@@ -163,14 +163,19 @@ function createAdapter(name: string): AdapterWithHandler {
 			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
 			const webhookUrl = process.env.MOM_TELEGRAM_WEBHOOK_URL;
 			const webhookSecret = process.env.MOM_TELEGRAM_WEBHOOK_SECRET;
-			if (!botToken || !webhookUrl || !webhookSecret) {
-				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN, MOM_TELEGRAM_WEBHOOK_URL, MOM_TELEGRAM_WEBHOOK_SECRET");
+			const skipRegistration = !!process.env.MOM_SKIP_WEBHOOK_REGISTRATION;
+			if (!botToken || !webhookSecret) {
+				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN, MOM_TELEGRAM_WEBHOOK_SECRET");
+				process.exit(1);
+			}
+			if (!skipRegistration && !webhookUrl) {
+				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_URL (required unless MOM_SKIP_WEBHOOK_REGISTRATION=true)");
 				process.exit(1);
 			}
 			const telegramPort = parseInt(process.env.MOM_TELEGRAM_WEBHOOK_PORT || "", 10) || 3001;
 			const tlsCert = process.env.MOM_TELEGRAM_TLS_CERT || undefined;
 			const tlsKey = process.env.MOM_TELEGRAM_TLS_KEY || undefined;
-			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, port: telegramPort, tlsCert, tlsKey });
+			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, port: telegramPort, skipRegistration, tlsCert, tlsKey });
 		}
 		default:
 			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', or 'telegram:webhook'.`);

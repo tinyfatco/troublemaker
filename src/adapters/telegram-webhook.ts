@@ -9,9 +9,11 @@ import { TelegramBase, type TelegramBaseConfig } from "./telegram-base.js";
 // ============================================================================
 
 export interface TelegramWebhookAdapterConfig extends TelegramBaseConfig {
-	webhookUrl: string;
+	webhookUrl?: string;
 	webhookSecret: string;
 	port: number;
+	/** Skip setWebHook/deleteWebHook calls. Use when webhook URL is managed externally (e.g. CF Worker). */
+	skipRegistration?: boolean;
 	/** Path to TLS certificate file (PEM). Required for self-signed certs on bare IP. */
 	tlsCert?: string;
 	/** Path to TLS key file (PEM). Required alongside tlsCert. */
@@ -19,9 +21,10 @@ export interface TelegramWebhookAdapterConfig extends TelegramBaseConfig {
 }
 
 export class TelegramWebhookAdapter extends TelegramBase {
-	private webhookUrl: string;
+	private webhookUrl?: string;
 	private webhookSecret: string;
 	private port: number;
+	private skipRegistration: boolean;
 	private tlsCert?: string;
 	private tlsKey?: string;
 	private server: Server | import("http").Server | null = null;
@@ -31,6 +34,7 @@ export class TelegramWebhookAdapter extends TelegramBase {
 		this.webhookUrl = config.webhookUrl;
 		this.webhookSecret = config.webhookSecret;
 		this.port = config.port;
+		this.skipRegistration = config.skipRegistration || !!process.env.MOM_SKIP_WEBHOOK_REGISTRATION;
 		this.tlsCert = config.tlsCert;
 		this.tlsKey = config.tlsKey;
 	}
@@ -44,16 +48,20 @@ export class TelegramWebhookAdapter extends TelegramBase {
 		// Wire up message handler — processUpdate() fires bot.on("message") events
 		this.bot.on("message", (msg) => this.handleIncomingMessage(msg));
 
-		// Register webhook with Telegram API
-		// If we have a self-signed cert, pass it so Telegram trusts our server
-		const webhookOpts: { secret_token: string; certificate?: string } = {
-			secret_token: this.webhookSecret,
-		};
-		if (this.tlsCert) {
-			webhookOpts.certificate = this.tlsCert;
+		// Register webhook with Telegram API (unless managed externally)
+		if (!this.skipRegistration) {
+			if (!this.webhookUrl) throw new Error("TelegramWebhookAdapter: webhookUrl required when not skipping registration");
+			const webhookOpts: { secret_token: string; certificate?: string } = {
+				secret_token: this.webhookSecret,
+			};
+			if (this.tlsCert) {
+				webhookOpts.certificate = this.tlsCert;
+			}
+			await this.bot.setWebHook(this.webhookUrl, webhookOpts);
+			log.logInfo(`Telegram webhook registered: ${this.webhookUrl}`);
+		} else {
+			log.logInfo("Telegram webhook registration skipped (managed externally)");
 		}
-		await this.bot.setWebHook(this.webhookUrl, webhookOpts);
-		log.logInfo(`Telegram webhook registered: ${this.webhookUrl}`);
 
 		// Start HTTPS server (or HTTP if no TLS cert — e.g. behind a reverse proxy)
 		const handler = (req: IncomingMessage, res: ServerResponse) => this.handleRequest(req, res);
@@ -81,12 +89,14 @@ export class TelegramWebhookAdapter extends TelegramBase {
 	}
 
 	async stop(): Promise<void> {
-		// Unregister webhook with Telegram
-		try {
-			await this.bot.deleteWebHook();
-			log.logInfo("Telegram webhook deleted");
-		} catch (err) {
-			log.logWarning("Failed to delete Telegram webhook", err instanceof Error ? err.message : String(err));
+		// Unregister webhook with Telegram (unless managed externally)
+		if (!this.skipRegistration) {
+			try {
+				await this.bot.deleteWebHook();
+				log.logInfo("Telegram webhook deleted");
+			} catch (err) {
+				log.logWarning("Failed to delete Telegram webhook", err instanceof Error ? err.message : String(err));
+			}
 		}
 
 		if (this.server) {
