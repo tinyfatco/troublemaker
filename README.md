@@ -87,14 +87,24 @@ mom [options] <working-directory>
 Options:
   --sandbox=host              Run tools on host (not recommended)
   --sandbox=docker:<name>     Run tools in Docker container (recommended)
+  --adapter=<name>[,<name>]   Platform adapters (default: auto-detect from env)
+  --port=<number>             HTTP port for webhook adapters (default: 3000)
+
+Adapter names:
+  slack          Slack Socket Mode (default, same as slack:socket)
+  slack:socket   Slack Socket Mode (outbound WebSocket, always-on)
+  slack:webhook  Slack HTTP Events API (inbound HTTP, serverless-friendly)
+  telegram       Telegram polling (default)
 ```
 
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `MOM_SLACK_APP_TOKEN` | Slack app-level token (xapp-...) |
+| `MOM_SLACK_APP_TOKEN` | Slack app-level token for Socket Mode (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | Slack bot token (xoxb-...) |
+| `MOM_SLACK_SIGNING_SECRET` | Slack signing secret for webhook mode |
+| `MOM_HTTP_PORT` | HTTP port for webhook adapters (default: 3000) |
 | `ANTHROPIC_API_KEY` | (Optional) Anthropic API key |
 
 ## Authentication
@@ -116,7 +126,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 ## How Mom Works
 
-Mom is a Node.js app that runs on your host machine. She connects to Slack via Socket Mode, receives messages, and responds using an LLM-based agent that can create and use tools.
+Mom is a Node.js app that runs on your host machine. She connects to platforms via adapters (Slack Socket Mode, Slack HTTP Events API, Telegram polling, etc.) and responds using an LLM-based agent that can create and use tools.
 
 **For each channel you add mom to** (group channels or DMs), mom maintains a separate conversation history with its own context, memory, and files.
 

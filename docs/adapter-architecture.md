@@ -111,19 +111,41 @@ The agent adapts its output formatting without any code changes.
 
 That's it. The agent, handler, events system, session management, and tools all work unchanged.
 
+## Adapter Modes
+
+Each platform adapter supports multiple connection modes — one for always-on deployments (VPS, on-prem) and one for serverless (CF, Lambda):
+
+### Slack
+
+| Mode | CLI flag | Env vars | Connection |
+|------|----------|----------|------------|
+| **Socket Mode** (default) | `--adapter=slack` or `slack:socket` | `MOM_SLACK_APP_TOKEN` + `MOM_SLACK_BOT_TOKEN` | Outbound WebSocket. Always-on. |
+| **Webhook (Events API)** | `--adapter=slack:webhook` | `MOM_SLACK_BOT_TOKEN` + `MOM_SLACK_SIGNING_SECRET` | HTTP server on `MOM_HTTP_PORT` (default 3000). Serverless-friendly. |
+
+Socket Mode and HTTP Events API are **mutually exclusive per Slack app** — you must choose one in the Slack admin console.
+
+### Telegram
+
+| Mode | CLI flag | Env vars | Connection |
+|------|----------|----------|------------|
+| **Polling** (default) | `--adapter=telegram` | `MOM_TELEGRAM_BOT_TOKEN` | Outbound `getUpdates` polling. Always-on. |
+| **Webhook** (planned) | `--adapter=telegram:webhook` | `MOM_TELEGRAM_BOT_TOKEN` + secret | HTTP server receives pushed updates. Serverless-friendly. |
+
 ## File Structure
 
 ```
 src/
 ├── adapters/
-│   ├── types.ts      — PlatformAdapter, MomContext, MomEvent, MomHandler
-│   ├── slack.ts      — SlackAdapter (Socket Mode + WebClient)
-│   └── telegram.ts   — TelegramAdapter (polling + Bot API)
-├── agent.ts          — AgentRunner, system prompt, tool handling
-├── main.ts           — CLI, adapter factory, handler, channel state
-├── events.ts         — Scheduled event watcher
-├── context.ts        — Session sync, settings manager
-├── store.ts          — Channel data persistence
-├── sandbox.ts        — Docker/host execution
-└── tools/            — Tool implementations (bash, read, write, edit, attach)
+│   ├── types.ts          — PlatformAdapter, MomContext, MomEvent, MomHandler
+│   ├── slack-base.ts     — SlackBase abstract class (shared WebClient, metadata, backfill, context, logging)
+│   ├── slack-socket.ts   — SlackSocketAdapter (Socket Mode — outbound WebSocket)
+│   ├── slack-webhook.ts  — SlackWebhookAdapter (HTTP Events API — inbound HTTP)
+│   └── telegram.ts       — TelegramAdapter (polling + Bot API)
+├── agent.ts              — AgentRunner, system prompt, tool handling
+├── main.ts               — CLI, adapter factory, handler, channel state
+├── events.ts             — Scheduled event watcher
+├── context.ts            — Session sync, settings manager
+├── store.ts              — Channel data persistence
+├── sandbox.ts            — Docker/host execution
+└── tools/                — Tool implementations (bash, read, write, edit, attach)
 ```
