@@ -6,20 +6,22 @@ import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
-// TelegramAdapter
+// TelegramBase — abstract base class for Telegram adapters
 // ============================================================================
 
 /** Escape text for Telegram HTML parse mode */
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-export interface TelegramAdapterConfig {
+export interface TelegramBaseConfig {
 	botToken: string;
 	workingDir: string;
 }
 
-export class TelegramAdapter implements PlatformAdapter {
+type QueuedWork = () => Promise<void>;
+
+export abstract class TelegramBase implements PlatformAdapter {
 	readonly name = "telegram";
 	readonly maxMessageLength = 4096;
 	readonly formatInstructions = `## Text Formatting (Telegram HTML)
@@ -29,21 +31,22 @@ Do NOT use markdown formatting (* _ \` etc.) — use HTML tags only.
 
 When mentioning users, use @username format.`;
 
-	private bot: TelegramBot;
-	private handler!: MomHandler;
-	private workingDir: string;
-	private botToken: string;
+	protected bot: TelegramBot;
+	protected handler!: MomHandler;
+	protected workingDir: string;
+	protected botToken: string;
 
 	// Track users/channels we've seen
-	private users = new Map<string, UserInfo>();
-	private channels = new Map<string, ChannelInfo>();
+	protected users = new Map<string, UserInfo>();
+	protected channels = new Map<string, ChannelInfo>();
 	private queues = new Map<string, QueuedWork[]>();
 	private processing = new Map<string, boolean>();
 
-	constructor(config: TelegramAdapterConfig) {
+	constructor(config: TelegramBaseConfig) {
 		this.workingDir = config.workingDir;
 		this.botToken = config.botToken;
-		this.bot = new TelegramBot(config.botToken, { polling: true });
+		// Always construct with polling: false — subclasses control lifecycle
+		this.bot = new TelegramBot(config.botToken, { polling: false });
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -51,74 +54,72 @@ When mentioning users, use @username format.`;
 	}
 
 	// ==========================================================================
-	// PlatformAdapter implementation
+	// Abstract — subclasses implement connection lifecycle
 	// ==========================================================================
 
-	async start(): Promise<void> {
-		if (!this.handler) throw new Error("TelegramAdapter: handler not set. Call setHandler() before start().");
+	abstract start(): Promise<void>;
+	abstract stop(): Promise<void>;
 
-		const me = await this.bot.getMe();
-		log.logInfo(`Telegram bot started: @${me.username} (${me.id})`);
+	// ==========================================================================
+	// Shared incoming message handler
+	// ==========================================================================
 
-		this.bot.on("message", (msg) => {
-			if (!msg.text || msg.from?.is_bot) return;
+	protected handleIncomingMessage(msg: TelegramBot.Message): void {
+		if (!msg.text || msg.from?.is_bot) return;
 
-			const chatId = String(msg.chat.id);
-			const userId = String(msg.from!.id);
-			const userName = msg.from!.username || msg.from!.first_name || userId;
-			const displayName = [msg.from!.first_name, msg.from!.last_name].filter(Boolean).join(" ") || userName;
+		const chatId = String(msg.chat.id);
+		const userId = String(msg.from!.id);
+		const userName = msg.from!.username || msg.from!.first_name || userId;
+		const displayName = [msg.from!.first_name, msg.from!.last_name].filter(Boolean).join(" ") || userName;
 
-			// Track user
-			this.users.set(userId, { id: userId, userName, displayName });
+		// Track user
+		this.users.set(userId, { id: userId, userName, displayName });
 
-			// Track channel/chat
-			const chatName = msg.chat.title || (msg.chat.type === "private" ? `DM:${userName}` : chatId);
-			this.channels.set(chatId, { id: chatId, name: chatName });
+		// Track channel/chat
+		const chatName = msg.chat.title || (msg.chat.type === "private" ? `DM:${userName}` : chatId);
+		this.channels.set(chatId, { id: chatId, name: chatName });
 
-			const momEvent: MomEvent = {
-				type: msg.chat.type === "private" ? "dm" : "mention",
-				channel: chatId,
-				ts: String(msg.date),
-				user: userId,
-				text: msg.text,
-			};
+		const momEvent: MomEvent = {
+			type: msg.chat.type === "private" ? "dm" : "mention",
+			channel: chatId,
+			ts: String(msg.date),
+			user: userId,
+			text: msg.text,
+		};
 
-			// Log user message
-			this.logToFile(chatId, {
-				date: new Date(msg.date * 1000).toISOString(),
-				ts: String(msg.date),
-				user: userId,
-				userName,
-				displayName,
-				text: msg.text,
-				attachments: [],
-				isBot: false,
-			});
-
-			// Check for stop
-			if (msg.text.toLowerCase().trim() === "stop") {
-				if (this.handler.isRunning(chatId)) {
-					this.handler.handleStop(chatId, this);
-				} else {
-					this.postMessage(chatId, "_Nothing running_");
-				}
-				return;
-			}
-
-			// Check if busy
-			if (this.handler.isRunning(chatId)) {
-				this.postMessage(chatId, "_Already working. Say `stop` to cancel._");
-			} else {
-				this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
-			}
+		// Log user message
+		this.logToFile(chatId, {
+			date: new Date(msg.date * 1000).toISOString(),
+			ts: String(msg.date),
+			user: userId,
+			userName,
+			displayName,
+			text: msg.text,
+			attachments: [],
+			isBot: false,
 		});
 
-		log.logConnected();
+		// Check for stop
+		if (msg.text.toLowerCase().trim() === "stop") {
+			if (this.handler.isRunning(chatId)) {
+				this.handler.handleStop(chatId, this);
+			} else {
+				this.postMessage(chatId, "_Nothing running_");
+			}
+			return;
+		}
+
+		// Check if busy
+		if (this.handler.isRunning(chatId)) {
+			this.postMessage(chatId, "_Already working. Say `stop` to cancel._");
+		} else {
+			this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
+		}
 	}
 
-	async stop(): Promise<void> {
-		this.bot.stopPolling();
-	}
+	// ==========================================================================
+	// PlatformAdapter implementation
+	// ==========================================================================
 
 	async postMessage(channel: string, text: string): Promise<string> {
 		const result = await this.bot.sendMessage(Number(channel), text, { parse_mode: "HTML" });
@@ -391,5 +392,3 @@ When mentioning users, use @username format.`;
 		this.processing.set(channelId, false);
 	}
 }
-
-type QueuedWork = () => Promise<void>;

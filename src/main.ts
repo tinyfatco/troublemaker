@@ -3,7 +3,8 @@
 import { join, resolve } from "path";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
-import { TelegramAdapter } from "./adapters/telegram.js";
+import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
+import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
@@ -106,9 +107,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram] [--port=3000] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
 }
@@ -149,16 +150,30 @@ function createAdapter(name: string): AdapterWithHandler {
 			const store = new ChannelStore({ workingDir, botToken });
 			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, port: parsedArgs.port });
 		}
-		case "telegram": {
+		case "telegram":
+		case "telegram:polling": {
 			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
 			if (!botToken) {
 				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 				process.exit(1);
 			}
-			return new TelegramAdapter({ botToken, workingDir });
+			return new TelegramPollingAdapter({ botToken, workingDir });
+		}
+		case "telegram:webhook": {
+			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
+			const webhookUrl = process.env.MOM_TELEGRAM_WEBHOOK_URL;
+			const webhookSecret = process.env.MOM_TELEGRAM_WEBHOOK_SECRET;
+			if (!botToken || !webhookUrl || !webhookSecret) {
+				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN, MOM_TELEGRAM_WEBHOOK_URL, MOM_TELEGRAM_WEBHOOK_SECRET");
+				process.exit(1);
+			}
+			const telegramPort = parseInt(process.env.MOM_TELEGRAM_WEBHOOK_PORT || "", 10) || 3001;
+			const tlsCert = process.env.MOM_TELEGRAM_TLS_CERT || undefined;
+			const tlsKey = process.env.MOM_TELEGRAM_TLS_KEY || undefined;
+			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, port: telegramPort, tlsCert, tlsKey });
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', or 'telegram'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', or 'telegram:webhook'.`);
 			process.exit(1);
 	}
 }
