@@ -10,6 +10,7 @@ import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js"
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
+import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
@@ -152,7 +153,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, port: parsedArgs.port });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret });
 		}
 		case "telegram":
 		case "telegram:polling": {
@@ -176,10 +177,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_URL (required unless MOM_SKIP_WEBHOOK_REGISTRATION=true)");
 				process.exit(1);
 			}
-			const telegramPort = parseInt(process.env.MOM_TELEGRAM_WEBHOOK_PORT || "", 10) || 3001;
-			const tlsCert = process.env.MOM_TELEGRAM_TLS_CERT || undefined;
-			const tlsKey = process.env.MOM_TELEGRAM_TLS_KEY || undefined;
-			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, port: telegramPort, skipRegistration, tlsCert, tlsKey });
+			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
 		}
 		case "email:webhook": {
 			const toolsToken = process.env.MOM_EMAIL_TOOLS_TOKEN;
@@ -187,9 +185,8 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_EMAIL_TOOLS_TOKEN");
 				process.exit(1);
 			}
-			const emailPort = parseInt(process.env.MOM_EMAIL_WEBHOOK_PORT || "", 10) || 3003;
 			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
-			return new EmailWebhookAdapter({ workingDir, port: emailPort, toolsToken, sendUrl });
+			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl });
 		}
 		default:
 			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', or 'email:webhook'.`);
@@ -299,12 +296,33 @@ for (const adapter of adapters) {
 	adapter.setHandler(handler);
 }
 
-// Start all adapters FIRST — they bind HTTP ports that webhooks need.
+// Route map: webhook adapters register their dispatch path with the gateway
+const DISPATCH_PATHS: Record<string, string> = {
+	"slack:webhook": "/slack/events",
+	"telegram:webhook": "/telegram/webhook",
+	"email:webhook": "/email/inbound",
+};
+
+// Create gateway and register webhook adapters
+const gateway = new Gateway();
+for (let i = 0; i < adapters.length; i++) {
+	const adapter = adapters[i];
+	const adapterName = parsedArgs.adapters[i];
+	const path = DISPATCH_PATHS[adapterName];
+	if (path && adapter.dispatch) {
+		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
+	}
+}
+
+// Start gateway FIRST — it binds the HTTP port that webhooks need.
 // Events watcher uses readdirSync which blocks the event loop on slow
-// filesystems (e.g. s3fs/R2 FUSE mounts). Starting adapters first ensures
-// ports are listening before the potentially slow events scan.
+// filesystems (e.g. s3fs/R2 FUSE mounts). Starting the gateway first ensures
+// the port is listening before the potentially slow events scan.
+await gateway.start(parsedArgs.port);
+
+// Start adapters (non-HTTP init: Slack metadata fetch, Telegram webhook registration, etc.)
 for (const adapter of adapters) {
-	adapter.start();
+	await adapter.start();
 }
 
 // Start events watcher AFTER adapters (may block on slow FS)
@@ -315,6 +333,7 @@ eventsWatcher.start();
 process.on("SIGINT", () => {
 	log.logInfo("Shutting down...");
 	eventsWatcher.stop();
+	gateway.stop();
 	for (const adapter of adapters) {
 		adapter.stop();
 	}
@@ -324,6 +343,7 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
 	log.logInfo("Shutting down...");
 	eventsWatcher.stop();
+	gateway.stop();
 	for (const adapter of adapters) {
 		adapter.stop();
 	}

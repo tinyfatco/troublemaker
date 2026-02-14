@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "crypto";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
+import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { SlackBase, type SlackBaseConfig } from "./slack-base.js";
@@ -11,31 +11,18 @@ import type { MomEvent } from "./types.js";
 
 export interface SlackWebhookAdapterConfig extends SlackBaseConfig {
 	signingSecret: string;
-	port: number;
 }
 
 export class SlackWebhookAdapter extends SlackBase {
 	private signingSecret: string;
-	private port: number;
-	private server: Server | null = null;
 
 	constructor(config: SlackWebhookAdapterConfig) {
 		super(config);
 		this.signingSecret = config.signingSecret;
-		this.port = config.port;
 	}
 
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("SlackWebhookAdapter: handler not set. Call setHandler() before start().");
-
-		this.server = createServer((req, res) => this.handleRequest(req, res));
-
-		await new Promise<void>((resolve) => {
-			this.server!.listen(this.port, () => {
-				log.logInfo(`Slack webhook server listening on port ${this.port}`);
-				resolve();
-			});
-		});
 
 		await this.initMetadata();
 
@@ -43,25 +30,14 @@ export class SlackWebhookAdapter extends SlackBase {
 	}
 
 	async stop(): Promise<void> {
-		if (this.server) {
-			await new Promise<void>((resolve, reject) => {
-				this.server!.close((err) => (err ? reject(err) : resolve()));
-			});
-			this.server = null;
-		}
+		// No-op — gateway owns the HTTP server
 	}
 
 	// ==========================================================================
-	// HTTP request handling
+	// HTTP request handling — called by Gateway
 	// ==========================================================================
 
-	private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-		if (req.method !== "POST" || req.url !== "/slack/events") {
-			res.writeHead(404);
-			res.end("Not found");
-			return;
-		}
-
+	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
@@ -102,7 +78,7 @@ export class SlackWebhookAdapter extends SlackBase {
 				return;
 			}
 
-			this.dispatch(payload, res);
+			this.dispatchEvent(payload, res);
 		});
 	}
 
@@ -127,7 +103,7 @@ export class SlackWebhookAdapter extends SlackBase {
 	// Event dispatch
 	// ==========================================================================
 
-	private dispatch(payload: SlackEventPayload, res: ServerResponse): void {
+	private dispatchEvent(payload: SlackEventPayload, res: ServerResponse): void {
 		// URL verification challenge
 		if (payload.type === "url_verification") {
 			res.writeHead(200, { "Content-Type": "application/json" });

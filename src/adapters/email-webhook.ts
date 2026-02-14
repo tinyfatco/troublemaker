@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync } from "fs";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
+import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
@@ -32,7 +32,6 @@ interface EmailPayload {
 
 export interface EmailWebhookAdapterConfig {
 	workingDir: string;
-	port: number;
 	/** Agent's tools_token for authenticating against TinyFat API */
 	toolsToken: string;
 	/** URL for sending email replies (e.g., https://tinyfat.com/api/email/send) */
@@ -48,17 +47,14 @@ Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: 
 Keep responses concise and professional. The user will receive one email with your complete response.`;
 
 	private workingDir: string;
-	private port: number;
 	private toolsToken: string;
 	private sendUrl: string;
-	private server: Server | null = null;
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
 
 	constructor(config: EmailWebhookAdapterConfig) {
 		this.workingDir = config.workingDir;
-		this.port = config.port;
 		this.toolsToken = config.toolsToken;
 		this.sendUrl = config.sendUrl;
 	}
@@ -69,39 +65,19 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("EmailWebhookAdapter: handler not set. Call setHandler() before start().");
-
-		this.server = createServer((req, res) => this.handleRequest(req, res));
-
-		await new Promise<void>((resolve) => {
-			this.server!.listen(this.port, () => {
-				log.logInfo(`Email webhook server listening on port ${this.port}`);
-				resolve();
-			});
-		});
-
+		log.logInfo("Email webhook adapter ready");
 		log.logConnected();
 	}
 
 	async stop(): Promise<void> {
-		if (this.server) {
-			await new Promise<void>((resolve, reject) => {
-				this.server!.close((err) => (err ? reject(err) : resolve()));
-			});
-			this.server = null;
-		}
+		// No-op — gateway owns the HTTP server
 	}
 
 	// ==========================================================================
-	// HTTP request handling
+	// HTTP request handling — called by Gateway
 	// ==========================================================================
 
-	private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-		if (req.method !== "POST" || req.url !== "/email/inbound") {
-			res.writeHead(404);
-			res.end("Not found");
-			return;
-		}
-
+	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {

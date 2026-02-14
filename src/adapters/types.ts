@@ -1,3 +1,4 @@
+import type { IncomingMessage, ServerResponse } from "http";
 import type { Attachment, ChannelStore } from "../store.js";
 
 // ============================================================================
@@ -93,11 +94,14 @@ export interface PlatformAdapter {
 	/** Platform-specific formatting instructions for the system prompt */
 	readonly formatInstructions: string;
 
-	/** Start the adapter (connect to platform) */
+	/** Start the adapter (connect to platform, but NOT the HTTP server — gateway handles that) */
 	start(): Promise<void>;
 
 	/** Stop the adapter */
 	stop(): Promise<void>;
+
+	/** Handle an inbound HTTP request (webhook adapters only — called by Gateway) */
+	dispatch?(req: IncomingMessage, res: ServerResponse): void;
 
 	// -- Message operations --
 

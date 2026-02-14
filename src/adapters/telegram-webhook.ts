@@ -1,6 +1,4 @@
-import { readFileSync } from "fs";
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "http";
-import { createServer as createHttpsServer, type Server } from "https";
+import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
 import { TelegramBase, type TelegramBaseConfig } from "./telegram-base.js";
 
@@ -11,32 +9,20 @@ import { TelegramBase, type TelegramBaseConfig } from "./telegram-base.js";
 export interface TelegramWebhookAdapterConfig extends TelegramBaseConfig {
 	webhookUrl?: string;
 	webhookSecret: string;
-	port: number;
 	/** Skip setWebHook/deleteWebHook calls. Use when webhook URL is managed externally (e.g. CF Worker). */
 	skipRegistration?: boolean;
-	/** Path to TLS certificate file (PEM). Required for self-signed certs on bare IP. */
-	tlsCert?: string;
-	/** Path to TLS key file (PEM). Required alongside tlsCert. */
-	tlsKey?: string;
 }
 
 export class TelegramWebhookAdapter extends TelegramBase {
 	private webhookUrl?: string;
 	private webhookSecret: string;
-	private port: number;
 	private skipRegistration: boolean;
-	private tlsCert?: string;
-	private tlsKey?: string;
-	private server: Server | import("http").Server | null = null;
 
 	constructor(config: TelegramWebhookAdapterConfig) {
 		super(config);
 		this.webhookUrl = config.webhookUrl;
 		this.webhookSecret = config.webhookSecret;
-		this.port = config.port;
 		this.skipRegistration = config.skipRegistration || !!process.env.MOM_SKIP_WEBHOOK_REGISTRATION;
-		this.tlsCert = config.tlsCert;
-		this.tlsKey = config.tlsKey;
 	}
 
 	async start(): Promise<void> {
@@ -51,39 +37,14 @@ export class TelegramWebhookAdapter extends TelegramBase {
 		// Register webhook with Telegram API (unless managed externally)
 		if (!this.skipRegistration) {
 			if (!this.webhookUrl) throw new Error("TelegramWebhookAdapter: webhookUrl required when not skipping registration");
-			const webhookOpts: { secret_token: string; certificate?: string } = {
+			const webhookOpts: { secret_token: string } = {
 				secret_token: this.webhookSecret,
 			};
-			if (this.tlsCert) {
-				webhookOpts.certificate = this.tlsCert;
-			}
 			await this.bot.setWebHook(this.webhookUrl, webhookOpts);
 			log.logInfo(`Telegram webhook registered: ${this.webhookUrl}`);
 		} else {
 			log.logInfo("Telegram webhook registration skipped (managed externally)");
 		}
-
-		// Start HTTPS server (or HTTP if no TLS cert — e.g. behind a reverse proxy)
-		const handler = (req: IncomingMessage, res: ServerResponse) => this.handleRequest(req, res);
-
-		if (this.tlsCert && this.tlsKey) {
-			const tlsOpts = {
-				cert: readFileSync(this.tlsCert),
-				key: readFileSync(this.tlsKey),
-			};
-			this.server = createHttpsServer(tlsOpts, handler);
-			log.logInfo("Telegram webhook using HTTPS (self-signed cert)");
-		} else {
-			this.server = createHttpServer(handler);
-			log.logInfo("Telegram webhook using HTTP (expects reverse proxy for TLS)");
-		}
-
-		await new Promise<void>((resolve) => {
-			this.server!.listen(this.port, () => {
-				log.logInfo(`Telegram webhook server listening on port ${this.port}`);
-				resolve();
-			});
-		});
 
 		log.logConnected();
 	}
@@ -98,26 +59,13 @@ export class TelegramWebhookAdapter extends TelegramBase {
 				log.logWarning("Failed to delete Telegram webhook", err instanceof Error ? err.message : String(err));
 			}
 		}
-
-		if (this.server) {
-			await new Promise<void>((resolve, reject) => {
-				this.server!.close((err) => (err ? reject(err) : resolve()));
-			});
-			this.server = null;
-		}
 	}
 
 	// ==========================================================================
-	// HTTP request handling
+	// HTTP request handling — called by Gateway
 	// ==========================================================================
 
-	private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-		if (req.method !== "POST" || req.url !== "/telegram/webhook") {
-			res.writeHead(404);
-			res.end("Not found");
-			return;
-		}
-
+	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
