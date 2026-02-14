@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { join } from "path";
 import * as log from "../log.js";
@@ -121,12 +121,15 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		log.logInfo(`[email] Inbound from ${payload.from}: ${payload.subject || "(no subject)"}`);
 
+		// Save attachments to disk so the agent can read them
+		const savedPaths = this.saveAttachments(payload, channelId);
+
 		const event: MomEvent = {
 			type: "dm",
 			channel: channelId,
 			ts,
 			user: payload.from,
-			text: this.buildMessageText(payload),
+			text: this.buildMessageText(payload, savedPaths),
 		};
 
 		// Store payload for createContext to read (threading metadata)
@@ -156,7 +159,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		}
 	}
 
-	private buildMessageText(payload: EmailPayload): string {
+	private buildMessageText(payload: EmailPayload, savedPaths: Map<string, string>): string {
 		const parts: string[] = [];
 
 		if (payload.subject) {
@@ -165,11 +168,36 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		parts.push(payload.body);
 
-		if (payload.attachments && payload.attachments.length > 0) {
-			parts.push(`\n[${payload.attachments.length} attachment(s): ${payload.attachments.map((a) => a.filename).join(", ")}]`);
+		if (savedPaths.size > 0) {
+			const fileList = Array.from(savedPaths.entries())
+				.map(([filename, path]) => `- ${filename}: ${path}`)
+				.join("\n");
+			parts.push(`Attachments saved to disk:\n${fileList}`);
 		}
 
 		return parts.join("\n\n");
+	}
+
+	private saveAttachments(payload: EmailPayload, channelId: string): Map<string, string> {
+		const saved = new Map<string, string>();
+		if (!payload.attachments || payload.attachments.length === 0) return saved;
+
+		const dir = join(this.workingDir, channelId, "attachments");
+		if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+		for (const att of payload.attachments) {
+			try {
+				const buffer = Buffer.from(att.content, "base64");
+				const filePath = join(dir, att.filename);
+				writeFileSync(filePath, buffer);
+				saved.set(att.filename, filePath);
+				log.logInfo(`[email] Saved attachment: ${att.filename} (${buffer.length} bytes) → ${filePath}`);
+			} catch (err) {
+				log.logWarning(`[email] Failed to save attachment ${att.filename}`, err instanceof Error ? err.message : String(err));
+			}
+		}
+
+		return saved;
 	}
 
 	// ==========================================================================
