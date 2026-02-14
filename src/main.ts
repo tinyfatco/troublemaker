@@ -326,8 +326,13 @@ for (let i = 0; i < adapters.length; i++) {
 await gateway.start(parsedArgs.port);
 
 // Start adapters (non-HTTP init: Slack metadata fetch, Telegram webhook registration, etc.)
+// Failures here must not kill the gateway — other adapters should still serve.
 for (const adapter of adapters) {
-	await adapter.start();
+	try {
+		await adapter.start();
+	} catch (err) {
+		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
+	}
 }
 
 // Start events watcher AFTER adapters (may block on slow FS)
