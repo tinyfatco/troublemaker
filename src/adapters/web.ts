@@ -337,7 +337,7 @@ Keep responses concise and helpful.`;
 
 			setWorking: async (working: boolean) => {
 				if (!working && writer) {
-					writer.send({ type: "run_complete" });
+					writer.send({ type: "run_complete", channelId: event.channel });
 				}
 			},
 
