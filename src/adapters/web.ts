@@ -317,7 +317,7 @@ Keep responses concise and helpful.`;
 				if (toolMatch) {
 					const [, status, toolName] = toolMatch;
 					const resultMatch = text.match(/\*Result:\*\n```\n([\s\S]*?)\n```/);
-					const preview = resultMatch ? resultMatch[1].substring(0, 200) : undefined;
+					const preview = resultMatch ? resultMatch[1] : undefined;
 
 					writer.send({
 						type: "tool_end",
