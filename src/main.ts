@@ -76,7 +76,7 @@ function parseArgs(): ParsedArgs {
 			}
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
-			// Prefer webhook mode when secret is set (crawdad-cf sets this)
+			// Prefer webhook mode when secret is set (external orchestrator sets this)
 			if (process.env.MOM_TELEGRAM_WEBHOOK_SECRET) {
 				adapters.push("telegram:webhook");
 			} else {
@@ -316,28 +316,27 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"web": "/web/chat",
 };
 
-// Create gateway and register webhook adapters
+// Start gateway — binds HTTP port before adapter init so callers can
+// detect the port is up. Routes return 503 until their adapter is ready.
 const gateway = new Gateway();
+await gateway.start(parsedArgs.port);
+
+// Register, init, and mark each adapter ready. Failures don't kill other
+// adapters — failed routes stay registered but never marked ready (permanent 503).
 for (let i = 0; i < adapters.length; i++) {
 	const adapter = adapters[i];
 	const adapterName = parsedArgs.adapters[i];
 	const path = DISPATCH_PATHS[adapterName];
+
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
 	}
-}
 
-// Start gateway FIRST — it binds the HTTP port that webhooks need.
-// Events watcher uses readdirSync which blocks the event loop on slow
-// filesystems (e.g. s3fs/R2 FUSE mounts). Starting the gateway first ensures
-// the port is listening before the potentially slow events scan.
-await gateway.start(parsedArgs.port);
-
-// Start adapters (non-HTTP init: Slack metadata fetch, Telegram webhook registration, etc.)
-// Failures here must not kill the gateway — other adapters should still serve.
-for (const adapter of adapters) {
 	try {
 		await adapter.start();
+		if (path) {
+			gateway.markReady(path);
+		}
 	} catch (err) {
 		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
 	}

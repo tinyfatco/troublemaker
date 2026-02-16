@@ -10,8 +10,8 @@ import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, Us
 // ============================================================================
 
 /**
- * Inbound web chat message from crawdad-cf.
- * crawdad-cf translates browser WebSocket messages to this format.
+ * Inbound web chat message from the orchestrator.
+ * The orchestrator translates browser messages to this format.
  */
 interface WebChatPayload {
 	message: string;

@@ -10,7 +10,7 @@ import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, Us
 // ============================================================================
 
 /**
- * Inbound email payload from fat-agents /api/email/inbound → crawdad-cf → here.
+ * Inbound email payload from the email inbound webhook → orchestrator → here.
  * Matches TriggerPayload from fat-agents/src/lib/email/inbound-types.ts
  */
 interface EmailPayload {
