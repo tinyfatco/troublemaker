@@ -224,6 +224,11 @@ When mentioning users, use @username format.`;
 		// Chronological entries for the working message (tool arrows + interim text blocks)
 		const workingEntries: string[] = [];
 
+		// Pending text buffer: holds the latest shouldLog=true text until we know
+		// whether it's interim (next event arrives → flush to working) or final
+		// (replaceMessage arrives → send as Message 2, skip working entirely).
+		let pendingText: string | null = null;
+
 		// Throttle: minimum 300ms between edits to avoid Telegram 429s
 		let lastEditTime = 0;
 		let editTimer: ReturnType<typeof setTimeout> | null = null;
@@ -286,6 +291,15 @@ When mentioning users, use @username format.`;
 			}
 		};
 
+		// Commit pendingText to the working message (proves it was interim, not final)
+		const flushPendingText = async () => {
+			if (pendingText !== null) {
+				workingEntries.push(escapeHtml(pendingText));
+				pendingText = null;
+				await scheduleWorkingUpdate();
+			}
+		};
+
 		return {
 			message: {
 				text: event.text,
@@ -304,22 +318,25 @@ When mentioning users, use @username format.`;
 				updatePromise = updatePromise.then(async () => {
 					// Tool labels (shouldLog=false, starts with _→) — append to working message
 					if (!shouldLog && text.startsWith("_→")) {
+						await flushPendingText();
 						const label = text.replace(/^_/, "").replace(/_$/, "");
 						workingEntries.push(`<i>${escapeHtml(label)}</i>`);
 						await scheduleWorkingUpdate();
 						return;
 					}
 
-					// Status messages (shouldLog=false) — just refresh working message
+					// Status messages (shouldLog=false) — flush pending, refresh working message
 					if (!shouldLog) {
+						await flushPendingText();
 						await scheduleWorkingUpdate();
 						return;
 					}
 
-					// Real content (shouldLog=true) — append to working message as interim text
+					// Real content (shouldLog=true) — buffer it. If something else arrives
+					// before replaceMessage, flushPendingText proves it was interim.
 					if (text.trim()) {
-						workingEntries.push(escapeHtml(text));
-						await scheduleWorkingUpdate();
+						await flushPendingText();
+						pendingText = text;
 					}
 				});
 				await updatePromise;
@@ -327,17 +344,12 @@ When mentioning users, use @username format.`;
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					// Final response — always send as a NEW message (Message 2) for notification
+					// Final response — send as a NEW message (Message 2) for notification.
+					// Discard pendingText (it's the same text about to be sent as Message 2).
 					if (!text.trim()) return;
 
-					// Remove the duplicate: the final text was already appended to the working
-					// message as an interim block. Find and remove the last non-tool entry.
-					for (let i = workingEntries.length - 1; i >= 0; i--) {
-						if (!workingEntries[i].startsWith("<i>")) {
-							workingEntries.splice(i, 1);
-							break;
-						}
-					}
+					pendingText = null;
+
 					if (workingMessageId) {
 						if (editTimer) {
 							clearTimeout(editTimer);
@@ -381,6 +393,9 @@ When mentioning users, use @username format.`;
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
 					if (!working) {
+						// Commit any orphaned pending text before finalizing
+						await flushPendingText();
+
 						// Flush any pending throttled edit
 						if (editTimer) {
 							clearTimeout(editTimer);
