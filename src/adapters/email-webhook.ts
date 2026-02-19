@@ -1,6 +1,6 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
-import { join } from "path";
+import { basename, join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
@@ -295,6 +295,7 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		const toolLog: string[] = [];
+		const pendingAttachments: Array<{ filename: string; content: string }> = [];
 		let finalText = "";
 		const payload = this.pendingPayloads.get(event.channel);
 		const emailMeta = {
@@ -358,14 +359,21 @@ Keep responses concise and professional. The user will receive one email with yo
 				// No-op for email
 			},
 
-			uploadFile: async () => {
-				// TODO: email attachments later
+			uploadFile: async (filePath: string, title?: string) => {
+				try {
+					const content = readFileSync(filePath).toString("base64");
+					const filename = title || basename(filePath);
+					pendingAttachments.push({ filename, content });
+					log.logInfo(`[email] Queued attachment: ${filename} (${content.length} chars base64)`);
+				} catch (err) {
+					log.logWarning(`[email] Failed to read attachment ${filePath}`, err instanceof Error ? err.message : String(err));
+				}
 			},
 
 			setWorking: async (working: boolean) => {
 				if (!working) {
 					// Run complete — send the email reply
-					await this.sendEmailReply(emailMeta, finalText, toolLog);
+					await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments);
 				}
 			},
 
@@ -383,6 +391,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		meta: { from: string; subject: string; messageId?: string; inReplyTo?: string; references?: string },
 		finalText: string,
 		toolLog: string[],
+		attachments: Array<{ filename: string; content: string }> = [],
 	): Promise<void> {
 		if (!finalText.trim()) {
 			log.logInfo("[email] No response text to send");
@@ -411,6 +420,12 @@ Keep responses concise and professional. The user will receive one email with yo
 		if (conciseLog) {
 			emailPayload.log = "inline";
 			emailPayload.log_content = conciseLog;
+		}
+
+		// Add attachments
+		if (attachments.length > 0) {
+			emailPayload.attachments = attachments;
+			log.logInfo(`[email] Including ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
 		}
 
 		// Add threading headers (reply to the original message)
