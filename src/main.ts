@@ -344,6 +344,17 @@ const DISPATCH_PATHS: Record<string, string> = {
 // detect the port is up. Routes return 503 until their adapter is ready.
 const gateway = new Gateway();
 
+// Status endpoint — reports which channels are currently running.
+// Used by the orchestrator to wait for agent idle before re-syncing schedules.
+gateway.registerGet("/status", async (_req, res) => {
+	const running: string[] = [];
+	for (const [channelId, state] of channelStates) {
+		if (state.running) running.push(channelId);
+	}
+	res.writeHead(200, { "Content-Type": "application/json" });
+	res.end(JSON.stringify({ running, idle: running.length === 0 }));
+});
+
 // Schedule endpoint — returns next wake time for scheduled events.
 // Used by the orchestrator to set alarms for sleeping containers.
 gateway.registerGet("/schedule", async (_req, res) => {
