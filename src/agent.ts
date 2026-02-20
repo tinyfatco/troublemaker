@@ -27,6 +27,11 @@ import { createMomTools, setUploadFunction } from "./tools/index.js";
 // Hardcoded model for now - TODO: make configurable (issue #63)
 const model = getModel("anthropic", "claude-sonnet-4-5");
 
+// Allow overriding the API base URL (e.g. to route through TinyFat proxy)
+if (model && process.env.ANTHROPIC_BASE_URL) {
+	(model as any).baseUrl = process.env.ANTHROPIC_BASE_URL;
+}
+
 export interface PendingMessage {
 	userName: string;
 	text: string;
