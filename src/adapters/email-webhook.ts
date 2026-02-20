@@ -295,7 +295,7 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		const toolLog: string[] = [];
-		const pendingAttachments: Array<{ filename: string; content: string }> = [];
+		const pendingAttachments: Array<{ filename: string; filePath: string }> = [];
 		let finalText = "";
 		const payload = this.pendingPayloads.get(event.channel);
 		const emailMeta = {
@@ -361,10 +361,12 @@ Keep responses concise and professional. The user will receive one email with yo
 
 			uploadFile: async (filePath: string, title?: string) => {
 				try {
-					const content = readFileSync(filePath).toString("base64");
 					const filename = title || basename(filePath);
-					pendingAttachments.push({ filename, content });
-					log.logInfo(`[email] Queued attachment: ${filename} (${content.length} chars base64)`);
+					// Store the file path so sendEmailReply can read binary directly
+					// (avoids base64-in-JSON overhead for multipart sends)
+					pendingAttachments.push({ filename, filePath });
+					const stat = readFileSync(filePath);
+					log.logInfo(`[email] Queued attachment: ${filename} (${stat.length} bytes) from ${filePath}`);
 				} catch (err) {
 					log.logWarning(`[email] Failed to read attachment ${filePath}`, err instanceof Error ? err.message : String(err));
 				}
@@ -391,7 +393,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		meta: { from: string; subject: string; messageId?: string; inReplyTo?: string; references?: string },
 		finalText: string,
 		toolLog: string[],
-		attachments: Array<{ filename: string; content: string }> = [],
+		attachments: Array<{ filename: string; filePath: string }> = [],
 	): Promise<void> {
 		if (!finalText.trim()) {
 			log.logInfo("[email] No response text to send");
@@ -401,16 +403,9 @@ Keep responses concise and professional. The user will receive one email with yo
 		// Build the concise work log
 		const conciseLog = this.buildConciseLog(toolLog);
 
-		// Build email body with log
-		let body = finalText;
-
-		if (conciseLog) {
-			body += `\n\n---\n${conciseLog}`;
-		}
-
 		const replySubject = meta.subject.startsWith("Re:") ? meta.subject : `Re: ${meta.subject}`;
 
-		const emailPayload: Record<string, unknown> = {
+		const emailMetadata: Record<string, unknown> = {
 			to: meta.from,
 			subject: replySubject,
 			body: finalText,
@@ -418,21 +413,14 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		// Add log as inline content if present
 		if (conciseLog) {
-			emailPayload.log = "inline";
-			emailPayload.log_content = conciseLog;
-		}
-
-		// Add attachments
-		if (attachments.length > 0) {
-			emailPayload.attachments = attachments;
-			log.logInfo(`[email] Including ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
+			emailMetadata.log = "inline";
+			emailMetadata.log_content = conciseLog;
 		}
 
 		// Add threading headers (reply to the original message)
 		if (meta.messageId) {
-			emailPayload.in_reply_to = meta.messageId;
-			// Build references chain: existing references + this message's ID
-			emailPayload.references = meta.references
+			emailMetadata.in_reply_to = meta.messageId;
+			emailMetadata.references = meta.references
 				? `${meta.references} ${meta.messageId}`
 				: meta.messageId;
 		}
@@ -440,14 +428,40 @@ Keep responses concise and professional. The user will receive one email with yo
 		log.logInfo(`[email] Sending reply to ${meta.from}: ${replySubject}`);
 
 		try {
-			const response = await fetch(this.sendUrl, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.toolsToken}`,
-				},
-				body: JSON.stringify(emailPayload),
-			});
+			let response: Response;
+
+			if (attachments.length > 0) {
+				// Use multipart/form-data for emails with attachments
+				// Sends binary files directly — no base64-in-JSON overhead
+				log.logInfo(`[email] Using multipart for ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
+
+				const form = new FormData();
+				form.append("metadata", JSON.stringify(emailMetadata));
+
+				for (const att of attachments) {
+					const buffer = readFileSync(att.filePath);
+					form.append("attachments", new Blob([buffer]), att.filename);
+				}
+
+				response = await fetch(this.sendUrl, {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.toolsToken}`,
+						// Let fetch set Content-Type with boundary automatically
+					},
+					body: form,
+				});
+			} else {
+				// No attachments — use simple JSON (existing path)
+				response = await fetch(this.sendUrl, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.toolsToken}`,
+					},
+					body: JSON.stringify(emailMetadata),
+				});
+			}
 
 			if (!response.ok) {
 				const errorText = await response.text();
