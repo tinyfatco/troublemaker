@@ -1,10 +1,10 @@
 {
-	"name": "@tinyfatco/crawdad",
+	"name": "@tinyfatco/troublemaker",
 	"version": "0.1.0",
 	"description": "Mom, liberated. Multi-platform AI agent runtime.",
 	"type": "module",
 	"bin": {
-		"crawdad": "dist/main.js"
+		"troublemaker": "dist/main.js"
 	},
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
@@ -43,13 +43,13 @@
 		"bot",
 		"ai",
 		"agent",
-		"crawdad"
+		"troublemaker"
 	],
 	"author": "TinyFat Co",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/tinyfatco/crawdad.git"
+		"url": "git+https://github.com/tinyfatco/troublemaker.git"
 	},
 	"engines": {
 		"node": ">=20.0.0"

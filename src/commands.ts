@@ -1,5 +1,5 @@
 /**
- * Slash command handler for crawdad.
+ * Slash command handler for troublemaker.
  *
  * Intercepts /model (and future commands) at the handler level
  * before the message reaches the agent loop.

@@ -1,12 +1,12 @@
-# Crawdad
+# Troublemaker
 
 An AI agent runtime with multi-platform adapters. Connects to Slack, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
 
-Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Crawdad extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — crawdad gets it to more places.
+Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
 
 ## How It Works
 
-When a message arrives from any platform, crawdad hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
+When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
 
 **For each conversation** (Slack channel, Telegram chat, email thread), the agent maintains:
 - **Persistent memory** — `MEMORY.md` files (global + per-channel) loaded into every prompt
@@ -39,8 +39,8 @@ For always-on deployments (VPS, Docker), Slack Socket Mode and Telegram polling 
 
 ```bash
 # Clone and build
-git clone https://github.com/tinyfatco/crawdad.git
-cd crawdad
+git clone https://github.com/tinyfatco/troublemaker.git
+cd troublemaker
 npm install
 npm run build
 npm link
@@ -51,10 +51,10 @@ export MOM_SLACK_APP_TOKEN=xapp-...    # Socket Mode
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
 # Run (auto-detects adapters from env vars)
-crawdad ./data
+troublemaker ./data
 
 # Or specify adapters explicitly
-crawdad --adapter=slack:webhook,telegram:webhook --port=3002 ./data
+troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 ```
 
 ## Adapters
@@ -67,12 +67,12 @@ crawdad --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 | `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_SECRET` | Webhook-based |
 | `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN` | Webhook-based |
 
-**Auto-detection:** If no `--adapter` flag is given, crawdad detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
+**Auto-detection:** If no `--adapter` flag is given, troublemaker detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
 
 ## CLI
 
 ```
-crawdad [options] <working-directory>
+troublemaker [options] <working-directory>
 
 Options:
   --sandbox=host              Run tools on host (default)
@@ -164,13 +164,13 @@ The agent can be susceptible to prompt injection — treat it like a junior deve
 ```bash
 docker run -d --name sandbox -v $(pwd)/data:/workspace alpine:latest tail -f /dev/null
 
-crawdad --sandbox=docker:sandbox ./data
+troublemaker --sandbox=docker:sandbox ./data
 ```
 
 ### VPS / Bare Metal
 
 ```bash
-crawdad --sandbox=host ./data
+troublemaker --sandbox=host ./data
 ```
 
 ## Development
@@ -199,7 +199,7 @@ npm run build      # Production build
 
 ## Acknowledgments
 
-Crawdad is built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). The agent core — tool execution, context management, memory, skills, compaction — is mom's work. Crawdad adds multi-platform adapters and a unified gateway.
+Troublemaker is built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). The agent core — tool execution, context management, memory, skills, compaction — is mom's work. Troublemaker adds multi-platform adapters and a unified gateway.
 
 ## License
 

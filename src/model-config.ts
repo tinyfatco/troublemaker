@@ -27,7 +27,7 @@ const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
  * 3. anthropic / claude-sonnet-4-5
  */
 export function resolveModel(workingDir?: string): Model<Api> {
-	// 1. Env vars (highest priority — set by platform/crawdad-cf)
+	// 1. Env vars (highest priority — set by platform/spider-relay)
 	let provider = process.env.MOM_MODEL_PROVIDER;
 	let modelId = process.env.MOM_MODEL_ID;
 
