@@ -2,9 +2,11 @@
 
 An AI agent runtime with multi-platform adapters. Connects to Slack, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
 
-> **Don't want to self-host?** [tinyfat.com](https://tinyfat.com) runs it for you.
-
 Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
+
+## Don't want to self-host?
+
+[tinyfat.com](https://tinyfat.com) runs troublemaker for you — managed agents with sandboxed containers, multi-channel delivery, and scheduled events. No servers, no Docker, no ops.
 
 ## How It Works
 
