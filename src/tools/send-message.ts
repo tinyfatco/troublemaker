@@ -1,0 +1,91 @@
+/**
+ * Cross-channel send_message tool.
+ *
+ * Lets the agent send a message to any connected channel (Telegram, Slack, Email)
+ * regardless of which channel the current conversation is on.
+ *
+ * Routing is by channel ID pattern:
+ *   numeric (positive or negative) → Telegram
+ *   C/D/G prefix                   → Slack
+ *   email-{address}                → Email
+ */
+
+import type { AgentTool } from "@mariozechner/pi-agent-core";
+import { Type } from "@sinclair/typebox";
+import type { PlatformAdapter } from "../adapters/types.js";
+import * as log from "../log.js";
+
+/** Resolve which adapter can handle a given channel ID */
+function resolveAdapter(channel: string, adapters: PlatformAdapter[]): PlatformAdapter | undefined {
+	// Telegram: numeric (positive or negative)
+	if (/^-?\d+$/.test(channel)) {
+		return adapters.find((a) => a.name === "telegram");
+	}
+	// Slack: starts with C, D, or G
+	if (/^[CDG]/.test(channel)) {
+		return adapters.find((a) => a.name === "slack");
+	}
+	// Email: starts with "email-" (internal channel ID format)
+	if (channel.startsWith("email-")) {
+		return adapters.find((a) => a.name === "email");
+	}
+	return undefined;
+}
+
+/**
+ * Create the send_message tool for cross-channel messaging.
+ *
+ * @param adapters - All platform adapters available for routing
+ */
+export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<any> {
+	const schema = Type.Object({
+		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
+		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID)" }),
+		text: Type.String({ description: "Message text to send" }),
+	});
+
+	return {
+		name: "send_message",
+		label: "send_message",
+		description:
+			"Send a message to a specific channel. Use this to reach people on Telegram, Slack, or Email. " +
+			"The channel ID determines which platform the message goes to: " +
+			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email.",
+		parameters: schema,
+		execute: async (
+			_toolCallId: string,
+			{ channel, text }: { label: string; channel: string; text: string },
+			signal?: AbortSignal,
+		) => {
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
+			}
+
+			const adapter = resolveAdapter(channel, adapters);
+			if (!adapter) {
+				return {
+					content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Available patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email).` }],
+					details: undefined,
+				};
+			}
+
+			try {
+				const ts = await adapter.postMessage(channel, text);
+				adapter.logBotResponse(channel, text, ts);
+				log.logInfo(`[send_message] Sent to ${adapter.name}:${channel}: ${text.substring(0, 80)}`);
+
+				return {
+					content: [{ type: "text" as const, text: `Message sent to ${adapter.name} channel ${channel} (ts=${ts})` }],
+					details: undefined,
+				};
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				log.logWarning(`[send_message] Failed to send to ${adapter.name}:${channel}`, errMsg);
+				return {
+					content: [{ type: "text" as const, text: `Failed to send: ${errMsg}` }],
+					details: undefined,
+				};
+			}
+		},
+	};
+}

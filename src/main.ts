@@ -17,6 +17,7 @@ import { Gateway } from "./gateway.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { createSendMessageTool } from "./tools/send-message.js";
 
 // ============================================================================
 // Config
@@ -239,8 +240,8 @@ function getState(channelId: string, formatInstructions: string): ChannelState {
 	let state = channelStates.get(channelId);
 	if (!state) {
 		const channelDir = join(workingDir, channelId);
-		// Inject send_message tool for heartbeat channel
-		const extraTools = channelId === "_heartbeat" ? [heartbeatAdapter.createSendMessageTool()] : [];
+		// send_message available on ALL channels for cross-channel messaging
+		const extraTools = [createSendMessageTool(adapters)];
 		state = {
 			running: false,
 			runner: getOrCreateRunner(sandbox, channelId, channelDir, formatInstructions, parsedArgs.skillsDirs, extraTools),

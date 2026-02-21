@@ -1,8 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { Type } from "@sinclair/typebox";
 import * as log from "../log.js";
+import { createSendMessageTool } from "../tools/send-message.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
@@ -65,84 +64,15 @@ You have woken up on your own schedule to think, act, and decide.
 	// No dispatch() — heartbeat has no inbound HTTP endpoint
 
 	// ==========================================================================
-	// Cross-channel send_message tool
+	// Cross-channel send_message tool (delegates to shared module)
 	// ==========================================================================
 
 	/**
-	 * Create the send_message tool that lets the agent send to any channel.
-	 * This is injected into the agent's toolset for heartbeat runs.
+	 * Create the send_message tool for heartbeat runs.
+	 * Delegates to the shared createSendMessageTool() in tools/send-message.ts.
 	 */
-	createSendMessageTool(): AgentTool<any> {
-		const adapters = this.otherAdapters;
-
-		const schema = Type.Object({
-			label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
-			channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email address)" }),
-			text: Type.String({ description: "Message text to send" }),
-		});
-
-		return {
-			name: "send_message",
-			label: "send_message",
-			description:
-				"Send a message to a specific channel. Use this to reach people on Telegram, Slack, or Email. " +
-				"The channel ID determines which platform the message goes to: " +
-				"numeric IDs → Telegram, C/D/G-prefixed → Slack, email addresses → Email.",
-			parameters: schema,
-			execute: async (
-				_toolCallId: string,
-				{ channel, text }: { label: string; channel: string; text: string },
-				signal?: AbortSignal,
-			) => {
-				if (signal?.aborted) {
-					throw new Error("Operation aborted");
-				}
-
-				// Find the right adapter for this channel
-				const adapter = this.resolveAdapter(channel);
-				if (!adapter) {
-					return {
-						content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Available patterns: numeric (Telegram), C/D/G prefix (Slack), email-* (Email).` }],
-						details: undefined,
-					};
-				}
-
-				try {
-					const ts = await adapter.postMessage(channel, text);
-					adapter.logBotResponse(channel, text, ts);
-					log.logInfo(`[heartbeat] Sent message to ${adapter.name}:${channel}: ${text.substring(0, 80)}`);
-
-					return {
-						content: [{ type: "text" as const, text: `Message sent to ${adapter.name} channel ${channel} (ts=${ts})` }],
-						details: undefined,
-					};
-				} catch (err) {
-					const errMsg = err instanceof Error ? err.message : String(err);
-					log.logWarning(`[heartbeat] Failed to send to ${adapter.name}:${channel}`, errMsg);
-					return {
-						content: [{ type: "text" as const, text: `Failed to send: ${errMsg}` }],
-						details: undefined,
-					};
-				}
-			},
-		};
-	}
-
-	/** Resolve which adapter can handle a given channel ID */
-	private resolveAdapter(channel: string): PlatformAdapter | undefined {
-		// Telegram: numeric (positive or negative)
-		if (/^-?\d+$/.test(channel)) {
-			return this.otherAdapters.find((a) => a.name === "telegram");
-		}
-		// Slack: starts with C, D, or G
-		if (/^[CDG]/.test(channel)) {
-			return this.otherAdapters.find((a) => a.name === "slack");
-		}
-		// Email: starts with "email-" (internal channel ID format)
-		if (channel.startsWith("email-")) {
-			return this.otherAdapters.find((a) => a.name === "email");
-		}
-		return undefined;
+	getSendMessageTool() {
+		return createSendMessageTool(this.otherAdapters);
 	}
 
 	// ==========================================================================

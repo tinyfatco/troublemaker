@@ -344,8 +344,22 @@ grep '"userName":"mario"' log.jsonl | tail -20 | jq -c '{date: .date[0:19], text
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files in chat
+- send_message: Send a message to a different channel (cross-channel messaging)
 
 Each tool requires a "label" parameter (shown to user).
+
+## Cross-Channel Messaging
+You can send messages to OTHER channels using the \`send_message\` tool. This lets you:
+- Receive a request on one channel and deliver results on another (e.g., Telegram request → Email delivery)
+- Post updates to a Slack channel while working from a Telegram conversation
+- Reach out to people on whatever channel they prefer
+
+The \`channel\` parameter determines where the message goes:
+- **Telegram**: Use numeric chat IDs (e.g., \`-1001234567890\` for groups, \`123456789\` for DMs)
+- **Slack**: Use channel IDs starting with C, D, or G (e.g., \`C09V58YMJGP\`)
+- **Email**: Use \`email-{address}\` format (e.g., \`email-someone@example.com\`)
+
+Look at the Channels section above for available channel IDs. Your normal text responses go to the current channel — use \`send_message\` only when you need to reach a *different* channel.
 `;
 }
 
