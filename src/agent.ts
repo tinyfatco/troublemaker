@@ -25,10 +25,6 @@ import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 
-// Resolve model from env vars (MOM_MODEL_PROVIDER + MOM_MODEL_ID)
-// Falls back to anthropic/claude-sonnet-4-5
-const model = resolveModel();
-
 export interface PendingMessage {
 	userName: string;
 	text: string;
@@ -452,6 +448,10 @@ function createRunner(
 	const authStorage = new AuthStorage(join(homedir(), ".pi", "mom", "auth.json"));
 	const modelRegistry = new ModelRegistry(authStorage);
 
+	// Resolve model: env vars > settings.json > defaults
+	const workspaceDir = join(channelDir, "..");
+	const model = resolveModel(workspaceDir);
+
 	// Create agent — getApiKey is provider-generic (resolves via AuthStorage for any provider)
 	const agent = new Agent({
 		initialState: {
@@ -700,6 +700,14 @@ function createRunner(
 			);
 			session.agent.setSystemPrompt(systemPrompt);
 
+			// Re-resolve model each run (picks up /model command changes from settings.json)
+			const currentModel = resolveModel(workspaceDir);
+			const agentModel = agent.state.model;
+			if (agentModel && (currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider)) {
+				log.logInfo(`[${channelId}] Model changed to ${currentModel.provider}/${currentModel.id}`);
+				agent.setModel(currentModel);
+			}
+
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
 				const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
@@ -865,7 +873,7 @@ function createRunner(
 						lastAssistantMessage.usage.cacheRead +
 						lastAssistantMessage.usage.cacheWrite
 					: 0;
-				const contextWindow = model.contextWindow || 200000;
+				const contextWindow = agent.state.model?.contextWindow || 200000;
 
 				const summary = log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");

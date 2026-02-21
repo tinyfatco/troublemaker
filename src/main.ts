@@ -10,6 +10,7 @@ import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import { WebAdapter } from "./adapters/web.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "./agent.js";
+import { handleSlashCommand } from "./commands.js";
 import { downloadChannel } from "./download.js";
 import { computeWakeManifest, createEventsWatcher } from "./events.js";
 import { Gateway } from "./gateway.js";
@@ -274,6 +275,13 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+		// Intercept slash commands before spinning up the agent
+		const trimmed = event.text.trim();
+		if (trimmed.startsWith("/") && !isEvent) {
+			const handled = await handleSlashCommand(trimmed, event.channel, workingDir, platform);
+			if (handled) return;
+		}
+
 		const state = getState(event.channel, platform.formatInstructions);
 
 		// Start run
