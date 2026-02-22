@@ -14,7 +14,6 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
-import { homedir } from "os";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
 import { MomSettingsManager, syncLogToSessionManager } from "./context.js";
@@ -473,8 +472,7 @@ function createRunner(
 	const settingsManager = new MomSettingsManager(join(channelDir, ".."));
 
 	// Create AuthStorage and ModelRegistry
-	// Auth stored outside workspace so agent can't access it
-	const authStorage = new AuthStorage(join(homedir(), ".pi", "mom", "auth.json"));
+	const authStorage = new AuthStorage();
 	const modelRegistry = new ModelRegistry(authStorage);
 
 	// Resolve model: env vars > settings.json > defaults
