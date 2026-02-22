@@ -148,13 +148,6 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		momEvent.attachments = this.logUserMessage(momEvent);
 
-		if (this.startupTs && event.ts < this.startupTs) {
-			log.logInfo(
-				`[${event.channel}] Logged old message (pre-startup), not triggering: ${momEvent.text.substring(0, 30)}`,
-			);
-			return;
-		}
-
 		if (momEvent.text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(event.channel)) {
 				this.handler.handleStop(event.channel, this);
@@ -190,11 +183,6 @@ export class SlackWebhookAdapter extends SlackBase {
 		};
 
 		momEvent.attachments = this.logUserMessage(momEvent);
-
-		if (this.startupTs && event.ts < this.startupTs) {
-			log.logInfo(`[${event.channel}] Skipping old message (pre-startup): ${momEvent.text.substring(0, 30)}`);
-			return;
-		}
 
 		if (isDM) {
 			if (momEvent.text.toLowerCase().trim() === "stop") {
