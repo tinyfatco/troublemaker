@@ -204,9 +204,44 @@ Keep responses concise and professional. The user will receive one email with yo
 	// PlatformAdapter — message operations (mostly no-ops for email)
 	// ==========================================================================
 
-	async postMessage(_channel: string, _text: string): Promise<string> {
-		// No live posting for email — context accumulates
-		return String(Date.now());
+	async postMessage(channel: string, text: string): Promise<string> {
+		// Cross-channel send: channel format is "email-{address}"
+		const emailMatch = channel.match(/^email-(.+)$/);
+		if (!emailMatch) {
+			log.logWarning(`[email] postMessage called with non-email channel: ${channel}`);
+			return String(Date.now());
+		}
+
+		const toAddress = emailMatch[1];
+		log.logInfo(`[email] Sending outbound to ${toAddress}`);
+
+		try {
+			const response = await fetch(this.sendUrl, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${this.toolsToken}`,
+				},
+				body: JSON.stringify({
+					to: toAddress,
+					subject: "Message from your agent",
+					body: text,
+				}),
+			});
+
+			if (!response.ok) {
+				const errorText = await response.text();
+				log.logWarning(`[email] Outbound send failed: ${response.status}`, errorText);
+				return String(Date.now());
+			}
+
+			const result = (await response.json()) as { ok: boolean; messageId?: string };
+			log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
+			return result.messageId || String(Date.now());
+		} catch (err) {
+			log.logWarning("[email] Outbound send error", err instanceof Error ? err.message : String(err));
+			return String(Date.now());
+		}
 	}
 
 	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {
