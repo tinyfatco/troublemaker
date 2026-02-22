@@ -204,7 +204,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	// PlatformAdapter — message operations (mostly no-ops for email)
 	// ==========================================================================
 
-	async postMessage(channel: string, text: string): Promise<string> {
+	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>): Promise<string> {
 		// Cross-channel send: channel format is "email-{address}"
 		const emailMatch = channel.match(/^email-(.+)$/);
 		if (!emailMatch) {
@@ -213,21 +213,47 @@ Keep responses concise and professional. The user will receive one email with yo
 		}
 
 		const toAddress = emailMatch[1];
-		log.logInfo(`[email] Sending outbound to ${toAddress}`);
+		log.logInfo(`[email] Sending outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
 
 		try {
-			const response = await fetch(this.sendUrl, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${this.toolsToken}`,
-				},
-				body: JSON.stringify({
-					to: toAddress,
-					subject: "Message from your agent",
-					body: text,
-				}),
-			});
+			let response: Response;
+			const emailMetadata = {
+				to: toAddress,
+				subject: "Message from your agent",
+				body: text,
+			};
+
+			if (attachments && attachments.length > 0) {
+				// Use multipart/form-data for emails with attachments
+				log.logInfo(`[email] Using multipart for ${attachments.length} attachment(s): ${attachments.map((a) => a.filename).join(", ")}`);
+
+				const form = new FormData();
+				form.append("metadata", JSON.stringify(emailMetadata));
+
+				for (const att of attachments) {
+					const buffer = readFileSync(att.filePath);
+					form.append("attachments", new Blob([buffer]), att.filename);
+					log.logInfo(`[email] Attached: ${att.filename} (${buffer.length} bytes)`);
+				}
+
+				response = await fetch(this.sendUrl, {
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${this.toolsToken}`,
+					},
+					body: form,
+				});
+			} else {
+				// No attachments — simple JSON
+				response = await fetch(this.sendUrl, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.toolsToken}`,
+					},
+					body: JSON.stringify(emailMetadata),
+				});
+			}
 
 			if (!response.ok) {
 				const errorText = await response.text();

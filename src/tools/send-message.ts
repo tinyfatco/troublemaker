@@ -12,6 +12,7 @@
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
 
@@ -42,6 +43,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
 		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID)" }),
 		text: Type.String({ description: "Message text to send" }),
+		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
 	});
 
 	return {
@@ -50,11 +52,12 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		description:
 			"Send a message to a specific channel. Use this to reach people on Telegram, Slack, or Email. " +
 			"The channel ID determines which platform the message goes to: " +
-			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email.",
+			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email. " +
+			"For email, you can include file attachments (e.g., PDFs, images).",
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,
-			{ channel, text }: { label: string; channel: string; text: string },
+			{ channel, text, attachments }: { label: string; channel: string; text: string; attachments?: string[] },
 			signal?: AbortSignal,
 		) => {
 			if (signal?.aborted) {
@@ -70,12 +73,20 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			}
 
 			try {
-				const ts = await adapter.postMessage(channel, text);
+				// Convert file path strings to attachment objects
+				const attachmentObjects = attachments?.map((filePath) => ({
+					filePath,
+					filename: basename(filePath),
+				}));
+
+				const ts = await adapter.postMessage(channel, text, attachmentObjects);
 				adapter.logBotResponse(channel, text, ts);
-				log.logInfo(`[send_message] Sent to ${adapter.name}:${channel}: ${text.substring(0, 80)}`);
+
+				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
+				log.logInfo(`[send_message] Sent to ${adapter.name}:${channel}${attInfo}: ${text.substring(0, 80)}`);
 
 				return {
-					content: [{ type: "text" as const, text: `Message sent to ${adapter.name} channel ${channel} (ts=${ts})` }],
+					content: [{ type: "text" as const, text: `Message sent to ${adapter.name} channel ${channel}${attInfo} (ts=${ts})` }],
 					details: undefined,
 				};
 			} catch (err) {
