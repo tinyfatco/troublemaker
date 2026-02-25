@@ -237,75 +237,22 @@ When mentioning users, use @username format.`;
 		let editTimer: ReturnType<typeof setTimeout> | null = null;
 		let editDirty = false;
 
-		// Stream state: live-updating message with LLM response text
-		const STREAM_THROTTLE_MS = 800; // Safe interval for Telegram editMessageText
-		const STREAM_MIN_CHARS = 30; // Wait for meaningful content before first send
-		const STREAM_MAX_CHARS = 3900; // Stop streaming before Telegram's 4096 limit
-		let streamText = "";
-		let streamMessageId: string | null = null;
-		let lastStreamEditTime = 0;
-		let streamEditTimer: ReturnType<typeof setTimeout> | null = null;
-		let streamStopped = false;
-
-		const flushStreamMessage = async () => {
-			if (!streamText.trim() || streamStopped) return;
-			try {
-				if (streamMessageId) {
-					await this.updateMessage(event.channel, streamMessageId, streamText);
-				} else {
-					streamMessageId = await this.postMessage(event.channel, streamText);
-				}
-				lastStreamEditTime = Date.now();
-			} catch (err) {
-				// On any error (429, parse error, etc.), stop streaming — fallback to block delivery
-				const errMsg = err instanceof Error ? err.message : String(err);
-				if (!errMsg.includes("message is not modified")) {
-					log.logWarning("Stream edit failed, stopping stream", errMsg);
-					streamStopped = true;
-				}
-			}
-		};
-
-		const scheduleStreamUpdate = () => {
-			if (streamStopped) return;
-			const elapsed = Date.now() - lastStreamEditTime;
-			if (elapsed >= STREAM_THROTTLE_MS) {
-				if (streamEditTimer) { clearTimeout(streamEditTimer); streamEditTimer = null; }
-				updatePromise = updatePromise.then(() => flushStreamMessage());
-			} else {
-				if (!streamEditTimer) {
-					streamEditTimer = setTimeout(() => {
-						streamEditTimer = null;
-						updatePromise = updatePromise.then(() => flushStreamMessage());
-					}, STREAM_THROTTLE_MS - elapsed);
-				}
-			}
-		};
-
-		const cleanupStreamTimers = () => {
-			if (streamEditTimer) {
-				clearTimeout(streamEditTimer);
-				streamEditTimer = null;
-			}
-		};
-
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-		let headerLine = eventFilename
+		const headerLine = eventFilename
 			? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
 			: "<i>Thinking</i>";
 
 		// Build the working message display from all accumulated entries
 		const buildWorkingDisplay = (): string => {
-			const lines = headerLine ? [headerLine, ...workingEntries] : [...workingEntries];
+			const lines = [headerLine, ...workingEntries];
 			let display = lines.join("\n");
 
 			// Telegram 4096 char limit — trim oldest entries if needed
 			while (display.length > 4000 && workingEntries.length > 1) {
 				workingEntries.shift();
-				const trimmedLines = headerLine ? [headerLine, ...workingEntries] : [...workingEntries];
-				display = `<i>... trimmed</i>\n${trimmedLines.join("\n")}`;
+				display = `<i>... trimmed</i>\n${[headerLine, ...workingEntries].join("\n")}`;
 			}
 
 			return isWorking ? display + " ..." : display;
@@ -372,33 +319,9 @@ When mentioning users, use @username format.`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Stream text updates — edit a live-updating message with LLM response
-					if (!shouldLog && text.startsWith("__STREAM__")) {
-						if (streamStopped) return;
-						streamText = text.slice("__STREAM__".length);
-						// Stop streaming if approaching Telegram's message limit
-						if (streamText.length > STREAM_MAX_CHARS) {
-							streamStopped = true;
-							return;
-						}
-						if (streamText.length >= STREAM_MIN_CHARS) {
-							// Delete bare "Thinking" message once stream content replaces it
-							if (workingMessageId && workingEntries.length === 0) {
-								await this.deleteMessage(event.channel, workingMessageId);
-								workingMessageId = null;
-							}
-							scheduleStreamUpdate();
-						}
-						return;
-					}
-
 					// Tool labels (shouldLog=false, starts with _→) — append to working message
 					if (!shouldLog && text.startsWith("_→")) {
 						await flushPendingText();
-						// First tool label replaces "Thinking" header
-						if (headerLine.includes("Thinking")) {
-							headerLine = "";
-						}
 						const label = text.replace(/^_/, "").replace(/_$/, "");
 						workingEntries.push(`<i>${escapeHtml(label)}</i>`);
 						await scheduleWorkingUpdate();
@@ -424,12 +347,11 @@ When mentioning users, use @username format.`;
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					// Final response — either edit the stream message or send a new one.
-					// Discard pendingText (it's the same text about to be sent).
+					// Final response — send as a NEW message (Message 2) for notification.
+					// Discard pendingText (it's the same text about to be sent as Message 2).
 					if (!text.trim()) return;
 
 					pendingText = null;
-					cleanupStreamTimers();
 
 					if (workingMessageId) {
 						if (editTimer) {
@@ -439,22 +361,8 @@ When mentioning users, use @username format.`;
 						await flushWorkingMessage();
 					}
 
-					// If we were streaming, edit the stream message with the final text
-					// instead of sending a new message (avoids duplicate).
-					if (streamMessageId) {
-						try {
-							await this.updateMessage(event.channel, streamMessageId, text);
-							finalMessageId = streamMessageId;
-							this.logBotResponse(event.channel, text, finalMessageId);
-						} catch {
-							// Fallback: send as new message
-							finalMessageId = await this.postMessage(event.channel, text);
-							this.logBotResponse(event.channel, text, finalMessageId);
-						}
-					} else {
-						finalMessageId = await this.postMessage(event.channel, text);
-						this.logBotResponse(event.channel, text, finalMessageId);
-					}
+					finalMessageId = await this.postMessage(event.channel, text);
+					this.logBotResponse(event.channel, text, finalMessageId);
 				});
 				await updatePromise;
 			},
@@ -491,12 +399,11 @@ When mentioning users, use @username format.`;
 						// Commit any orphaned pending text before finalizing
 						await flushPendingText();
 
-						// Flush any pending throttled edits (working message + stream)
+						// Flush any pending throttled edit
 						if (editTimer) {
 							clearTimeout(editTimer);
 							editTimer = null;
 						}
-						cleanupStreamTimers();
 
 						// If nothing accumulated, delete the working message (clean UX)
 						if (workingEntries.length === 0 && workingMessageId) {
@@ -506,19 +413,6 @@ When mentioning users, use @username format.`;
 							// Final edit — removes the "..." spinner
 							await flushWorkingMessage();
 						}
-
-						// Final flush of stream message
-						if (streamMessageId && streamText.trim() && !streamStopped) {
-							try {
-								await this.updateMessage(
-									event.channel,
-									streamMessageId,
-									streamText,
-								);
-							} catch {
-								// Best-effort — if final text was already set by replaceMessage, this may fail
-							}
-						}
 					}
 				});
 				await updatePromise;
@@ -526,19 +420,14 @@ When mentioning users, use @username format.`;
 
 			deleteMessage: async () => {
 				updatePromise = updatePromise.then(async () => {
-					// Delete all messages (used by [SILENT] handler)
+					// Delete both messages (used by [SILENT] handler)
 					if (editTimer) {
 						clearTimeout(editTimer);
 						editTimer = null;
 					}
-					cleanupStreamTimers();
 					if (workingMessageId) {
 						await this.deleteMessage(event.channel, workingMessageId);
 						workingMessageId = null;
-					}
-					if (streamMessageId) {
-						await this.deleteMessage(event.channel, streamMessageId);
-						streamMessageId = null;
 					}
 					if (finalMessageId) {
 						await this.deleteMessage(event.channel, finalMessageId);
