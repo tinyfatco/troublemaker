@@ -292,19 +292,20 @@ When mentioning users, use @username format.`;
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-		const headerLine = eventFilename
+		let headerLine = eventFilename
 			? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`
 			: "<i>Thinking</i>";
 
 		// Build the working message display from all accumulated entries
 		const buildWorkingDisplay = (): string => {
-			const lines = [headerLine, ...workingEntries];
+			const lines = headerLine ? [headerLine, ...workingEntries] : [...workingEntries];
 			let display = lines.join("\n");
 
 			// Telegram 4096 char limit — trim oldest entries if needed
 			while (display.length > 4000 && workingEntries.length > 1) {
 				workingEntries.shift();
-				display = `<i>... trimmed</i>\n${[headerLine, ...workingEntries].join("\n")}`;
+				const trimmedLines = headerLine ? [headerLine, ...workingEntries] : [...workingEntries];
+				display = `<i>... trimmed</i>\n${trimmedLines.join("\n")}`;
 			}
 
 			return isWorking ? display + " ..." : display;
@@ -381,6 +382,11 @@ When mentioning users, use @username format.`;
 							return;
 						}
 						if (streamText.length >= STREAM_MIN_CHARS) {
+							// Delete bare "Thinking" message once stream content replaces it
+							if (workingMessageId && workingEntries.length === 0) {
+								await this.deleteMessage(event.channel, workingMessageId);
+								workingMessageId = null;
+							}
 							scheduleStreamUpdate();
 						}
 						return;
@@ -389,6 +395,10 @@ When mentioning users, use @username format.`;
 					// Tool labels (shouldLog=false, starts with _→) — append to working message
 					if (!shouldLog && text.startsWith("_→")) {
 						await flushPendingText();
+						// First tool label replaces "Thinking" header
+						if (headerLine.includes("Thinking")) {
+							headerLine = "";
+						}
 						const label = text.replace(/^_/, "").replace(/_$/, "");
 						workingEntries.push(`<i>${escapeHtml(label)}</i>`);
 						await scheduleWorkingUpdate();
