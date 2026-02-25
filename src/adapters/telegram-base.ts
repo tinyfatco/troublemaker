@@ -250,11 +250,10 @@ When mentioning users, use @username format.`;
 		const flushStreamMessage = async () => {
 			if (!streamText.trim() || streamStopped) return;
 			try {
-				const display = markdownToTelegramHtml(streamText) + " ...";
 				if (streamMessageId) {
-					await this.updateMessage(event.channel, streamMessageId, display);
+					await this.updateMessage(event.channel, streamMessageId, streamText);
 				} else {
-					streamMessageId = await this.postMessage(event.channel, display);
+					streamMessageId = await this.postMessage(event.channel, streamText);
 				}
 				lastStreamEditTime = Date.now();
 			} catch (err) {
@@ -434,7 +433,7 @@ When mentioning users, use @username format.`;
 					// instead of sending a new message (avoids duplicate).
 					if (streamMessageId) {
 						try {
-							await this.updateMessage(event.channel, streamMessageId, markdownToTelegramHtml(text));
+							await this.updateMessage(event.channel, streamMessageId, text);
 							finalMessageId = streamMessageId;
 							this.logBotResponse(event.channel, text, finalMessageId);
 						} catch {
@@ -498,13 +497,13 @@ When mentioning users, use @username format.`;
 							await flushWorkingMessage();
 						}
 
-						// Final flush of stream message (remove "..." suffix)
+						// Final flush of stream message
 						if (streamMessageId && streamText.trim() && !streamStopped) {
 							try {
 								await this.updateMessage(
 									event.channel,
 									streamMessageId,
-									markdownToTelegramHtml(streamText),
+									streamText,
 								);
 							} catch {
 								// Best-effort — if final text was already set by replaceMessage, this may fail
