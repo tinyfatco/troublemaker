@@ -840,6 +840,21 @@ function createRunner(
 
 			await session.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
 
+			// If overflow error triggered background compaction+retry, wait for it.
+			// Agent.emit() doesn't await async handlers, so _runAutoCompaction runs
+			// detached. waitForIdle() waits for any in-flight agent.continue() call.
+			if (runState.stopReason === "error") {
+				await agent.waitForIdle();
+
+				// Re-read result — background retry may have succeeded
+				const msgs = session.messages;
+				const last = msgs.filter((m) => m.role === "assistant").pop() as any;
+				if (last && last.stopReason && last.stopReason !== "error") {
+					runState.stopReason = last.stopReason;
+					runState.errorMessage = undefined;
+				}
+			}
+
 			// Wait for queued messages
 			await queueChain;
 
