@@ -469,15 +469,17 @@ function createRunner(
 	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
 	const contextFile = join(channelDir, "context.jsonl");
 	const sessionManager = SessionManager.open(contextFile, channelDir);
-	const settingsManager = new MomSettingsManager(join(channelDir, ".."));
+	const workspaceDir = join(channelDir, "..");
+	const settingsManager = new MomSettingsManager(workspaceDir);
 
 	// Create AuthStorage and ModelRegistry
+	// Important: point ModelRegistry at workspace models.json (/data/models.json)
+	// so custom providers (e.g. fireworks proxy) are available to /model and runtime.
 	const authStorage = new AuthStorage();
-	const modelRegistry = new ModelRegistry(authStorage);
+	const modelRegistry = new ModelRegistry(authStorage, join(workspaceDir, "models.json"));
 
 	// Resolve model: env vars > settings.json > defaults
-	const workspaceDir = join(channelDir, "..");
-	const model = resolveModel(workspaceDir);
+	const model = resolveModel(workspaceDir, modelRegistry);
 
 	// Create agent — getApiKey is provider-generic (resolves via AuthStorage for any provider)
 	const agent = new Agent({
@@ -728,7 +730,7 @@ function createRunner(
 			session.agent.setSystemPrompt(systemPrompt);
 
 			// Re-resolve model each run (picks up /model command changes from settings.json)
-			const currentModel = resolveModel(workspaceDir);
+			const currentModel = resolveModel(workspaceDir, modelRegistry);
 			const agentModel = agent.state.model;
 			if (agentModel && (currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider)) {
 				log.logInfo(`[${channelId}] Model changed to ${currentModel.provider}/${currentModel.id}`);

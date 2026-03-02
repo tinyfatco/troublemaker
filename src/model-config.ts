@@ -3,20 +3,71 @@
  *
  * Priority: env vars > settings.json > defaults.
  *
- * Pi's getModel() returns the full Model object with api type, baseUrl,
- * cost, context window, etc. Pi's streamSimple() then dispatches to the
- * correct stream function based on model.api (anthropic-messages,
- * openai-codex-responses, openai-responses, etc).
+ * Models are resolved through ModelRegistry so custom providers from
+ * /data/models.json (e.g. Fireworks proxy models) are available to /model
+ * and runtime resolution.
  */
 
-import { getModel, getModels, getProviders, type Api, type KnownProvider, type Model } from "@mariozechner/pi-ai";
-import type { AuthStorage } from "@mariozechner/pi-coding-agent";
+import { getModel, type Api, type Model } from "@mariozechner/pi-ai";
+import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import * as log from "./log.js";
 
 const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
+
+/**
+ * Friendly aliases for Fireworks-backed models.
+ * Includes legacy aliases for backwards compatibility.
+ */
+const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
+	minimax: "accounts/fireworks/models/minimax-m2p5",
+	"minimax-m2p1": "accounts/fireworks/models/minimax-m2p5",
+	"minimax-m2p5": "accounts/fireworks/models/minimax-m2p5",
+	deepseek: "accounts/fireworks/models/deepseek-v3p1",
+	"deepseek-v3": "accounts/fireworks/models/deepseek-v3p1",
+	"deepseek-v3p1": "accounts/fireworks/models/deepseek-v3p1",
+	"deepseek-r1": "accounts/fireworks/models/deepseek-v3p1",
+	kimi: "accounts/fireworks/models/kimi-k2p5",
+	"kimi-k2p5": "accounts/fireworks/models/kimi-k2p5",
+};
+
+function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
+	const authStorage = new AuthStorage();
+	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
+	return new ModelRegistry(authStorage, modelsJsonPath);
+}
+
+function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
+	if (modelRegistry) {
+		modelRegistry.refresh();
+		return modelRegistry.getAll();
+	}
+	return createWorkspaceModelRegistry(workingDir).getAll();
+}
+
+function findExactModel(models: Model<Api>[], provider: string, modelId: string): Model<Api> | undefined {
+	const normalizedProvider = provider.toLowerCase().trim();
+	const normalizedModelId = modelId.toLowerCase().trim();
+	return models.find(
+		(model) =>
+			model.provider.toLowerCase() === normalizedProvider &&
+			model.id.toLowerCase() === normalizedModelId,
+	);
+}
+
+function resolveFireworksAliasModel(
+	models: Model<Api>[],
+	alias: string,
+	providerHint?: string,
+): Model<Api> | undefined {
+	const normalizedAlias = alias.toLowerCase().trim();
+	const modelId = FIREWORKS_ALIAS_TO_MODEL_ID[normalizedAlias];
+	if (!modelId) return undefined;
+	if (providerHint && providerHint.toLowerCase().trim() !== "fireworks") return undefined;
+	return findExactModel(models, "fireworks", modelId);
+}
 
 /**
  * Resolve the model from env vars or settings.json, falling back to defaults.
@@ -26,8 +77,8 @@ const DEFAULT_MODEL_ID = "claude-sonnet-4-5";
  * 2. settings.json defaultProvider + defaultModel (set by /model command or agent)
  * 3. anthropic / claude-sonnet-4-5
  */
-export function resolveModel(workingDir?: string): Model<Api> {
-	// 1. Env vars (highest priority — set by platform/spider-relay)
+export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
+	// 1. Env vars (highest priority — set by platform/crawdad-cf)
 	let provider = process.env.MOM_MODEL_PROVIDER;
 	let modelId = process.env.MOM_MODEL_ID;
 
@@ -42,52 +93,84 @@ export function resolveModel(workingDir?: string): Model<Api> {
 	provider = provider || DEFAULT_PROVIDER;
 	modelId = modelId || DEFAULT_MODEL_ID;
 
-	const model = getModel(provider as any, modelId as any);
+	const models = getRegistryModels(workingDir, modelRegistry);
+
+	let model = findExactModel(models, provider, modelId);
+	if (!model) {
+		model = resolveFireworksAliasModel(models, modelId, provider);
+	}
+
 	if (!model) {
 		log.logWarning(
 			`Model not found: ${provider}/${modelId}`,
 			`Falling back to ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID}`,
 		);
-		const fallback = getModel("anthropic", "claude-sonnet-4-5");
+
+		const fallback =
+			findExactModel(models, DEFAULT_PROVIDER, DEFAULT_MODEL_ID) ||
+			getModel(DEFAULT_PROVIDER as any, DEFAULT_MODEL_ID as any);
 		if (!fallback) {
-			throw new Error("Default model anthropic/claude-sonnet-4-5 not found in Pi registry");
+			throw new Error(`Default model ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID} not found`);
 		}
-		return applyBaseUrlOverride(fallback, DEFAULT_PROVIDER);
+		return applyBaseUrlOverride(fallback, fallback.provider);
 	}
 
-	log.logInfo(`Model: ${provider}/${modelId} (api: ${model.api})`);
-	return applyBaseUrlOverride(model, provider);
+	log.logInfo(`Model: ${model.provider}/${model.id} (api: ${model.api})`);
+	return applyBaseUrlOverride(model, model.provider);
 }
 
 /**
  * Find a model by fuzzy matching against provider/id.
- * Accepts formats like "gpt-5.1", "anthropic/claude-sonnet-4-5", "sonnet", etc.
+ * Accepts formats like "gpt-5.1", "anthropic/claude-sonnet-4-5", "minimax", etc.
  */
-export function findModel(query: string): Model<Api> | undefined {
+export function findModel(
+	query: string,
+	workingDir?: string,
+	modelRegistry?: ModelRegistry,
+): Model<Api> | undefined {
 	const q = query.toLowerCase().trim();
+	if (!q) return undefined;
 
-	// Try exact provider/model match first
+	const allModels = getRegistryModels(workingDir, modelRegistry);
+
+	// Friendly aliases first (e.g. /model minimax)
+	const alias = resolveFireworksAliasModel(allModels, q);
+	if (alias) return alias;
+
+	// Provider/model queries (supports nested IDs like openrouter/minimax/minimax-m2.1)
 	if (q.includes("/")) {
-		const [provider, modelId] = q.split("/", 2);
-		const model = getModel(provider as any, modelId as any);
-		if (model) return model;
+		const [provider, ...rest] = q.split("/");
+		const modelQuery = rest.join("/").trim();
+		if (provider && modelQuery) {
+			const exact = findExactModel(allModels, provider, modelQuery);
+			if (exact) return exact;
+
+			const providerAlias = resolveFireworksAliasModel(allModels, modelQuery, provider);
+			if (providerAlias) return providerAlias;
+
+			const providerIdMatches = allModels.filter(
+				(m) =>
+					m.provider.toLowerCase() === provider && m.id.toLowerCase().includes(modelQuery),
+			);
+			if (providerIdMatches.length === 1) return providerIdMatches[0];
+
+			const providerNameMatches = allModels.filter(
+				(m) =>
+					m.provider.toLowerCase() === provider && m.name.toLowerCase().includes(modelQuery),
+			);
+			if (providerNameMatches.length === 1) return providerNameMatches[0];
+		}
 	}
 
-	// Search all models for substring match on id or name
-	const allModels: Model<Api>[] = [];
-	for (const provider of getProviders()) {
-		allModels.push(...(getModels(provider as KnownProvider) as Model<Api>[]));
-	}
-
-	// Exact id match
+	// Exact id match across all providers
 	const exact = allModels.find((m) => m.id.toLowerCase() === q);
 	if (exact) return exact;
 
-	// Substring match on id
-	const matches = allModels.filter((m) => m.id.toLowerCase().includes(q));
-	if (matches.length === 1) return matches[0];
+	// Unique substring match on id
+	const idMatches = allModels.filter((m) => m.id.toLowerCase().includes(q));
+	if (idMatches.length === 1) return idMatches[0];
 
-	// Substring match on name
+	// Unique substring match on name
 	const nameMatches = allModels.filter((m) => m.name.toLowerCase().includes(q));
 	if (nameMatches.length === 1) return nameMatches[0];
 
@@ -97,14 +180,16 @@ export function findModel(query: string): Model<Api> | undefined {
 /**
  * List available models (for /model command with no args).
  */
-export function listModels(): Array<{ provider: string; id: string; name: string; api: string }> {
-	const result: Array<{ provider: string; id: string; name: string; api: string }> = [];
-	for (const provider of getProviders()) {
-		for (const model of getModels(provider as KnownProvider) as Model<Api>[]) {
-			result.push({ provider: model.provider, id: model.id, name: model.name, api: model.api });
-		}
-	}
-	return result;
+export function listModels(
+	workingDir?: string,
+	modelRegistry?: ModelRegistry,
+): Array<{ provider: string; id: string; name: string; api: string }> {
+	return getRegistryModels(workingDir, modelRegistry).map((model) => ({
+		provider: model.provider,
+		id: model.id,
+		name: model.name,
+		api: model.api,
+	}));
 }
 
 function readSettings(workingDir: string): { defaultProvider?: string; defaultModel?: string } {

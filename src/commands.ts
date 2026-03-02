@@ -41,7 +41,7 @@ async function handleModelCommand(
 	// /model (no args) — show current model
 	if (args.length === 0) {
 		const model = resolveModel(workingDir);
-		const models = listModels();
+		const models = listModels(workingDir);
 
 		// Group by provider
 		const byProvider = new Map<string, typeof models>();
@@ -63,7 +63,7 @@ async function handleModelCommand(
 
 	// /model list — show all available models
 	if (args[0] === "list") {
-		const models = listModels();
+		const models = listModels(workingDir);
 		const currentModel = resolveModel(workingDir);
 
 		const byProvider = new Map<string, typeof models>();
@@ -91,7 +91,7 @@ async function handleModelCommand(
 
 	// /model <query> — switch model
 	const query = args.join(" ");
-	const match = findModel(query);
+	const match = findModel(query, workingDir);
 
 	if (!match) {
 		await platform.postMessage(
