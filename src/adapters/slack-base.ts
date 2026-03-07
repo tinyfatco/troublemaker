@@ -209,22 +209,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	// ==========================================================================
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
-		// Two-message pattern (ported from Telegram adapter):
-		//   Message 1 (working): Compact tool arrows, edited in place. Thread replies go here.
-		//   Message 2 (final):   Response text, sent as NEW message (triggers notification).
-		let workingMessageId: string | null = null;
-		let finalMessageId: string | null = null;
+		// Single-message pattern:
+		//   While working: "_Thinking_" header + tool arrows, edited in place.
+		//   On final: tool arrows (no header) + blank line + response text.
+		//   Thread replies go under the same message.
+		let messageTs: string | null = null;
 		const threadMessageTs: string[] = [];
 		let isWorking = true;
 		let updatePromise = Promise.resolve();
 
-		// Chronological entries for the working message (tool arrows + interim text)
+		// Tool arrow entries shown at top of message
 		const workingEntries: string[] = [];
-
-		// Pending text buffer: holds latest shouldLog=true text until we know
-		// whether it's interim (next event → flush to working) or final
-		// (replaceMessage → send as Message 2).
-		let pendingText: string | null = null;
 
 		// Edit throttling: min 300ms between edits to avoid rate limits
 		let lastEditTime = 0;
@@ -240,7 +235,6 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			const lines = [headerLine, ...workingEntries];
 			let display = lines.join("\n");
 
-			// Trim oldest entries if message gets too long (Slack 40k limit is generous, but keep it readable)
 			while (display.length > 3900 && workingEntries.length > 1) {
 				workingEntries.shift();
 				display = [headerLine, "_... trimmed_", ...workingEntries].join("\n");
@@ -249,43 +243,35 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			return isWorking ? display + " ..." : display;
 		};
 
-		const flushWorkingMessage = async () => {
+		const flushMessage = async () => {
 			const display = buildWorkingDisplay();
-			if (workingMessageId) {
-				await this.updateMessage(event.channel, workingMessageId, display);
+			if (messageTs) {
+				await this.updateMessage(event.channel, messageTs, display);
 			} else {
-				workingMessageId = await this.postMessage(event.channel, display);
+				messageTs = await this.postMessage(event.channel, display);
 			}
 			lastEditTime = Date.now();
 			editDirty = false;
 		};
 
-		const scheduleWorkingUpdate = async () => {
+		const scheduleUpdate = async () => {
 			const elapsed = Date.now() - lastEditTime;
 			if (elapsed >= 300) {
 				if (editTimer) {
 					clearTimeout(editTimer);
 					editTimer = null;
 				}
-				await flushWorkingMessage();
+				await flushMessage();
 			} else {
 				editDirty = true;
 				if (!editTimer) {
 					editTimer = setTimeout(() => {
 						editTimer = null;
 						if (editDirty) {
-							updatePromise = updatePromise.then(() => flushWorkingMessage());
+							updatePromise = updatePromise.then(() => flushMessage());
 						}
 					}, 300 - elapsed);
 				}
-			}
-		};
-
-		const flushPendingText = async () => {
-			if (pendingText !== null) {
-				workingEntries.push(pendingText);
-				pendingText = null;
-				await scheduleWorkingUpdate();
 			}
 		};
 
@@ -305,58 +291,58 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 			respond: async (text: string, shouldLog = true) => {
 				updatePromise = updatePromise.then(async () => {
-					// Tool labels (shouldLog=false, starts with _→) → append to working message
+					// Tool labels (shouldLog=false, starts with _→) → append to working entries
 					if (!shouldLog && text.startsWith("_→")) {
-						await flushPendingText();
 						workingEntries.push(text);
-						await scheduleWorkingUpdate();
+						await scheduleUpdate();
 						return;
 					}
 
-					// Other status messages (shouldLog=false) → refresh working message
+					// Other status messages (shouldLog=false) → refresh display
 					if (!shouldLog) {
-						await flushPendingText();
-						await scheduleWorkingUpdate();
+						await scheduleUpdate();
 						return;
 					}
 
-					// Real content (shouldLog=true) → buffer as pending
-					if (text.trim()) {
-						await flushPendingText();
-						pendingText = text;
-					}
+					// Real content (shouldLog=true) — ignored here, replaceMessage handles final text
 				});
 				await updatePromise;
 			},
 
 			replaceMessage: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					// Final response — send as NEW message (Message 2) for notification
 					if (!text.trim()) return;
 
-					pendingText = null;
-
-					// Finalize working message (remove spinner, flush pending edits)
-					if (workingMessageId) {
-						if (editTimer) {
-							clearTimeout(editTimer);
-							editTimer = null;
-						}
-						await flushWorkingMessage();
+					if (editTimer) {
+						clearTimeout(editTimer);
+						editTimer = null;
 					}
 
-					// Post final response as a new top-level message
-					finalMessageId = await this.postMessage(event.channel, text);
-					this.logBotResponse(event.channel, text, finalMessageId);
+					// Build final display: tool arrows (if any) + blank line + response
+					let finalDisplay: string;
+					if (workingEntries.length > 0) {
+						finalDisplay = workingEntries.join("\n") + "\n\n" + text;
+					} else {
+						finalDisplay = text;
+					}
+
+					if (messageTs) {
+						await this.updateMessage(event.channel, messageTs, finalDisplay);
+					} else {
+						messageTs = await this.postMessage(event.channel, finalDisplay);
+					}
+
+					if (messageTs) {
+						this.logBotResponse(event.channel, text, messageTs);
+					}
 				});
 				await updatePromise;
 			},
 
 			respondInThread: async (text: string) => {
 				updatePromise = updatePromise.then(async () => {
-					// Thread replies go under the working message (Message 1)
-					if (workingMessageId) {
-						const ts = await this.postInThread(event.channel, workingMessageId, text);
+					if (messageTs) {
+						const ts = await this.postInThread(event.channel, messageTs, text);
 						threadMessageTs.push(ts);
 					}
 				});
@@ -364,10 +350,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			},
 
 			setTyping: async (isTyping: boolean) => {
-				if (isTyping && !workingMessageId) {
+				if (isTyping && !messageTs) {
 					updatePromise = updatePromise.then(async () => {
-						if (!workingMessageId) {
-							await flushWorkingMessage();
+						if (!messageTs) {
+							await flushMessage();
 						}
 					});
 					await updatePromise;
@@ -382,22 +368,13 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				updatePromise = updatePromise.then(async () => {
 					isWorking = working;
 					if (!working) {
-						// Commit any orphaned pending text
-						await flushPendingText();
-
-						// Flush any pending throttled edit
 						if (editTimer) {
 							clearTimeout(editTimer);
 							editTimer = null;
 						}
-
-						// If nothing accumulated, delete working message (clean UX)
-						if (workingEntries.length === 0 && workingMessageId) {
-							await this.deleteMessage(event.channel, workingMessageId);
-							workingMessageId = null;
-						} else if (workingMessageId) {
-							// Final edit — removes the "..." spinner
-							await flushWorkingMessage();
+						// Final edit — removes the "..." spinner
+						if (messageTs) {
+							await flushMessage();
 						}
 					}
 				});
@@ -410,7 +387,6 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 						clearTimeout(editTimer);
 						editTimer = null;
 					}
-					// Delete thread messages under working message
 					for (let i = threadMessageTs.length - 1; i >= 0; i--) {
 						try {
 							await this.deleteMessage(event.channel, threadMessageTs[i]);
@@ -419,15 +395,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 						}
 					}
 					threadMessageTs.length = 0;
-					// Delete working message
-					if (workingMessageId) {
-						await this.deleteMessage(event.channel, workingMessageId);
-						workingMessageId = null;
-					}
-					// Delete final message
-					if (finalMessageId) {
-						await this.deleteMessage(event.channel, finalMessageId);
-						finalMessageId = null;
+					if (messageTs) {
+						await this.deleteMessage(event.channel, messageTs);
+						messageTs = null;
 					}
 				});
 				await updatePromise;
