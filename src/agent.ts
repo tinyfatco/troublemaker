@@ -445,30 +445,19 @@ function createRunner(
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
 ): AgentRunner {
+	const t0 = performance.now();
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
 	// Create tools (core + any extras like heartbeat's send_message)
 	const tools = [...createMomTools(executor), ...extraTools];
 
-	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
-	const memory = getMemory(channelDir);
-	const skills = loadMomSkills(channelDir, workspacePath, extraSkillsDirs);
-	const systemPrompt = buildSystemPrompt(
-		workspacePath,
-		channelId,
-		memory,
-		sandboxConfig,
-		[],
-		[],
-		skills,
-		formatInstructions,
-	);
+	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
+	const systemPrompt = "Initializing...";
 
 	// Create session manager and settings manager
 	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
 	const contextFile = join(channelDir, "context.jsonl");
-	const sessionManager = SessionManager.open(contextFile, channelDir);
 	const workspaceDir = join(channelDir, "..");
 	const settingsManager = new MomSettingsManager(workspaceDir);
 
@@ -493,13 +482,20 @@ function createRunner(
 		getApiKey: async (provider: string) => resolveApiKey(authStorage, provider),
 	});
 
-	// Load existing messages
-	const loadedSession = sessionManager.buildSessionContext();
-	if (loadedSession.messages.length > 0) {
-		const sanitized = sanitizeMessages(loadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
-		agent.replaceMessages(sanitized as unknown as typeof loadedSession.messages);
-		log.logInfo(`[${channelId}] Loaded ${sanitized.length} messages from context.jsonl`);
-	}
+	// Defer context loading to run() — avoid double-reading from R2
+	// SessionManager.open() and buildSessionContext() read context.jsonl over s3fs,
+	// and run() will read it again anyway. Do it once.
+	let sessionManager: SessionManager | null = null;
+	const getSessionManager = () => {
+		if (!sessionManager) {
+			const t = performance.now();
+			sessionManager = SessionManager.open(contextFile, channelDir);
+			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
+		}
+		return sessionManager;
+	};
+
+	log.logInfo(`[perf] createRunner (no R2 reads): ${(performance.now() - t0).toFixed(0)}ms`);
 
 	const resourceLoader: ResourceLoader = {
 		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
@@ -516,16 +512,24 @@ function createRunner(
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-	// Create AgentSession wrapper
-	const session = new AgentSession({
-		agent,
-		sessionManager,
-		settingsManager: settingsManager as any,
-		cwd: process.cwd(),
-		modelRegistry,
-		resourceLoader,
-		baseToolsOverride,
-	});
+	// Session created lazily on first run (needs sessionManager which reads R2)
+	let session: AgentSession | null = null;
+	const getSession = () => {
+		if (!session) {
+			session = new AgentSession({
+				agent,
+				sessionManager: getSessionManager(),
+				settingsManager: settingsManager as any,
+				cwd: process.cwd(),
+				modelRegistry,
+				resourceLoader,
+				baseToolsOverride,
+			});
+			// Subscribe to events
+			session.subscribe(eventHandler);
+		}
+		return session;
+	};
 
 	// Mutable per-run state - event handler references this
 	const runState = {
@@ -547,8 +551,8 @@ function createRunner(
 		errorMessage: undefined as string | undefined,
 	};
 
-	// Subscribe to events ONCE
-	session.subscribe(async (event) => {
+	// Event handler — extracted so it can be attached when session is lazily created
+	const eventHandler = async (event: any) => {
 		// Skip if no active run
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
 
@@ -670,7 +674,7 @@ function createRunner(
 				"retry",
 			);
 		}
-	});
+	};
 
 	// Message length limit (adapter-specific)
 	const MAX_MESSAGE_LENGTH = 40000;
@@ -695,28 +699,52 @@ function createRunner(
 			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
 		): Promise<{ stopReason: string; errorMessage?: string }> {
+			const tRun = performance.now();
+
 			// Ensure channel directory exists
 			await mkdir(channelDir, { recursive: true });
 
-			// Sync messages from log.jsonl that arrived while we were offline or busy
-			// Exclude the current message (it will be added via prompt())
-			const syncedCount = syncLogToSessionManager(sessionManager, channelDir, ctx.message.ts);
+			// --- Parallel R2 reads ---
+			// These all hit s3fs (network I/O). Run concurrently instead of sequentially.
+			const tR2 = performance.now();
+
+			const sm = getSessionManager();
+
+			// syncLogToSessionManager reads log.jsonl, buildSessionContext reads context.jsonl,
+			// getMemory reads MEMORY.md, loadMomSkills scans skills dirs.
+			// sync must happen before buildSessionContext, but memory/skills are independent.
+			const syncedCount = syncLogToSessionManager(sm, channelDir, ctx.message.ts);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}
+			log.logInfo(`[perf] log sync: ${(performance.now() - tR2).toFixed(0)}ms`);
 
-			// Reload messages from context.jsonl
-			// This picks up any messages synced above
-			const reloadedSession = sessionManager.buildSessionContext();
+			// These three are independent — but they're sync fs calls (readFileSync via s3fs).
+			// We can't truly parallelize sync calls without worker threads.
+			// For now, instrument each one so we know where the time goes.
+			const tCtx = performance.now();
+			const reloadedSession = sm.buildSessionContext();
+			log.logInfo(`[perf] buildSessionContext: ${(performance.now() - tCtx).toFixed(0)}ms`);
+
 			if (reloadedSession.messages.length > 0) {
+				const tSan = performance.now();
 				const sanitized = sanitizeMessages(reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
 				agent.replaceMessages(sanitized as unknown as typeof reloadedSession.messages);
-				log.logInfo(`[${channelId}] Reloaded ${sanitized.length} messages from context`);
+				log.logInfo(`[perf] sanitize+replace (${sanitized.length} msgs): ${(performance.now() - tSan).toFixed(0)}ms`);
 			}
 
-			// Update system prompt with fresh memory, channel/user info, and skills
+			const tMem = performance.now();
 			const memory = getMemory(channelDir);
+			log.logInfo(`[perf] getMemory: ${(performance.now() - tMem).toFixed(0)}ms`);
+
+			const tSkills = performance.now();
 			const skills = loadMomSkills(channelDir, workspacePath, extraSkillsDirs);
+			log.logInfo(`[perf] loadMomSkills (${skills.length} skills): ${(performance.now() - tSkills).toFixed(0)}ms`);
+
+			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
+
+			// Build system prompt with fresh data
+			const currentSession = getSession();
 			const systemPrompt = buildSystemPrompt(
 				workspacePath,
 				channelId,
@@ -727,7 +755,7 @@ function createRunner(
 				skills,
 				formatInstructions,
 			);
-			session.agent.setSystemPrompt(systemPrompt);
+			currentSession.agent.setSystemPrompt(systemPrompt);
 
 			// Re-resolve model each run (picks up /model command changes from settings.json)
 			const currentModel = resolveModel(workspaceDir, modelRegistry);
@@ -742,6 +770,8 @@ function createRunner(
 				const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
 				await ctx.uploadFile(hostPath, title);
 			});
+
+			log.logInfo(`[perf] run() pre-prompt setup: ${(performance.now() - tRun).toFixed(0)}ms`);
 
 			// Reset per-run state
 			runState.ctx = ctx;
@@ -834,13 +864,15 @@ function createRunner(
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt,
-				messages: session.messages,
+				messages: currentSession.messages,
 				newUserMessage: userMessage,
 				imageAttachmentCount: imageAttachments.length,
 			};
 			await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
 
-			await session.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+			const tPrompt = performance.now();
+			await currentSession.prompt(userMessage, imageAttachments.length > 0 ? { images: imageAttachments } : undefined);
+			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
 			// Agent.emit() doesn't await async handlers, so _runAutoCompaction runs
@@ -849,7 +881,7 @@ function createRunner(
 				await agent.waitForIdle();
 
 				// Re-read result — background retry may have succeeded
-				const msgs = session.messages;
+				const msgs = currentSession.messages;
 				const last = msgs.filter((m) => m.role === "assistant").pop() as any;
 				if (last && last.stopReason && last.stopReason !== "error") {
 					runState.stopReason = last.stopReason;
@@ -871,7 +903,7 @@ function createRunner(
 				}
 			} else {
 				// Final message update
-				const messages = session.messages;
+				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
 				const finalText =
 					lastAssistant?.content
@@ -905,7 +937,7 @@ function createRunner(
 			// Log usage summary with context info
 			if (runState.totalUsage.cost.total > 0) {
 				// Get last non-aborted assistant message for context calculation
-				const messages = session.messages;
+				const messages = currentSession.messages;
 				const lastAssistantMessage = messages
 					.slice()
 					.reverse()
@@ -929,11 +961,12 @@ function createRunner(
 			runState.logCtx = null;
 			runState.queue = null;
 
+			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };
 		},
 
 		abort(): void {
-			session.abort();
+			if (session) session.abort();
 		},
 	};
 }

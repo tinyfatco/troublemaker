@@ -116,6 +116,7 @@ function parseArgs(): ParsedArgs {
 	};
 }
 
+const T_BOOT = performance.now();
 const parsedArgs = parseArgs();
 
 // Handle --download mode (Slack-only for now)
@@ -144,7 +145,9 @@ const { workingDir, sandbox } = {
 	sandbox: parsedArgs.sandbox,
 };
 
+log.logInfo(`[perf] args parsed: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 await validateSandbox(sandbox);
+log.logInfo(`[perf] sandbox validated: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // ============================================================================
 // Create platform adapters
@@ -379,6 +382,7 @@ gateway.registerGet("/schedule", async (_req, res) => {
 });
 
 await gateway.start(parsedArgs.port);
+log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Register, init, and mark each adapter ready. Failures don't kill other
 // adapters — failed routes stay registered but never marked ready (permanent 503).
@@ -400,11 +404,14 @@ for (let i = 0; i < adapters.length; i++) {
 		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }
+log.logInfo(`[perf] adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start events watcher AFTER adapters (may block on slow FS)
 // Uses allAdapters so heartbeat events (_heartbeat channelId) get routed correctly
 const eventsWatcher = createEventsWatcher(workingDir, allAdapters);
 eventsWatcher.start();
+log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Handle shutdown
 process.on("SIGINT", () => {
