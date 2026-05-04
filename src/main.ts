@@ -1,13 +1,11 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "./adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "./adapters/email-webhook.js";
 import { HeartbeatAdapter } from "./adapters/heartbeat.js";
 import { syncHeartbeatFromSpontaneity } from "./heartbeat-schedule.js";
 import { OperatorAdapter } from "./adapters/operator.js";
-import { TickAdapter } from "./adapters/tick.js";
 import { SlackSocketAdapter } from "./adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "./adapters/slack-webhook.js";
 import { TelegramPollingAdapter } from "./adapters/telegram-polling.js";
@@ -31,8 +29,6 @@ import { ChannelStore } from "./store.js";
 import { McpBridge } from "./mcp-client/bridge.js";
 import { createListChannelsTool } from "./tools/list-channels.js";
 import { createSendMessageToChannelTool } from "./tools/send-message-to-channel.js";
-import { createTuneInTool } from "./tools/tune-in.js";
-import { createTuneOutTool } from "./tools/tune-out.js";
 import { createYieldNoActionTool } from "./tools/yield-no-action.js";
 
 // ============================================================================
@@ -476,14 +472,6 @@ adapters.push(operatorAdapter);
 
 const AWARENESS_DIR = "awareness";
 
-// Always create tick adapter — implicit presence loop (tune_in / tune_out).
-// Must come after AWARENESS_DIR because it needs awarenessDir for presence transitions.
-const tickAdapter = new TickAdapter({
-	workingDir,
-	awarenessDir: join(workingDir, AWARENESS_DIR),
-}) as AdapterWithHandler;
-adapters.push(tickAdapter);
-
 // Inject the full adapter list into the MCP adapter so its send_message_to_channel
 // and list_channels tools can route through peer adapters. Done after all adapters
 // are constructed to close the circular dependency.
@@ -515,22 +503,6 @@ const mcpBridge = new McpBridge(workingDir);
 	}).catch((err) => {
 		log.logWarning(`[mcp-client] bridge connect failed (non-fatal)`, err instanceof Error ? err.message : String(err));
 	});
-}
-
-// Seed TICK.md template on first boot if it doesn't exist (agent-editable after).
-{
-	const tickFile = join(workingDir, "TICK.md");
-	if (!existsSync(tickFile)) {
-		const templatePath = join(import.meta.dirname || __dirname, "templates", "TICK.md");
-		try {
-			if (existsSync(templatePath)) {
-				copyFileSync(templatePath, tickFile);
-				log.logInfo(`Seeded TICK.md from template`);
-			}
-		} catch (err) {
-			log.logWarning("Failed to seed TICK.md", err instanceof Error ? err.message : String(err));
-		}
-	}
 }
 
 interface Awareness {
@@ -620,16 +592,6 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createSendMessageToChannelTool(adapters),
 			createListChannelsTool(workingDir),
 			createYieldNoActionTool(),
-			createTuneInTool({
-				workingDir,
-				awarenessDir,
-				onTuneIn: () => (tickAdapter as unknown as TickAdapter).startTicking(),
-			}),
-			createTuneOutTool({
-				workingDir,
-				awarenessDir,
-				onTuneOut: () => (tickAdapter as unknown as TickAdapter).stopTicking(),
-			}),
 			...mcpBridge.tools(),
 		];
 
