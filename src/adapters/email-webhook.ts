@@ -662,7 +662,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				if (!working) {
 					// Run complete — send the email reply
 					try {
-						await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments);
+						await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments, event.channel);
 					} finally {
 						this.clearActiveReplyContext(activeReplyContext);
 					}
@@ -688,6 +688,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		finalText: string,
 		toolLog: string[],
 		attachments: Array<{ filename: string; filePath: string }> = [],
+		channelId?: string,
 	): Promise<void> {
 		if (!finalText.trim()) {
 			log.logInfo("[email] No response text to send");
@@ -780,6 +781,14 @@ Keep responses concise and professional. The user will receive one email with yo
 			} else {
 				const result = (await response.json()) as { ok: boolean; messageId?: string };
 				log.logInfo(`[email] Reply sent: messageId=${result.messageId}`);
+
+				// FAT-370: log the bot's outbound reply so future replies in this thread
+				// can include the agent's prior content in the quoted body.
+				// Without this, buildConversationReplyBody finds no isBot:true entries
+				// for this channelId and the agent loses its own context across turns.
+				if (channelId) {
+					this.logBotResponse(channelId, finalText, String(Date.now()));
+				}
 			}
 		} catch (err) {
 			log.logWarning("[email] Send error", err instanceof Error ? err.message : String(err));
