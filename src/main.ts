@@ -380,11 +380,12 @@ function createAdapter(name: string): AdapterWithHandler {
 		}
 		case "slack:webhook": {
 			const botToken = process.env.MOM_SLACK_BOT_TOKEN;
-			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET;
-			if (!botToken || !signingSecret) {
-				console.error("Missing env: MOM_SLACK_BOT_TOKEN, MOM_SLACK_SIGNING_SECRET");
+			if (!botToken) {
+				console.error("Missing env: MOM_SLACK_BOT_TOKEN");
 				process.exit(1);
 			}
+			// signing secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
+			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET || "";
 			const store = new ChannelStore({ workingDir, botToken });
 			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage, consumeAmbientDefer });
 		}
@@ -400,14 +401,19 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "telegram:webhook": {
 			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
 			const webhookUrl = process.env.MOM_TELEGRAM_WEBHOOK_URL;
-			const webhookSecret = process.env.MOM_TELEGRAM_WEBHOOK_SECRET;
 			const skipRegistration = !!process.env.MOM_SKIP_WEBHOOK_REGISTRATION;
-			if (!botToken || !webhookSecret) {
-				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN, MOM_TELEGRAM_WEBHOOK_SECRET");
+			if (!botToken) {
+				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 				process.exit(1);
 			}
+			// webhook secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
+			const webhookSecret = process.env.MOM_TELEGRAM_WEBHOOK_SECRET || "";
 			if (!skipRegistration && !webhookUrl) {
 				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_URL (required unless MOM_SKIP_WEBHOOK_REGISTRATION=true)");
+				process.exit(1);
+			}
+			if (!skipRegistration && !webhookSecret) {
+				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_SECRET (required when registering webhook)");
 				process.exit(1);
 			}
 			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });

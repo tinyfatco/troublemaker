@@ -71,13 +71,17 @@ export class TelegramWebhookAdapter extends TelegramBase {
 		req.on("end", async () => {
 			const body = Buffer.concat(chunks).toString("utf-8");
 
-			// Verify secret token header
-			const secretToken = req.headers["x-telegram-bot-api-secret-token"] as string | undefined;
-			if (!secretToken || secretToken !== this.webhookSecret) {
-				log.logWarning("Telegram webhook secret token verification failed");
-				res.writeHead(401);
-				res.end("Invalid secret token");
-				return;
+			// Trust upstream verification when crawdad-cf has already verified the request
+			// (or when running with no webhook secret — secrets-out-of-container mode).
+			const upstreamVerified = req.headers["x-crawdad-dev-verified"] === "true";
+			if (!upstreamVerified && this.webhookSecret) {
+				const secretToken = req.headers["x-telegram-bot-api-secret-token"] as string | undefined;
+				if (!secretToken || secretToken !== this.webhookSecret) {
+					log.logWarning("Telegram webhook secret token verification failed");
+					res.writeHead(401);
+					res.end("Invalid secret token");
+					return;
+				}
 			}
 
 			let update: object;

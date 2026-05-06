@@ -48,29 +48,33 @@ export class SlackWebhookAdapter extends SlackBase {
 			const rawBody = Buffer.concat(chunks);
 			const body = rawBody.toString("utf-8");
 
-			// Verify signature
-			const timestamp = req.headers["x-slack-request-timestamp"] as string | undefined;
-			const signature = req.headers["x-slack-signature"] as string | undefined;
+			// Trust upstream verification when crawdad-cf has already verified the request
+			// (or when running with no signing secret — secrets-out-of-container mode).
+			const upstreamVerified = req.headers["x-crawdad-dev-verified"] === "true";
+			if (!upstreamVerified && this.signingSecret) {
+				const timestamp = req.headers["x-slack-request-timestamp"] as string | undefined;
+				const signature = req.headers["x-slack-signature"] as string | undefined;
 
-			if (!timestamp || !signature) {
-				res.writeHead(401);
-				res.end("Missing signature headers");
-				return;
-			}
+				if (!timestamp || !signature) {
+					res.writeHead(401);
+					res.end("Missing signature headers");
+					return;
+				}
 
-			// Reject requests older than 5 minutes (replay protection)
-			const now = Math.floor(Date.now() / 1000);
-			if (Math.abs(now - parseInt(timestamp, 10)) > 300) {
-				res.writeHead(401);
-				res.end("Request too old");
-				return;
-			}
+				// Reject requests older than 5 minutes (replay protection)
+				const now = Math.floor(Date.now() / 1000);
+				if (Math.abs(now - parseInt(timestamp, 10)) > 300) {
+					res.writeHead(401);
+					res.end("Request too old");
+					return;
+				}
 
-			if (!this.verifySignature(timestamp, body, signature)) {
-				log.logWarning("Slack webhook signature verification failed");
-				res.writeHead(401);
-				res.end("Invalid signature");
-				return;
+				if (!this.verifySignature(timestamp, body, signature)) {
+					log.logWarning("Slack webhook signature verification failed");
+					res.writeHead(401);
+					res.end("Invalid signature");
+					return;
+				}
 			}
 
 			let payload: SlackEventPayload;
