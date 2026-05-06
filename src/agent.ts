@@ -13,7 +13,7 @@ import {
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
 import { randomUUID } from "crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
@@ -71,7 +71,7 @@ export interface AgentRunner {
 	/** Compact context — summarize old messages, keep recent */
 	compact(instructions?: string): Promise<CompactResult>;
 	/** Clear context entirely — archive and start fresh */
-	clear(): Promise<{ messagesCleared: number }>;
+	clear(): Promise<{ messagesCleared: number; quarantined?: string }>;
 	/** Called on every substantive event (tool call, LLM token, etc.) during a run */
 	onActivity?: () => void;
 }
@@ -1208,34 +1208,76 @@ function createRunner(
 		get onActivity(): (() => void) | undefined { return onActivity; },
 		set onActivity(fn: (() => void) | undefined) { onActivity = fn; },
 
-		async clear(): Promise<{ messagesCleared: number }> {
+		async clear(): Promise<{ messagesCleared: number; quarantined?: string }> {
 			const contextFile = join(awarenessDir, "context.jsonl");
-			// Ensure messages are loaded from context.jsonl before counting
-			const sm = getSessionManager();
-			const currentSession = getSession();
-			if (currentSession.messages.length === 0) {
-				const restored = sm.buildSessionContext();
-				if (restored.messages.length > 0) {
-					agent.state.messages = restored.messages;
+
+			// FAT-347: /clear must always succeed in truncating, even when read or
+			// archive fails (e.g. gocryptfs EIO from a corrupt block). Each step
+			// below is best-effort with its own try/catch; we always reach the
+			// truncate at the end.
+
+			// Step 1: best-effort load + count messages. If reading fails, count = 0.
+			let messagesCleared = 0;
+			try {
+				const sm = getSessionManager();
+				const currentSession = getSession();
+				if (currentSession.messages.length === 0) {
+					const restored = sm.buildSessionContext();
+					if (restored.messages.length > 0) {
+						agent.state.messages = restored.messages;
+					}
+				}
+				messagesCleared = currentSession.messages.length;
+			} catch (err) {
+				log.logWarning(`[awareness] /clear: could not load context for counting (continuing): ${err instanceof Error ? err.message : String(err)}`);
+			}
+
+			// Step 2: best-effort archive. If copy fails (likely the same EIO), move
+			// the broken file aside so subsequent reads don't fail again.
+			let quarantined: string | undefined;
+			try {
+				await archiveContext(contextFile);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				log.logWarning(`[awareness] /clear: archive failed (${msg}) — quarantining broken file`);
+				try {
+					if (existsSync(contextFile)) {
+						const ts = new Date().toISOString().replace(/[:.]/g, "-");
+						const broken = `${contextFile}.broken-${ts}`;
+						renameSync(contextFile, broken);
+						quarantined = broken;
+						log.logInfo(`[awareness] /clear: quarantined corrupt context to ${broken}`);
+					}
+				} catch (qerr) {
+					log.logWarning(`[awareness] /clear: quarantine also failed (continuing): ${qerr instanceof Error ? qerr.message : String(qerr)}`);
 				}
 			}
-			const messagesCleared = currentSession.messages.length;
 
-			// Archive before clearing
-			await archiveContext(contextFile);
+			// Step 3: always truncate. After quarantine the file may not exist —
+			// writeFileSync creates a fresh empty file in that case.
+			try {
+				writeFileSync(contextFile, "", "utf-8");
+			} catch (err) {
+				log.logWarning(`[awareness] /clear: truncate failed (${err instanceof Error ? err.message : String(err)})`);
+				// Re-throw — if we can't even create an empty file at this path,
+				// the agent is in a worse state than corrupt data and the caller
+				// needs to know.
+				throw err;
+			}
 
-			// Truncate context.jsonl
-			writeFileSync(contextFile, "", "utf-8");
-
-			// Reset in-memory state — unsubscribe old session to prevent listener leak
+			// Step 4: always reset in-memory state.
 			unsubscribeSession?.();
 			unsubscribeSession = null;
 			agent.state.messages = [];
 			sessionManager = null;
 			session = null;
 
-			log.logInfo(`[awareness] Context cleared (${messagesCleared} messages archived)`);
-			return { messagesCleared };
+			if (quarantined) {
+				log.logInfo(`[awareness] Context cleared — previous file was unreadable and quarantined to ${quarantined}`);
+			} else {
+				log.logInfo(`[awareness] Context cleared (${messagesCleared} messages archived)`);
+			}
+			return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
 		},
 	};
 }
