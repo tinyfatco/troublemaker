@@ -517,11 +517,19 @@ Keep responses concise and professional. The user will receive one email with yo
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
+		// Normalize channelId to match processEmail's format (FAT-370):
+		//   processEmail: `email-${from.toLowerCase().replace(/[^a-z0-9]/g, "_")}`
+		// Without normalization, bot replies routed via send_message_to_channel
+		// arrive here as channel="email-alex@gmail.com" while inbound uses
+		// channelId="email-alex_gmail_com" — and buildConversationReplyBody's
+		// channelId filter never matches across turns.
+		const stripped = channel.startsWith("email-") ? channel.slice("email-".length) : channel;
+		const normalizedChannelId = `email-${stripped.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
 		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
-			channel: `email:${channel.replace("email-", "")}`,
-			channelId: channel,
+			channel: `email:${stripped}`,
+			channelId: normalizedChannelId,
 			user: "bot",
 			text,
 			attachments: [],
