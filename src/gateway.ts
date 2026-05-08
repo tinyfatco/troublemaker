@@ -378,7 +378,21 @@ export class Gateway {
 		});
 	}
 
-	/** Handle GET /awareness/backlog — returns last N lines of context.jsonl as JSON array */
+	/** Handle GET /awareness/backlog — returns last N lines of context.jsonl as JSON array.
+	 *
+	 * Tail-first reverse byte read (FAT-352): seeks from the end of the file
+	 * backwards in CHUNK-sized blocks until enough newlines are found. Avoids
+	 * reading the entire file (which through s3fs/gocryptfs FUSE was triggering
+	 * full-file R2 GETs per request — root cause of the ~5 TB/mo egress storm
+	 * documented in FAT-348/350/351/349).
+	 *
+	 * Pagination:
+	 *   - before=0 (default): return the last `limit` lines
+	 *   - before>0: return up to `limit` lines ending at line index `before`
+	 *
+	 * `total` is approximate — we return the line count consumed by this query
+	 * and use file size as a sentinel for whether more history exists.
+	 */
 	private handleAwarenessBacklog(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.workspaceDir) {
 			res.writeHead(500, { "Content-Type": "application/json" });
@@ -391,25 +405,78 @@ export class Gateway {
 		const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 200);
 		const before = parseInt(url.searchParams.get("before") || "0", 10) || 0;
 
-		let allLines: string[];
+		let fileSize: number;
 		try {
-			const content = readFileSync(contextFile, "utf-8");
-			allLines = content.split("\n").filter(Boolean);
+			fileSize = statSync(contextFile).size;
 		} catch {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
 			return;
 		}
 
-		const total = allLines.length;
-		// "before" is a line index — return `limit` lines ending before that index
-		// If before=0 (default), return the last `limit` lines
-		const endIndex = before > 0 ? Math.min(before, total) : total;
-		const startIndex = Math.max(0, endIndex - limit);
-		const slice = allLines.slice(startIndex, endIndex);
+		if (fileSize === 0) {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+			return;
+		}
 
-		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
+		// Hot path (before=0): tail-first chunked read from the end of the file.
+		// Avoids the full-file readFileSync that was triggering whole-file R2 GETs
+		// through the s3fs/gocryptfs FUSE stack (FAT-348/350/351/349).
+		if (before <= 0) {
+			const CHUNK = 64 * 1024;
+			const fd = openSync(contextFile, "r");
+			try {
+				let position = fileSize;
+				let buffer = Buffer.alloc(0);
+				let lineCount = 0;
+
+				while (position > 0 && lineCount <= limit) {
+					const readSize = Math.min(CHUNK, position);
+					position -= readSize;
+					const chunk = Buffer.alloc(readSize);
+					readSync(fd, chunk, 0, readSize, position);
+					buffer = Buffer.concat([chunk, buffer]);
+					lineCount = 0;
+					for (let i = 0; i < buffer.length; i++) {
+						if (buffer[i] === 0x0a /* \n */) lineCount++;
+					}
+				}
+
+				const text = buffer.toString("utf-8");
+				const allLines = text.split("\n").filter(Boolean);
+				const slice = allLines.slice(-limit);
+				// offset is approximate when we didn't read the whole file — use
+				// "more history exists upstream" sentinel: if we stopped before
+				// reaching position=0, there's older data, so report a non-zero offset.
+				// The exact value isn't used by the client beyond ===0 vs >0.
+				const offset = position > 0 ? Math.max(1, allLines.length - slice.length) : Math.max(0, allLines.length - slice.length);
+
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ lines: slice, total: allLines.length, offset }));
+			} finally {
+				closeSync(fd);
+			}
+			return;
+		}
+
+		// Cold path (before>0): scroll-up pagination. Falls back to whole-file
+		// read since we don't have a byte-offset index for arbitrary line numbers.
+		// Hit much less frequently than before=0, so the 1× full read here is OK
+		// in practice (and a full byte-offset index would be a separate ticket).
+		try {
+			const content = readFileSync(contextFile, "utf-8");
+			const allLines = content.split("\n").filter(Boolean);
+			const total = allLines.length;
+			const endIndex = Math.min(before, total);
+			const startIndex = Math.max(0, endIndex - limit);
+			const slice = allLines.slice(startIndex, endIndex);
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
+		} catch {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+		}
 	}
 
 	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
