@@ -153,11 +153,11 @@ function parseArgs(): ParsedArgs {
 		if (process.env.MOM_SLACK_APP_TOKEN && process.env.MOM_SLACK_BOT_TOKEN) {
 			adapters.push("slack");
 		}
-		if (process.env.MOM_SLACK_SIGNING_SECRET && process.env.MOM_SLACK_BOT_TOKEN) {
-			// Auto-detect webhook mode if signing secret is set (and no app token)
-			if (!adapters.includes("slack")) {
-				adapters.push("slack:webhook");
-			}
+		if (process.env.MOM_SLACK_BOT_TOKEN && !adapters.includes("slack")) {
+			// Auto-detect webhook mode when only the bot token is present. In crawdad-cf
+			// mode, Slack signatures are verified upstream and the signing secret is
+			// intentionally not exposed to the container.
+			adapters.push("slack:webhook");
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
 			// Prefer webhook mode when secret is set (external orchestrator sets this)
