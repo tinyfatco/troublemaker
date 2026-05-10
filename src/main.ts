@@ -160,8 +160,12 @@ function parseArgs(): ParsedArgs {
 			adapters.push("slack:webhook");
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
-			// Prefer webhook mode when secret is set (external orchestrator sets this)
-			if (process.env.MOM_TELEGRAM_WEBHOOK_SECRET) {
+			// External orchestrator (crawdad-cf) signals "I manage the webhook URL
+			// and verify upstream" via MOM_SKIP_WEBHOOK_REGISTRATION. In that case
+			// pick webhook mode unconditionally — the secret is intentionally absent
+			// from container env (FAT-366). Otherwise fall back to historic behavior:
+			// secret present → webhook (self-registered), absent → polling.
+			if (process.env.MOM_SKIP_WEBHOOK_REGISTRATION || process.env.MOM_TELEGRAM_WEBHOOK_SECRET) {
 				adapters.push("telegram:webhook");
 			} else {
 				adapters.push("telegram");
