@@ -15,6 +15,7 @@ import { TelegramWebhookAdapter } from "./adapters/telegram-webhook.js";
 import { VoiceAdapter } from "./adapters/voice.js";
 import { WebAdapter } from "./adapters/web.js";
 import { McpAdapter } from "./adapters/mcp.js";
+import { PhoneMessagingWebhookAdapter } from "./adapters/phone-messaging-webhook.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "./adapters/web-voice.js";
 import { handleTerminalUpgrade } from "./terminal.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./adapters/types.js";
@@ -56,6 +57,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 			if (isDiscordSnowflake(channelId)) return `discord:#${ch.name}`;
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
+			if (channelId.startsWith("phone-")) return `phone:${ch.name}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
 			if (channelId.startsWith("voice-")) return `voice:${ch.name}`;
 			if (channelId === "heartbeat") return `heartbeat:${ch.name}`;
@@ -68,6 +70,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	if (isDiscordSnowflake(channelId)) return `discord:${channelId}`;
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
 	if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
+	if (channelId.startsWith("phone-")) return `phone:${channelId}`;
 	if (channelId.startsWith("web-")) return `web:${channelId}`;
 	if (channelId.startsWith("voice-")) return `voice:${channelId}`;
 	return channelId;
@@ -177,6 +180,9 @@ function parseArgs(): ParsedArgs {
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
 		}
+		if (process.env.MOM_PHONE_MESSAGING === "true" || process.env.LOOPMESSAGE_API_KEY || process.env.MOM_LOOPMESSAGE_API_KEY || process.env.TWILIO_ACCOUNT_SID || process.env.MOM_TWILIO_ACCOUNT_SID) {
+			adapters.push("phone-messaging:webhook");
+		}
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
 		}
@@ -223,7 +229,7 @@ if (parsedArgs.downloadChannel) {
 if (!parsedArgs.workingDir) {
 	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, web, mcp, voice");
 	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
@@ -440,6 +446,10 @@ function createAdapter(name: string): AdapterWithHandler {
 			}
 			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
 			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl });
+		}
+		case "phone-messaging:webhook":
+		case "phone:webhook": {
+			return new PhoneMessagingWebhookAdapter({ workingDir });
 		}
 		case "web": {
 			return new WebAdapter({ workingDir });
@@ -917,6 +927,8 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"telegram:webhook": "/telegram/webhook",
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",
+	"phone-messaging:webhook": "/phone-messaging/webhook",
+	"phone:webhook": "/phone-messaging/webhook",
 	"web": "/web/chat",
 	"mcp": "/mcp",
 };

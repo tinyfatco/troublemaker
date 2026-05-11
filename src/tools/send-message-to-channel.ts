@@ -1,7 +1,7 @@
 /**
  * send_message_to_channel — send a message to any connected channel.
  *
- * Lets the agent send a message to any connected channel (Telegram, Slack, Email)
+ * Lets the agent send a message to any connected channel (Telegram, Slack, Email, Phone)
  * regardless of which channel the current conversation is on. Fire and forget —
  * the agent stays where it is.
  *
@@ -9,6 +9,7 @@
  *   numeric (positive or negative) → Telegram
  *   C/D/G prefix                   → Slack
  *   email-{address}                → Email
+ *   phone-{hash}                   → SMS/iMessage phone messaging
  */
 
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -31,6 +32,10 @@ export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): Pl
 	if (channel.startsWith("email-")) {
 		return adapters.find((a) => a.name === "email");
 	}
+	// Phone messaging: internal channel IDs begin with phone-
+	if (channel.startsWith("phone-")) {
+		return adapters.find((a) => a.name === "phone");
+	}
 	return undefined;
 }
 
@@ -42,7 +47,7 @@ export function resolveAdapter(channel: string, adapters: PlatformAdapter[]): Pl
 export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
-		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email-user@example.com)" }),
+		channel: Type.String({ description: "Channel ID to send to (e.g., Telegram chat ID, Slack channel ID, email-user@example.com, phone-...)" }),
 		text: Type.String({ description: "Message text to send" }),
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
 		subject: Type.Optional(Type.String({ description: "Subject line (email only — ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
@@ -52,10 +57,10 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 		name: "send_message_to_channel",
 		label: "send_message_to_channel",
 		description:
-			"Send a message to a channel without moving there. Use this to reach people on Telegram, Slack, or Email " +
+			"Send a message to a channel without moving there. Use this to reach people on Telegram, Slack, Email, or SMS/iMessage " +
 			"while staying focused on your current channel. " +
 			"The channel ID determines which platform the message goes to: " +
-			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email. " +
+			"numeric IDs → Telegram, C/D/G-prefixed → Slack, email-{address} → Email, phone-{hash} → SMS/iMessage. " +
 			"For email, you can include file attachments (e.g., PDFs, images) and an optional subject line. " +
 			"If you use this during an active email conversation and send back to that same email channel, the adapter preserves reply threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: You MUST send a message whenever a cross-channel message arrives while you are working. " +
@@ -80,7 +85,7 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 			const adapter = resolveAdapter(channel, adapters);
 			if (!adapter) {
 				return {
-					content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Available patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email).` }],
+					content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Available patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
 					details: undefined,
 				};
 			}

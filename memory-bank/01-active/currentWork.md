@@ -1,6 +1,13 @@
 # Current Work
 
-**Last updated:** 2026-03-21
+**Last updated:** 2026-05-11
+
+
+## Status: Phone Messaging Adapter Added
+
+2026-05-11: Added the provider-neutral `phone` adapter for SMS/iMessage-style threads. It accepts canonical phone webhook payloads, records discovered `phone-...` channels, replies via LoopMessage or Twilio provider drivers, and exposes those channels through `list_channels` / `send_message_to_channel`.
+
+This is explicitly a two-way conversational surface, not cold outbound broadcast infrastructure. Loop group-chat and iMessage-to-SMS fallback behavior still requires sandbox QA before customer use.
 
 ## Status: Self-Hosted Runtime Is Real
 
