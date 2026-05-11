@@ -1,4 +1,6 @@
 export type PhoneTransport = "imessage" | "sms" | "mms" | "rcs" | "whatsapp" | "unknown";
+export type PhoneMessageDirection = "inbound" | "outbound";
+export type PhoneMessageStatus = "received" | "sent" | "queued" | "failed" | "rejected" | "delivered" | "read";
 
 export interface PhoneAttachment {
 	filename?: string;
@@ -10,6 +12,8 @@ export interface PhoneAttachment {
 export interface PhoneInboundPayload {
 	provider: string;
 	transport?: PhoneTransport;
+	direction?: PhoneMessageDirection;
+	status?: PhoneMessageStatus;
 	messageId: string;
 	conversationId?: string;
 	from: string;

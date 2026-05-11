@@ -91,6 +91,11 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 	}
 
 	private async processInbound(payload: PhoneInboundPayload): Promise<void> {
+		if (payload.direction && payload.direction !== "inbound") {
+			this.logReceipt(payload);
+			return;
+		}
+
 		const record = this.upsertChannel(payload);
 		const ts = payload.timestamp || new Date().toISOString();
 		const userId = normalizeAddress(payload.from);
@@ -192,6 +197,28 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			provider: record.provider,
 			transport: record.transport,
 			providerMessageId: ts,
+		});
+	}
+
+	private logReceipt(payload: PhoneInboundPayload): void {
+		const record = this.upsertChannel(payload);
+		const ts = payload.timestamp || new Date().toISOString();
+		this.logToFile({
+			date: toIsoDate(ts),
+			ts,
+			channel: `phone:${record.displayName}`,
+			channelId: record.channelId,
+			user: "provider",
+			userName: payload.provider,
+			displayName: `${payload.provider} receipt`,
+			text: payload.text,
+			attachments: [],
+			isBot: true,
+			provider: payload.provider,
+			transport: record.transport,
+			providerMessageId: payload.messageId,
+			direction: payload.direction,
+			status: payload.status,
 		});
 	}
 

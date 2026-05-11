@@ -9,6 +9,8 @@
 
 This is explicitly a two-way conversational surface, not cold outbound broadcast infrastructure. Loop group-chat and iMessage-to-SMS fallback behavior still requires sandbox QA before customer use.
 
+2026-05-11 follow-up: phone receipt/status payloads with `direction=outbound` are logged but do not enter the agent event loop. This defends against Loop delivery callbacks echoing Zip's own outbound iMessages back as fresh inbound user messages.
+
 ## Status: Self-Hosted Runtime Is Real
 
 ### Native Terminal PTY — Shipped
