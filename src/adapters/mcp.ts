@@ -16,7 +16,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
 import * as log from "../log.js";
-import { appendAwarenessLine } from "../presence.js";
+import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
 import { collectChannelsFromLog, formatChannelTable } from "../tools/list-channels.js";
 import { resolveAdapter } from "../tools/send-message-to-channel.js";
