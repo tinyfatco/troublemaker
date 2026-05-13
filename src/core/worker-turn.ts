@@ -77,8 +77,10 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	kimi: "accounts/fireworks/models/kimi-k2p5",
 	"kimi-k2p5": "accounts/fireworks/models/kimi-k2p5",
 	glm: "accounts/fireworks/models/glm-5p1",
+	glm5: "accounts/fireworks/models/glm-5p1",
 	"glm-5": "accounts/fireworks/models/glm-5",
 	"glm-5p1": "accounts/fireworks/models/glm-5p1",
+	"glm-5.1": "accounts/fireworks/models/glm-5p1",
 };
 
 const ANTHROPIC_ALIAS_TO_MODEL_ID: Record<string, string> = {

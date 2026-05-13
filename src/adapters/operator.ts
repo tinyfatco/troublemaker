@@ -48,6 +48,7 @@ import type {
 	PlatformAdapter,
 	UserInfo,
 } from "./types.js";
+import { findModel } from "../model-config.js";
 
 export const OPERATOR_CHANNEL_ID = "operator";
 const OPERATOR_CHANNEL_LABEL = "operator:control";
@@ -56,10 +57,10 @@ const OPERATOR_USER = "operator";
 /**
  * Flat simple targets — edited as single JSON keys in `settings.json`.
  * (Verbosity and spontaneity go through dedicated branches below because
- * they have nested shapes or need a live reschedule. thinking_level also
- * gets its own branch for validation.)
+ * they have nested shapes or need a live reschedule. model and
+ * thinking_level also get dedicated branches for validation/canonical keys.)
  */
-const SIMPLE_SETTINGS_TARGETS = new Set(["model"]);
+const SIMPLE_SETTINGS_TARGETS = new Set<string>();
 
 /** Accepted thinking_level values. Matches agent.ts resolveThinkingLevel. */
 const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -454,6 +455,9 @@ Replies to the operator happen through whatever channel you were already using w
 		if (target === "thinking_level") {
 			return this.configureThinkingLevel(originalTarget, body.value, res);
 		}
+		if (target === "model") {
+			return this.configureModel(originalTarget, body.value, res);
+		}
 		if (SIMPLE_SETTINGS_TARGETS.has(target)) {
 			return this.configureSimpleSetting(originalTarget, target, body.value, res);
 		}
@@ -534,6 +538,59 @@ Replies to the operator happen through whatever channel you were already using w
 			new_value: value,
 			applied_at: nowIso(),
 			note: "Settings changes take effect on next wake.",
+		});
+	}
+
+	private configureModel(
+		originalTarget: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		if (typeof value !== "string" || !value.trim()) {
+			return sendError(res, 400, "invalid_value", "model must be a non-empty string");
+		}
+
+		const match = findModel(value, this.workingDir);
+		if (!match) {
+			return sendError(
+				res,
+				400,
+				"model_not_found",
+				`Model not found: ${value}. Use /model list to see available models.`,
+			);
+		}
+
+		const settings = this.loadSettingsRaw();
+		if (settings instanceof Response) return sendError(res, 500, "settings_read_failed");
+
+		const previousValue = settings.defaultProvider && settings.defaultModel
+			? `${String(settings.defaultProvider)}/${String(settings.defaultModel)}`
+			: settings.model ?? null;
+
+		settings.defaultProvider = match.provider;
+		settings.defaultModel = match.id;
+		delete settings.model;
+
+		if (!this.saveSettingsRaw(settings)) {
+			return sendError(res, 500, "settings_write_failed");
+		}
+
+		const newValue = `${match.provider}/${match.id}`;
+		this.writeAwareness(
+			`[operator configured ${originalTarget} = ${JSON.stringify(newValue)}] (previously ${JSON.stringify(previousValue)})`,
+		);
+		this.triggerRun(
+			`The operator just changed your \`${originalTarget}\` to \`${newValue}\`. This takes effect on your next wake.`,
+		);
+
+		sendJson(res, 200, {
+			edited: true,
+			target: originalTarget,
+			tier: "container",
+			previous_value: previousValue,
+			new_value: newValue,
+			applied_at: nowIso(),
+			note: "Takes effect on next wake.",
 		});
 	}
 
