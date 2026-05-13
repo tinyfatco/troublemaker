@@ -227,6 +227,7 @@ function getApiKey(host: WorkerTurnHost, provider: string): string | undefined {
 	if (normalized === "anthropic") return host.env("ANTHROPIC_API_KEY");
 	if (normalized === "fireworks") return host.env("FIREWORKS_API_KEY");
 	if (normalized === "openai") return host.env("OPENAI_API_KEY");
+	if (normalized === "openai-codex") return host.env("OPENAI_CODEX_API_KEY") || host.env("OPENAI_API_KEY");
 	return undefined;
 }
 
