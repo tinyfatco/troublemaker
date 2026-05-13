@@ -194,7 +194,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     }
 
     return (
-      <div className="awareness-entry user-entry">
+      <div className={`awareness-entry user-entry ${entry.channel === 'web' ? 'web-user-entry' : ''}`}>
         <div className="awareness-meta">
           {entry.timestamp && <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>}
           {entry.channel && <ChannelBadge channel={entry.channel} />}
@@ -236,7 +236,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     }
 
     return (
-      <div className="awareness-entry assistant-entry">
+      <div className={`awareness-entry assistant-entry ${entry.isStreaming ? 'streaming' : ''}`}>
         {!entry.isStreaming && entry.timestamp && (
           <div className="awareness-meta">
             <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>

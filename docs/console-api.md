@@ -49,3 +49,18 @@ This first slice standardizes the API boundary without yet moving state out of
 containers. Crawdad CF initially proxies file, awareness, and message operations
 through the existing container gateway. Later Worker/DO-backed awareness and
 status reads can replace that proxy layer without changing the UI contract.
+
+## Chat And Event Semantics
+
+`POST /api/v2/agents/:id/messages` returns an SSE stream for the active turn.
+Clients should treat that stream as the low-latency rendering path for the
+message they just sent, then dedupe against durable awareness entries when the
+same turn appears in `/events` or `/events/stream`.
+
+`GET /api/v2/agents/:id/events/stream` emits only new durable awareness lines.
+Each SSE message should include an `id` when the backing awareness line has an
+`id` or timestamp, allowing browsers to provide `Last-Event-ID` on reconnect.
+Clients still need duplicate filtering by parsed awareness entry id.
+
+The durable event stream remains the source of truth. Optimistic chat entries
+are UI affordances, not persistent state.

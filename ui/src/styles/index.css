@@ -267,6 +267,7 @@ html, body, #root {
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
 }
 
 .awareness-pane-header {
@@ -285,7 +286,7 @@ html, body, #root {
 .awareness-pane-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 0.5rem 0;
+  padding: 0.6rem 0.7rem;
 }
 
 .awareness-pane-empty {
@@ -301,8 +302,63 @@ html, body, #root {
 .awareness-pane-stream {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.6rem;
 }
+
+/* Compact connection/run state. */
+.status-strip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 30px;
+  padding: 0 0.7rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  flex-shrink: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--warning);
+}
+
+.status-dot.connected { background: var(--success); }
+.status-dot.reconnecting { animation: status-pulse 1.2s ease-in-out infinite; }
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.status-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.status-label.muted { opacity: 0.7; }
+
+.status-divider {
+  width: 1px;
+  height: 12px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.chat-status-connecting,
+.chat-status-tool_running,
+.chat-status-streaming {
+  color: var(--accent);
+}
+
+.chat-status-error { color: var(--error); }
 
 /* Scroll-to-bottom button */
 .scroll-to-bottom-btn {
@@ -394,9 +450,31 @@ html, body, #root {
 /* User message background */
 .awareness-entry.user-entry {
   background: var(--accent-muted);
-  border-radius: 2px;
-  padding: 0.25rem 0.5rem;
+  border-radius: 7px;
+  padding: 0.35rem 0.55rem;
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.awareness-entry.web-user-entry {
+  align-self: flex-end;
+  max-width: min(86%, 520px);
+  background: var(--accent);
+  color: white;
+}
+
+.awareness-entry.web-user-entry .awareness-meta,
+.awareness-entry.web-user-entry .awareness-username,
+.awareness-entry.web-user-entry .entry-timestamp {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.awareness-entry.web-user-entry .channel-badge {
+  display: none;
+}
+
+.awareness-entry.web-user-entry .awareness-user-text {
+  color: white;
 }
 
 /* Event triggers — compact indicator with optional description */
@@ -529,11 +607,17 @@ html, body, #root {
   color: var(--text);
   line-height: 1.6;
   font-size: 0.85rem;
-  padding: 0.25rem 0.5rem;
+  padding: 0.45rem 0.6rem;
   background: var(--bg-secondary);
-  border-radius: 2px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.awareness-entry.assistant-entry.streaming {
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .entry-timestamp {

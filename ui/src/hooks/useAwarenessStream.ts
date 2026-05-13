@@ -21,6 +21,8 @@ export interface UseAwarenessStreamReturn {
   isLoadingMore: boolean;
   /** True when there are no more older entries to load */
   allLoaded: boolean;
+  connectionState: 'connecting' | 'connected' | 'reconnecting';
+  lastEventAt: string | null;
   error: string | null;
 }
 
@@ -30,6 +32,8 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   const [backlogDone, setBacklogDone] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [allLoaded, setAllLoaded] = useState(false);
+  const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
+  const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Track the oldest line offset we've loaded (for pagination)
@@ -76,11 +80,13 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
 
   // Connect SSE for live updates (no backlog replay)
   useEffect(() => {
+    setConnectionState('connecting');
     const es = new EventSource(awarenessStreamUrl());
 
     es.onmessage = (event) => {
       const entry = parseContextLine(event.data);
       if (!entry) return;
+      setLastEventAt(new Date().toISOString());
       setEntries((prev) => {
         if (prev.some((e) => e.id === entry.id)) return prev;
         return [...prev, entry];
@@ -88,11 +94,13 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     };
 
     es.onerror = () => {
-      setError('Connection lost — reconnecting...');
+      setConnectionState('reconnecting');
+      setError('Connection lost; reconnecting.');
       setTimeout(() => setError(null), 3000);
     };
 
     es.onopen = () => {
+      setConnectionState('connected');
       setError(null);
     };
 
@@ -123,5 +131,15 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     }
   }, [isLoadingMore, allLoaded]);
 
-  return { entries, isLoading, backlogDone, loadMore, isLoadingMore, allLoaded, error };
+  return {
+    entries,
+    isLoading,
+    backlogDone,
+    loadMore,
+    isLoadingMore,
+    allLoaded,
+    connectionState,
+    lastEventAt,
+    error,
+  };
 }

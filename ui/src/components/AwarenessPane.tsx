@@ -5,17 +5,32 @@
  * Loads recent entries first (tail-first), lazy-loads older entries on scroll-up.
  */
 
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
+import type { AwarenessEntry } from '../types';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
+import { StatusStrip } from './StatusStrip';
 
 export function AwarenessPane() {
-  const { entries, isLoading, backlogDone, loadMore, isLoadingMore, allLoaded, error: streamError } = useAwarenessStream();
   const {
+    entries,
+    isLoading,
+    backlogDone,
+    loadMore,
+    isLoadingMore,
+    allLoaded,
+    connectionState,
+    lastEventAt,
+    error: streamError,
+  } = useAwarenessStream();
+  const {
+    userEntry,
+    streamingEntry,
     isStreaming,
+    status: chatStatus,
     error: chatError,
     sendMessage,
     abortStream,
@@ -27,9 +42,10 @@ export function AwarenessPane() {
 
   const error = chatError || streamError || voice.error;
 
-  // SSE awareness stream is the single source of truth for all messages.
-  // useWebChat only provides isStreaming (to disable input) and error state.
-  // No optimistic rendering — messages appear when the server writes them.
+  const visibleEntries = useMemo(
+    () => mergeOptimisticEntries(entries, userEntry, streamingEntry),
+    [entries, userEntry, streamingEntry],
+  );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -48,7 +64,7 @@ export function AwarenessPane() {
 
   // Scroll to bottom when initial backlog loads
   useEffect(() => {
-    if (backlogDone && entries.length > 0) {
+    if (backlogDone && visibleEntries.length > 0) {
       scrollToBottom('instant');
     }
   }, [backlogDone]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -72,14 +88,14 @@ export function AwarenessPane() {
       el.scrollTop += delta;
     }
     prevScrollHeightRef.current = 0;
-  }, [entries.length, isLoadingMore]);
+  }, [visibleEntries.length, isLoadingMore]);
 
   // Auto-scroll on new entries (only if user hasn't scrolled up)
   useEffect(() => {
     if (!userScrolledRef.current && backlogDone) {
       scrollToBottom('smooth');
     }
-  }, [entries.length, scrollToBottom, backlogDone]);
+  }, [visibleEntries.length, scrollToBottom, backlogDone]);
 
   // Detect user scroll — scroll-up triggers loadMore, scroll-down hides button
   const handleScroll = useCallback(() => {
@@ -103,6 +119,13 @@ export function AwarenessPane() {
 
   return (
     <div className="awareness-pane">
+      <StatusStrip
+        connectionState={connectionState}
+        chatStatus={chatStatus}
+        isLoading={isLoading}
+        isLoadingMore={isLoadingMore}
+        lastEventAt={lastEventAt}
+      />
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
@@ -112,7 +135,7 @@ export function AwarenessPane() {
           <div className="awareness-pane-empty">
             <span>Loading...</span>
           </div>
-        ) : entries.length === 0 ? (
+        ) : visibleEntries.length === 0 ? (
           <div className="awareness-pane-empty">
             <span>Send a message to get started.</span>
           </div>
@@ -124,12 +147,12 @@ export function AwarenessPane() {
                 <span>Loading older messages...</span>
               </div>
             )}
-            {!allLoaded && !isLoadingMore && entries.length > 0 && (
+            {!allLoaded && !isLoadingMore && visibleEntries.length > 0 && (
               <div className="awareness-loading-more awareness-load-trigger">
                 <span>Scroll up for older messages</span>
               </div>
             )}
-            {entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
           </div>
@@ -188,4 +211,30 @@ export function AwarenessPane() {
       />
     </div>
   );
+}
+
+function mergeOptimisticEntries(
+  entries: AwarenessEntry[],
+  userEntry: AwarenessEntry | null,
+  streamingEntry: AwarenessEntry | null,
+): AwarenessEntry[] {
+  const merged = [...entries];
+  const lastUserText = userEntry?.strippedText || '';
+  const hasUser = !!lastUserText && merged
+    .slice(-8)
+    .some((entry) => entry.role === 'user' && entry.strippedText === lastUserText);
+
+  if (userEntry && !hasUser) {
+    merged.push(userEntry);
+  }
+
+  const hasAssistantAfterUser = hasUser && merged
+    .slice(-4)
+    .some((entry) => entry.role === 'assistant' && !entry.isStreaming);
+
+  if (streamingEntry && !hasAssistantAfterUser) {
+    merged.push(streamingEntry);
+  }
+
+  return merged;
 }

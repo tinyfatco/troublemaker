@@ -627,7 +627,8 @@ export class Gateway {
 				const lines = newContent.split("\n").filter(Boolean);
 
 				for (const line of lines) {
-					const event = `data: ${line}\n\n`;
+					const id = extractAwarenessEventId(line);
+					const event = `${id ? `id: ${id}\n` : ""}data: ${line}\n\n`;
 					for (const client of this.awarenessClients) {
 						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
 					}
@@ -917,4 +918,15 @@ function bufferIndexOf(buf: Buffer, search: Buffer, fromIndex: number): number {
 		if (found) return i;
 	}
 	return -1;
+}
+
+function extractAwarenessEventId(line: string): string | null {
+	try {
+		const parsed = JSON.parse(line) as { id?: unknown; timestamp?: unknown };
+		const raw = parsed.id ?? parsed.timestamp;
+		if (typeof raw !== "string" || raw.length === 0) return null;
+		return raw.replace(/[\r\n]/g, "").slice(0, 128);
+	} catch {
+		return null;
+	}
 }

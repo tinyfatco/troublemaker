@@ -17,6 +17,7 @@ export type StreamStatus =
   | 'connecting'
   | 'streaming'
   | 'tool_running'
+  | 'stopping'
   | 'error';
 
 export interface UseWebChatReturn {
@@ -27,6 +28,7 @@ export interface UseWebChatReturn {
   isStreaming: boolean;
   status: StreamStatus;
   error: string | null;
+  startedAt: string | null;
   sendMessage: (text: string) => void;
   abortStream: () => void;
   clearError: () => void;
@@ -38,9 +40,13 @@ export function useWebChat(): UseWebChatReturn {
   const [isStreaming, setIsStreaming] = useState(false);
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [error, setError] = useState<string | null>(null);
+  const [startedAt, setStartedAt] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || abortControllerRef.current) return;
+
     const now = new Date().toISOString();
 
     // Optimistic user entry
@@ -49,10 +55,10 @@ export function useWebChat(): UseWebChatReturn {
       type: 'message',
       timestamp: now,
       role: 'user',
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text: trimmed }],
       channel: 'web',
       userName: 'user',
-      strippedText: text,
+      strippedText: trimmed,
     };
 
     // Empty assistant entry — filled by SSE tokens
@@ -70,6 +76,7 @@ export function useWebChat(): UseWebChatReturn {
     setIsStreaming(true);
     setStatus('connecting');
     setError(null);
+    setStartedAt(now);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -81,7 +88,7 @@ export function useWebChat(): UseWebChatReturn {
         response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: text }),
+          body: JSON.stringify({ message: trimmed }),
           signal: controller.signal,
         });
         if (response.status === 503) {
@@ -127,10 +134,11 @@ export function useWebChat(): UseWebChatReturn {
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        // User cancelled
+        setError(null);
       } else {
         const msg = err instanceof Error ? err.message : 'Unknown error';
         setError(msg);
+        setStatus('error');
         setStreamingEntry((prev) => {
           if (!prev) return null;
           const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
@@ -144,18 +152,21 @@ export function useWebChat(): UseWebChatReturn {
       setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
       setIsStreaming(false);
       setStatus('idle');
+      setStartedAt(null);
       abortControllerRef.current = null;
     }
   }, []);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
+      setStatus('stopping');
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
     setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
     setIsStreaming(false);
     setStatus('idle');
+    setStartedAt(null);
   }, []);
 
   const clearError = useCallback(() => {
@@ -163,7 +174,7 @@ export function useWebChat(): UseWebChatReturn {
     setStatus('idle');
   }, []);
 
-  return { userEntry, streamingEntry, isStreaming, status, error, sendMessage, abortStream, clearError };
+  return { userEntry, streamingEntry, isStreaming, status, error, startedAt, sendMessage, abortStream, clearError };
 }
 
 // ============================================================================
