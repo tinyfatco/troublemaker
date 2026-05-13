@@ -5,7 +5,6 @@ import {
 	AuthStorage,
 	convertToLlm,
 	createExtensionRuntime,
-	formatSkillsForPrompt,
 	loadSkillsFromDir,
 	ModelRegistry,
 	type ResourceLoader,
@@ -16,12 +15,19 @@ import { randomUUID } from "crypto";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
-import type { ChannelInfo, MomContext, UserInfo } from "./adapters/types.js";
-import { MomSettingsManager, type VerbosityLevel } from "./context.js";
+import type { MomContext } from "./adapters/types.js";
+import { MomSettingsManager } from "./context.js";
+import {
+	buildSessionPreamble,
+	buildSystemPrompt,
+	getWorkspaceContext,
+	getWorkspaceSkillsMtime,
+	resolveThinkingLevel,
+} from "./core/prompt.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
-import { resolveOpenAIOverlay } from "./openai-overlay.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -89,129 +95,18 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function readWorkspaceFile(workspaceDir: string, filename: string): string {
-	const filePath = join(workspaceDir, filename);
-	if (existsSync(filePath)) {
-		try {
-			const content = readFileSync(filePath, "utf-8").trim();
-			if (content) return content;
-		} catch (error) {
-			log.logWarning(`Failed to read ${filename}`, `${filePath}: ${error}`);
-		}
-	}
-	return "";
-}
-
-function getRecentDailyMemory(workspaceDir: string): string {
-	const memoryDir = join(workspaceDir, "memory");
-	if (!existsSync(memoryDir)) return "";
-
-	const today = new Date();
-	const yesterday = new Date(today);
-	yesterday.setDate(yesterday.getDate() - 1);
-	const fmt = (d: Date) => d.toISOString().slice(0, 10);
-
-	const parts: string[] = [];
-	for (const date of [fmt(today), fmt(yesterday)]) {
-		const content = readWorkspaceFile(memoryDir, `${date}.md`);
-		if (content) parts.push(`### ${date}\n${content}`);
-	}
-	return parts.join("\n\n");
-}
-
-/** Check if this is a fresh workspace in onboarding mode. */
-function hasBootstrap(workspaceDir: string): boolean {
-	return existsSync(join(workspaceDir, "BOOTSTRAP.md"));
-}
-
-/**
- * Build the structured workspace context for the session preamble.
- * In onboarding mode (BOOTSTRAP.md exists), returns just the bootstrap content.
- * In normal mode, returns all workspace files.
- */
-/**
- * FAT-275 — read thinking_level from settings.json.
- *
- * Returns "off" when the setting is absent or unreadable, preserving the
- * pre-FAT-275 default. Accepts the value as a loose string and lets the
- * Agent state enforce its own union — upstream pi-ai accepts
- * minimal|low|medium|high|xhigh, and the troublemaker runner has
- * historically passed "off" without complaint.
- */
-function resolveThinkingLevel(workspaceDir: string): any {
-	try {
-		const settingsPath = join(workspaceDir, "settings.json");
-		if (!existsSync(settingsPath)) return "off";
-		const settings = JSON.parse(readFileSync(settingsPath, "utf-8")) as {
-			thinking_level?: string;
-			defaultThinkingLevel?: string;
-		};
-		// Canonical key is thinking_level (written by Agency MCP configure).
-		// Fall back to defaultThinkingLevel (written by MomSettingsManager).
-		const level = settings.thinking_level ?? settings.defaultThinkingLevel;
-		if (!level) return "off";
-		const allowed = ["off", "minimal", "low", "medium", "high", "xhigh"];
-		if (allowed.includes(level)) return level;
-		return "off";
-	} catch {
-		return "off";
-	}
-}
-
-function getWorkspaceContext(workspaceDir: string): string {
-	if (hasBootstrap(workspaceDir)) {
-		const bootstrap = readWorkspaceFile(workspaceDir, "BOOTSTRAP.md");
-		return `Bootstrap:\n${bootstrap}`;
-	}
-
-	const sections: string[] = [];
-
-	const agents = readWorkspaceFile(workspaceDir, "AGENTS.md");
-	if (agents) sections.push(`Agents:\n${agents}`);
-
-	const identity = readWorkspaceFile(workspaceDir, "IDENTITY.md");
-	if (identity) sections.push(`Identity:\n${identity}`);
-
-	const soul = readWorkspaceFile(workspaceDir, "SOUL.md");
-	if (soul) sections.push(`Soul:\n${soul}`);
-
-	const user = readWorkspaceFile(workspaceDir, "USER.md");
-	if (user) sections.push(`User Profile:\n${user}`);
-
-	const memory = readWorkspaceFile(workspaceDir, "MEMORY.md");
-	if (memory) sections.push(`Memory:\n${memory}`);
-	else sections.push("Memory:\n(no working memory yet)");
-
-	// FAT-271 — operator-assigned brief. Re-read every turn so a fresh
-	// assignment is picked up without rebuilding the runner.
-	const brief = readWorkspaceFile(workspaceDir, "BRIEF.md");
-	if (brief) sections.push(`Current Brief (assigned by operator):\n${brief}`);
-
-	const recent = getRecentDailyMemory(workspaceDir);
-	if (recent) sections.push(`Recent:\n${recent}`);
-
-	return sections.join("\n\n");
-}
-
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
 const skillsCache = new Map<string, { skills: Skill[]; workspaceMtime: number }>();
-
-function getWorkspaceSkillsMtime(dir: string): number {
-	try {
-		return statSync(dir).mtimeMs;
-	} catch {
-		return 0;
-	}
-}
 
 function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
 	const hostWorkspacePath = join(awarenessDir, "..");
 	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
+	const workspaceStore = new FilesystemWorkspaceStore(hostWorkspacePath);
 
 	// Check cache — invalidate only if workspace skills dir mtime changed
 	const cached = skillsCache.get(awarenessDir);
 	if (cached) {
-		const currentMtime = getWorkspaceSkillsMtime(workspaceSkillsDir);
+		const currentMtime = getWorkspaceSkillsMtime(workspaceStore);
 		if (currentMtime === cached.workspaceMtime) {
 			return cached.skills;
 		}
@@ -243,123 +138,8 @@ function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsD
 	}
 
 	const skills = Array.from(skillMap.values());
-	skillsCache.set(awarenessDir, { skills, workspaceMtime: getWorkspaceSkillsMtime(workspaceSkillsDir) });
+	skillsCache.set(awarenessDir, { skills, workspaceMtime: getWorkspaceSkillsMtime(workspaceStore) });
 	return skills;
-}
-
-/**
- * Build the static system prompt. This must be byte-identical across turns
- * so that Anthropic's prompt caching can cache-hit on the system prefix.
- * All dynamic state (memory, channels, users, skills, current channel)
- * goes in buildSessionPreamble() instead.
- */
-function buildSystemPrompt(
-	workspacePath: string,
-	sandboxConfig: SandboxConfig,
-	formatInstructions: string,
-	model?: { id?: string; provider?: string },
-): string {
-	const isDocker = sandboxConfig.type === "docker";
-	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-	const envDescription = isDocker
-		? `Docker container (Alpine Linux). Working directory: /. Install tools with apk add.`
-		: `Host machine. Working directory: ${process.cwd()}. Be careful with system modifications.`;
-
-	const overlay = resolveOpenAIOverlay(model);
-	const overlaySuffix = overlay ? `\n\n${overlay}` : "";
-
-	return `## Context
-- For current date/time, use: date
-- For older history beyond your context, search log.jsonl with jq/grep.
-- Each message includes a <session_context> block with current channels, users, skills, memory, and which channel you're attending. Always use the latest one.
-
-${formatInstructions}
-
-## Attention Model
-You have unified awareness across all channels (Slack, Telegram, Email, Web, Heartbeat, Operator). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] or [heartbeat:heartbeat] or [operator:control] [user]: text
-
-The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack) when you want to follow up or complete unfinished work.
-
-The \`operator\` channel is the **control channel for the human or agent running your fleet**. Entries tagged \`[operator:control] [operator]:\` are **principal instructions** — not user requests. Weight them accordingly:
-- \`[operator message] ...\` is a direct instruction from your principal. Read it and act.
-- \`[operator assigned brief: ...]\` means a new \`BRIEF.md\` has been written to your workspace root. Read it and begin the work.
-- \`[operator configured ...]\` means one of your settings changed. Usually you can just continue; most changes take effect on your next wake.
-
-The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, email) via \`send_message_to_channel\`.
-
-When a cross-channel message arrives mid-run, use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore).
-
-## Environment
-${envDescription}
-
-## Workspace
-${workspacePath}/
-├── awareness/context.jsonl    # Conversation context
-├── awareness/scratch/         # Working directory
-├── log.jsonl                  # Unified activity log (JSONL: date, channel, channelId, user, userName, text, isBot)
-├── MEMORY.md                  # Persistent memory (unified, not per-channel)
-├── BRIEF.md                   # Current operator-assigned brief (if any) — read on every wake
-├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
-├── settings.json              # Model & preferences (change model here or /model <name>)
-├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)
-├── events/                    # Scheduled wake events (JSON files)
-└── attachments/               # Files shared by users
-
-## Events
-JSON files in \`${workspacePath}/events/\`. Three types:
-- \`{"type": "immediate", "text": "..."}\` — triggers immediately, auto-deletes
-- \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
-- \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
-
-Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack), use \`send_message_to_channel\` during execution.
-
-Use unique filenames (include timestamp suffix). Max 5 queued events.
-Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
-For periodic events with nothing to report, respond with just \`[SILENT]\`.
-Debounce immediate events — batch multiple signals into one rather than creating many.
-Timezone: ${tz}. Assume this when users don't specify.
-
-## Tools
-bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
-Use \`ping\` with channel ID to message a different channel. Channel ID formats: Telegram=numeric, Slack=C/D/G prefix, Email=email-{address}.
-${overlaySuffix}`;
-}
-
-/**
- * Build the dynamic session preamble injected into each user message.
- * Contains state that changes between turns: channels, users, skills, workspace context, attention.
- */
-function buildSessionPreamble(
-	workspaceContext: string,
-	channels: ChannelInfo[],
-	users: UserInfo[],
-	skills: Skill[],
-	displayChannelId: string,
-	displayChannelName?: string,
-	verbosity?: VerbosityLevel,
-): string {
-	const channelMappings =
-		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
-	const userMappings =
-		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
-	const skillsSection = skills.length > 0 ? formatSkillsForPrompt(skills) : "(none)";
-	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
-
-	const verbosityNote = verbosity === "messages-only"
-		? "\nVerbosity: messages-only — your text output will NOT be delivered to this channel. Use send_message_to_channel for ALL communication."
-		: "";
-
-	return `<session_context>
-Attending: ${attending}${verbosityNote}
-Channels:
-${channelMappings}
-Users:
-${userMappings}
-Skills:
-${skillsSection}
-${workspaceContext}
-</session_context>`;
 }
 
 function truncate(text: string, maxLen: number): string {
@@ -467,6 +247,7 @@ function createRunner(
 	// Create session manager and settings manager
 	const contextFile = join(awarenessDir, "context.jsonl");
 	const workspaceDir = join(awarenessDir, "..");
+	const workspaceStore = new FilesystemWorkspaceStore(workspaceDir);
 	const settingsManager = new MomSettingsManager(workspaceDir);
 
 	// Create AuthStorage and ModelRegistry
@@ -481,7 +262,7 @@ function createRunner(
 
 	// FAT-275 — read thinking_level from settings.json. Defaults to "off" for
 	// backwards compatibility. Accepts off|low|medium|high.
-	const initialThinkingLevel = resolveThinkingLevel(workspaceDir);
+	const initialThinkingLevel = resolveThinkingLevel(workspaceStore);
 
 	// Create agent
 	const agent = new Agent({
@@ -804,7 +585,7 @@ function createRunner(
 			}
 
 			const tMem = performance.now();
-			const workspaceContext = getWorkspaceContext(join(awarenessDir, ".."));
+			const workspaceContext = getWorkspaceContext(workspaceStore);
 			log.logInfo(`[perf] getWorkspaceContext: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();

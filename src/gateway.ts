@@ -1,8 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import type { Socket } from "net";
-import { existsSync, readFileSync, readdirSync, statSync, openSync, readSync, closeSync, writeFileSync, mkdirSync } from "fs";
-import { join, extname, resolve, normalize, dirname } from "path";
+import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
+import { join, extname, resolve, normalize } from "path";
+import { ConsoleError, ConsoleService } from "./console/service.js";
 import * as log from "./log.js";
+import { FilesystemAwarenessStore } from "./storage/node/filesystem-awareness.js";
+import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 
 /**
  * Gateway — single HTTP server with path-based routing.
@@ -42,6 +45,8 @@ export class Gateway {
 	private server: Server | null = null;
 	private uiDir: string | null = null;
 	private workspaceDir: string | null = null;
+	private consoleService: ConsoleService | null = null;
+	private awarenessStore: FilesystemAwarenessStore | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
 	private awarenessWatcher: ReturnType<typeof setInterval> | null = null;
@@ -54,6 +59,8 @@ export class Gateway {
 		}
 		if (options.workspaceDir) {
 			this.workspaceDir = resolve(options.workspaceDir);
+			this.consoleService = new ConsoleService(new FilesystemWorkspaceStore(this.workspaceDir));
+			this.awarenessStore = new FilesystemAwarenessStore(this.workspaceDir);
 		}
 	}
 
@@ -95,99 +102,63 @@ export class Gateway {
 		}
 	}
 
+	private requireConsoleService(res: ServerResponse): ConsoleService | null {
+		if (!this.consoleService) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return null;
+		}
+		return this.consoleService;
+	}
+
+	private sendConsoleError(res: ServerResponse, err: unknown, fallbackStatus = 500): void {
+		if (err instanceof ConsoleError) {
+			res.writeHead(err.status, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: err.message }));
+			return;
+		}
+		const message = err instanceof Error ? err.message : String(err);
+		res.writeHead(fallbackStatus, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({ error: message || "Request failed" }));
+	}
+
 	/** Handle GET /api/config — workspace configuration for the web UI */
 	private handleConfigApi(_req: IncomingMessage, res: ServerResponse): void {
-		const config = this.readWorkspaceConfig();
-		if (config) {
+		const service = this.requireConsoleService(res);
+		if (!service) return;
+		try {
+			const config = service.getConfig();
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(config));
 			return;
+		} catch (err) {
+			this.sendConsoleError(res, err, 503);
 		}
-
-		// Workspace not ready — return 503 so client retries
-		res.writeHead(503, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({ error: "Workspace not ready" }));
-	}
-
-	private readWorkspaceConfig(): { display_mode: "terminal" | "desktop"; agent_name: string } | null {
-		if (this.workspaceDir) {
-			try {
-				const settingsPath = resolve(this.workspaceDir, "settings.json");
-				const raw = readFileSync(settingsPath, "utf-8");
-				const settings = JSON.parse(raw);
-				return {
-					display_mode: settings.display_mode === "desktop" ? "desktop" : "terminal",
-					agent_name: settings.name || "agent",
-				};
-			} catch {
-				// settings.json not readable yet (R2 not mounted) — tell client to retry
-			}
-		}
-
-		return null;
 	}
 
 	private handleConsoleSession(_req: IncomingMessage, res: ServerResponse): void {
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({
-			mode: "standalone",
-			agent_id: "current",
-			capabilities: {
-				awareness: true,
-				files: true,
-				messages: true,
-				terminal: true,
-				desktop: false,
-				voice: false,
-				fleet: false,
-			},
-		}));
+		res.end(JSON.stringify(service.getSession()));
 	}
 
 	private handleConsoleAgents(_req: IncomingMessage, res: ServerResponse): void {
-		const config = this.readWorkspaceConfig();
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({
-			scope: "active",
-			count: 1,
-			agents: [{
-				id: "current",
-				name: config?.agent_name ?? "agent",
-				enabled: true,
-				archived_at: null,
-				runtime: "troublemaker",
-				provider: "standalone",
-				state: "active",
-				last_activity_at: null,
-				current_task: null,
-			}],
-		}));
+		res.end(JSON.stringify(service.getAgents()));
 	}
 
 	private handleConsoleStatus(_req: IncomingMessage, res: ServerResponse): void {
-		const config = this.readWorkspaceConfig();
-		if (!config) {
-			res.writeHead(503, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Workspace not ready" }));
-			return;
+		const service = this.requireConsoleService(res);
+		if (!service) return;
+		try {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(service.getStatus()));
+		} catch (err) {
+			this.sendConsoleError(res, err, 503);
 		}
-
-		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({
-			agent_id: "current",
-			mode: "standalone",
-			runtime: "troublemaker",
-			workspace_ready: true,
-			...config,
-			capabilities: {
-				awareness: true,
-				files: true,
-				messages: true,
-				terminal: true,
-				desktop: config.display_mode === "desktop",
-				voice: false,
-			},
-		}));
 	}
 
 	private isConsoleAgentPath(urlPath: string, suffix: string): boolean {
@@ -196,123 +167,39 @@ export class Gateway {
 
 	/** Handle GET /api/files — directory listing */
 	private handleFilesApi(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
-			res.writeHead(500, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "No workspace configured" }));
-			return;
-		}
-
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 		const requestedPath = url.searchParams.get("path") || "";
 
-		// Resolve and validate path is within workspace
-		const fullPath = resolve(this.workspaceDir, requestedPath);
-		if (!fullPath.startsWith(this.workspaceDir)) {
-			res.writeHead(403, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Path outside workspace" }));
-			return;
-		}
-
 		try {
-			const stat = statSync(fullPath);
-			if (!stat.isDirectory()) {
-				res.writeHead(400, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Not a directory" }));
-				return;
-			}
-
-			const entries = readdirSync(fullPath, { withFileTypes: true });
-			const files = entries.map((entry) => {
-				const entryPath = join(requestedPath, entry.name);
-				const entryFullPath = join(fullPath, entry.name);
-				const isDir = entry.isDirectory();
-				const result: Record<string, unknown> = {
-					name: entry.name,
-					path: entryPath,
-					type: isDir ? "directory" : "file",
-				};
-				if (!isDir) {
-					try {
-						const s = statSync(entryFullPath);
-						result.size = s.size;
-						result.modified = s.mtime.toISOString();
-					} catch {
-						// Skip stat errors
-					}
-				}
-				return result;
-			});
-
-			// Sort: directories first, then alphabetical
-			files.sort((a, b) => {
-				if (a.type !== b.type) return a.type === "directory" ? -1 : 1;
-				return (a.name as string).localeCompare(b.name as string);
-			});
-
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ files }));
-		} catch {
-			res.writeHead(404, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Directory not found" }));
+			res.end(JSON.stringify(service.listFiles(requestedPath)));
+		} catch (err) {
+			this.sendConsoleError(res, err, 404);
 		}
 	}
 
 	/** Handle GET /api/file — read file contents */
 	private handleFileApi(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
-			res.writeHead(500, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "No workspace configured" }));
-			return;
-		}
-
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 		const requestedPath = url.searchParams.get("path") || "";
 
-		if (!requestedPath) {
-			res.writeHead(400, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Missing path parameter" }));
-			return;
-		}
-
-		const fullPath = resolve(this.workspaceDir, requestedPath);
-		if (!fullPath.startsWith(this.workspaceDir)) {
-			res.writeHead(403, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "Path outside workspace" }));
-			return;
-		}
-
 		try {
-			const stat = statSync(fullPath);
-			if (stat.isDirectory()) {
-				res.writeHead(400, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Path is a directory, use /api/files" }));
-				return;
-			}
-
-			// Don't serve huge files
-			if (stat.size > 5 * 1024 * 1024) {
-				res.writeHead(413, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "File too large (>5MB)" }));
-				return;
-			}
-
-			const content = readFileSync(fullPath, "utf-8");
+			const content = service.readFile(requestedPath);
 			res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
 			res.end(content);
-		} catch {
-			res.writeHead(404, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "File not found" }));
+		} catch (err) {
+			this.sendConsoleError(res, err, 404);
 		}
 	}
 
 	/** Handle POST /api/file/save — write file contents */
 	private handleFileSaveApi(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
-			res.writeHead(500, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "No workspace configured" }));
-			return;
-		}
-
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 		const chunks: Buffer[] = [];
 		let totalSize = 0;
 		const MAX_SIZE = 5 * 1024 * 1024;
@@ -340,43 +227,22 @@ export class Gateway {
 				return;
 			}
 
-			if (!payload.path || typeof payload.content !== "string") {
-				res.writeHead(400, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Missing path or content" }));
-				return;
-			}
-
-			const fullPath = resolve(this.workspaceDir!, payload.path);
-			if (!fullPath.startsWith(this.workspaceDir!)) {
-				res.writeHead(403, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Path outside workspace" }));
-				return;
-			}
-
 			try {
-				const dir = dirname(fullPath);
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
-				}
-				writeFileSync(fullPath, payload.content, "utf-8");
-				log.logInfo(`[save] wrote ${payload.path} (${payload.content.length} bytes)`);
+				service.writeFile(payload.path || "", payload.content as string);
+				log.logInfo(`[save] wrote ${payload.path} (${payload.content?.length ?? 0} bytes)`);
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ ok: true }));
 			} catch (err) {
 				log.logWarning("[save] write error", err instanceof Error ? err.message : String(err));
-				res.writeHead(500, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Failed to write file" }));
+				this.sendConsoleError(res, err);
 			}
 		});
 	}
 
 	/** Handle POST /api/upload — multipart file upload to workspace */
 	private handleUploadApi(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
-			res.writeHead(500, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ error: "No workspace configured" }));
-			return;
-		}
+		const service = this.requireConsoleService(res);
+		if (!service) return;
 
 		const contentType = req.headers["content-type"] || "";
 		const boundaryMatch = contentType.match(/boundary=(.+)/);
@@ -420,26 +286,7 @@ export class Gateway {
 					}
 					if (!file.filename) continue;
 
-					// Sanitize filename — strip path separators, collapse dots
-					const safeName = file.filename.replace(/[/\\]/g, "_").replace(/\.{2,}/g, ".");
-					if (!safeName) continue;
-
-					const relPath = join(targetDir, safeName);
-					const fullPath = resolve(this.workspaceDir!, relPath);
-
-					// Path traversal check
-					if (!fullPath.startsWith(this.workspaceDir!)) {
-						log.logWarning("[upload] path traversal attempt blocked", relPath);
-						continue;
-					}
-
-					// Ensure directory exists
-					const dir = dirname(fullPath);
-					if (!existsSync(dir)) {
-						mkdirSync(dir, { recursive: true });
-					}
-
-					writeFileSync(fullPath, file.data);
+					const relPath = service.uploadFile(targetDir, file.filename, file.data);
 					uploaded.push(relPath);
 					log.logInfo(`[upload] wrote ${relPath} (${file.data.length} bytes)`);
 				}
@@ -448,8 +295,7 @@ export class Gateway {
 				res.end(JSON.stringify({ uploaded }));
 			} catch (err) {
 				log.logWarning("[upload] parse error", err instanceof Error ? err.message : String(err));
-				res.writeHead(400, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ error: "Failed to parse upload" }));
+				this.sendConsoleError(res, err, 400);
 			}
 		});
 	}
@@ -470,85 +316,20 @@ export class Gateway {
 	 * and use file size as a sentinel for whether more history exists.
 	 */
 	private handleAwarenessBacklog(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.workspaceDir) {
+		if (!this.awarenessStore) {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "No workspace configured" }));
 			return;
 		}
 
-		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 		const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10) || 50, 200);
 		const before = parseInt(url.searchParams.get("before") || "0", 10) || 0;
 
-		let fileSize: number;
 		try {
-			fileSize = statSync(contextFile).size;
-		} catch {
+			const backlog = this.awarenessStore.readBacklog(limit, before);
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
-			return;
-		}
-
-		if (fileSize === 0) {
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
-			return;
-		}
-
-		// Hot path (before=0): tail-first chunked read from the end of the file.
-		// Avoids the full-file readFileSync that was triggering whole-file R2 GETs
-		// through the s3fs/gocryptfs FUSE stack (FAT-348/350/351/349).
-		if (before <= 0) {
-			const CHUNK = 64 * 1024;
-			const fd = openSync(contextFile, "r");
-			try {
-				let position = fileSize;
-				let buffer = Buffer.alloc(0);
-				let lineCount = 0;
-
-				while (position > 0 && lineCount <= limit) {
-					const readSize = Math.min(CHUNK, position);
-					position -= readSize;
-					const chunk = Buffer.alloc(readSize);
-					readSync(fd, chunk, 0, readSize, position);
-					buffer = Buffer.concat([chunk, buffer]);
-					lineCount = 0;
-					for (let i = 0; i < buffer.length; i++) {
-						if (buffer[i] === 0x0a /* \n */) lineCount++;
-					}
-				}
-
-				const text = buffer.toString("utf-8");
-				const allLines = text.split("\n").filter(Boolean);
-				const slice = allLines.slice(-limit);
-				// offset is approximate when we didn't read the whole file — use
-				// "more history exists upstream" sentinel: if we stopped before
-				// reaching position=0, there's older data, so report a non-zero offset.
-				// The exact value isn't used by the client beyond ===0 vs >0.
-				const offset = position > 0 ? Math.max(1, allLines.length - slice.length) : Math.max(0, allLines.length - slice.length);
-
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ lines: slice, total: allLines.length, offset }));
-			} finally {
-				closeSync(fd);
-			}
-			return;
-		}
-
-		// Cold path (before>0): scroll-up pagination. Falls back to whole-file
-		// read since we don't have a byte-offset index for arbitrary line numbers.
-		// Hit much less frequently than before=0, so the 1× full read here is OK
-		// in practice (and a full byte-offset index would be a separate ticket).
-		try {
-			const content = readFileSync(contextFile, "utf-8");
-			const allLines = content.split("\n").filter(Boolean);
-			const total = allLines.length;
-			const endIndex = Math.min(before, total);
-			const startIndex = Math.max(0, endIndex - limit);
-			const slice = allLines.slice(startIndex, endIndex);
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ lines: slice, total, offset: startIndex }));
+			res.end(JSON.stringify(backlog));
 		} catch {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));

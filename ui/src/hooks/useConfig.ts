@@ -10,9 +10,14 @@ import { fetchWorkspaceStatus } from '../console-api';
 export interface WorkspaceConfig {
   display_mode: 'terminal' | 'desktop';
   agent_name: string;
+  capabilities: Record<string, boolean>;
 }
 
-const DEFAULT_CONFIG: WorkspaceConfig = { display_mode: 'terminal', agent_name: 'agent' };
+const DEFAULT_CONFIG: WorkspaceConfig = {
+  display_mode: 'terminal',
+  agent_name: 'agent',
+  capabilities: { terminal: true, desktop: false, awareness: true, files: true, messages: true },
+};
 
 export function useConfig() {
   const [config, setConfig] = useState<WorkspaceConfig | null>(null);
@@ -32,6 +37,7 @@ export function useConfig() {
             setConfig({
               display_mode: data.display_mode === 'desktop' ? 'desktop' : 'terminal',
               agent_name: data.agent_name || 'agent',
+              capabilities: data.capabilities || DEFAULT_CONFIG.capabilities,
             });
             setIsLoading(false);
           }

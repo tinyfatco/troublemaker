@@ -22,7 +22,19 @@ import { UploadZone } from './UploadZone';
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
   const [displayOverride, setDisplayOverride] = useState<'terminal' | 'desktop' | null>(null);
-  const displayMode = displayOverride ?? config.display_mode;
+  const capabilities = config.capabilities || {};
+  const terminalAvailable = capabilities.terminal !== false;
+  const desktopAvailable = capabilities.desktop === true;
+  const hasInteractivePanel = terminalAvailable || desktopAvailable;
+  const requestedDisplayMode = displayOverride ?? config.display_mode;
+  const displayMode =
+    requestedDisplayMode === 'desktop' && desktopAvailable
+      ? 'desktop'
+      : terminalAvailable
+        ? 'terminal'
+        : desktopAvailable
+          ? 'desktop'
+          : null;
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
@@ -122,11 +134,13 @@ export function WorkspaceLayout() {
   }, []);
 
   const toggleDisplayMode = () => {
+    if (!terminalAvailable || !desktopAvailable) return;
     const next = displayMode === 'terminal' ? 'desktop' : 'terminal';
     setDisplayOverride(next);
   };
 
   const toggleCenter = () => {
+    if (!hasInteractivePanel) return;
     const next = !centerCollapsed;
     setCenterCollapsed(next);
     // If hiding center and awareness is also hidden, show awareness
@@ -148,6 +162,13 @@ export function WorkspaceLayout() {
         </div>
       );
     }
+    if (!displayMode) {
+      return (
+        <div className="desktop-pane">
+          <div className="desktop-placeholder">Interactive session unavailable</div>
+        </div>
+      );
+    }
     if (displayMode === 'desktop') {
       return <DesktopPane />;
     }
@@ -166,35 +187,39 @@ export function WorkspaceLayout() {
           {/* agent name removed */}
         </div>
         <div className="header-right">
-          <button
-            className={`header-btn ${centerCollapsed ? 'active' : ''}`}
-            onClick={toggleCenter}
-            title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
-          >
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-              {!centerCollapsed && (
-                <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
+          {hasInteractivePanel && (
+            <button
+              className={`header-btn ${centerCollapsed ? 'active' : ''}`}
+              onClick={toggleCenter}
+              title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                {!centerCollapsed && (
+                  <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
+                )}
+              </svg>
+            </button>
+          )}
+          {terminalAvailable && desktopAvailable && (
+            <button
+              className={`header-btn display-toggle ${displayMode === 'desktop' ? 'active' : ''}`}
+              onClick={toggleDisplayMode}
+              title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
+            >
+              {displayMode === 'terminal' ? (
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
+                  <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                  <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
               )}
-            </svg>
-          </button>
-          <button
-            className={`header-btn display-toggle ${displayMode === 'desktop' ? 'active' : ''}`}
-            onClick={toggleDisplayMode}
-            title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
-          >
-            {displayMode === 'terminal' ? (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
-                <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
-            )}
-          </button>
+            </button>
+          )}
           <button className="header-btn" onClick={toggleAwareness} title="Toggle awareness">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
@@ -228,7 +253,7 @@ export function WorkspaceLayout() {
         )}
 
         {/* Center: Terminal / Desktop / File Viewer */}
-        {!centerCollapsed && (
+        {!centerCollapsed && hasInteractivePanel && (
           <div className="center-panel">
             <CenterPanel />
           </div>
@@ -237,8 +262,8 @@ export function WorkspaceLayout() {
         {/* Right: Awareness Stream */}
         {!awarenessCollapsed && (
           <>
-            {!centerCollapsed && <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />}
-            <div className="awareness-sidebar" style={centerCollapsed ? { flex: 1 } : { width: awarenessWidth }}>
+            {!centerCollapsed && hasInteractivePanel && <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />}
+            <div className="awareness-sidebar" style={centerCollapsed || !hasInteractivePanel ? { flex: 1 } : { width: awarenessWidth }}>
               <AwarenessPane />
             </div>
           </>

@@ -10,6 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import type { SettingsStore } from "./storage/settings.js";
 
 // ============================================================================
 // MomSettingsManager - Simple settings for mom
@@ -98,13 +99,23 @@ const DEFAULT_SPONTANEITY: MomSpontaneitySettings = {
 export class MomSettingsManager {
 	private settingsPath: string;
 	private settings: MomSettings;
+	private store?: SettingsStore;
 
-	constructor(workspaceDir: string) {
-		this.settingsPath = join(workspaceDir, "settings.json");
+	constructor(workspaceDirOrStore: string | SettingsStore) {
+		if (typeof workspaceDirOrStore === "string") {
+			this.settingsPath = join(workspaceDirOrStore, "settings.json");
+		} else {
+			this.settingsPath = "settings.json";
+			this.store = workspaceDirOrStore;
+		}
 		this.settings = this.load();
 	}
 
 	private load(): MomSettings {
+		if (this.store) {
+			return this.store.read();
+		}
+
 		if (!existsSync(this.settingsPath)) {
 			return {};
 		}
@@ -119,6 +130,10 @@ export class MomSettingsManager {
 
 	private save(): void {
 		try {
+			if (this.store) {
+				this.store.write(this.settings);
+				return;
+			}
 			const dir = dirname(this.settingsPath);
 			if (!existsSync(dir)) {
 				mkdirSync(dir, { recursive: true });

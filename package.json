@@ -20,7 +20,8 @@
 		"build": "npm run patch && tsc && chmod +x dist/main.js",
 		"dev": "tsc --watch --preserveWatchOutput",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:awareness-stream",
+		"test:worker-import": "npx tsx test/worker-import.test.ts",
+		"validate:local": "npm run typecheck && npm run build && npm run test:awareness-stream && npm run test:worker-import",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
