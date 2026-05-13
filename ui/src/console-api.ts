@@ -22,6 +22,8 @@ export interface AwarenessBacklog {
   offset: number;
 }
 
+const DEFAULT_FETCH_TIMEOUT_MS = 8000;
+
 function currentAgentId(): string {
   const match = window.location.pathname.match(/\/agents\/([0-9a-f-]{36})(?:\/|$)/i);
   return match?.[1] ?? 'current';
@@ -43,8 +45,18 @@ async function readError(resp: Response, fallback: string): Promise<Error> {
   return new Error(text || fallback);
 }
 
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {
-  const resp = await fetch(consoleAgentUrl('/status'));
+  const resp = await fetchWithTimeout(consoleAgentUrl('/status'));
   if (!resp.ok) throw await readError(resp, `Status failed: ${resp.status}`);
   return resp.json();
 }
@@ -52,7 +64,7 @@ export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {
 export async function fetchAwarenessBacklog(limit: number, before?: number): Promise<AwarenessBacklog> {
   const params = new URLSearchParams({ limit: String(limit) });
   if (before !== undefined) params.set('before', String(before));
-  const resp = await fetch(consoleAgentUrl(`/events?${params}`));
+  const resp = await fetchWithTimeout(consoleAgentUrl(`/events?${params}`));
   if (!resp.ok) throw await readError(resp, `Awareness failed: ${resp.status}`);
   return resp.json();
 }
@@ -63,7 +75,7 @@ export function awarenessStreamUrl(): string {
 
 export async function listFiles(path: string): Promise<FileNode[]> {
   const params = new URLSearchParams({ path });
-  const resp = await fetch(consoleAgentUrl(`/files?${params}`));
+  const resp = await fetchWithTimeout(consoleAgentUrl(`/files?${params}`));
   if (!resp.ok) throw await readError(resp, `Files failed: ${resp.status}`);
   const data = await resp.json() as { files?: FileNode[] };
   return data.files || [];
@@ -71,7 +83,7 @@ export async function listFiles(path: string): Promise<FileNode[]> {
 
 export async function readFile(path: string): Promise<string> {
   const params = new URLSearchParams({ path });
-  const resp = await fetch(consoleAgentUrl(`/file?${params}`));
+  const resp = await fetchWithTimeout(consoleAgentUrl(`/file?${params}`), {}, 15000);
   if (!resp.ok) throw await readError(resp, `File read failed: ${resp.status}`);
   return resp.text();
 }
