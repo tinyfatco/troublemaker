@@ -10,6 +10,7 @@ import { execFile } from "child_process";
 import { rmSync } from "fs";
 
 const probes = [
+	["src/index.ts", "/tmp/troublemaker-index.js"],
 	["src/core/runtime.ts", "/tmp/troublemaker-core-runtime.js"],
 	["src/host/worker/contract.ts", "/tmp/troublemaker-worker-contract.js"],
 ] as const;

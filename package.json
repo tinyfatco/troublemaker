@@ -3,6 +3,12 @@
 	"version": "0.1.0",
 	"description": "Mom, liberated. Multi-platform AI agent runtime.",
 	"type": "module",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
 	"bin": {
 		"troublemaker": "dist/main.js",
 		"crawdad": "dist/main.js"
