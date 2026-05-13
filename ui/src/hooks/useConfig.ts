@@ -1,11 +1,11 @@
 /**
- * useConfig — fetch workspace configuration from /api/config.
+ * useConfig — fetch workspace configuration from the portable console API.
  * Returns display_mode ('terminal' | 'desktop') and agent_name.
  * Retries on 503 (workspace not ready during cold start).
  */
 
 import { useState, useEffect } from 'react';
-import { apiUrl } from '../api';
+import { fetchWorkspaceStatus } from '../console-api';
 
 export interface WorkspaceConfig {
   display_mode: 'terminal' | 'desktop';
@@ -27,16 +27,12 @@ export function useConfig() {
       for (let attempt = 0; attempt < 15; attempt++) {
         if (cancelled) return;
         try {
-          const response = await fetch(apiUrl('/api/config'));
-          if (response.status === 503) {
-            // Workspace not ready — retry
-            await new Promise((r) => setTimeout(r, 2000));
-            continue;
-          }
-          if (!response.ok) throw new Error('Failed to fetch config');
-          const data = await response.json();
+          const data = await fetchWorkspaceStatus();
           if (!cancelled) {
-            setConfig(data);
+            setConfig({
+              display_mode: data.display_mode === 'desktop' ? 'desktop' : 'terminal',
+              agent_name: data.agent_name || 'agent',
+            });
             setIsLoading(false);
           }
           return;

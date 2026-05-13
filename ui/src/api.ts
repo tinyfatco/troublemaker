@@ -6,6 +6,8 @@
  * the base is just "/".
  */
 
+import { saveWorkspaceFile, uploadWorkspaceFiles } from './console-api';
+
 /** Get the base path for API calls, derived from the current page URL. */
 function getBasePath(): string {
   const path = window.location.pathname;
@@ -23,29 +25,10 @@ export function apiUrl(endpoint: string): string {
 
 /** Save file contents to the agent workspace. */
 export async function saveFile(path: string, content: string): Promise<void> {
-  const resp = await fetch(apiUrl('/api/file/save'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path, content }),
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: 'Save failed' }));
-    throw new Error(err.error || `Save failed: ${resp.status}`);
-  }
+  await saveWorkspaceFile(path, content);
 }
 
 /** Upload files to the agent workspace. Returns list of uploaded paths. */
 export async function uploadFiles(files: File[], targetDir = 'attachments'): Promise<string[]> {
-  const form = new FormData();
-  form.append('targetDir', targetDir);
-  for (const file of files) {
-    form.append('file', file, file.name);
-  }
-  const resp = await fetch(apiUrl('/api/upload'), { method: 'POST', body: form });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ error: 'Upload failed' }));
-    throw new Error(err.error || `Upload failed: ${resp.status}`);
-  }
-  const data = await resp.json();
-  return data.uploaded || [];
+  return uploadWorkspaceFiles(files, targetDir);
 }

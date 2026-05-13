@@ -97,25 +97,101 @@ export class Gateway {
 
 	/** Handle GET /api/config — workspace configuration for the web UI */
 	private handleConfigApi(_req: IncomingMessage, res: ServerResponse): void {
-		if (this.workspaceDir) {
-			try {
-				const settingsPath = resolve(this.workspaceDir, "settings.json");
-				const raw = readFileSync(settingsPath, "utf-8");
-				const settings = JSON.parse(raw);
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({
-					display_mode: settings.display_mode === "desktop" ? "desktop" : "terminal",
-					agent_name: settings.name || "agent",
-				}));
-				return;
-			} catch {
-				// settings.json not readable yet (R2 not mounted) — tell client to retry
-			}
+		const config = this.readWorkspaceConfig();
+		if (config) {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify(config));
+			return;
 		}
 
 		// Workspace not ready — return 503 so client retries
 		res.writeHead(503, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: "Workspace not ready" }));
+	}
+
+	private readWorkspaceConfig(): { display_mode: "terminal" | "desktop"; agent_name: string } | null {
+		if (this.workspaceDir) {
+			try {
+				const settingsPath = resolve(this.workspaceDir, "settings.json");
+				const raw = readFileSync(settingsPath, "utf-8");
+				const settings = JSON.parse(raw);
+				return {
+					display_mode: settings.display_mode === "desktop" ? "desktop" : "terminal",
+					agent_name: settings.name || "agent",
+				};
+			} catch {
+				// settings.json not readable yet (R2 not mounted) — tell client to retry
+			}
+		}
+
+		return null;
+	}
+
+	private handleConsoleSession(_req: IncomingMessage, res: ServerResponse): void {
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({
+			mode: "standalone",
+			agent_id: "current",
+			capabilities: {
+				awareness: true,
+				files: true,
+				messages: true,
+				terminal: true,
+				desktop: false,
+				voice: false,
+				fleet: false,
+			},
+		}));
+	}
+
+	private handleConsoleAgents(_req: IncomingMessage, res: ServerResponse): void {
+		const config = this.readWorkspaceConfig();
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({
+			scope: "active",
+			count: 1,
+			agents: [{
+				id: "current",
+				name: config?.agent_name ?? "agent",
+				enabled: true,
+				archived_at: null,
+				runtime: "troublemaker",
+				provider: "standalone",
+				state: "active",
+				last_activity_at: null,
+				current_task: null,
+			}],
+		}));
+	}
+
+	private handleConsoleStatus(_req: IncomingMessage, res: ServerResponse): void {
+		const config = this.readWorkspaceConfig();
+		if (!config) {
+			res.writeHead(503, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "Workspace not ready" }));
+			return;
+		}
+
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({
+			agent_id: "current",
+			mode: "standalone",
+			runtime: "troublemaker",
+			workspace_ready: true,
+			...config,
+			capabilities: {
+				awareness: true,
+				files: true,
+				messages: true,
+				terminal: true,
+				desktop: config.display_mode === "desktop",
+				voice: false,
+			},
+		}));
+	}
+
+	private isConsoleAgentPath(urlPath: string, suffix: string): boolean {
+		return new RegExp(`^/api/v2/agents/[^/]+${suffix}$`).test(urlPath);
 	}
 
 	/** Handle GET /api/files — directory listing */
@@ -590,6 +666,43 @@ export class Gateway {
 				return;
 			}
 
+			// Portable console API (standalone Troublemaker implementation).
+			// Hosted Crawdad implements the same contract at the Worker layer.
+			if (req.method === "GET" && urlPath === "/api/v2/session") {
+				this.handleConsoleSession(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && urlPath === "/api/v2/agents") {
+				this.handleConsoleAgents(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/status")) {
+				this.handleConsoleStatus(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/events")) {
+				this.handleAwarenessBacklog(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/events/stream")) {
+				this.handleAwarenessStream(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/files")) {
+				this.handleFilesApi(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/file")) {
+				this.handleFileApi(req, res);
+				return;
+			}
+
 			// File API routes
 			if (req.method === "GET" && urlPath === "/api/files") {
 				this.handleFilesApi(req, res);
@@ -640,9 +753,35 @@ export class Gateway {
 				return;
 			}
 
+			if (req.method === "PUT" && this.isConsoleAgentPath(urlPath, "/file")) {
+				this.handleFileSaveApi(req, res);
+				return;
+			}
+
 			// File upload API
 			if (req.method === "POST" && urlPath === "/api/upload") {
 				this.handleUploadApi(req, res);
+				return;
+			}
+
+			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/upload")) {
+				this.handleUploadApi(req, res);
+				return;
+			}
+
+			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/messages")) {
+				const handler = this.routes.get("/web/chat");
+				if (!handler) {
+					res.writeHead(404);
+					res.end("Web chat route not registered");
+					return;
+				}
+				if (!this.readyRoutes.has("/web/chat")) {
+					res.writeHead(503);
+					res.end("Adapter not ready");
+					return;
+				}
+				handler(req, res);
 				return;
 			}
 

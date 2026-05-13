@@ -1,13 +1,13 @@
 /**
  * useAwarenessStream — tail-first awareness loading with lazy scroll-up.
  *
- * 1. Fetches the most recent entries via GET /awareness/backlog?limit=50
- * 2. Connects to GET /awareness/stream for live SSE updates (no backlog replay)
+ * 1. Fetches the most recent entries via GET /api/v2/agents/:id/events
+ * 2. Connects to GET /api/v2/agents/:id/events/stream for live SSE updates
  * 3. Exposes loadMore() for paginated scroll-up loading of older entries
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { apiUrl } from '../api';
+import { awarenessStreamUrl, fetchAwarenessBacklog } from '../console-api';
 import { parseContextLine, type AwarenessEntry } from '../types';
 
 export interface UseAwarenessStreamReturn {
@@ -43,9 +43,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       const maxRetries = 5;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const resp = await fetch(apiUrl('/awareness/backlog?limit=50'));
-          if (!resp.ok) throw new Error(`${resp.status}`);
-          const data = await resp.json() as { lines: string[]; total: number; offset: number };
+          const data = await fetchAwarenessBacklog(50);
 
           if (cancelled) return;
 
@@ -78,8 +76,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
 
   // Connect SSE for live updates (no backlog replay)
   useEffect(() => {
-    const url = apiUrl('/awareness/stream');
-    const es = new EventSource(url);
+    const es = new EventSource(awarenessStreamUrl());
 
     es.onmessage = (event) => {
       const entry = parseContextLine(event.data);
@@ -108,9 +105,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
 
     setIsLoadingMore(true);
     try {
-      const resp = await fetch(apiUrl(`/awareness/backlog?limit=50&before=${oldestOffsetRef.current}`));
-      if (!resp.ok) throw new Error(`backlog fetch failed: ${resp.status}`);
-      const data = await resp.json() as { lines: string[]; total: number; offset: number };
+      const data = await fetchAwarenessBacklog(50, oldestOffsetRef.current);
 
       const parsed = data.lines
         .map((line: string) => parseContextLine(line))

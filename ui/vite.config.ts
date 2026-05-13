@@ -10,6 +10,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/api/v2': 'http://localhost:3002',
       '/web/chat': 'http://localhost:3002',
       '/api/files': 'http://localhost:3002',
       '/api/file': 'http://localhost:3002',

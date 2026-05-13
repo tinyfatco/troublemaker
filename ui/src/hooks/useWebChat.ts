@@ -1,7 +1,7 @@
 /**
  * useWebChat — SSE streaming for the active web chat turn.
  *
- * Sends messages via POST /web/chat and reads token-level SSE events.
+ * Sends messages via POST /api/v2/agents/:id/messages and reads token-level SSE events.
  * Returns a single in-progress AwarenessEntry that the ChatPane renders
  * at the bottom of the awareness stream. When the turn completes,
  * streamingEntry goes null — the completed entry arrives via the
@@ -9,7 +9,7 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import { apiUrl } from '../api';
+import { postMessageUrl } from '../console-api';
 import type { AwarenessEntry } from '../types';
 
 export type StreamStatus =
@@ -78,7 +78,7 @@ export function useWebChat(): UseWebChatReturn {
       // Retry loop for cold starts
       let response: Response | null = null;
       for (let attempt = 1; attempt <= 30; attempt++) {
-        response = await fetch(apiUrl('/web/chat'), {
+        response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: text }),

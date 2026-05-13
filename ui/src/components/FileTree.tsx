@@ -1,14 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { apiUrl } from '../api';
-
-interface FileNode {
-  name: string;
-  path: string;
-  type: 'file' | 'directory';
-  size?: number;
-  modified?: string;
-}
+import { listFiles, type FileNode } from '../console-api';
 
 interface FileTreeProps {
   selectedPath: string | null;
@@ -16,10 +8,7 @@ interface FileTreeProps {
 }
 
 async function fetchFiles(path: string): Promise<FileNode[]> {
-  const response = await fetch(apiUrl(`/api/files?path=${encodeURIComponent(path)}`));
-  if (!response.ok) throw new Error('Failed to fetch files');
-  const data = await response.json();
-  return data.files || [];
+  return listFiles(path);
 }
 
 const FILE_ICONS: Record<string, string> = {

@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiUrl, saveFile } from '../api';
+import { saveFile } from '../api';
+import { fileContentUrl, readFile } from '../console-api';
 import { Markdown } from './Markdown';
 
 interface FileViewerProps {
@@ -9,9 +10,7 @@ interface FileViewerProps {
 }
 
 async function fetchFile(path: string): Promise<string> {
-  const response = await fetch(apiUrl(`/api/file?path=${encodeURIComponent(path)}`));
-  if (!response.ok) throw new Error(`Failed to load file: ${response.status}`);
-  return response.text();
+  return readFile(path);
 }
 
 function isMarkdown(path: string): boolean {
@@ -149,7 +148,7 @@ export function FileViewer({ path, onClose }: FileViewerProps) {
         )}
         {content != null && img && (
           <div className="file-viewer-image">
-            <img src={apiUrl(`/api/file?path=${encodeURIComponent(path)}`)} alt={fileName} />
+            <img src={fileContentUrl(path)} alt={fileName} />
           </div>
         )}
       </div>
