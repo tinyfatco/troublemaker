@@ -70,8 +70,9 @@ const DEFAULT_PROVIDER = "anthropic";
 const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 
 const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
-	minimax: "accounts/fireworks/models/minimax-m2p5",
+	minimax: "accounts/fireworks/models/minimax-m2p7",
 	"minimax-m2p5": "accounts/fireworks/models/minimax-m2p5",
+	"minimax-2.5": "accounts/fireworks/models/minimax-m2p5",
 	"minimax-m2p7": "accounts/fireworks/models/minimax-m2p7",
 	"minimax-2.7": "accounts/fireworks/models/minimax-m2p7",
 	kimi: "accounts/fireworks/models/kimi-k2p5",

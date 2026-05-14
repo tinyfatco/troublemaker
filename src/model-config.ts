@@ -55,9 +55,10 @@ const ANTHROPIC_LISTED_MODELS = new Set([
 ]);
 
 const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
-	minimax: "accounts/fireworks/models/minimax-m2p5",
+	minimax: "accounts/fireworks/models/minimax-m2p7",
 	"minimax-m2p1": "accounts/fireworks/models/minimax-m2p5",
 	"minimax-m2p5": "accounts/fireworks/models/minimax-m2p5",
+	"minimax-2.5": "accounts/fireworks/models/minimax-m2p5",
 	"minimax-m2p7": "accounts/fireworks/models/minimax-m2p7",
 	"minimax-2.7": "accounts/fireworks/models/minimax-m2p7",
 	deepseek: "accounts/fireworks/models/deepseek-v3p1",
@@ -93,7 +94,7 @@ const FIREWORKS_MODELS = [
 		id: "accounts/fireworks/models/minimax-m2p7",
 		name: "MiniMax M2.7 (Fireworks)",
 		reasoning: true,
-		input: ["text", "image"] as ("text" | "image")[],
+		input: ["text"] as ("text" | "image")[],
 		cost: { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
 		contextWindow: 196608,
 		maxTokens: 24576,
