@@ -31,6 +31,11 @@ export interface UserInfo {
 	displayName: string;
 }
 
+export interface SendFinalResponseOptions {
+	/** Deliver even when the channel is configured as messages-only. */
+	force?: boolean;
+}
+
 /**
  * The context object passed to the agent for each run.
  * Platform-agnostic — adapters create this from their platform primitives.
@@ -49,7 +54,7 @@ export interface MomContext {
 	channels: ChannelInfo[];
 	users: UserInfo[];
 	respond: (text: string, shouldLog?: boolean) => Promise<void>;
-	sendFinalResponse: (text: string) => Promise<void>;
+	sendFinalResponse: (text: string, options?: SendFinalResponseOptions) => Promise<void>;
 	respondInThread: (text: string) => Promise<void>;
 	setTyping: (isTyping: boolean) => Promise<void>;
 	uploadFile: (filePath: string, title?: string) => Promise<void>;

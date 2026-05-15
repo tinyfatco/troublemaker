@@ -198,13 +198,14 @@ export function createTwoMessageContext(
 			await updatePromise;
 		},
 
-		sendFinalResponse: async (text: string) => {
+		sendFinalResponse: async (text: string, options = {}) => {
 			updatePromise = updatePromise.then(async () => {
 				if (!text.trim()) return;
 
-				// messages-only: suppress harness-driven final response entirely.
-				// Agent communicates only via send_message_to_channel.
-				if (messagesOnly) {
+				// messages-only suppresses ordinary harness output so agents use
+				// send_message_to_channel, but forced runtime errors still need to
+				// reach the user instead of failing silently.
+				if (messagesOnly && !options.force) {
 					pendingText = null;
 					return;
 				}

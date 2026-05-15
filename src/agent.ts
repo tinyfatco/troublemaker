@@ -558,6 +558,14 @@ function createRunner(
 		return parts;
 	};
 
+	const formatUserVisibleError = (message: string): string => {
+		const normalized = message.replace(/\s+/g, " ").trim();
+		const redacted = normalized
+			.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
+			.replace(/\b(?:sk|sess|ghp|gho|github_pat)_[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
+		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
+	};
+
 	return {
 		async run(
 			ctx: MomContext,
@@ -742,10 +750,17 @@ function createRunner(
 			log.logInfo(`[awareness] Pre-prompt: ${currentSession.messages.length} messages in context`);
 
 			const tPrompt = performance.now();
-			await currentSession.prompt(finalUserMessage, {
-				...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-				streamingBehavior: "steer" as const,
-			});
+			try {
+				await currentSession.prompt(finalUserMessage, {
+					...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
+					streamingBehavior: "steer" as const,
+				});
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				runState.stopReason = "error";
+				runState.errorMessage = errMsg;
+				log.logWarning("Model prompt failed", errMsg);
+			}
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
@@ -774,9 +789,16 @@ function createRunner(
 				if (retryInstruction) {
 					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
-					await currentSession.prompt(retryInstruction, {
-						streamingBehavior: "steer" as const,
-					});
+					try {
+						await currentSession.prompt(retryInstruction, {
+							streamingBehavior: "steer" as const,
+						});
+					} catch (err) {
+						const errMsg = err instanceof Error ? err.message : String(err);
+						runState.stopReason = "error";
+						runState.errorMessage = errMsg;
+						log.logWarning("Model retry prompt failed", errMsg);
+					}
 					log.logInfo(`[gpt-steering] Retry prompt completed`);
 				}
 			}
@@ -787,10 +809,11 @@ function createRunner(
 			// Handle error case
 			if (runState.stopReason === "error" && runState.errorMessage) {
 				try {
-					const userErrorMsg = `_Sorry, something went wrong: ${runState.errorMessage}_`;
-					ctx.emitContentBlock?.({ type: "error", message: runState.errorMessage });
-					await ctx.sendFinalResponse(userErrorMsg);
-					await ctx.respondInThread(`_Error: ${runState.errorMessage}_`);
+					const visibleError = formatUserVisibleError(runState.errorMessage);
+					const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
+					ctx.emitContentBlock?.({ type: "error", message: visibleError });
+					await ctx.sendFinalResponse(userErrorMsg, { force: true });
+					await ctx.respondInThread(`_Error: ${visibleError}_`);
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
 					log.logWarning("Failed to post error message", errMsg);
