@@ -19,7 +19,7 @@ import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
 import { collectChannelsFromLog, formatChannelTable } from "../tools/list-channels.js";
-import { resolveAdapter } from "../tools/send-message-to-channel.js";
+import { resolveChannelTarget } from "../tools/send-message-to-channel.js";
 import type {
 	ChannelInfo,
 	MomContext,
@@ -308,7 +308,7 @@ export class McpAdapter implements PlatformAdapter {
 
 		// ── send_message_to_channel ──────────────────────────────────────
 		// Lets the MCP client send a message on any of the agent's connected
-		// channels (Telegram, Slack, Email, Discord) using the agent's bot
+		// channels (Telegram, Slack, Discord, Email, phone) using the agent's bot
 		// credentials. Appears in the agent's awareness stream as a system
 		// notification but does NOT trigger a runner wake.
 		server.registerTool(
@@ -316,11 +316,12 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description:
 					"Send a message on the agent's behalf to one of its connected channels " +
-					"(Telegram, Slack, Email, Discord). Channel ID determines routing: numeric → Telegram, " +
-					"C/D/G prefix → Slack, email-{address} → Email. The send appears in the agent's " +
+					"(Telegram, Slack, Discord, Email, SMS/iMessage). Channel ID determines routing: " +
+					"discord:<17-20 digit ID> or raw 17-20 digit snowflake → Discord, shorter numeric → Telegram, " +
+					"C/D/G prefix → Slack, email-{address} → Email, phone-{hash} → SMS/iMessage. The send appears in the agent's " +
 					"awareness stream but does NOT trigger a run. Use list_channels to discover valid IDs.",
 				inputSchema: {
-					channel: z.string().describe("Channel ID (numeric for Telegram, C/D/G-prefixed for Slack, email-{addr} for Email)"),
+					channel: z.string().describe("Channel ID (discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, email-{addr} for Email, phone-{hash} for SMS/iMessage)"),
 					text: z.string().describe("Message text to send"),
 					subject: z.string().optional().describe("Subject line (email only)"),
 					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
@@ -329,13 +330,14 @@ export class McpAdapter implements PlatformAdapter {
 			async ({ channel, text, subject, attachments }: { channel: string; text: string; subject?: string; attachments?: string[] }) => {
 				log.logInfo(`[mcp] send_message_to_channel: ${channel} (${text.length} chars)`);
 
-				const adapter = resolveAdapter(channel, this.peerAdapters);
-				if (!adapter) {
+				const target = resolveChannelTarget(channel, this.peerAdapters);
+				if (!target) {
 					return {
-						content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Valid patterns: numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email).` }],
+						content: [{ type: "text" as const, text: `No adapter found for channel "${channel}". Valid patterns: discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
 						isError: true,
 					};
 				}
+				const { adapter } = target;
 
 				try {
 					const attachmentObjects = attachments?.map((filePath) => ({
@@ -343,8 +345,8 @@ export class McpAdapter implements PlatformAdapter {
 						filename: basename(filePath),
 					}));
 
-					const ts = await adapter.postMessage(channel, text, attachmentObjects, subject);
-					adapter.logBotResponse(channel, text, ts);
+					const ts = await adapter.postMessage(target.channel, text, attachmentObjects, subject);
+					adapter.logBotResponse(target.channel, text, ts);
 
 					// Append to awareness so the agent sees it on its next run.
 					// Does not enqueue a MomEvent — no runner wake.
@@ -352,7 +354,7 @@ export class McpAdapter implements PlatformAdapter {
 						const preview = text.length > 200 ? `${text.slice(0, 200)}…` : text;
 						appendAwarenessLine(
 							this.awarenessDir,
-							`[mcp] sent to ${adapter.name}:${channel}: ${preview}`,
+							`[mcp] sent to ${adapter.name}:${target.channel}: ${preview}`,
 						);
 					}
 
@@ -362,24 +364,24 @@ export class McpAdapter implements PlatformAdapter {
 						type: "tool_call",
 						tool: "send_message_to_channel",
 						target_adapter: adapter.name,
-						target_channel: channel,
+						target_channel: target.channel,
 						success: true,
 					});
 
 					const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
 					return {
-						content: [{ type: "text" as const, text: `Sent to ${adapter.name}:${channel}${attInfo} (ts=${ts})` }],
+						content: [{ type: "text" as const, text: `Sent to ${adapter.name}:${target.channel}${attInfo} (ts=${ts})` }],
 					};
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
-					log.logWarning(`[mcp] send_message_to_channel failed for ${adapter.name}:${channel}`, errMsg);
+					log.logWarning(`[mcp] send_message_to_channel failed for ${adapter.name}:${target.channel}`, errMsg);
 					this.logToFile({
 						date: new Date().toISOString(),
 						channel: "mcp",
 						type: "tool_call",
 						tool: "send_message_to_channel",
 						target_adapter: adapter.name,
-						target_channel: channel,
+						target_channel: target.channel,
 						success: false,
 						error: errMsg,
 					});

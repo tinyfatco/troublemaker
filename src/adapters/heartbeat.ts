@@ -50,7 +50,7 @@ You are waking up for a spontaneous reflection. This is your internal channel â€
 
 Review your recent context and decide what to do:
 
-1. **Incomplete work:** Did anything crash or fail to deliver? If so, pick it up and finish it. Use \`send_message_to_channel\` to deliver on the right channel (email, Telegram, Slack).
+1. **Incomplete work:** Did anything crash or fail to deliver? If so, pick it up and finish it. Use \`send_message_to_channel\` to deliver on the right channel (email, Telegram, Slack, Discord).
 2. **Proactive outreach:** Is there anything worth reaching out to your owner about? A follow-up, a reminder, something you noticed? Use \`send_message_to_channel\` to send it on the appropriate channel.
 3. **Observations:** Note anything interesting in your context â€” patterns, pending items, things to watch. Even if you don't act, a brief observation is valuable.
 

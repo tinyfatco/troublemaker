@@ -1365,7 +1365,7 @@ To change these, edit \`settings.json\` directly.
 
 - Keep this file short — it's included in every heartbeat prompt.
 - If you clear this file (leave it empty), heartbeats will be skipped entirely.
-- Use \`send_message_to_channel\` to reach out on email/Telegram/Slack if something needs attention.
+- Use \`send_message_to_channel\` to reach out on email/Telegram/Slack/Discord if something needs attention.
 - Use \`yield_no_action\` if nothing needs doing — the quiet is recorded.
 - You can update this file yourself to evolve your own periodic behavior.
 `, "utf-8");

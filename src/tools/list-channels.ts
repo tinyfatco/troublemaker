@@ -23,6 +23,13 @@ export interface ChannelListing {
 	lastSeen: string;
 }
 
+function sendTargetForChannel(channel: ChannelListing): string {
+	if (channel.adapter === "discord" && /^\d{17,20}$/.test(channel.id)) {
+		return `discord:${channel.id}`;
+	}
+	return channel.id;
+}
+
 /**
  * Parse log.jsonl and extract the unique channels the agent has touched.
  *
@@ -80,9 +87,9 @@ export function formatChannelTable(channels: ChannelListing[]): string {
 		return "No channels yet — the agent hasn't sent or received any messages.";
 	}
 	const lines = [
-		"| Adapter | Channel ID | Name | Last Seen |",
-		"|---------|------------|------|-----------|",
-		...channels.map((c) => `| ${c.adapter} | \`${c.id}\` | ${c.name} | ${c.lastSeen || "—"} |`),
+		"| Adapter | Channel ID | Send Target | Name | Last Seen |",
+		"|---------|------------|-------------|------|-----------|",
+		...channels.map((c) => `| ${c.adapter} | \`${c.id}\` | \`${sendTargetForChannel(c)}\` | ${c.name} | ${c.lastSeen || "—"} |`),
 	];
 	return lines.join("\n");
 }
@@ -97,7 +104,7 @@ export function createListChannelsTool(workingDir: string): AgentTool<any> {
 			"List every channel the agent has ever sent or received a message on. " +
 			"Reads from log.jsonl, so it covers all adapters (Telegram, Slack, Email, " +
 			"Discord, SMS/iMessage, etc.) and survives container restarts. Use this to discover " +
-			"valid channel IDs for send_message_to_channel.",
+			"valid send targets for send_message_to_channel.",
 		parameters: schema,
 		execute: async () => {
 			const channels = collectChannelsFromLog(workingDir);

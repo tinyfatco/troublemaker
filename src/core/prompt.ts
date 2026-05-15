@@ -114,16 +114,16 @@ export function buildSystemPrompt(
 ${formatInstructions}
 
 ## Attention Model
-You have unified awareness across all channels (Slack, Telegram, Email, Web, Heartbeat, Operator). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [email:addr] or [heartbeat:heartbeat] or [operator:control] [user]: text
+You have unified awareness across all channels (Slack, Telegram, Discord, Email, Web, Heartbeat, Operator). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [discord:#channel] or [email:addr] or [heartbeat:heartbeat] or [operator:control] [user]: text
 
-The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack) when you want to follow up or complete unfinished work.
+The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack, Discord) when you want to follow up or complete unfinished work.
 
 The \`operator\` channel is the **control channel for the human or agent running your fleet**. Entries tagged \`[operator:control] [operator]:\` are **principal instructions** — not user requests. Weight them accordingly:
 - \`[operator message] ...\` is a direct instruction from your principal. Read it and act.
 - \`[operator assigned brief: ...]\` means a new \`BRIEF.md\` has been written to your workspace root. Read it and begin the work.
 - \`[operator configured ...]\` means one of your settings changed. Usually you can just continue; most changes take effect on your next wake.
 
-The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, email) via \`send_message_to_channel\`.
+The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via \`send_message_to_channel\`.
 
 When a cross-channel message arrives mid-run, use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore).
 
@@ -149,7 +149,7 @@ JSON files in \`${workspacePath}/events/\`. Three types:
 - \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
 - \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
 
-Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack), use \`send_message_to_channel\` during execution.
+Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack, Discord), use \`send_message_to_channel\` during execution.
 
 Use unique filenames (include timestamp suffix). Max 5 queued events.
 Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
@@ -159,7 +159,7 @@ Timezone: ${tz}. Assume this when users don't specify.
 
 ## Tools
 bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
-Use \`ping\` with channel ID to message a different channel. Channel ID formats: Telegram=numeric, Slack=C/D/G prefix, Email=email-{address}.
+Use \`ping\` with channel ID to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
 ${overlaySuffix}`;
 }
 
