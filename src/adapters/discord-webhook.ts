@@ -130,27 +130,29 @@ export class DiscordWebhookAdapter extends DiscordBase {
 	// Gateway relay message handler (MESSAGE_CREATE from discord-gateway)
 	// ==========================================================================
 
-	private async handleGatewayMessage(payload: {
-		type: string;
-		channelId: string;
-		guildId: string | null;
-		author: { id: string; username: string; discriminator?: string };
-		content: string;
-		messageId: string;
-		isDM: boolean;
-		timestamp: string;
-	}): Promise<void> {
-		const { channelId, author, content, messageId, isDM } = payload;
+	async handleGatewayMessage(payload: DiscordGatewayMessagePayload): Promise<void> {
+		const { channelId, author, messageId, isDM } = payload;
+		const trigger = payload.trigger || (isDM ? "dm" : "mention");
+		const content = payload.content || "";
+		const rawContent = payload.rawContent || content;
+		const displayName = author.global_name || author.username;
 
 		if (!content.trim()) return;
 
-		log.logInfo(`[discord] Gateway message: ${isDM ? "DM" : "@mention"} from ${author.username}: ${content.substring(0, 80)}`);
+		if (payload.botUserId) {
+			this.botUserId = payload.botUserId;
+			this.pulse?.setSelfId(payload.botUserId);
+		}
+
+		log.logInfo(`[discord] Gateway message: ${trigger} from ${displayName}: ${content.substring(0, 80)}`);
 
 		// Track user
-		this.users.set(author.id, { id: author.id, userName: author.username, displayName: author.username });
+		this.users.set(author.id, { id: author.id, userName: author.username, displayName });
 
 		// Track channel
-		this.channels.set(channelId, { id: channelId, name: channelId });
+		this.channels.set(channelId, { id: channelId, name: payload.channelName || channelId });
+
+		this.pulse?.record(channelId, author.id, rawContent.length, rawContent);
 
 		const momEvent: MomEvent = {
 			type: isDM ? "dm" : "mention",
@@ -168,12 +170,18 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			channelId,
 			user: author.id,
 			userName: author.username,
-			text: content,
+			displayName,
+			text: rawContent,
 			attachments: [],
 			isBot: false,
 		});
 
-		if (this.handler.resolvePendingInput(channelId, content)) {
+		if (!isDM && trigger === "ambient") {
+			this.onAmbientMessage?.(channelId, momEvent);
+			return;
+		}
+
+		if (this.handler.resolvePendingInput(channelId, momEvent.text)) {
 			return;
 		}
 
@@ -182,7 +190,7 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		}
 
 		// Check for stop
-		if (content.toLowerCase().trim() === "stop") {
+		if (momEvent.text.toLowerCase().trim() === "stop") {
 			if (this.handler.isRunning(channelId)) {
 				this.handler.handleStop(channelId, this);
 			}
@@ -322,6 +330,27 @@ export class DiscordWebhookAdapter extends DiscordBase {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+interface DiscordGatewayMessagePayload {
+	type: string;
+	trigger?: "dm" | "mention" | "ambient";
+	channelId: string;
+	channelName?: string;
+	guildId: string | null;
+	author: {
+		id: string;
+		username: string;
+		global_name?: string;
+		discriminator?: string;
+	};
+	content: string;
+	rawContent?: string;
+	messageId: string;
+	isDM: boolean;
+	isMentioned?: boolean;
+	timestamp: string;
+	botUserId?: string;
+}
 
 function hexToUint8Array(hex: string): Uint8Array {
 	const bytes = new Uint8Array(hex.length / 2);

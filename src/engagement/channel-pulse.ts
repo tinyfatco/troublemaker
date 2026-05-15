@@ -31,14 +31,17 @@ const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 export class ChannelPulse {
 	private buffers = new Map<string, PulseEntry[]>();
 	private selfId: string;
+	private selfIds = new Set<string>();
 
 	constructor(selfId: string) {
 		this.selfId = selfId;
+		this.selfIds.add(selfId);
 	}
 
 	/** Update selfId after auth resolves the bot user ID. */
 	setSelfId(id: string): void {
 		this.selfId = id;
+		this.selfIds.add(id);
 	}
 
 	/** Record a message in a channel. Call on every incoming event, before any filtering. */
@@ -87,7 +90,7 @@ export class ChannelPulse {
 		const buf = this.buffers.get(channelId);
 		if (!buf) return Infinity;
 		for (let i = buf.length - 1; i >= 0; i--) {
-			if (buf[i].participantId === this.selfId) {
+			if (this.selfIds.has(buf[i].participantId)) {
 				return Date.now() - buf[i].ts;
 			}
 		}

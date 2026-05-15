@@ -343,31 +343,32 @@ function fireAmbientEvaluation(channelId: string, snapshotEntries?: import("../.
 		? { temperature: snapshotEntries.length, recentParticipants: new Set(snapshotEntries.map(e => e.participantId)).size, timeSinceMyLastMs: Infinity }
 		: pulse.summary(channelId);
 
-	// Find the Slack adapter that owns this channel
-	const slackAdapter = adapters.find((a) => a.name === "slack" && a.getChannel(channelId));
-	if (!slackAdapter) return;
+	// Find the chat adapter that owns this channel.
+	const ambientAdapter = adapters.find((a) => a.getChannel(channelId));
+	if (!ambientAdapter) {
+		log.logInfo(`[ambient:${channelId}] No adapter owns this channel, skipping`);
+		return;
+	}
 
-	// Format recent messages — resolve Slack user IDs to display names
+	// Format recent messages — resolve platform user IDs to display names
 	const messageLines = recentMessages.map((m) => {
-		const user = slackAdapter.getUser(m.participantId);
+		const user = ambientAdapter.getUser(m.participantId);
 		const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
 		return `${who}: ${m.text}`;
 	}).join("\n");
+
+	const channelLabel = getChannelLabel(channelId, adapters);
 
 	const ambientEvent: MomEvent = {
 		type: "mention",
 		channel: channelId,
 		ts: String(Date.now() / 1000),
 		user: "system",
-		text: `[AMBIENT] A conversation is happening in this channel. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. If you have something genuinely useful, interesting, or fun to add — respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
+		text: `[AMBIENT] A conversation is happening in ${channelLabel}. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. You were not directly addressed. If you have something genuinely useful, interesting, or fun to add, respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
 	};
 
-	const queue = (slackAdapter as any).getQueue?.(channelId);
-	if (queue) {
-		return queue.enqueue(async () => {
-			if (awareness?.running) return;
-			await handler.handleEvent(ambientEvent, slackAdapter);
-		});
+	if (!ambientAdapter.enqueueEvent(ambientEvent)) {
+		log.logInfo(`[ambient:${channelId}] Adapter ${ambientAdapter.name} rejected ambient event`);
 	}
 }
 
@@ -432,7 +433,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_DISCORD_BOT_TOKEN, MOM_DISCORD_APPLICATION_ID, MOM_DISCORD_PUBLIC_KEY");
 				process.exit(1);
 			}
-			return new DiscordWebhookAdapter({ botToken: discordBotToken, applicationId: discordAppId, publicKey: discordPublicKey, workingDir });
+			return new DiscordWebhookAdapter({ botToken: discordBotToken, applicationId: discordAppId, publicKey: discordPublicKey, workingDir, pulse, onAmbientMessage: handleAmbientMessage });
 		}
 		case "email:webhook": {
 			const toolsToken = process.env.MOM_EMAIL_TOOLS_TOKEN;

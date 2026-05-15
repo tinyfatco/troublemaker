@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
+import type { ChannelPulse } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { markdownToDiscordMarkdown, stripDiscordMentions } from "./discord-format.js";
@@ -21,6 +22,9 @@ export interface DiscordBaseConfig {
 	botToken: string;
 	applicationId: string;
 	workingDir: string;
+	pulse?: ChannelPulse;
+	/** Called when a non-DM, non-mention message arrives and the agent might want to engage. */
+	onAmbientMessage?: (channelId: string, event: MomEvent) => void;
 }
 
 type QueuedWork = () => Promise<void>;
@@ -36,6 +40,9 @@ When mentioning users, use <@userId> format.`;
 	protected applicationId: string;
 	protected handler!: MomHandler;
 	protected workingDir: string;
+	protected botUserId: string | null = null;
+	protected pulse?: ChannelPulse;
+	protected onAmbientMessage?: (channelId: string, event: MomEvent) => void;
 
 	// Track users/channels we've seen
 	protected users = new Map<string, UserInfo>();
@@ -47,6 +54,10 @@ When mentioning users, use <@userId> format.`;
 		this.botToken = config.botToken;
 		this.applicationId = config.applicationId;
 		this.workingDir = config.workingDir;
+		this.botUserId = config.applicationId;
+		this.pulse = config.pulse;
+		this.onAmbientMessage = config.onAmbientMessage;
+		this.pulse?.setSelfId(this.botUserId);
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -270,6 +281,8 @@ When mentioning users, use <@userId> format.`;
 			attachments: [],
 			isBot: true,
 		});
+		const selfId = this.botUserId || this.applicationId;
+		this.pulse?.record(channel, selfId, text.length, text);
 	}
 
 	// ==========================================================================

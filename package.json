@@ -27,9 +27,10 @@
 		"dev": "tsc --watch --preserveWatchOutput",
 		"test:send-message-to-channel": "npx tsx test/send-message-to-channel.test.ts",
 		"test:context-messages-only-error": "npx tsx test/context-messages-only-error.test.ts",
+		"test:discord-ambient": "npx tsx test/discord-ambient.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
 		"test:worker-import": "npx tsx test/worker-import.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:awareness-stream && npm run test:worker-import",
+		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:worker-import",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
