@@ -131,24 +131,14 @@ Keep responses concise and professional. The user will receive one email with yo
 				return;
 			}
 
-			const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
-
-			if (!holdConnection) {
-				// Fire-and-forget (crawdad-cf mode)
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
-			}
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true }));
 
 			// Process email
 			try {
 				await this.processEmail(payload);
 			} catch (err) {
 				log.logWarning("Email processing error", err instanceof Error ? err.message : String(err));
-			}
-
-			if (holdConnection) {
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
 			}
 		});
 	}

@@ -260,21 +260,6 @@ const pulse = new ChannelPulse("pending");
 const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
 const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ambientLastFired = new Map<string, number>();
-const AMBIENT_PENDING_DIR = join(workingDir, "ambient-pending");
-const isSpritesMode = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
-
-/**
- * Deferred ambient signal — set by handleAmbientMessage in Sprites mode,
- * read by the Slack webhook adapter to add the X-Ambient-Defer header.
- */
-let pendingAmbientDefer: { channelId: string; delaySec: number } | null = null;
-
-/** Read and clear the pending ambient defer signal. */
-function consumeAmbientDefer(): { channelId: string; delaySec: number } | null {
-	const val = pendingAmbientDefer;
-	pendingAmbientDefer = null;
-	return val;
-}
 
 /** Schedule (or re-schedule) an ambient evaluation for a channel. */
 function handleAmbientMessage(channelId: string, _event: MomEvent): void {
@@ -297,16 +282,6 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	const pulseSummary = pulse.summary(channelId);
 	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(delayMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
 
-	// Sprites mode: save pulse to disk, signal deferred poke via DO alarm.
-	// In-memory timers die when the Sprite sleeps at 30s idle.
-	if (isSpritesMode) {
-		pulse.saveSnapshot(channelId, AMBIENT_PENDING_DIR);
-		pendingAmbientDefer = { channelId, delaySec: Math.ceil(delayMs / 1000) };
-		log.logInfo(`[ambient:${channelId}] Sprites mode: saved pulse snapshot, deferring ${Math.ceil(delayMs / 1000)}s via DO alarm`);
-		return;
-	}
-
-	// crawdad-cf / host mode: use in-memory timer (container stays alive)
 	const timerId = setTimeout(() => {
 		ambientTimers.delete(channelId);
 		ambientLastFired.set(channelId, Date.now());
@@ -316,32 +291,22 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	ambientTimers.set(channelId, timerId);
 }
 
-/** Run the ambient engagement evaluation for a channel. Used by both timer and /ambient/evaluate.
- *  Returns a promise that resolves when the run completes (for hold-connection). */
-function fireAmbientEvaluation(channelId: string, snapshotEntries?: import("../../engagement/channel-pulse.js").PulseEntry[]): Promise<void> | void {
+function fireAmbientEvaluation(channelId: string): void {
 	// Check if agent is currently running — if so, re-defer
 	if (awareness?.running) {
 		log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
-		if (!isSpritesMode) {
-			// In-memory re-defer (crawdad-cf mode)
-			const timerId = setTimeout(() => {
-				ambientTimers.delete(channelId);
-				fireAmbientEvaluation(channelId);
-			}, 10_000);
-			ambientTimers.set(channelId, timerId);
-		}
+		const timerId = setTimeout(() => {
+			ambientTimers.delete(channelId);
+			fireAmbientEvaluation(channelId);
+		}, 10_000);
+		ambientTimers.set(channelId, timerId);
 		return;
 	}
 
-	// Get recent messages — from snapshot (Sprites) or live pulse (crawdad-cf)
-	const recentMessages = snapshotEntries
-		? snapshotEntries.filter(e => e.text).slice(-15)
-		: pulse.recentMessages(channelId);
+	const recentMessages = pulse.recentMessages(channelId);
 	if (recentMessages.length === 0) return;
 
-	const refreshedSummary = snapshotEntries
-		? { temperature: snapshotEntries.length, recentParticipants: new Set(snapshotEntries.map(e => e.participantId)).size, timeSinceMyLastMs: Infinity }
-		: pulse.summary(channelId);
+	const refreshedSummary = pulse.summary(channelId);
 
 	// Find the chat adapter that owns this channel.
 	const ambientAdapter = adapters.find((a) => a.getChannel(channelId));
@@ -394,7 +359,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			// signing secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
 			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET || "";
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage, consumeAmbientDefer });
+				return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage });
 		}
 		case "telegram":
 		case "telegram:polling": {
@@ -924,45 +889,6 @@ gateway.registerGet("/schedule", async (_req, res) => {
 	}
 });
 
-// Ambient evaluate endpoint — Sprout DO pokes this to trigger deferred ambient engagement.
-// The Sprite wakes, reads the pulse snapshot from disk, runs the LLM evaluation.
-// Marked ready immediately — doesn't depend on adapter init.
-gateway.register("/ambient/evaluate", async (req, res) => {
-	const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-	const channelId = url.searchParams.get("channel");
-
-	if (!channelId) {
-		res.writeHead(400);
-		res.end("Missing channel param");
-		return;
-	}
-
-	log.logInfo(`[ambient:${channelId}] Received evaluate poke from orchestrator`);
-
-	// Load pulse snapshot from disk
-	const snapshot = ChannelPulse.loadSnapshot(channelId, AMBIENT_PENDING_DIR);
-	if (!snapshot) {
-		log.logInfo(`[ambient:${channelId}] No snapshot found, skipping`);
-		res.writeHead(200);
-		res.end("no snapshot");
-		return;
-	}
-
-	// Delete snapshot before evaluation (prevent re-fire on re-poke)
-	ChannelPulse.deleteSnapshot(channelId, AMBIENT_PENDING_DIR);
-
-	// Update cooldown tracking
-	ambientLastFired.set(channelId, Date.now());
-
-	// Fire the evaluation — this enqueues a run on the Slack adapter's channel queue.
-	// Await the returned promise to hold the connection (keeps Sprite awake during the run).
-	const runDone = fireAmbientEvaluation(channelId, snapshot.entries);
-	if (runDone) await runDone;
-
-	res.writeHead(200);
-	res.end("ok");
-});
-
 // Register native terminal PTY — provides /terminal WebSocket in standalone mode.
 // When crawdad-cf is in front, it intercepts /agents/{id}/terminal at the Worker
 // level (sandbox.terminal()) so this handler never fires.
@@ -982,7 +908,6 @@ for (const path of ["/operator/message", "/operator/assign", "/operator/configur
 }
 
 await gateway.start(parsedArgs.port);
-gateway.markReady("/ambient/evaluate");
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start voice WebSocket server early (port 8765) so it's ready before adapters init.

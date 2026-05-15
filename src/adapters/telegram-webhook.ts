@@ -93,25 +93,12 @@ export class TelegramWebhookAdapter extends TelegramBase {
 				return;
 			}
 
-			const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
+			res.writeHead(200);
+			res.end();
 
-			if (!holdConnection) {
-				// Fire-and-forget (crawdad-cf mode)
-				res.writeHead(200);
-				res.end();
-			}
-
-			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()} (hold=${holdConnection})`);
+			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()}`);
 			// Process the update — fires bot.on("message") which calls handleIncomingMessage
 			this.bot.processUpdate(update as Parameters<typeof this.bot.processUpdate>[0]);
-
-			if (holdConnection) {
-				// Wait for the run to complete before responding (Sprites mode)
-				await this.lastRunDone;
-				res.writeHead(200);
-				res.end();
-				log.logInfo(`[telegram:webhook] held connection released`);
-			}
 		});
 	}
 }

@@ -71,21 +71,13 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 				return;
 			}
 
-			const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
-			if (!holdConnection) {
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
-			}
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true }));
 
 			try {
 				await this.processInbound(payload);
 			} catch (err) {
 				log.logWarning("[phone] inbound processing error", err instanceof Error ? err.message : String(err));
-			}
-
-			if (holdConnection) {
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
 			}
 		});
 	}

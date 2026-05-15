@@ -11,18 +11,14 @@ import type { MomEvent } from "./types.js";
 
 export interface SlackWebhookAdapterConfig extends SlackBaseConfig {
 	signingSecret: string;
-	/** Optional: returns and clears a pending ambient defer signal (Sprites mode). */
-	consumeAmbientDefer?: () => { channelId: string; delaySec: number } | null;
 }
 
 export class SlackWebhookAdapter extends SlackBase {
 	private signingSecret: string;
-	consumeAmbientDefer?: () => { channelId: string; delaySec: number } | null;
 
 	constructor(config: SlackWebhookAdapterConfig) {
 		super(config);
 		this.signingSecret = config.signingSecret;
-		this.consumeAmbientDefer = config.consumeAmbientDefer;
 	}
 
 	async start(): Promise<void> {
@@ -111,7 +107,7 @@ export class SlackWebhookAdapter extends SlackBase {
 	// Event dispatch
 	// ==========================================================================
 
-	/** Promise that resolves when the last enqueued run completes. Used by hold-connection mode. */
+	/** Promise that resolves when the last enqueued run completes. */
 	public lastRunDone: Promise<void> = Promise.resolve();
 
 	private async dispatchEvent(payload: SlackEventPayload, res: ServerResponse): Promise<void> {
@@ -123,16 +119,10 @@ export class SlackWebhookAdapter extends SlackBase {
 			return;
 		}
 
-		const holdConnection = !!process.env.MOM_HOLD_WEBHOOK_CONNECTION;
-
-		if (!holdConnection) {
-			// Fire-and-forget (crawdad-cf mode)
-			res.writeHead(200);
-			res.end();
-		}
+		res.writeHead(200);
+		res.end();
 
 		if (payload.type !== "event_callback" || !payload.event) {
-			if (holdConnection) { res.writeHead(200); res.end(); }
 			return;
 		}
 
@@ -145,17 +135,14 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		// Ignore own messages only — bots are just participants
 		if (event.user === this.botUserId) {
-			if (holdConnection) { res.writeHead(200); res.end(); }
 			return;
 		}
 		// Ignore subtypes other than file_share and bot_message
 		if (event.subtype !== undefined && event.subtype !== "file_share" && event.subtype !== "bot_message") {
-			if (holdConnection) { res.writeHead(200); res.end(); }
 			return;
 		}
 		// Need at least a user or bot_id to attribute the message
 		if (!event.user && !event.bot_id) {
-			if (holdConnection) { res.writeHead(200); res.end(); }
 			return;
 		}
 
@@ -165,17 +152,6 @@ export class SlackWebhookAdapter extends SlackBase {
 			await this.handleMessage(event);
 		}
 
-		if (holdConnection) {
-			await this.lastRunDone;
-			// Check for deferred ambient signal (Sprites mode)
-			const ambientDefer = this.consumeAmbientDefer?.();
-			if (ambientDefer) {
-				res.writeHead(200, { "X-Ambient-Defer": `${ambientDefer.channelId}:${ambientDefer.delaySec}` });
-			} else {
-				res.writeHead(200);
-			}
-			res.end();
-		}
 	}
 
 	private async handleAppMention(event: SlackEventInner): Promise<void> {
