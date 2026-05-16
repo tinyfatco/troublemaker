@@ -19,7 +19,7 @@
  *     [--scopes content:read,content:write]
  *
  * Environment:
- *   TERMINAL_SECRET - from ~/.config/fat-agents/spider-relay.env
+ *   OPS_TERMINAL_TOKEN - from ~/.config/fat-agents/scoped-tokens.env
  */
 
 import { readFileSync } from "fs";
@@ -41,18 +41,18 @@ if (!agentId || !alias || !url || !token) {
 	process.exit(1);
 }
 
-// Read TERMINAL_SECRET from env or spider-relay.env
-let terminalSecret = process.env.TERMINAL_SECRET;
-if (!terminalSecret) {
+// Read OPS_TERMINAL_TOKEN from env or scoped-tokens.env
+let opsTerminalToken = process.env.OPS_TERMINAL_TOKEN;
+if (!opsTerminalToken) {
 	try {
-		const envFile = readFileSync(`${process.env.HOME}/.config/fat-agents/spider-relay.env`, "utf-8");
-		const match = envFile.match(/^TERMINAL_SECRET=(.+)$/m);
-		if (match) terminalSecret = match[1];
+		const envFile = readFileSync(`${process.env.HOME}/.config/fat-agents/scoped-tokens.env`, "utf-8");
+		const match = envFile.match(/^OPS_TERMINAL_TOKEN=(.+)$/m);
+		if (match) opsTerminalToken = match[1];
 	} catch {}
 }
 
-if (!terminalSecret) {
-	console.error("TERMINAL_SECRET not found");
+if (!opsTerminalToken) {
+	console.error("OPS_TERMINAL_TOKEN not found");
 	process.exit(1);
 }
 
@@ -60,7 +60,9 @@ const BASE = "https://crawdad.tinyfat.com";
 
 async function exec(cmd) {
 	const encoded = encodeURIComponent(cmd);
-	const resp = await fetch(`${BASE}/agents/${agentId}/logs?token=${terminalSecret}&cmd=${encoded}`);
+	const resp = await fetch(`${BASE}/agents/${agentId}/logs?cmd=${encoded}`, {
+		headers: { Authorization: `Bearer ${opsTerminalToken}` },
+	});
 	if (!resp.ok) throw new Error(`exec failed: ${resp.status} ${await resp.text()}`);
 	return resp.text();
 }
@@ -108,4 +110,4 @@ const verify = await exec("cat /data/.config/mcp/" + alias + ".json && echo '---
 console.log(`   → ${verify.trim()}`);
 
 console.log("\nDone! Restart the agent for changes to take effect:");
-console.log(`  curl -s -X POST "${BASE}/agents/${agentId}/restart?token=\$TERMINAL_SECRET"`);
+console.log(`  curl -s -X POST -H "Authorization: Bearer $OPS_RESTART_TOKEN" "${BASE}/agents/${agentId}/restart"`);
