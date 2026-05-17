@@ -121,8 +121,10 @@ Keep responses concise and helpful.`;
 				Connection: "keep-alive",
 				"X-Accel-Buffering": "no",
 			});
+			res.flushHeaders?.();
 
 			const writer = new SSEWriter(res);
+			writer.send({ type: "status", status: "accepted", message: "Message accepted" });
 
 			this.processMessage(payload, writer).catch((err) => {
 				log.logWarning("Web chat processing error", err instanceof Error ? err.message : String(err));

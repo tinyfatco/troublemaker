@@ -102,6 +102,7 @@ async function run() {
 
 		const slashResponse = await dispatch(adapter, { message: "/context" });
 		assert(slashResponse.statusCode === 200, "slash command returns an SSE response");
+		assert(slashResponse.body.includes('"status":"accepted"'), "web chat emits an immediate accepted status");
 		assert(slashResponse.body.includes('"type":"text"'), "slash command emits a text event");
 		assert(slashResponse.body.includes("slash-ok"), "slash command response is visible in SSE");
 		assert(!slashResponse.body.includes("Already processing"), "slash command bypasses busy rejection");

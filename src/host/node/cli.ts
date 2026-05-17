@@ -523,6 +523,11 @@ function isRunBusy(): boolean {
 	return activeRun !== null || queuedRunCount > 0 || (awareness?.running ?? false);
 }
 
+function slashCommandNeedsRunner(text: string): boolean {
+	const command = text.trim().split(/\s+/, 1)[0]?.toLowerCase();
+	return command === "/context" || command === "/compact" || command === "/clear";
+}
+
 function describeActiveRun(): string {
 	if (!activeRun) return queuedRunCount > 0 ? `${queuedRunCount} queued run(s)` : "idle";
 	return `${activeRun.label} for ${Date.now() - activeRun.startedAt}ms`;
@@ -713,7 +718,16 @@ function scheduleInterruptRestart(): void {
 }
 
 async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
-	// Ensure awareness is initialized (needed for /context and other commands)
+	const trimmed = event.text.trim();
+
+	// Lightweight slash commands are pure control-plane work and should not
+	// wait for MCP bridge/runner initialization.
+	if (trimmed.startsWith("/") && !isEvent && !slashCommandNeedsRunner(trimmed)) {
+		const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform);
+		if (handled) return;
+	}
+
+	// Ensure awareness is initialized for agent runs and runner-backed commands.
 	const state = await getAwareness(event.channel, platform, platform.formatInstructions);
 
 	// Route display output to the channel for the active run only. Queued runs
@@ -722,7 +736,6 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	state.displayAdapter = platform;
 
 	// Intercept slash commands before spinning up the agent
-	const trimmed = event.text.trim();
 	if (trimmed.startsWith("/") && !isEvent) {
 		const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
 		if (handled) return;
@@ -799,6 +812,10 @@ const handler: MomHandler = {
 		// Slash commands are control-plane messages. Handle them before the
 		// busy/steer path so active ticks or heartbeats don't swallow commands
 		// like /model as ordinary steering text.
+		if (!slashCommandNeedsRunner(trimmed)) {
+			return executeSlashCommand(trimmed, event.channel, workingDir, adapter);
+		}
+
 		const state = await getAwareness(event.channel, adapter, adapter.formatInstructions);
 		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
 	},
