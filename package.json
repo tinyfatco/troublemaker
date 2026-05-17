@@ -30,7 +30,8 @@
 		"test:discord-ambient": "npx tsx test/discord-ambient.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
 		"test:worker-import": "npx tsx test/worker-import.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:worker-import",
+		"test:web-slash-command": "npx tsx test/web-slash-command.test.ts",
+		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:worker-import && npm run test:web-slash-command",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {

@@ -157,13 +157,6 @@ Keep responses concise and helpful.`;
 			isBot: false,
 		});
 
-		if (this.handler.isRunning(channelId)) {
-			log.logInfo(`[web] Already running for ${channelId}`);
-			writer.send({ type: "error", message: "Already processing a message, say stop to cancel" });
-			writer.done();
-			return;
-		}
-
 		// Stash writer so createContext can access it
 		this.pendingWriters.set(channelId, writer);
 
@@ -173,6 +166,21 @@ Keep responses concise and helpful.`;
 		}, 12000);
 
 		try {
+			if (this.handler.resolvePendingInput(channelId, event.text)) {
+				return;
+			}
+
+			if (event.text.trim().startsWith("/")) {
+				const handled = await this.handler.handleSlashCommand(event, this);
+				if (handled) return;
+			}
+
+			if (this.handler.isRunning(channelId)) {
+				log.logInfo(`[web] Already running for ${channelId}`);
+				writer.send({ type: "error", message: "Already processing a message, say stop to cancel" });
+				return;
+			}
+
 			await this.handler.handleEvent(event, this);
 		} finally {
 			clearInterval(keepalive);
@@ -185,8 +193,11 @@ Keep responses concise and helpful.`;
 	// PlatformAdapter — message operations (mostly no-ops for web)
 	// ==========================================================================
 
-	async postMessage(_channel: string, _text: string): Promise<string> {
-		return String(Date.now());
+	async postMessage(channel: string, text: string): Promise<string> {
+		const ts = String(Date.now());
+		this.pendingWriters.get(channel)?.send({ type: "text", text });
+		this.logBotResponse(channel, text, ts);
+		return ts;
 	}
 
 	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {}
