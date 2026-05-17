@@ -23,6 +23,7 @@ GET  /api/v2/agents/:id/status
 GET  /api/v2/agents/:id/events?limit=50&before=:offset
 GET  /api/v2/agents/:id/events/stream
 POST /api/v2/agents/:id/messages
+POST /api/v2/agents/:id/messages/stop
 GET  /api/v2/agents/:id/files?path=:path
 GET  /api/v2/agents/:id/file?path=:path
 PUT  /api/v2/agents/:id/file

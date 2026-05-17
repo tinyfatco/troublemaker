@@ -113,6 +113,15 @@ export function postMessageUrl(): string {
   return consoleAgentUrl('/messages');
 }
 
+export async function stopActiveMessage(channelId = 'web'): Promise<void> {
+  const resp = await fetch(consoleAgentUrl('/messages/stop'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channelId }),
+  });
+  if (!resp.ok) throw await readError(resp, `Stop failed: ${resp.status}`);
+}
+
 export function fileContentUrl(path: string): string {
   const params = new URLSearchParams({ path });
   return consoleAgentUrl(`/file?${params}`);

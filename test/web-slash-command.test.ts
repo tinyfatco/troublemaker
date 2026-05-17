@@ -57,12 +57,24 @@ function dispatch(adapter: WebAdapter, payload: Record<string, unknown>): Promis
 	});
 }
 
+function dispatchStop(adapter: WebAdapter, payload: Record<string, unknown> = {}): Promise<MockResponse> {
+	return new Promise((resolve) => {
+		const req = new EventEmitter() as any;
+		const res = createMockResponse(() => resolve(res));
+		(adapter as any).dispatchStop(req, res as any);
+		req.emit("data", Buffer.from(JSON.stringify(payload)));
+		req.emit("end");
+	});
+}
+
 async function run() {
 	const workingDir = mkdtempSync(join(tmpdir(), "web-slash-command-"));
 	try {
 		let running = true;
 		let slashCount = 0;
 		let eventCount = 0;
+		let steerCount = 0;
+		let stopCount = 0;
 
 		const handler: MomHandler = {
 			isRunning: () => running,
@@ -74,8 +86,14 @@ async function run() {
 				await adapter.postMessage(event.channel, "slash-ok");
 				return true;
 			},
-			handleSteer: () => {},
-			handleStop: async () => {},
+			handleSteer: () => {
+				steerCount++;
+				setTimeout(() => { running = false; }, 10);
+			},
+			handleStop: async () => {
+				stopCount++;
+				running = false;
+			},
 			resolvePendingInput: () => false,
 		};
 
@@ -91,13 +109,19 @@ async function run() {
 		assert(eventCount === 0, "slash command does not start an agent run");
 
 		const busyResponse = await dispatch(adapter, { message: "hello" });
-		assert(busyResponse.body.includes('"type":"error"'), "normal busy message emits an error");
-		assert(busyResponse.body.includes("Already processing"), "normal busy message is rejected");
+		assert(busyResponse.body.includes('"status":"steering"'), "normal busy message emits a steering status");
+		assert(steerCount === 1, "normal busy message steers the active run");
 		assert(eventCount === 0, "normal busy message does not start an agent run");
 
 		running = false;
 		await dispatch(adapter, { message: "hello again" });
 		assert(eventCount === 1, "normal idle message starts an agent run");
+
+		running = true;
+		const stopResponse = await dispatchStop(adapter);
+		assert(stopResponse.statusCode === 200, "stop endpoint returns JSON success");
+		assert(stopResponse.body.includes('"ok":true'), "stop endpoint reports ok");
+		assert(stopCount === 1, "stop endpoint calls handler.handleStop");
 
 		console.log(`\n${passed} passed, ${failed} failed`);
 		process.exit(failed > 0 ? 1 : 0);

@@ -9,13 +9,14 @@
  */
 
 import { useState, useCallback, useRef } from 'react';
-import { postMessageUrl } from '../console-api';
+import { postMessageUrl, stopActiveMessage } from '../console-api';
 import type { AwarenessEntry } from '../types';
 
 export type StreamStatus =
   | 'idle'
   | 'waking'
   | 'connecting'
+  | 'steering'
   | 'streaming'
   | 'tool_running'
   | 'stopping'
@@ -81,6 +82,7 @@ export function useWebChat(): UseWebChatReturn {
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    let endedWithError = false;
 
     try {
       // Retry loop for cold starts
@@ -123,14 +125,14 @@ export function useWebChat(): UseWebChatReturn {
           if (!line.startsWith('data: ')) continue;
           const data = line.slice(6);
           if (data === '[DONE]') continue;
-          processEvent(data, setStreamingEntry, setStatus, setError);
+          if (processEvent(data, setStreamingEntry, setStatus, setError)) endedWithError = true;
         }
       }
 
       if (buffer.startsWith('data: ')) {
         const remaining = buffer.slice(6);
         if (remaining !== '[DONE]') {
-          processEvent(remaining, setStreamingEntry, setStatus, setError);
+          if (processEvent(remaining, setStreamingEntry, setStatus, setError)) endedWithError = true;
         }
       }
     } catch (err) {
@@ -138,6 +140,7 @@ export function useWebChat(): UseWebChatReturn {
         setError(null);
       } else {
         const msg = err instanceof Error ? err.message : 'Unknown error';
+        endedWithError = true;
         setError(msg);
         setStatus('error');
         setStreamingEntry((prev) => {
@@ -152,7 +155,7 @@ export function useWebChat(): UseWebChatReturn {
       // version. The SSE duplicate gets filtered out in AwarenessPane.
       setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
       setIsStreaming(false);
-      setStatus('idle');
+      setStatus(endedWithError ? 'error' : 'idle');
       setStartedAt(null);
       abortControllerRef.current = null;
     }
@@ -161,6 +164,9 @@ export function useWebChat(): UseWebChatReturn {
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
       setStatus('stopping');
+      stopActiveMessage().catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to stop active run');
+      });
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
@@ -187,7 +193,7 @@ function processEvent(
   setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
   setStatus: (s: StreamStatus) => void,
   setError: (e: string | null) => void,
-): void {
+): boolean {
   try {
     const parsed = JSON.parse(data);
 
@@ -260,12 +266,24 @@ function processEvent(
         setStatus('waking');
       } else if (parsed.status === 'connecting' || parsed.status === 'container') {
         setStatus('connecting');
+      } else if (parsed.status === 'steering') {
+        setStatus('steering');
       }
     } else if (parsed.type === 'error') {
-      setError(parsed.message || 'Stream error');
+      const message = parsed.message || 'Stream error';
+      setStatus('error');
+      setError(message);
+      setEntry((prev) => {
+        if (!prev) return prev;
+        const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
+        if (hasContent) return { ...prev, isStreaming: false };
+        return { ...prev, content: [{ type: 'text' as const, text: message }], isStreaming: false };
+      });
+      return true;
     }
     // heartbeat and run_complete are ignored
   } catch {
     // Non-JSON — skip
   }
+  return false;
 }

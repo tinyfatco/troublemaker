@@ -23,6 +23,8 @@ function chatLabel(status: StreamStatus): string {
       return 'waking';
     case 'connecting':
       return 'connecting';
+    case 'steering':
+      return 'updating';
     case 'streaming':
       return 'responding';
     case 'tool_running':

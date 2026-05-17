@@ -39,6 +39,24 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   // Track the oldest line offset we've loaded (for pagination)
   const oldestOffsetRef = useRef<number>(Infinity);
 
+  const mergeRecentBacklog = useCallback((data: { lines: string[]; offset: number }, replaceEmpty = false) => {
+    const parsed = data.lines
+      .map((line: string) => parseContextLine(line))
+      .filter((e): e is AwarenessEntry => e !== null);
+
+    oldestOffsetRef.current = Math.min(oldestOffsetRef.current, data.offset);
+    setAllLoaded(data.offset === 0);
+    setEntries((prev) => {
+      if (replaceEmpty && prev.length === 0) return parsed;
+      return mergeAwarenessEntries(prev, parsed);
+    });
+  }, []);
+
+  const refreshRecentBacklog = useCallback(async (replaceEmpty = false) => {
+    const data = await fetchAwarenessBacklog(50);
+    mergeRecentBacklog(data, replaceEmpty);
+  }, [mergeRecentBacklog]);
+
   // Fetch initial backlog (recent entries) — retries on failure for cold starts
   useEffect(() => {
     let cancelled = false;
@@ -47,17 +65,8 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       const maxRetries = 5;
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          const data = await fetchAwarenessBacklog(50);
-
+          await refreshRecentBacklog(true);
           if (cancelled) return;
-
-          const parsed = data.lines
-            .map((line: string) => parseContextLine(line))
-            .filter((e): e is AwarenessEntry => e !== null);
-
-          oldestOffsetRef.current = data.offset;
-          setEntries(parsed);
-          setAllLoaded(data.offset === 0);
           setIsLoading(false);
           setBacklogDone(true);
           return;
@@ -76,7 +85,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     })();
 
     return () => { cancelled = true; };
-  }, []);
+  }, [refreshRecentBacklog]);
 
   // Connect SSE for live updates (no backlog replay)
   useEffect(() => {
@@ -96,16 +105,32 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onerror = () => {
       setConnectionState('reconnecting');
       setError('Connection lost; reconnecting.');
+      refreshRecentBacklog(false).catch(() => {});
       setTimeout(() => setError(null), 3000);
     };
 
     es.onopen = () => {
       setConnectionState('connected');
       setError(null);
+      refreshRecentBacklog(false).catch(() => {});
     };
 
     return () => { es.close(); };
-  }, []);
+  }, [refreshRecentBacklog]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') {
+        refreshRecentBacklog(false).catch(() => {});
+      }
+    };
+    window.addEventListener('focus', refreshIfVisible);
+    document.addEventListener('visibilitychange', refreshIfVisible);
+    return () => {
+      window.removeEventListener('focus', refreshIfVisible);
+      document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [refreshRecentBacklog]);
 
   // Load older entries (scroll-up pagination)
   const loadMore = useCallback(async () => {
@@ -142,4 +167,15 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     lastEventAt,
     error,
   };
+}
+
+function mergeAwarenessEntries(existing: AwarenessEntry[], incoming: AwarenessEntry[]): AwarenessEntry[] {
+  const seen = new Set(existing.map((entry) => entry.id));
+  const merged = [...existing];
+  for (const entry of incoming) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    merged.push(entry);
+  }
+  return merged;
 }

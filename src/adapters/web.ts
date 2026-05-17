@@ -18,6 +18,10 @@ interface WebChatPayload {
 	channelId?: string;
 }
 
+interface WebStopPayload {
+	channelId?: string;
+}
+
 export interface WebAdapterConfig {
 	workingDir: string;
 }
@@ -115,6 +119,7 @@ Keep responses concise and helpful.`;
 				"Content-Type": "text/event-stream",
 				"Cache-Control": "no-cache",
 				Connection: "keep-alive",
+				"X-Accel-Buffering": "no",
 			});
 
 			const writer = new SSEWriter(res);
@@ -127,6 +132,38 @@ Keep responses concise and helpful.`;
 		});
 	}
 
+	dispatchStop(req: IncomingMessage, res: ServerResponse): void {
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		req.on("end", () => {
+			let payload: WebStopPayload = {};
+			const body = Buffer.concat(chunks).toString("utf-8").trim();
+			if (body) {
+				try {
+					payload = JSON.parse(body);
+				} catch {
+					res.writeHead(400, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ ok: false, error: "Invalid JSON" }));
+					return;
+				}
+			}
+
+			const channelId = payload.channelId || "web";
+			this.handler.handleStop(channelId, this)
+				.then(() => {
+					res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+					res.end(JSON.stringify({ ok: true }));
+				})
+				.catch((err) => {
+					res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+					res.end(JSON.stringify({
+						ok: false,
+						error: err instanceof Error ? err.message : String(err),
+					}));
+				});
+		});
+	}
+
 	// ==========================================================================
 	// Message processing
 	// ==========================================================================
@@ -134,6 +171,8 @@ Keep responses concise and helpful.`;
 	private async processMessage(payload: WebChatPayload, writer: SSEWriter): Promise<void> {
 		const channelId = payload.channelId || "web";
 		const ts = String(Date.now());
+		let ownsWriter = false;
+		let keepalive: ReturnType<typeof setInterval> | undefined;
 
 		log.logInfo(`[web] Inbound: ${payload.message.substring(0, 80)}`);
 
@@ -157,35 +196,62 @@ Keep responses concise and helpful.`;
 			isBot: false,
 		});
 
-		// Stash writer so createContext can access it
-		this.pendingWriters.set(channelId, writer);
-
-		// Keep stream active during long tool/thinking phases to avoid idle SSE gaps.
-		const keepalive = setInterval(() => {
-			writer.send({ type: "heartbeat", ts: Date.now() });
-		}, 12000);
-
 		try {
 			if (this.handler.resolvePendingInput(channelId, event.text)) {
 				return;
 			}
 
 			if (event.text.trim().startsWith("/")) {
+				this.pendingWriters.set(channelId, writer);
+				ownsWriter = true;
+				keepalive = setInterval(() => {
+					writer.send({ type: "heartbeat", ts: Date.now() });
+				}, 12000);
 				const handled = await this.handler.handleSlashCommand(event, this);
 				if (handled) return;
 			}
 
-			if (this.handler.isRunning(channelId)) {
-				log.logInfo(`[web] Already running for ${channelId}`);
-				writer.send({ type: "error", message: "Already processing a message, say stop to cancel" });
+			if (event.text.toLowerCase().trim() === "stop") {
+				await this.handler.handleStop(channelId, this);
 				return;
 			}
 
+			if (this.handler.isRunning(channelId)) {
+				log.logInfo(`[web] Steering active run for ${channelId}`);
+				this.pendingWriters.set(channelId, writer);
+				ownsWriter = true;
+				keepalive = setInterval(() => {
+					writer.send({ type: "heartbeat", ts: Date.now() });
+				}, 12000);
+				writer.send({ type: "status", status: "steering", message: "Updating active run" });
+				this.handler.handleSteer(event, this);
+				await this.waitForIdle(channelId, writer);
+				return;
+			}
+
+			this.pendingWriters.set(channelId, writer);
+			ownsWriter = true;
+			keepalive = setInterval(() => {
+				writer.send({ type: "heartbeat", ts: Date.now() });
+			}, 12000);
 			await this.handler.handleEvent(event, this);
 		} finally {
-			clearInterval(keepalive);
-			this.pendingWriters.delete(channelId);
+			if (keepalive) clearInterval(keepalive);
+			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
+				this.pendingWriters.delete(channelId);
+			}
 			writer.done();
+		}
+	}
+
+	private async waitForIdle(channelId: string, writer: SSEWriter): Promise<void> {
+		const deadline = Date.now() + 10 * 60 * 1000;
+		while (this.handler.isRunning(channelId)) {
+			if (Date.now() > deadline) {
+				writer.send({ type: "error", message: "Timed out waiting for active run to finish" });
+				return;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 500));
 		}
 	}
 

@@ -351,6 +351,7 @@ export class Gateway {
 			"Content-Type": "text/event-stream",
 			"Cache-Control": "no-cache",
 			"Connection": "keep-alive",
+			"X-Accel-Buffering": "no",
 		});
 
 		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
@@ -559,6 +560,22 @@ export class Gateway {
 					return;
 				}
 				if (!this.readyRoutes.has("/web/chat")) {
+					res.writeHead(503);
+					res.end("Adapter not ready");
+					return;
+				}
+				handler(req, res);
+				return;
+			}
+
+			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/messages/stop")) {
+				const handler = this.routes.get("/web/stop");
+				if (!handler) {
+					res.writeHead(404);
+					res.end("Web stop route not registered");
+					return;
+				}
+				if (!this.readyRoutes.has("/web/stop")) {
 					res.writeHead(503);
 					res.end("Adapter not ready");
 					return;
