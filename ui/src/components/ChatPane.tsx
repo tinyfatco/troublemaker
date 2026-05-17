@@ -20,12 +20,16 @@ export function ChatPane() {
 
   // Dedup: hide optimistic entries once the awareness stream has the real versions.
   // The awareness stream delivers the user message first, then the assistant response.
-  // Check if the last few awareness entries contain the same user text.
+  // Bound matching to this turn so repeated identical messages don't hide the
+  // new streaming entry behind an older user/assistant pair.
   const lastUserText = userEntry?.strippedText || '';
+  const turnEntries = userEntry
+    ? entries.filter((entry) => isEntryAtOrAfter(entry, userEntry.timestamp))
+    : [];
   const awarenessHasUser = lastUserText && entries.length > 0 &&
-    entries.slice(-6).some((e) => e.role === 'user' && e.strippedText === lastUserText);
-  const awarenessHasAssistant = awarenessHasUser && entries.length > 0 &&
-    entries[entries.length - 1]?.role === 'assistant';
+    turnEntries.some((e) => e.role === 'user' && e.strippedText === lastUserText);
+  const awarenessHasAssistant = awarenessHasUser &&
+    turnEntries.some((e) => e.role === 'assistant' && !e.isStreaming);
 
   const showUserEntry = userEntry && !awarenessHasUser;
   const showStreamingEntry = streamingEntry && !awarenessHasAssistant;
@@ -76,4 +80,11 @@ export function ChatPane() {
       />
     </div>
   );
+}
+
+function isEntryAtOrAfter(entry: { timestamp: string }, since: string): boolean {
+  const entryMs = Date.parse(entry.timestamp);
+  const sinceMs = Date.parse(since);
+  if (!Number.isFinite(entryMs) || !Number.isFinite(sinceMs)) return false;
+  return entryMs >= sinceMs - 5000;
 }

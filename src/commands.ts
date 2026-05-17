@@ -113,15 +113,6 @@ async function handleModelCommand(
 	// /model (no args) — show current model
 	if (args.length === 0) {
 		const model = resolveModel(workingDir);
-		const models = listModels(workingDir);
-
-		// Group by provider
-		const byProvider = new Map<string, typeof models>();
-		for (const m of models) {
-			const list = byProvider.get(m.provider) || [];
-			list.push(m);
-			byProvider.set(m.provider, list);
-		}
 
 		let response = `*Current model:* ${model.provider}/${model.id}\n\n`;
 		response += `Use \`/model <name>\` to switch. Examples:\n`;

@@ -220,16 +220,17 @@ function mergeOptimisticEntries(
 ): AwarenessEntry[] {
   const merged = [...entries];
   const lastUserText = userEntry?.strippedText || '';
-  const hasUser = !!lastUserText && merged
-    .slice(-8)
+  const turnEntries = userEntry
+    ? merged.filter((entry) => isEntryAtOrAfter(entry, userEntry.timestamp))
+    : [];
+  const hasUser = !!lastUserText && turnEntries
     .some((entry) => entry.role === 'user' && entry.strippedText === lastUserText);
 
   if (userEntry && !hasUser) {
     merged.push(userEntry);
   }
 
-  const hasAssistantAfterUser = hasUser && merged
-    .slice(-4)
+  const hasAssistantAfterUser = hasUser && turnEntries
     .some((entry) => entry.role === 'assistant' && !entry.isStreaming);
 
   if (streamingEntry && !hasAssistantAfterUser) {
@@ -237,6 +238,13 @@ function mergeOptimisticEntries(
   }
 
   return merged;
+}
+
+function isEntryAtOrAfter(entry: { timestamp: string }, since: string): boolean {
+  const entryMs = Date.parse(entry.timestamp);
+  const sinceMs = Date.parse(since);
+  if (!Number.isFinite(entryMs) || !Number.isFinite(sinceMs)) return false;
+  return entryMs >= sinceMs - 5000;
 }
 
 function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
