@@ -16,6 +16,11 @@
   --error: #ef4444;
   --success: #22c55e;
   --warning: #f59e0b;
+  --entry-user: #3769d6;
+  --entry-agent: #2c8b6f;
+  --entry-tool: #b46a1f;
+  --entry-thinking: #7e7370;
+  --entry-system: #9b3f55;
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --font-mono: "SF Mono", Monaco, "Cascadia Code", "Courier New", monospace;
 }
@@ -29,6 +34,11 @@
   --border: #333333;
   --accent: #4a9eff;
   --accent-muted: rgba(74, 158, 255, 0.1);
+  --entry-user: #6d92f0;
+  --entry-agent: #50b894;
+  --entry-tool: #d08a3a;
+  --entry-thinking: #a99d99;
+  --entry-system: #c7677c;
 }
 
 html, body, #root {
@@ -287,6 +297,10 @@ html, body, #root {
   flex: 1;
   overflow-y: auto;
   padding: 0.6rem 0.7rem;
+  background:
+    radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--entry-user) 8%, transparent), transparent 28%),
+    radial-gradient(circle at 86% 14%, color-mix(in srgb, var(--entry-tool) 8%, transparent), transparent 30%),
+    var(--surface);
 }
 
 .awareness-pane-empty {
@@ -302,7 +316,7 @@ html, body, #root {
 .awareness-pane-stream {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 4px;
 }
 
 /* Compact connection/run state. */
@@ -406,11 +420,17 @@ html, body, #root {
    ======================================================================== */
 
 .awareness-entry {
+  --entry-color: var(--entry-agent);
   max-width: 100%;
-  padding: 0;
+  padding: 0.5rem 0.65rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--entry-color) 13%, var(--surface) 87%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--entry-color) 12%, transparent);
+  overflow-wrap: anywhere;
 }
 
 .awareness-entry.user-entry {
+  --entry-color: var(--entry-user);
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
@@ -444,30 +464,19 @@ html, body, #root {
 .awareness-user-text {
   color: var(--text);
   font-size: 0.85rem;
-  line-height: 1.7;
-  padding: 0.15rem 0;
-}
-
-/* User message background */
-.awareness-entry.user-entry {
-  background: var(--accent-muted);
-  border-radius: 7px;
-  padding: 0.35rem 0.55rem;
-  margin: 0;
-  overflow-wrap: anywhere;
+  line-height: 1.55;
 }
 
 .awareness-entry.web-user-entry {
-  align-self: flex-end;
-  max-width: min(86%, 520px);
-  background: var(--accent);
-  color: white;
+  align-self: stretch;
+  max-width: 100%;
+  color: var(--text);
 }
 
 .awareness-entry.web-user-entry .awareness-meta,
 .awareness-entry.web-user-entry .awareness-username,
 .awareness-entry.web-user-entry .entry-timestamp {
-  color: rgba(255, 255, 255, 0.75);
+  color: color-mix(in srgb, var(--text-muted) 84%, var(--entry-user) 16%);
 }
 
 .awareness-entry.web-user-entry .channel-badge {
@@ -475,18 +484,17 @@ html, body, #root {
 }
 
 .awareness-entry.web-user-entry .awareness-user-text {
-  color: white;
+  color: var(--text);
 }
 
 /* Event triggers — compact indicator with optional description */
 .awareness-entry.event-entry {
+  --entry-color: var(--entry-system);
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  padding: 0.25rem 0.75rem;
   font-size: 0.7rem;
   color: var(--text-muted);
-  opacity: 0.7;
 }
 
 .event-header {
@@ -497,14 +505,15 @@ html, body, #root {
 
 .event-icon {
   font-size: 0.45rem;
-  color: var(--warning);
+  color: var(--entry-color);
 }
 
 .event-name {
   font-family: var(--font-mono);
   font-size: 0.65rem;
   letter-spacing: 0.01em;
-  font-weight: 500;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--entry-color) 78%, var(--text) 22%);
 }
 
 .event-desc {
@@ -524,14 +533,12 @@ html, body, #root {
 
 /* Ambient engagement — compact trigger with conversation context */
 .awareness-entry.ambient-entry {
+  --entry-color: var(--entry-thinking);
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
-  padding: 0.25rem 0.75rem;
   font-size: 0.7rem;
   color: var(--text-muted);
-  opacity: 0.8;
-  border-left: 2px solid #f59e0b30;
 }
 
 .ambient-pulse {
@@ -556,12 +563,11 @@ html, body, #root {
 
 /* System actions (/model, /compact) — compact inline indicator */
 .awareness-entry.system-action-entry {
+  --entry-color: var(--entry-system);
   display: flex;
   align-items: center;
-  padding: 0.15rem 0.75rem;
   font-size: 0.65rem;
   color: var(--text-muted);
-  opacity: 0.7;
 }
 
 .system-action-cmd {
@@ -578,10 +584,10 @@ html, body, #root {
 
 /* Silent responses — minimal dot + label */
 .awareness-entry.silent-entry {
+  --entry-color: var(--entry-thinking);
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.1rem 0.75rem;
   opacity: 0.5;
 }
 
@@ -602,23 +608,18 @@ html, body, #root {
 }
 
 .awareness-entry.assistant-entry {
+  --entry-color: var(--entry-agent);
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
   color: var(--text);
   line-height: 1.6;
   font-size: 0.85rem;
-  padding: 0.45rem 0.6rem;
-  background: var(--bg-secondary);
-  border-radius: 7px;
-  border: 1px solid var(--border);
   margin: 0;
-  overflow-wrap: anywhere;
 }
 
 .awareness-entry.assistant-entry.streaming {
-  border-color: rgba(59, 130, 246, 0.35);
-  box-shadow: inset 2px 0 0 var(--accent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
 .entry-timestamp {
@@ -698,6 +699,7 @@ html, body, #root {
 
 /* Thinking blocks */
 .awareness-thinking {
+  --entry-color: var(--entry-thinking);
   display: flex;
   align-items: flex-start;
   gap: 0.35rem;
@@ -705,7 +707,6 @@ html, body, #root {
   color: var(--text-muted);
   font-style: italic;
   cursor: pointer;
-  padding: 0.2rem 0;
 }
 
 .awareness-thinking:hover { color: var(--text); }
@@ -737,38 +738,31 @@ html, body, #root {
    ======================================================================== */
 
 .tool-call {
+  --entry-color: var(--entry-tool);
   font-size: 0.75rem;
   font-family: var(--font-mono);
-  border-left: 2px solid var(--border);
-  background: var(--bg-secondary);
-  border-radius: 0 4px 4px 0;
-  margin: 0.15rem 0;
+  margin: 0;
 }
 
-.tool-call.running { border-left-color: var(--accent); background: var(--accent-muted); }
-.tool-call.error { border-left-color: var(--error); background: rgba(239, 68, 68, 0.05); }
+.tool-call.running { --entry-color: var(--accent); }
+.tool-call.error { --entry-color: var(--error); }
 
 .tool-header {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
   width: 100%;
-  padding: 0.3rem 0.5rem;
-  background: none;
-  border: none;
-  color: var(--text-muted);
+  min-height: 20px;
+  padding: 0;
+  color: color-mix(in srgb, var(--entry-color) 76%, var(--text) 24%);
   text-align: left;
-  cursor: pointer;
   font-family: var(--font-mono);
   font-size: 0.75rem;
 }
 
-.tool-header:disabled { cursor: default; }
-.tool-header:hover:not(:disabled) { color: var(--text); }
-
 .tool-status-icon {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -782,21 +776,74 @@ html, body, #root {
 .tool-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid var(--border);
-  border-top-color: var(--accent);
+  border: 1.5px solid color-mix(in srgb, var(--entry-color) 22%, transparent);
+  border-top-color: var(--entry-color);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.tool-arrow { flex-shrink: 0; opacity: 0.5; }
-.tool-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tool-expand { opacity: 0.5; font-size: 0.8rem; }
+.tool-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 
-.tool-details { padding: 0 0.5rem 0.4rem; font-size: 0.7rem; }
+.tool-result-summary {
+  margin-left: auto;
+  color: color-mix(in srgb, var(--text-muted) 76%, var(--entry-color) 24%);
+  font-size: 0.68rem;
+}
 
-.tool-detail { margin-top: 0.4rem; }
+.tool-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-top: 0.1rem;
+  color: color-mix(in srgb, var(--text) 76%, var(--entry-color) 24%);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.tool-primary-arg {
+  max-width: 100%;
+  overflow: hidden;
+  padding: 0.08rem 0.35rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--entry-color) 8%, var(--surface) 92%);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-inline-action {
+  border: 0;
+  padding: 0;
+  color: color-mix(in srgb, var(--entry-color) 82%, var(--text) 18%);
+  background: transparent;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.tool-inline-action:hover { text-decoration: underline; }
+
+.tool-output,
+.tool-details {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+}
+
+.tool-detail { margin-top: 0; }
 
 .tool-detail-label {
   display: block;
@@ -809,13 +856,13 @@ html, body, #root {
 
 .tool-detail-pre {
   margin: 0;
-  padding: 0.4rem;
-  background: var(--bg);
+  padding: 0.45rem 0.55rem;
+  background: color-mix(in srgb, var(--entry-color) 7%, var(--surface) 93%);
   border-radius: 3px;
   overflow-x: auto;
   white-space: pre-wrap;
-  word-break: break-all;
-  max-height: 120px;
+  word-break: break-word;
+  max-height: 220px;
   overflow-y: auto;
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -834,7 +881,7 @@ html, body, #root {
   gap: 0.4rem;
   width: 100%;
   padding: 0.2rem 0.4rem;
-  background: var(--bg-secondary);
+  background: transparent;
   border: none;
   border-radius: 3px;
   color: var(--text-muted);
@@ -854,7 +901,8 @@ html, body, #root {
 }
 
 .tool-result-entry {
-  margin: 0.1rem 0;
+  --entry-color: var(--entry-tool);
+  margin: 0;
 }
 
 /* ========================================================================
@@ -864,15 +912,20 @@ html, body, #root {
 .input-bar {
   width: 100%;
   flex-shrink: 0;
-  border-top: 1px solid var(--border);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-top: 0;
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--bg) 78%, transparent) 34%);
+  padding: 0.45rem 0.65rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
 }
 
 .input-container {
   display: flex;
   gap: 0.4rem;
   align-items: flex-end;
-  padding: 0.75rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  box-shadow: 0 10px 28px rgba(35, 32, 22, 0.08);
 }
 
 .input-bar textarea {

@@ -47,9 +47,19 @@ function stripSessionContext(text: string): string {
 }
 
 function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; isRunning?: boolean; result?: ToolResultContent }) {
-  const [expanded, setExpanded] = useState(false);
+  const [argsExpanded, setArgsExpanded] = useState(false);
+  const [outputHidden, setOutputHidden] = useState(false);
   const args = block.arguments || {};
-  const label = (args.label as string) || block.name;
+  const primaryArg = getPrimaryToolArg(args);
+  const hasArgs = Object.keys(args).length > 0;
+  const resultText = result?.result ? String(result.result) : '';
+  const resultSummary = result
+    ? result.isError
+      ? 'error'
+      : summarizeToolResult(resultText)
+    : isRunning
+      ? 'running'
+      : 'pending';
 
   const statusIcon = isRunning
     ? <span className="tool-spinner" />
@@ -58,25 +68,40 @@ function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; i
       : <span className="tool-status-icon success">{'\u2713'}</span>;
 
   return (
-    <div className={`tool-call ${isRunning ? 'running' : ''} ${result?.isError ? 'error' : ''}`}>
-      <button className="tool-header" onClick={() => setExpanded(!expanded)}>
+    <div className={`awareness-entry tool-call ${isRunning ? 'running' : ''} ${result?.isError ? 'error' : ''}`}>
+      <div className="tool-header">
         {statusIcon}
-        <span className="tool-arrow">{'\u2192'}</span>
-        <span className="tool-label">{label}</span>
-        <span className="tool-expand">{expanded ? '\u2212' : '+'}</span>
-      </button>
-      {expanded && (
+        <span className="tool-label">{block.name}</span>
+        <span className="tool-result-summary">{resultSummary}</span>
+      </div>
+
+      <div className="tool-summary">
+        {primaryArg && <span className="tool-primary-arg">{primaryArg}</span>}
+        {result && (
+          <button className="tool-inline-action" onClick={() => setOutputHidden(!outputHidden)}>
+            {outputHidden ? 'show output' : 'hide output'}
+          </button>
+        )}
+        {hasArgs && (
+          <button className="tool-inline-action" onClick={() => setArgsExpanded(!argsExpanded)}>
+            {argsExpanded ? 'hide args' : 'show args'}
+          </button>
+        )}
+      </div>
+
+      {result && !outputHidden && (
+        <div className="tool-output">
+          <span className="tool-detail-label">output</span>
+          <pre className="tool-detail-pre">{resultText}</pre>
+        </div>
+      )}
+
+      {argsExpanded && (
         <div className="tool-details">
           <div className="tool-detail">
             <span className="tool-detail-label">args</span>
             <pre className="tool-detail-pre">{JSON.stringify(args, null, 2)}</pre>
           </div>
-          {result?.result && (
-            <div className="tool-detail">
-              <span className="tool-detail-label">result</span>
-              <pre className="tool-detail-pre">{result.result}</pre>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -102,7 +127,8 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
   if (entry.type === 'session') return null;
   if (!entry.content || !Array.isArray(entry.content)) return null;
 
-  // Tool results — render collapsed
+  // Orphan tool results are rare after stream normalization, but keep a
+  // fallback so unmatched output is never silently dropped.
   if (entry.role === 'toolResult') {
     const results = entry.content.filter((c) => c.type === 'toolResult');
     if (results.length === 0) return null;
@@ -236,38 +262,74 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     }
 
     return (
-      <div className={`awareness-entry assistant-entry ${entry.isStreaming ? 'streaming' : ''}`}>
-        {!entry.isStreaming && entry.timestamp && (
-          <div className="awareness-meta">
-            <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>
+      <>
+        {entry.content.map((block, i) => {
+          if (block.type === 'thinking') {
+            return <ThinkingBlock key={i} text={block.thinking} />;
+          }
+
+          if (block.type === 'text') {
+            const cleaned = stripSessionContext(block.text);
+            if (!cleaned.trim()) return null;
+            return (
+              <div key={i} className={`awareness-entry assistant-entry ${entry.isStreaming ? 'streaming' : ''}`}>
+                {!entry.isStreaming && entry.timestamp && (
+                  <div className="awareness-meta">
+                    <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>
+                  </div>
+                )}
+                <Markdown content={cleaned} />
+              </div>
+            );
+          }
+
+          if (block.type === 'toolCall') {
+            return (
+              <ToolCallBlock
+                key={i}
+                block={block}
+                isRunning={isToolRunning(block)}
+                result={getToolResult(block)}
+              />
+            );
+          }
+
+          return null;
+        })}
+        {entry.isStreaming && (
+          <div className="awareness-entry assistant-entry streaming cursor-entry">
+            <span className="cursor" />
           </div>
         )}
-        {thinkingBlocks.map((block, i) => (
-          <ThinkingBlock key={i} text={block.type === 'thinking' ? block.thinking : ''} />
-        ))}
-        {textBlocks.map((block, i) => {
-          if (block.type !== 'text') return null;
-          const cleaned = stripSessionContext(block.text);
-          if (!cleaned.trim()) return null;
-          return <Markdown key={i} content={cleaned} />;
-        })}
-        {toolCallBlocks.map((block, i) => (
-          <ToolCallBlock key={i} block={block} isRunning={isToolRunning(block)} result={getToolResult(block)} />
-        ))}
-        {entry.isStreaming && <span className="cursor" />}
-      </div>
+      </>
     );
   }
 
   return null;
 });
 
+function getPrimaryToolArg(args: Record<string, unknown>): string | null {
+  const keys = ['label', 'path', 'file', 'filePath', 'targetPath', 'command', 'cmd', 'query', 'pattern', 'url'];
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return null;
+}
+
+function summarizeToolResult(result: string): string {
+  if (!result) return 'done';
+  const lines = result.split('\n').length;
+  if (lines > 1) return `${lines} lines`;
+  return result.length > 64 ? `${result.length} chars` : 'done';
+}
+
 function ThinkingBlock({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   if (!text.trim()) return null;
 
   return (
-    <div className="awareness-thinking" onClick={() => setExpanded(!expanded)}>
+    <div className="awareness-entry awareness-thinking" onClick={() => setExpanded(!expanded)}>
       <span className="thinking-icon">{'\uD83D\uDCAD'}</span>
       <span className="thinking-text">
         {expanded ? text : text.substring(0, 80) + (text.length > 80 ? '...' : '')}

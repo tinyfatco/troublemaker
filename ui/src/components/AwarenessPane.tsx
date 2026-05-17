@@ -9,7 +9,7 @@ import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
-import type { AwarenessEntry } from '../types';
+import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { StatusStrip } from './StatusStrip';
@@ -43,7 +43,7 @@ export function AwarenessPane() {
   const error = chatError || streamError || voice.error;
 
   const visibleEntries = useMemo(
-    () => mergeOptimisticEntries(entries, userEntry, streamingEntry),
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry)),
     [entries, userEntry, streamingEntry],
   );
 
@@ -237,4 +237,76 @@ function mergeOptimisticEntries(
   }
 
   return merged;
+}
+
+function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
+  const normalized: AwarenessEntry[] = [];
+
+  for (const entry of entries) {
+    if (!isStandaloneToolResultEntry(entry)) {
+      normalized.push(entry);
+      continue;
+    }
+
+    if (!Array.isArray(entry.content)) continue;
+
+    const results = entry.content.filter((block): block is ToolResultContent => block.type === 'toolResult');
+    if (results.length === 0) {
+      normalized.push(entry);
+      continue;
+    }
+
+    const unmerged: ToolResultContent[] = [];
+
+    for (const result of results) {
+      const assistantIndex = findAssistantWithToolCall(normalized, result.toolCallId);
+      if (assistantIndex === -1) {
+        unmerged.push(result);
+        continue;
+      }
+
+      const assistant = normalized[assistantIndex];
+      const content = assistant.content || [];
+      const alreadyMerged = content.some(
+        (block) => block.type === 'toolResult' && block.toolCallId === result.toolCallId,
+      );
+
+      if (alreadyMerged) continue;
+
+      normalized[assistantIndex] = {
+        ...assistant,
+        content: [...content, result],
+      };
+    }
+
+    if (unmerged.length > 0) {
+      normalized.push({ ...entry, role: 'toolResult', content: unmerged });
+    }
+  }
+
+  return normalized;
+}
+
+function isStandaloneToolResultEntry(entry: AwarenessEntry): boolean {
+  if (!Array.isArray(entry.content)) return false;
+  if (entry.role === 'toolResult') return true;
+  if (entry.role === 'assistant') return false;
+
+  const hasToolResult = entry.content.some((block) => block.type === 'toolResult');
+  const hasText = entry.content.some((block) => block.type === 'text' && block.text.trim());
+  return hasToolResult && !hasText;
+}
+
+function findAssistantWithToolCall(entries: AwarenessEntry[], toolCallId: string): number {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.role !== 'assistant' || !entry.content) continue;
+    const hasToolCall = entry.content.some((block: ContentBlock) => {
+      if (block.type !== 'toolCall') return false;
+      const toolCall = block as ToolCallContent;
+      return toolCall.id === toolCallId;
+    });
+    if (hasToolCall) return i;
+  }
+  return -1;
 }
