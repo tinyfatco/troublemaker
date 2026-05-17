@@ -36,9 +36,9 @@ export function WorkspaceLayout() {
           ? 'desktop'
           : null;
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
-  const [centerCollapsed, setCenterCollapsed] = useState(false);
+  const [centerCollapsed, setCenterCollapsed] = useState(true);
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
