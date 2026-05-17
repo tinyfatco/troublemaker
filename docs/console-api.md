@@ -45,10 +45,11 @@ behind a local tunnel, reverse proxy auth, or a future standalone console token.
 
 ## Current State
 
-This first slice standardizes the API boundary without yet moving state out of
-containers. Crawdad CF initially proxies file, awareness, and message operations
-through the existing container gateway. Later Worker/DO-backed awareness and
-status reads can replace that proxy layer without changing the UI contract.
+The v2 console API is the product boundary for hosted web, standalone web, and
+future mobile clients. Crawdad CF can satisfy cheap reads and status from the
+Worker/R2 side when that is practical, but agent turns are container-backed:
+`POST /messages` streams from Troublemaker's `/web/chat` gateway. The Worker is
+not an agent runtime.
 
 ## Chat And Event Semantics
 

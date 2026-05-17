@@ -19,8 +19,10 @@ function formatStatusTime(ts: string | null): string {
 
 function chatLabel(status: StreamStatus): string {
   switch (status) {
-    case 'connecting':
+    case 'waking':
       return 'waking';
+    case 'connecting':
+      return 'connecting';
     case 'streaming':
       return 'responding';
     case 'tool_running':

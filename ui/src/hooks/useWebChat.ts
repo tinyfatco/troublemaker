@@ -14,6 +14,7 @@ import type { AwarenessEntry } from '../types';
 
 export type StreamStatus =
   | 'idle'
+  | 'waking'
   | 'connecting'
   | 'streaming'
   | 'tool_running'
@@ -254,10 +255,16 @@ function processEvent(
           isError: parsed.isError,
         }] };
       });
+    } else if (parsed.type === 'status') {
+      if (parsed.status === 'waking') {
+        setStatus('waking');
+      } else if (parsed.status === 'connecting' || parsed.status === 'container') {
+        setStatus('connecting');
+      }
     } else if (parsed.type === 'error') {
       setError(parsed.message || 'Stream error');
     }
-    // heartbeat, run_complete, status — ignored
+    // heartbeat and run_complete are ignored
   } catch {
     // Non-JSON — skip
   }

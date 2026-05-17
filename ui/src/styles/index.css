@@ -353,6 +353,7 @@ html, body, #root {
 }
 
 .chat-status-connecting,
+.chat-status-waking,
 .chat-status-tool_running,
 .chat-status-streaming {
   color: var(--accent);
