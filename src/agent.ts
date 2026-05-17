@@ -344,6 +344,15 @@ function createRunner(
 		return session;
 	};
 
+	const resetSessionState = () => {
+		unsubscribeSession?.();
+		unsubscribeSession = null;
+		session?.dispose();
+		session = null;
+		sessionManager = null;
+		agent.state.messages = [];
+	};
+
 	// Mutable per-run state
 	const runState = {
 		ctx: null as MomContext | null,
@@ -981,11 +990,7 @@ function createRunner(
 			writeFileSync(contextFile, "", "utf-8");
 
 			// Reset in-memory state (same as /clear)
-			unsubscribeSession?.();
-			unsubscribeSession = null;
-			agent.state.messages = [];
-			sessionManager = null;
-			session = null;
+			resetSessionState();
 
 			// Re-open SessionManager on the empty file — writes fresh session header
 			const freshSm = getSessionManager();
@@ -1070,11 +1075,7 @@ function createRunner(
 			}
 
 			// Step 4: always reset in-memory state.
-			unsubscribeSession?.();
-			unsubscribeSession = null;
-			agent.state.messages = [];
-			sessionManager = null;
-			session = null;
+			resetSessionState();
 
 			if (quarantined) {
 				log.logInfo(`[awareness] Context cleared — previous file was unreadable and quarantined to ${quarantined}`);
