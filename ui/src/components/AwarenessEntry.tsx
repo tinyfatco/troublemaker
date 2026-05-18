@@ -403,7 +403,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       <>
         {renderedBlocks}
         {shouldRenderStreamingPlaceholder(entry) && (
-          <div className="awareness-entry assistant-entry streaming waiting-entry">
+          <div className="waiting-entry">
             <span className="waiting-spinner" role="status" aria-label="Waiting for agent response" />
           </div>
         )}

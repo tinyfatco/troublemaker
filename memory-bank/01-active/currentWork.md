@@ -93,6 +93,10 @@ compact spinner. #27 tightens the web SSE writer lookup and optimistic merge
 logic so tool-call activity can remain visible while a tool-first response is
 still streaming.
 
+Spinner polish follow-up: the pending assistant spinner is no longer rendered
+inside the generic awareness-entry card surface. It now appears as a bare
+inline waiting indicator in the stream.
+
 
 ## Status: Phone Messaging Adapter Added
 
