@@ -1,0 +1,48 @@
+import {
+	getToolDetail,
+	getToolStatus,
+	getToolStatusText,
+	getToolTitle,
+	humanizeToolName,
+} from "../ui/src/toolDisplay.ts";
+import type { ToolCallContent, ToolResultContent } from "../ui/src/types.ts";
+
+let passed = 0;
+let failed = 0;
+
+function assert(condition: boolean, msg: string) {
+	if (condition) {
+		passed++;
+		console.log(`  ✓ ${msg}`);
+	} else {
+		failed++;
+		console.error(`  ✗ ${msg}`);
+	}
+}
+
+const bashCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-1",
+	name: "bash",
+	arguments: {
+		label: "Find WorkspaceLayout source",
+		command: "rg -n \"WorkspaceLayout\" ui/src",
+	},
+};
+
+const result: ToolResultContent = {
+	type: "toolResult",
+	toolCallId: "tool-1",
+	result: "one\ntwo\nthree",
+};
+
+assert(getToolTitle(bashCall) === "Find WorkspaceLayout source", "tool title prefers human label over raw tool name");
+assert(getToolDetail(bashCall) === "rg -n \"WorkspaceLayout\" ui/src", "tool detail uses command as secondary text");
+assert(getToolStatus(false) === "done", "historical tool call without a result is done, not pending");
+assert(getToolStatus(true, result) === "running", "streaming unresolved call is running");
+assert(getToolStatus(false, { ...result, isError: true }) === "error", "errored result reports error");
+assert(getToolStatusText("done", result) === "3 lines", "multi-line result summary is compact");
+assert(humanizeToolName("send_message_to_channel") === "Send Message To Channel", "fallback tool names are readable");
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed > 0 ? 1 : 0);

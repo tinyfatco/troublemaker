@@ -6,14 +6,19 @@
  */
 
 import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
-import { useAwarenessStream } from '../hooks/useAwarenessStream';
+import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
+import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 
-export function AwarenessPane() {
+interface AwarenessPaneProps {
+  stream: UseAwarenessStreamReturn;
+}
+
+export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const {
     entries,
     isLoading,
@@ -22,7 +27,7 @@ export function AwarenessPane() {
     isLoadingMore,
     allLoaded,
     error: streamError,
-  } = useAwarenessStream();
+  } = stream;
   const {
     userEntry,
     streamingEntry,
@@ -202,40 +207,6 @@ export function AwarenessPane() {
   );
 }
 
-function mergeOptimisticEntries(
-  entries: AwarenessEntry[],
-  userEntry: AwarenessEntry | null,
-  streamingEntry: AwarenessEntry | null,
-): AwarenessEntry[] {
-  const merged = [...entries];
-  const lastUserText = userEntry?.strippedText || '';
-  const turnEntries = userEntry
-    ? merged.filter((entry) => isEntryAtOrAfter(entry, userEntry.timestamp))
-    : [];
-  const hasUser = !!lastUserText && turnEntries
-    .some((entry) => entry.role === 'user' && entry.strippedText === lastUserText);
-
-  if (userEntry && !hasUser) {
-    merged.push(userEntry);
-  }
-
-  const hasAssistantAfterUser = hasUser && turnEntries
-    .some((entry) => entry.role === 'assistant' && !entry.isStreaming);
-
-  if (streamingEntry && !hasAssistantAfterUser) {
-    merged.push(streamingEntry);
-  }
-
-  return merged;
-}
-
-function isEntryAtOrAfter(entry: { timestamp: string }, since: string): boolean {
-  const entryMs = Date.parse(entry.timestamp);
-  const sinceMs = Date.parse(since);
-  if (!Number.isFinite(entryMs) || !Number.isFinite(sinceMs)) return false;
-  return entryMs >= sinceMs - 5000;
-}
-
 function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
   const normalized: AwarenessEntry[] = [];
 
@@ -256,7 +227,8 @@ function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
     const unmerged: ToolResultContent[] = [];
 
     for (const result of results) {
-      const assistantIndex = findAssistantWithToolCall(normalized, result.toolCallId);
+      const resultId = getToolResultId(result);
+      const assistantIndex = findAssistantWithToolCall(normalized, resultId);
       if (assistantIndex === -1) {
         unmerged.push(result);
         continue;
@@ -265,7 +237,7 @@ function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
       const assistant = normalized[assistantIndex];
       const content = assistant.content || [];
       const alreadyMerged = content.some(
-        (block) => block.type === 'toolResult' && block.toolCallId === result.toolCallId,
+        (block) => block.type === 'toolResult' && getToolResultId(block) === resultId,
       );
 
       if (alreadyMerged) continue;
@@ -295,6 +267,7 @@ function isStandaloneToolResultEntry(entry: AwarenessEntry): boolean {
 }
 
 function findAssistantWithToolCall(entries: AwarenessEntry[], toolCallId: string): number {
+  if (!toolCallId) return -1;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (entry.role !== 'assistant' || !entry.content) continue;
@@ -306,4 +279,12 @@ function findAssistantWithToolCall(entries: AwarenessEntry[], toolCallId: string
     if (hasToolCall) return i;
   }
   return -1;
+}
+
+function getToolResultId(result: ToolResultContent): string {
+  return String((result as ToolResultContent & {
+    tool_call_id?: string;
+    toolUseId?: string;
+    tool_use_id?: string;
+  }).toolCallId || (result as any).tool_call_id || (result as any).toolUseId || (result as any).tool_use_id || '');
 }

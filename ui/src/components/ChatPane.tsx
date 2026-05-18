@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
+import { getOptimisticVisibility } from '../optimisticEntries';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 
@@ -18,21 +19,7 @@ export function ChatPane() {
 
   const error = chatError || streamError;
 
-  // Dedup: hide optimistic entries once the awareness stream has the real versions.
-  // The awareness stream delivers the user message first, then the assistant response.
-  // Bound matching to this turn so repeated identical messages don't hide the
-  // new streaming entry behind an older user/assistant pair.
-  const lastUserText = userEntry?.strippedText || '';
-  const turnEntries = userEntry
-    ? entries.filter((entry) => isEntryAtOrAfter(entry, userEntry.timestamp))
-    : [];
-  const awarenessHasUser = lastUserText && entries.length > 0 &&
-    turnEntries.some((e) => e.role === 'user' && e.strippedText === lastUserText);
-  const awarenessHasAssistant = awarenessHasUser &&
-    turnEntries.some((e) => e.role === 'assistant' && !e.isStreaming);
-
-  const showUserEntry = userEntry && !awarenessHasUser;
-  const showStreamingEntry = streamingEntry && !awarenessHasAssistant;
+  const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -80,11 +67,4 @@ export function ChatPane() {
       />
     </div>
   );
-}
-
-function isEntryAtOrAfter(entry: { timestamp: string }, since: string): boolean {
-  const entryMs = Date.parse(entry.timestamp);
-  const sinceMs = Date.parse(since);
-  if (!Number.isFinite(entryMs) || !Number.isFinite(sinceMs)) return false;
-  return entryMs >= sinceMs - 5000;
 }

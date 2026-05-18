@@ -36,7 +36,7 @@ export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (!isStreaming) handleSubmit();
+      handleSubmit();
     }
   };
 
@@ -48,26 +48,25 @@ export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? 'Agent is working...' : 'Type a message...'}
-          disabled={disabled && !isStreaming}
+          placeholder={isStreaming ? 'Type to steer...' : 'Type a message...'}
+          disabled={disabled}
           rows={1}
         />
 
-        {isStreaming ? (
-          <button className="control-button stop" onClick={onStop} aria-label="Stop">
+        <button
+          className="send-button"
+          onClick={handleSubmit}
+          disabled={disabled || !value.trim()}
+          aria-label={isStreaming ? 'Send steering message' : 'Send'}
+        >
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+        {isStreaming && (
+          <button className="control-button stop" onClick={onStop} aria-label="Stop" title="Stop">
             <svg viewBox="0 0 24 24" fill="none">
               <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
-            </svg>
-          </button>
-        ) : (
-          <button
-            className="send-button"
-            onClick={handleSubmit}
-            disabled={disabled || !value.trim()}
-            aria-label="Send"
-          >
-            <svg viewBox="0 0 24 24" fill="none">
-              <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
           </button>
         )}

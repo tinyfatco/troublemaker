@@ -96,13 +96,13 @@ export function parseContextLine(line: string): AwarenessEntry | null {
         type: 'message',
         timestamp: raw.timestamp,
         role: msg.role,
-        content: msg.content,
+        content: normalizeContentBlocks(msg.content),
         model: raw.model,
         stopReason: raw.stopReason,
       };
 
-      if (msg.role === 'user' && Array.isArray(msg.content)) {
-        const textBlock = msg.content.find((c: ContentBlock) => c.type === 'text') as TextContent | undefined;
+      if (msg.role === 'user' && Array.isArray(entry.content)) {
+        const textBlock = entry.content.find((c: ContentBlock) => c.type === 'text') as TextContent | undefined;
         if (textBlock) {
           // Strip <session_context> before parsing — it precedes the [timestamp] prefix
           const cleaned = textBlock.text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '').trim();
@@ -133,4 +133,49 @@ export function parseContextLine(line: string): AwarenessEntry | null {
     // Malformed line
   }
   return null;
+}
+
+function normalizeContentBlocks(content: unknown): ContentBlock[] | undefined {
+  if (!Array.isArray(content)) return undefined;
+  return content.map((block) => normalizeContentBlock(block)).filter((block): block is ContentBlock => block !== null);
+}
+
+function normalizeContentBlock(block: unknown): ContentBlock | null {
+  if (!block || typeof block !== 'object') return null;
+  const raw = block as Record<string, unknown>;
+
+  if (raw.type === 'text') {
+    return { type: 'text', text: typeof raw.text === 'string' ? raw.text : '' };
+  }
+  if (raw.type === 'thinking') {
+    return {
+      type: 'thinking',
+      thinking: typeof raw.thinking === 'string' ? raw.thinking : '',
+      thinkingSignature: typeof raw.thinkingSignature === 'string' ? raw.thinkingSignature : undefined,
+    };
+  }
+  if (raw.type === 'toolCall' || raw.type === 'tool_call' || raw.type === 'tool_use') {
+    const rawArgs = raw.arguments ?? raw.args ?? raw.input;
+    return {
+      type: 'toolCall',
+      id: String(raw.id ?? raw.toolCallId ?? raw.tool_call_id ?? raw.toolUseId ?? raw.tool_use_id ?? ''),
+      name: String(raw.name ?? raw.toolName ?? raw.tool_name ?? 'tool'),
+      arguments: isRecord(rawArgs) ? rawArgs : {},
+    };
+  }
+  if (raw.type === 'toolResult' || raw.type === 'tool_result') {
+    const result = raw.result ?? raw.content ?? raw.output ?? '';
+    return {
+      type: 'toolResult',
+      toolCallId: String(raw.toolCallId ?? raw.tool_call_id ?? raw.toolUseId ?? raw.tool_use_id ?? ''),
+      result: typeof result === 'string' ? result : JSON.stringify(result),
+      isError: Boolean(raw.isError ?? raw.is_error),
+    };
+  }
+
+  return null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

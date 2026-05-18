@@ -790,27 +790,45 @@ html, body, #root {
    Tool Calls
    ======================================================================== */
 
-.tool-call {
+.tool-call-group {
   --entry-color: var(--entry-tool);
-  font-size: 0.75rem;
-  font-family: var(--font-mono);
-  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0.2rem 0.25rem;
+  background: color-mix(in srgb, var(--entry-tool) 8%, var(--surface) 92%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--entry-tool) 10%, transparent);
 }
 
-.tool-call.running { --entry-color: var(--accent); }
-.tool-call.error { --entry-color: var(--error); }
+.tool-call-row {
+  --tool-state-color: var(--success);
+  border-radius: 3px;
+}
 
-.tool-header {
+.tool-call-row.running { --tool-state-color: var(--accent); }
+.tool-call-row.error { --tool-state-color: var(--error); }
+
+.tool-call-main {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
+  gap: 0.5rem;
   width: 100%;
-  min-height: 20px;
-  padding: 0;
-  color: color-mix(in srgb, var(--entry-color) 76%, var(--text) 24%);
+  min-height: 28px;
+  padding: 0.2rem 0.25rem;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
   text-align: left;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.tool-call-main:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--entry-tool) 7%, transparent);
+}
+
+.tool-call-main:disabled {
+  cursor: default;
 }
 
 .tool-status-icon {
@@ -821,6 +839,7 @@ html, body, #root {
   justify-content: center;
   font-size: 0.65rem;
   font-weight: 600;
+  color: var(--tool-state-color);
 }
 
 .tool-status-icon.success { color: var(--success); }
@@ -829,74 +848,71 @@ html, body, #root {
 .tool-spinner {
   width: 10px;
   height: 10px;
-  border: 1.5px solid color-mix(in srgb, var(--entry-color) 22%, transparent);
-  border-top-color: var(--entry-color);
+  border: 1.5px solid color-mix(in srgb, var(--tool-state-color) 22%, transparent);
+  border-top-color: var(--tool-state-color);
   border-radius: 50%;
   animation: spin 1s linear infinite;
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.tool-label {
+.tool-call-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.tool-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 650;
+  line-height: 1.25;
+}
+
+.tool-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  line-height: 1.25;
 }
 
 .tool-result-summary {
-  margin-left: auto;
-  color: color-mix(in srgb, var(--text-muted) 76%, var(--entry-color) 24%);
-  font-size: 0.68rem;
-}
-
-.tool-summary {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  flex-wrap: wrap;
-  margin-top: 0.1rem;
-  color: color-mix(in srgb, var(--text) 76%, var(--entry-color) 24%);
-  font-family: var(--font-sans);
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
-.tool-primary-arg {
-  max-width: 100%;
-  overflow: hidden;
-  padding: 0.08rem 0.35rem;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--entry-color) 8%, var(--surface) 92%);
-  color: var(--text);
+  color: color-mix(in srgb, var(--text-muted) 78%, var(--tool-state-color) 22%);
   font-family: var(--font-mono);
-  font-size: 0.72rem;
-  text-overflow: ellipsis;
+  font-size: 0.64rem;
   white-space: nowrap;
 }
 
-.tool-inline-action {
-  border: 0;
-  padding: 0;
-  color: color-mix(in srgb, var(--entry-color) 82%, var(--text) 18%);
-  background: transparent;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 700;
+.tool-caret {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  transition: transform 0.15s ease;
 }
 
-.tool-inline-action:hover { text-decoration: underline; }
-
-.tool-output,
-.tool-details {
-  margin-top: 0.4rem;
-  font-size: 0.7rem;
+.tool-caret.open {
+  transform: rotate(90deg);
 }
 
-.tool-detail { margin-top: 0; }
+.tool-accordion {
+  margin: 0.15rem 0.2rem 0.35rem 1.45rem;
+  padding: 0.4rem 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--entry-tool) 28%, transparent);
+  background: color-mix(in srgb, var(--entry-tool) 5%, transparent);
+  border-radius: 3px;
+}
+
+.tool-detail-section + .tool-detail-section {
+  margin-top: 0.55rem;
+}
 
 .tool-detail-label {
   display: block;
@@ -907,10 +923,11 @@ html, body, #root {
   margin-bottom: 0.2rem;
 }
 
-.tool-detail-pre {
+.tool-output-pre,
+.structured-string-block {
   margin: 0;
   padding: 0.45rem 0.55rem;
-  background: color-mix(in srgb, var(--entry-color) 7%, var(--surface) 93%);
+  background: color-mix(in srgb, var(--entry-tool) 6%, var(--surface) 94%);
   border-radius: 3px;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -921,6 +938,57 @@ html, body, #root {
   font-size: 0.7rem;
   color: var(--text);
 }
+
+.structured-value {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.structured-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, 0.34fr) minmax(0, 1fr);
+  gap: 0.5rem;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.structured-key {
+  color: var(--text-muted);
+  font-size: 0.66rem;
+  line-height: 1.35;
+  text-transform: lowercase;
+}
+
+.structured-string,
+.structured-code,
+.structured-number,
+.structured-boolean,
+.structured-null,
+.structured-empty {
+  min-width: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.structured-string {
+  font-family: var(--font-sans);
+}
+
+.structured-code {
+  padding: 0.04rem 0.25rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--entry-tool) 7%, var(--surface) 93%);
+}
+
+.structured-number { color: color-mix(in srgb, var(--accent) 78%, var(--text) 22%); }
+.structured-boolean { color: color-mix(in srgb, var(--entry-user) 80%, var(--text) 20%); }
+.structured-null,
+.structured-empty { color: var(--text-muted); }
 
 /* Tool results */
 .awareness-tool-result {

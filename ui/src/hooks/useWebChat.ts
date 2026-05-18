@@ -45,9 +45,55 @@ export function useWebChat(): UseWebChatReturn {
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  const sendSteeringMessage = useCallback(async (trimmed: string) => {
+    const now = new Date().toISOString();
+    const user: AwarenessEntry = {
+      id: `live-user-${Date.now()}`,
+      type: 'message',
+      timestamp: now,
+      role: 'user',
+      content: [{ type: 'text', text: trimmed }],
+      channel: 'web',
+      userName: 'user',
+      strippedText: trimmed,
+    };
+
+    setUserEntry(user);
+    setError(null);
+    setStatus('steering');
+
+    try {
+      const response = await fetch(postMessageUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: trimmed }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText || `HTTP ${response.status}`);
+      }
+
+      if (response.body) {
+        const endedWithError = await readSseResponse(response, setStreamingEntry, setStatus, setError);
+        if (endedWithError) return;
+      }
+
+      setStatus(abortControllerRef.current ? 'streaming' : 'idle');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setError(msg);
+      setStatus('error');
+    }
+  }, []);
+
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || abortControllerRef.current) return;
+    if (!trimmed) return;
+    if (abortControllerRef.current) {
+      void sendSteeringMessage(trimmed);
+      return;
+    }
 
     const now = new Date().toISOString();
 
@@ -109,32 +155,7 @@ export function useWebChat(): UseWebChatReturn {
 
       if (!response.body) throw new Error('No response body');
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6);
-          if (data === '[DONE]') continue;
-          if (processEvent(data, setStreamingEntry, setStatus, setError)) endedWithError = true;
-        }
-      }
-
-      if (buffer.startsWith('data: ')) {
-        const remaining = buffer.slice(6);
-        if (remaining !== '[DONE]') {
-          if (processEvent(remaining, setStreamingEntry, setStatus, setError)) endedWithError = true;
-        }
-      }
+      endedWithError = await readSseResponse(response, setStreamingEntry, setStatus, setError);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         setError(null);
@@ -159,7 +180,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, []);
+  }, [sendSteeringMessage]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
@@ -187,6 +208,45 @@ export function useWebChat(): UseWebChatReturn {
 // ============================================================================
 // SSE event → update streaming AwarenessEntry
 // ============================================================================
+
+async function readSseResponse(
+  response: Response,
+  setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
+  setStatus: (s: StreamStatus) => void,
+  setError: (e: string | null) => void,
+): Promise<boolean> {
+  if (!response.body) return false;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let endedWithError = false;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const data = line.slice(6);
+      if (data === '[DONE]') continue;
+      if (processEvent(data, setEntry, setStatus, setError)) endedWithError = true;
+    }
+  }
+
+  if (buffer.startsWith('data: ')) {
+    const remaining = buffer.slice(6);
+    if (remaining !== '[DONE]') {
+      if (processEvent(remaining, setEntry, setStatus, setError)) endedWithError = true;
+    }
+  }
+
+  return endedWithError;
+}
 
 function processEvent(
   data: string,

@@ -12,6 +12,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useConfig } from '../hooks/useConfig';
+import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
@@ -22,6 +23,7 @@ import { HeaderStatus } from './HeaderStatus';
 
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
+  const awarenessStream = useAwarenessStream();
   const [displayOverride, setDisplayOverride] = useState<'terminal' | 'desktop' | null>(null);
   const capabilities = config.capabilities || {};
   const terminalAvailable = capabilities.terminal !== false;
@@ -239,7 +241,7 @@ export function WorkspaceLayout() {
           {/* agent name removed */}
         </div>
         <div className="header-right">
-          <HeaderStatus />
+          <HeaderStatus stream={awarenessStream} />
         </div>
       </header>
 
@@ -276,7 +278,7 @@ export function WorkspaceLayout() {
           <>
             {!centerCollapsed && hasInteractivePanel && <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />}
             <div className="awareness-sidebar" style={centerCollapsed || !hasInteractivePanel ? { flex: 1 } : { width: awarenessWidth }}>
-              <AwarenessPane />
+              <AwarenessPane stream={awarenessStream} />
             </div>
           </>
         )}
