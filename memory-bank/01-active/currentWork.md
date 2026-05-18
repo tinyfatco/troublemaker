@@ -33,6 +33,11 @@ identical prior turn as the current turn and hid the new streaming response.
 The fix narrows the optimistic match skew so rapid repeated turns remain
 visible.
 
+Second #24 fix: the frontend could also route a rapid repeated slash command
+through the steering path if the previous request was still winding down.
+Slash commands should always use the normal independent send path because the
+backend explicitly bypasses busy handling for them.
+
 
 ## Status: Phone Messaging Adapter Added
 

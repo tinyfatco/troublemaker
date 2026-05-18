@@ -11,6 +11,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { postMessageUrl, stopActiveMessage } from '../console-api';
 import type { AwarenessEntry } from '../types';
+import { shouldSendAsSteering } from '../webChatRouting';
 
 export type StreamStatus =
   | 'idle'
@@ -90,7 +91,7 @@ export function useWebChat(): UseWebChatReturn {
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (abortControllerRef.current) {
+    if (shouldSendAsSteering(trimmed, !!abortControllerRef.current)) {
       void sendSteeringMessage(trimmed);
       return;
     }
