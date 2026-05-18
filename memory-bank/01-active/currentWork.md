@@ -77,6 +77,11 @@ while an assistant streaming entry has no visible content. As soon as text,
 thinking, or tool activity arrives from SSE, the placeholder is replaced by
 the real streaming content instead of remaining as a separate blinking block.
 
+Top-bar polish follow-up: the workspace header no longer renders the last
+awareness event time beside the connection dot. That value was the timestamp
+of the most recent delivered agent event, not a useful clock, so the header
+now only exposes connected/loading/reconnecting status.
+
 
 ## Status: Phone Messaging Adapter Added
 

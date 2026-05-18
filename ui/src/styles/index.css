@@ -113,19 +113,11 @@ html, body, #root {
 .header-status {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
   min-width: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1;
-}
-
-.header-status-time {
-  max-width: 80px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Body — three-panel flex */
