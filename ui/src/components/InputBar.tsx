@@ -1,17 +1,24 @@
-import { useState, useRef, useEffect, type KeyboardEvent } from 'react';
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent, type ReactNode } from 'react';
 
 interface InputBarProps {
   onSend: (text: string) => void;
   onStop?: () => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  onHeightChange?: (height: number) => void;
   /** Optional extra button(s) rendered after the send button */
-  extraButtons?: React.ReactNode;
+  extraButtons?: ReactNode;
 }
 
-export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }: InputBarProps) {
+export function InputBar({ onSend, onStop, disabled, isStreaming, onHeightChange, extraButtons }: InputBarProps) {
   const [value, setValue] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const reportHeight = useCallback(() => {
+    const height = containerRef.current?.getBoundingClientRect().height;
+    if (height) onHeightChange?.(Math.ceil(height));
+  }, [onHeightChange]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -19,7 +26,23 @@ export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }
       textarea.style.height = 'auto';
       textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
     }
-  }, [value]);
+
+    const frame = requestAnimationFrame(reportHeight);
+    return () => cancelAnimationFrame(frame);
+  }, [value, reportHeight]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') {
+      reportHeight();
+      return;
+    }
+
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(container);
+    reportHeight();
+    return () => observer.disconnect();
+  }, [reportHeight, isStreaming, disabled, extraButtons]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -42,7 +65,7 @@ export function InputBar({ onSend, onStop, disabled, isStreaming, extraButtons }
 
   return (
     <div className="input-bar">
-      <div className="input-container">
+      <div className="input-container" ref={containerRef}>
         <textarea
           ref={textareaRef}
           value={value}

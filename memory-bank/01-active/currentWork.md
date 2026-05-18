@@ -1,6 +1,24 @@
 # Current Work
 
-**Last updated:** 2026-05-11
+**Last updated:** 2026-05-18
+
+## Status: Hosted Workspace Reliability Polish In Progress
+
+2026-05-18: Active work is on the Crawdad-hosted Troublemaker workspace
+inside the fat-platform iframe. The immediate target is GitHub issues #21
+and #22:
+
+- #21: keep the active streaming message visible when the user is already
+  near the live bottom, and compensate when the input composer expands so it
+  does not hide the newest agent output.
+- #22: completed tool calls should render as green/success; yellow/orange
+  should be reserved for running/pending tool activity.
+
+Implementation note: this belongs in `troublemaker/ui`, because Crawdad CF
+serves the built workspace UI bundle. The fix tracks the composer height,
+keeps a live scroll signal for streaming content growth, respects explicit
+manual scroll-up, and makes completed tool-call groups/rows use the success
+palette by default.
 
 
 ## Status: Phone Messaging Adapter Added

@@ -327,6 +327,7 @@ html, body, #root {
 }
 
 .awareness-pane {
+  --composer-height: 72px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -350,6 +351,7 @@ html, body, #root {
   flex: 1;
   overflow-y: auto;
   padding: 0.6rem 0.7rem;
+  scroll-padding-bottom: calc(var(--composer-height) + 1rem);
   background:
     radial-gradient(circle at 14% 8%, color-mix(in srgb, var(--entry-user) 8%, transparent), transparent 28%),
     radial-gradient(circle at 86% 14%, color-mix(in srgb, var(--entry-tool) 8%, transparent), transparent 30%),
@@ -431,7 +433,7 @@ html, body, #root {
 /* Scroll-to-bottom button */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 80px;
+  bottom: calc(var(--composer-height) + 12px);
   right: 20px;
   width: 32px;
   height: 32px;
@@ -791,21 +793,30 @@ html, body, #root {
    ======================================================================== */
 
 .tool-call-group {
-  --entry-color: var(--entry-tool);
+  --entry-color: var(--success);
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 0.2rem 0.25rem;
-  background: color-mix(in srgb, var(--entry-tool) 8%, var(--surface) 92%);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--entry-tool) 10%, transparent);
+  background: color-mix(in srgb, var(--entry-color) 7%, var(--surface) 93%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--entry-color) 16%, transparent);
+}
+
+.tool-call-group:has(.tool-call-row.running) {
+  --entry-color: var(--entry-tool);
+}
+
+.tool-call-group:has(.tool-call-row.error) {
+  --entry-color: var(--error);
 }
 
 .tool-call-row {
   --tool-state-color: var(--success);
   border-radius: 3px;
+  background: color-mix(in srgb, var(--tool-state-color) 6%, transparent);
 }
 
-.tool-call-row.running { --tool-state-color: var(--accent); }
+.tool-call-row.running { --tool-state-color: var(--entry-tool); }
 .tool-call-row.error { --tool-state-color: var(--error); }
 
 .tool-call-main {
@@ -824,7 +835,7 @@ html, body, #root {
 }
 
 .tool-call-main:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--entry-tool) 7%, transparent);
+  background: color-mix(in srgb, var(--tool-state-color) 9%, transparent);
 }
 
 .tool-call-main:disabled {
@@ -905,8 +916,8 @@ html, body, #root {
 .tool-accordion {
   margin: 0.15rem 0.2rem 0.35rem 1.45rem;
   padding: 0.4rem 0.5rem;
-  border-left: 1px solid color-mix(in srgb, var(--entry-tool) 28%, transparent);
-  background: color-mix(in srgb, var(--entry-tool) 5%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--entry-color) 28%, transparent);
+  background: color-mix(in srgb, var(--entry-color) 5%, transparent);
   border-radius: 3px;
 }
 
@@ -927,7 +938,7 @@ html, body, #root {
 .structured-string-block {
   margin: 0;
   padding: 0.45rem 0.55rem;
-  background: color-mix(in srgb, var(--entry-tool) 6%, var(--surface) 94%);
+  background: color-mix(in srgb, var(--entry-color) 6%, var(--surface) 94%);
   border-radius: 3px;
   overflow-x: auto;
   white-space: pre-wrap;

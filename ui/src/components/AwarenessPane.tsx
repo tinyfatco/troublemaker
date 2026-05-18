@@ -5,7 +5,7 @@
  * Loads recent entries first (tail-first), lazy-loads older entries on scroll-up.
  */
 
-import { useRef, useEffect, useCallback, useMemo, useState } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties } from 'react';
 import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
@@ -51,8 +51,16 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(0);
   const userScrolledRef = useRef(false);
   const prevScrollHeightRef = useRef(0);
+  const composerHeightRef = useRef(0);
+
+  const isNearBottom = useCallback((threshold = 120) => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     // Use requestAnimationFrame to ensure DOM has settled
@@ -62,6 +70,27 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
       setShowScrollBtn(false);
     });
   }, []);
+
+  const handleComposerHeightChange = useCallback((height: number) => {
+    if (Math.abs(height - composerHeightRef.current) < 1) return;
+
+    const shouldFollowBottom = !userScrolledRef.current || isNearBottom(160);
+    composerHeightRef.current = height;
+    setComposerHeight(height);
+
+    if (shouldFollowBottom && backlogDone) {
+      scrollToBottom('instant');
+    }
+  }, [backlogDone, isNearBottom, scrollToBottom]);
+
+  const liveScrollSignal = useMemo(
+    () => getLiveScrollSignal(visibleEntries),
+    [visibleEntries],
+  );
+
+  const paneStyle = useMemo(() => ({
+    '--composer-height': `${composerHeight}px`,
+  }) as CSSProperties, [composerHeight]);
 
   // Scroll to bottom when initial backlog loads
   useEffect(() => {
@@ -91,12 +120,15 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
     prevScrollHeightRef.current = 0;
   }, [visibleEntries.length, isLoadingMore]);
 
-  // Auto-scroll on new entries (only if user hasn't scrolled up)
+  // Auto-scroll on new entries and streaming text growth, but only while the
+  // user is still reading near the live bottom.
   useEffect(() => {
-    if (!userScrolledRef.current && backlogDone) {
-      scrollToBottom('smooth');
+    if (!backlogDone || isLoadingMore) return;
+
+    if (!userScrolledRef.current || isNearBottom(160)) {
+      scrollToBottom(isStreaming ? 'instant' : 'smooth');
     }
-  }, [visibleEntries.length, scrollToBottom, backlogDone]);
+  }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
 
   // Detect user scroll — scroll-up triggers loadMore, scroll-down hides button
   const handleScroll = useCallback(() => {
@@ -119,7 +151,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   }, [loadMore, isLoadingMore, allLoaded, backlogDone]);
 
   return (
-    <div className="awareness-pane">
+    <div className="awareness-pane" style={paneStyle}>
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
@@ -183,6 +215,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
         onStop={abortStream}
         disabled={isVoiceActive}
         isStreaming={isStreaming}
+        onHeightChange={handleComposerHeightChange}
         extraButtons={
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}
@@ -205,6 +238,28 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
       />
     </div>
   );
+}
+
+function getLiveScrollSignal(entries: AwarenessEntry[]): string {
+  const last = entries[entries.length - 1];
+  if (!last) return 'empty';
+  const contentSignal = (last.content || []).map(getContentBlockSignal).join('|');
+  return `${last.id}:${last.role || ''}:${last.isStreaming ? 'streaming' : 'settled'}:${contentSignal}`;
+}
+
+function getContentBlockSignal(block: ContentBlock): string {
+  switch (block.type) {
+    case 'text':
+      return `text:${block.text.length}`;
+    case 'thinking':
+      return `thinking:${block.thinking.length}`;
+    case 'toolCall':
+      return `tool:${block.id}:${block.name}:${JSON.stringify(block.arguments || {}).length}`;
+    case 'toolResult':
+      return `result:${block.toolCallId}:${block.isError ? 'error' : 'ok'}:${block.result.length}`;
+    default:
+      return 'unknown';
+  }
 }
 
 function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
