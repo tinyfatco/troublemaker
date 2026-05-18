@@ -38,6 +38,13 @@ through the steering path if the previous request was still winding down.
 Slash commands should always use the normal independent send path because the
 backend explicitly bypasses busy handling for them.
 
+Third #24 fix: the backend web adapter no longer relies only on a single
+mutable `channelId -> SSE writer` slot for slash-command responses. Each
+incoming web request now carries a request-scoped SSE writer through
+`AsyncLocalStorage`, so overlapping same-channel slash commands cannot steal
+or drop each other's final text. Added a regression that runs `/slow` and
+`/fast` concurrently and asserts each response lands on its own stream.
+
 
 ## Status: Phone Messaging Adapter Added
 

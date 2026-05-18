@@ -67,6 +67,32 @@ function dispatchStop(adapter: WebAdapter, payload: Record<string, unknown> = {}
 	});
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+	let resolve!: () => void;
+	const promise = new Promise<void>((res) => {
+		resolve = res;
+	});
+	return { promise, resolve };
+}
+
+function waitFor(predicate: () => boolean): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const deadline = Date.now() + 1000;
+		const tick = () => {
+			if (predicate()) {
+				resolve();
+				return;
+			}
+			if (Date.now() > deadline) {
+				reject(new Error("timed out waiting for condition"));
+				return;
+			}
+			setTimeout(tick, 0);
+		};
+		tick();
+	});
+}
+
 async function run() {
 	const workingDir = mkdtempSync(join(tmpdir(), "web-slash-command-"));
 	try {
@@ -75,6 +101,8 @@ async function run() {
 		let eventCount = 0;
 		let steerCount = 0;
 		let stopCount = 0;
+		const slowSlashGate = deferred();
+		let slowSlashStarted = false;
 
 		const handler: MomHandler = {
 			isRunning: () => running,
@@ -83,6 +111,16 @@ async function run() {
 			},
 			handleSlashCommand: async (event: MomEvent, adapter: PlatformAdapter) => {
 				slashCount++;
+				if (event.text === "/slow") {
+					slowSlashStarted = true;
+					await slowSlashGate.promise;
+					await adapter.postMessage(event.channel, "slow-ok");
+					return true;
+				}
+				if (event.text === "/fast") {
+					await adapter.postMessage(event.channel, "fast-ok");
+					return true;
+				}
 				await adapter.postMessage(event.channel, "slash-ok");
 				return true;
 			},
@@ -108,6 +146,16 @@ async function run() {
 		assert(!slashResponse.body.includes("Already processing"), "slash command bypasses busy rejection");
 		assert(slashCount === 1, "slash command handler is called");
 		assert(eventCount === 0, "slash command does not start an agent run");
+
+		const slowPromise = dispatch(adapter, { message: "/slow" });
+		await waitFor(() => slowSlashStarted);
+		const fastResponse = await dispatch(adapter, { message: "/fast" });
+		slowSlashGate.resolve();
+		const slowResponse = await slowPromise;
+		assert(fastResponse.body.includes("fast-ok"), "overlapping fast slash response reaches its own SSE stream");
+		assert(!fastResponse.body.includes("slow-ok"), "overlapping fast slash stream does not receive slow response text");
+		assert(slowResponse.body.includes("slow-ok"), "overlapping slow slash response is not dropped after fast request completes");
+		assert(!slowResponse.body.includes("fast-ok"), "overlapping slow slash stream does not receive fast response text");
 
 		const busyResponse = await dispatch(adapter, { message: "hello" });
 		assert(busyResponse.body.includes('"status":"steering"'), "normal busy message emits a steering status");

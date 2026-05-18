@@ -1,5 +1,6 @@
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
+import { AsyncLocalStorage } from "async_hooks";
 import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
@@ -20,6 +21,11 @@ interface WebChatPayload {
 
 interface WebStopPayload {
 	channelId?: string;
+}
+
+interface WriterScope {
+	channelId: string;
+	writer: SSEWriter;
 }
 
 export interface WebAdapterConfig {
@@ -70,6 +76,7 @@ Keep responses concise and helpful.`;
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
+	private writerScope = new AsyncLocalStorage<WriterScope>();
 
 	constructor(config: WebAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -126,10 +133,13 @@ Keep responses concise and helpful.`;
 			const writer = new SSEWriter(res);
 			writer.send({ type: "status", status: "accepted", message: "Message accepted" });
 
-			this.processMessage(payload, writer).catch((err) => {
-				log.logWarning("Web chat processing error", err instanceof Error ? err.message : String(err));
-				writer.send({ type: "error", message: err instanceof Error ? err.message : "Unknown error" });
-				writer.done();
+			const channelId = payload.channelId || "web";
+			this.writerScope.run({ channelId, writer }, () => {
+				this.processMessage(payload, writer).catch((err) => {
+					log.logWarning("Web chat processing error", err instanceof Error ? err.message : String(err));
+					writer.send({ type: "error", message: err instanceof Error ? err.message : "Unknown error" });
+					writer.done();
+				});
 			});
 		});
 	}
@@ -263,7 +273,13 @@ Keep responses concise and helpful.`;
 
 	async postMessage(channel: string, text: string): Promise<string> {
 		const ts = String(Date.now());
-		this.pendingWriters.get(channel)?.send({ type: "text", text });
+		const scoped = this.writerScope.getStore();
+		const writer = scoped?.channelId === channel ? scoped.writer : this.pendingWriters.get(channel);
+		if (writer) {
+			writer.send({ type: "text", text });
+		} else {
+			log.logWarning(`[web] No active SSE writer for channel ${channel}; response logged only`);
+		}
 		this.logBotResponse(channel, text, ts);
 		return ts;
 	}
