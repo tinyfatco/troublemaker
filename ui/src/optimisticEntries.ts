@@ -11,11 +11,13 @@ export function getOptimisticVisibility(
   entries: AwarenessEntry[],
   userEntry: AwarenessEntry | null,
   streamingEntry: AwarenessEntry | null,
+  localEntries: AwarenessEntry[] = [],
 ): OptimisticVisibility {
-  const realUserIndex = findMatchingTurnUserIndex(entries, userEntry);
+  const visibleBaseEntries = [...entries, ...localEntries];
+  const realUserIndex = findMatchingTurnUserIndex(visibleBaseEntries, userEntry);
   const hasRealUser = realUserIndex !== -1;
   const hasAssistantAfterUser = hasRealUser &&
-    entries.slice(realUserIndex + 1).some((entry) => entry.role === 'assistant' && !entry.isStreaming);
+    visibleBaseEntries.slice(realUserIndex + 1).some((entry) => entry.role === 'assistant' && !entry.isStreaming);
 
   return {
     showUserEntry: !!userEntry && !hasRealUser,
@@ -27,9 +29,10 @@ export function mergeOptimisticEntries(
   entries: AwarenessEntry[],
   userEntry: AwarenessEntry | null,
   streamingEntry: AwarenessEntry | null,
+  localEntries: AwarenessEntry[] = [],
 ): AwarenessEntry[] {
-  const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry);
-  const merged = [...entries];
+  const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry, localEntries);
+  const merged = [...entries, ...localEntries];
 
   if (userEntry && showUserEntry) {
     merged.push(userEntry);

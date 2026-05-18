@@ -70,6 +70,21 @@ assert(
 	'repeated /model merge keeps the live streaming assistant entry visible',
 );
 
+const mergedWithLocalSlashHistory = mergeOptimisticEntries(
+	[],
+	secondOptimisticUser,
+	secondStreaming,
+	[firstUser, firstAssistant],
+);
+assert(
+	mergedWithLocalSlashHistory.some((entry) => entry.id === firstAssistant.id),
+	'completed local slash response remains visible when no durable awareness entry exists',
+);
+assert(
+	mergedWithLocalSlashHistory.some((entry) => entry.id === secondStreaming.id),
+	'new repeated slash response renders after completed local slash history',
+);
+
 const secondAssistant = assistant('a2', '2026-05-18T00:01:09.000Z');
 const visibleAfterSecondResponse = getOptimisticVisibility(
 	[firstUser, firstAssistant, secondOptimisticUser, secondAssistant],

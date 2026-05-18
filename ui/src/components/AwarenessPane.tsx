@@ -29,6 +29,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
     error: streamError,
   } = stream;
   const {
+    localEntries,
     userEntry,
     streamingEntry,
     isStreaming,
@@ -44,8 +45,8 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const error = chatError || streamError || voice.error;
 
   const visibleEntries = useMemo(
-    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry)),
-    [entries, userEntry, streamingEntry],
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
+    [entries, userEntry, streamingEntry, localEntries],
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);

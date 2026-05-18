@@ -45,6 +45,14 @@ incoming web request now carries a request-scoped SSE writer through
 or drop each other's final text. Added a regression that runs `/slow` and
 `/fast` concurrently and asserts each response lands on its own stream.
 
+Fourth #24 fix: the web UI now keeps completed slash-command turns in a
+small local transcript buffer. `/model` and similar commands do not always
+write assistant entries to `awareness/context.jsonl`, so the previous
+single-entry optimistic state caused repeated slash commands to replace the
+prior visible response instead of adding a new one. Added optimistic merge
+coverage for completed local slash history followed by a repeated live
+response.
+
 
 ## Status: Phone Messaging Adapter Added
 

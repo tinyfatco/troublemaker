@@ -1,13 +1,14 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
-import { getOptimisticVisibility } from '../optimisticEntries';
+import { mergeOptimisticEntries } from '../optimisticEntries';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 
 export function ChatPane() {
   const { entries, isLoading, error: streamError } = useAwarenessStream();
   const {
+    localEntries,
     userEntry,
     streamingEntry,
     isStreaming,
@@ -19,7 +20,7 @@ export function ChatPane() {
 
   const error = chatError || streamError;
 
-  const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry);
+  const visibleEntries = mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -36,17 +37,15 @@ export function ChatPane() {
           <div className="chat-empty">
             <p className="chat-empty-text">Loading awareness...</p>
           </div>
-        ) : entries.length === 0 && !showUserEntry && !showStreamingEntry ? (
+        ) : visibleEntries.length === 0 ? (
           <div className="chat-empty">
             <p className="chat-empty-text">Send a message to get started.</p>
           </div>
         ) : (
           <div className="chat-stream">
-            {entries.map((entry) => (
+            {visibleEntries.map((entry) => (
               <AwarenessEntryComponent key={entry.id} entry={entry} />
             ))}
-            {showUserEntry && <AwarenessEntryComponent key={userEntry.id} entry={userEntry} />}
-            {showStreamingEntry && <AwarenessEntryComponent key={streamingEntry.id} entry={streamingEntry} />}
           </div>
         )}
         <div ref={messagesEndRef} />

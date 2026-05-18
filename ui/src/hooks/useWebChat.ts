@@ -2,10 +2,9 @@
  * useWebChat — SSE streaming for the active web chat turn.
  *
  * Sends messages via POST /api/v2/agents/:id/messages and reads token-level SSE events.
- * Returns a single in-progress AwarenessEntry that the ChatPane renders
- * at the bottom of the awareness stream. When the turn completes,
- * streamingEntry goes null — the completed entry arrives via the
- * awareness stream (from context.jsonl).
+ * Returns an in-progress AwarenessEntry that the ChatPane renders at the
+ * bottom of the awareness stream. Completed slash-command turns are retained
+ * locally because they do not always produce durable context.jsonl entries.
  */
 
 import { useState, useCallback, useRef } from 'react';
@@ -24,6 +23,8 @@ export type StreamStatus =
   | 'error';
 
 export interface UseWebChatReturn {
+  /** Completed local web turns that are not guaranteed to appear in context.jsonl */
+  localEntries: AwarenessEntry[];
   /** The user's message, shown optimistically while streaming */
   userEntry: AwarenessEntry | null;
   /** The assistant's in-progress response */
@@ -38,6 +39,7 @@ export interface UseWebChatReturn {
 }
 
 export function useWebChat(): UseWebChatReturn {
+  const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>([]);
   const [userEntry, setUserEntry] = useState<AwarenessEntry | null>(null);
   const [streamingEntry, setStreamingEntry] = useState<AwarenessEntry | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
@@ -45,6 +47,15 @@ export function useWebChat(): UseWebChatReturn {
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeStreamingEntryRef = useRef<AwarenessEntry | null>(null);
+
+  const setActiveStreamingEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>> = useCallback((next) => {
+    const value = typeof next === 'function'
+      ? (next as (prev: AwarenessEntry | null) => AwarenessEntry | null)(activeStreamingEntryRef.current)
+      : next;
+    activeStreamingEntryRef.current = value;
+    setStreamingEntry(value);
+  }, []);
 
   const sendSteeringMessage = useCallback(async (trimmed: string) => {
     const now = new Date().toISOString();
@@ -121,6 +132,7 @@ export function useWebChat(): UseWebChatReturn {
     };
 
     setUserEntry(user);
+    activeStreamingEntryRef.current = assistant;
     setStreamingEntry(assistant);
     setIsStreaming(true);
     setStatus('connecting');
@@ -156,7 +168,7 @@ export function useWebChat(): UseWebChatReturn {
 
       if (!response.body) throw new Error('No response body');
 
-      endedWithError = await readSseResponse(response, setStreamingEntry, setStatus, setError);
+      endedWithError = await readSseResponse(response, setActiveStreamingEntry, setStatus, setError);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         setError(null);
@@ -165,7 +177,7 @@ export function useWebChat(): UseWebChatReturn {
         endedWithError = true;
         setError(msg);
         setStatus('error');
-        setStreamingEntry((prev) => {
+        setActiveStreamingEntry((prev) => {
           if (!prev) return null;
           const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
           if (hasContent) return { ...prev, isStreaming: false };
@@ -173,15 +185,24 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
-      // Keep streamingEntry with isStreaming=false — it becomes the rendered
-      // version. The SSE duplicate gets filtered out in AwarenessPane.
-      setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      const finalAssistant = activeStreamingEntryRef.current
+        ? { ...activeStreamingEntryRef.current, isStreaming: false }
+        : null;
+      if (trimmed.startsWith('/')) {
+        setLocalEntries((prev) => appendLocalSlashTurn(prev, user, finalAssistant));
+        setUserEntry(null);
+        setActiveStreamingEntry(null);
+      } else {
+        // Keep streamingEntry with isStreaming=false — it becomes the rendered
+        // version. The SSE duplicate gets filtered out in AwarenessPane.
+        setActiveStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      }
       setIsStreaming(false);
       setStatus(endedWithError ? 'error' : 'idle');
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [sendSteeringMessage]);
+  }, [sendSteeringMessage, setActiveStreamingEntry]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
@@ -192,18 +213,40 @@ export function useWebChat(): UseWebChatReturn {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
     }
-    setStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+    setActiveStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
     setIsStreaming(false);
     setStatus('idle');
     setStartedAt(null);
-  }, []);
+  }, [setActiveStreamingEntry]);
 
   const clearError = useCallback(() => {
     setError(null);
     setStatus('idle');
   }, []);
 
-  return { userEntry, streamingEntry, isStreaming, status, error, startedAt, sendMessage, abortStream, clearError };
+  return { localEntries, userEntry, streamingEntry, isStreaming, status, error, startedAt, sendMessage, abortStream, clearError };
+}
+
+const LOCAL_SLASH_ENTRY_LIMIT = 40;
+
+function appendLocalSlashTurn(
+  entries: AwarenessEntry[],
+  user: AwarenessEntry,
+  assistant: AwarenessEntry | null,
+): AwarenessEntry[] {
+  const next = [...entries, user];
+  if (assistant && hasRenderableContent(assistant)) {
+    next.push(assistant);
+  }
+  return next.slice(-LOCAL_SLASH_ENTRY_LIMIT);
+}
+
+function hasRenderableContent(entry: AwarenessEntry): boolean {
+  return !!entry.content?.some((block) => {
+    if (block.type === 'text') return block.text.trim().length > 0;
+    if (block.type === 'thinking') return block.thinking.trim().length > 0;
+    return block.type === 'toolCall' || block.type === 'toolResult';
+  });
 }
 
 // ============================================================================
