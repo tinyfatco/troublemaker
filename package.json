@@ -29,12 +29,13 @@
 		"test:context-messages-only-error": "npx tsx test/context-messages-only-error.test.ts",
 		"test:discord-ambient": "npx tsx test/discord-ambient.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
+		"test:model-config-current-selection": "npx tsx test/model-config-current-selection.test.ts",
 		"test:web-slash-command": "npx tsx test/web-slash-command.test.ts",
 		"test:web-ui-optimistic-dedupe": "npx tsx test/web-ui-optimistic-dedupe.test.ts",
 		"test:web-ui-thinking-display": "npx tsx test/web-ui-thinking-display.test.ts",
 		"test:web-ui-webchat-routing": "npx tsx test/web-ui-webchat-routing.test.ts",
 		"test:web-ui-tool-display": "npx tsx test/web-ui-tool-display.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display",
+		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:model-config-current-selection && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {

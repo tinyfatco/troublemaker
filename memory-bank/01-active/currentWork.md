@@ -53,6 +53,13 @@ prior visible response instead of adding a new one. Added optimistic merge
 coverage for completed local slash history followed by a repeated live
 response.
 
+Warm-path performance follow-up: hosted Playwright now proves the repeated
+`/model` response renders twice, but warm response time was still ~7.9s.
+The remaining delay was inside `/model` itself: the no-args command rebuilt a
+full `ModelRegistry` just to display the current provider/model. Added a fast
+current-selection reader for `/model` no-args while leaving registry-backed
+resolution for `/model list` and `/model <name>`.
+
 
 ## Status: Phone Messaging Adapter Added
 

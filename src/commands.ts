@@ -12,7 +12,7 @@ import { randomUUID } from "crypto";
 import type { PlatformAdapter } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
 import { MomSettingsManager } from "./context.js";
-import { findModel, listModels, resolveModel } from "./model-config.js";
+import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
@@ -112,7 +112,7 @@ async function handleModelCommand(
 ): Promise<void> {
 	// /model (no args) — show current model
 	if (args.length === 0) {
-		const model = resolveModel(workingDir);
+		const model = getCurrentModelSelection(workingDir);
 
 		let response = `*Current model:* ${model.provider}/${model.id}\n\n`;
 		response += `Use \`/model <name>\` to switch. Examples:\n`;

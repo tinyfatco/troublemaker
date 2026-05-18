@@ -212,20 +212,7 @@ function resolveFireworksAliasModel(
  * 3. anthropic / claude-sonnet-4-5
  */
 export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
-	// 1. Env vars (highest priority — set by platform/crawdad-cf)
-	let provider = process.env.MOM_MODEL_PROVIDER;
-	let modelId = process.env.MOM_MODEL_ID;
-
-	// 2. settings.json (set by /model command or agent bash)
-	if ((!provider || !modelId) && workingDir) {
-		const settings = readSettings(workingDir);
-		if (!provider && settings.defaultProvider) provider = settings.defaultProvider;
-		if (!modelId && settings.defaultModel) modelId = settings.defaultModel;
-	}
-
-	// 3. Defaults
-	provider = provider || DEFAULT_PROVIDER;
-	modelId = modelId || DEFAULT_MODEL_ID;
+	const { provider, id: modelId } = getCurrentModelSelection(workingDir);
 
 	const models = getRegistryModels(workingDir, modelRegistry);
 
@@ -251,6 +238,22 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 
 	log.logInfo(`Model: ${model.provider}/${model.id} (api: ${model.api})`);
 	return applyBaseUrlOverride(model, model.provider);
+}
+
+export function getCurrentModelSelection(workingDir?: string): { provider: string; id: string } {
+	let provider = process.env.MOM_MODEL_PROVIDER;
+	let modelId = process.env.MOM_MODEL_ID;
+
+	if ((!provider || !modelId) && workingDir) {
+		const settings = readSettings(workingDir);
+		if (!provider && settings.defaultProvider) provider = settings.defaultProvider;
+		if (!modelId && settings.defaultModel) modelId = settings.defaultModel;
+	}
+
+	return {
+		provider: provider || DEFAULT_PROVIDER,
+		id: modelId || DEFAULT_MODEL_ID,
+	};
 }
 
 /**
