@@ -67,6 +67,10 @@ and registered existing scheduled events. The watcher now arms filesystem
 watching immediately for new event files but delays its initial existing-file
 scan by 10s after boot, giving the first warm web turn a clear path before
 background scheduling work starts. Added `test:events-initial-scan-delay`.
+Verified after baking into `CRAWDAD_VERSION=254`: hosted cold/warm Playwright
+passed, with warm `/model` at ~3.2s immediately after the cold turn. Cold
+remains ~30s because sandbox filesystem/process readiness still dominates
+before the Troublemaker gateway can accept `/web/chat`.
 
 
 ## Status: Phone Messaging Adapter Added
