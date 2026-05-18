@@ -813,11 +813,18 @@ html, body, #root {
 .tool-call-row {
   --tool-state-color: var(--success);
   border-radius: 3px;
-  background: color-mix(in srgb, var(--tool-state-color) 6%, transparent);
+  background: transparent;
 }
 
-.tool-call-row.running { --tool-state-color: var(--entry-tool); }
-.tool-call-row.error { --tool-state-color: var(--error); }
+.tool-call-row.running {
+  --tool-state-color: var(--entry-tool);
+  background: color-mix(in srgb, var(--tool-state-color) 7%, transparent);
+}
+
+.tool-call-row.error {
+  --tool-state-color: var(--error);
+  background: color-mix(in srgb, var(--tool-state-color) 7%, transparent);
+}
 
 .tool-call-main {
   display: flex;
@@ -895,10 +902,15 @@ html, body, #root {
 }
 
 .tool-result-summary {
-  color: color-mix(in srgb, var(--text-muted) 78%, var(--tool-state-color) 22%);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 0.64rem;
   white-space: nowrap;
+}
+
+.tool-call-row.running .tool-result-summary,
+.tool-call-row.error .tool-result-summary {
+  color: color-mix(in srgb, var(--text-muted) 70%, var(--tool-state-color) 30%);
 }
 
 .tool-caret {
@@ -917,7 +929,7 @@ html, body, #root {
   margin: 0.15rem 0.2rem 0.35rem 1.45rem;
   padding: 0.4rem 0.5rem;
   border-left: 1px solid color-mix(in srgb, var(--entry-color) 28%, transparent);
-  background: color-mix(in srgb, var(--entry-color) 5%, transparent);
+  background: color-mix(in srgb, var(--surface) 95%, var(--text-muted) 5%);
   border-radius: 3px;
 }
 
@@ -938,7 +950,7 @@ html, body, #root {
 .structured-string-block {
   margin: 0;
   padding: 0.45rem 0.55rem;
-  background: color-mix(in srgb, var(--entry-color) 6%, var(--surface) 94%);
+  background: color-mix(in srgb, var(--surface) 96%, var(--text-muted) 4%);
   border-radius: 3px;
   overflow-x: auto;
   white-space: pre-wrap;
