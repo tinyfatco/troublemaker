@@ -1,5 +1,6 @@
 import { memo, useState, type ReactNode } from 'react';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
+import { getThinkingPreview } from '../thinkingDisplay';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
@@ -398,13 +399,21 @@ function ThinkingBlock({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   if (!text.trim()) return null;
 
+  const preview = getThinkingPreview(text);
+  const canExpand = preview.isTruncated;
+  const displayText = expanded || !canExpand ? text.trimEnd() : preview.text;
+
   return (
-    <div className="awareness-entry awareness-thinking" onClick={() => setExpanded(!expanded)}>
+    <button
+      type="button"
+      className={`awareness-entry awareness-thinking ${canExpand ? 'toggleable' : ''}`}
+      onClick={() => canExpand && setExpanded(!expanded)}
+      aria-expanded={canExpand ? expanded : undefined}
+    >
       <span className="thinking-icon">{'\uD83D\uDCAD'}</span>
-      <span className="thinking-text">
-        {expanded ? text : text.substring(0, 80) + (text.length > 80 ? '...' : '')}
-      </span>
-    </div>
+      <span className="thinking-text">{displayText}</span>
+      {canExpand && <span className="thinking-toggle">{expanded ? 'less' : 'more'}</span>}
+    </button>
   );
 }
 

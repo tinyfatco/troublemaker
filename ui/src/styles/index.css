@@ -758,13 +758,21 @@ html, body, #root {
   display: flex;
   align-items: flex-start;
   gap: 0.35rem;
+  width: 100%;
+  border: 0;
   font-size: 0.75rem;
+  font-family: var(--font-sans);
   color: var(--text-muted);
   font-style: italic;
+  text-align: left;
+  cursor: default;
+}
+
+.awareness-thinking.toggleable {
   cursor: pointer;
 }
 
-.awareness-thinking:hover { color: var(--text); }
+.awareness-thinking.toggleable:hover { color: var(--text); }
 
 .thinking-icon {
   font-size: 0.7rem;
@@ -772,7 +780,19 @@ html, body, #root {
 }
 
 .thinking-text {
+  flex: 1;
+  min-width: 0;
   line-height: 1.4;
+  white-space: pre-wrap;
+}
+
+.thinking-toggle {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-style: normal;
+  opacity: 0.8;
 }
 
 /* Cursor */

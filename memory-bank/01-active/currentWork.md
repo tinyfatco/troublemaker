@@ -20,6 +20,12 @@ keeps a live scroll signal for streaming content growth, respects explicit
 manual scroll-up, and makes completed tool-call groups/rows use the success
 palette by default.
 
+2026-05-18 follow-up: #23 targets thinking display. The UI no longer hard
+truncates thinking blocks at 80 characters with appended ellipses. Medium
+thinking text renders intact; only genuinely long thinking content collapses
+to a larger 600-character / 8-line preview, with the full text available by
+expanding.
+
 
 ## Status: Phone Messaging Adapter Added
 
