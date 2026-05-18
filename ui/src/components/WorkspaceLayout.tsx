@@ -18,6 +18,7 @@ import { TerminalPane } from './TerminalPane';
 import { DesktopPane } from './DesktopPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
+import { HeaderStatus } from './HeaderStatus';
 
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
@@ -149,6 +150,57 @@ export function WorkspaceLayout() {
     }
   };
 
+  const SidebarControls = () => (
+    <div className="sidebar-controls" aria-label="Workspace controls">
+      {hasInteractivePanel && (
+        <button
+          className={`sidebar-control-btn ${centerCollapsed ? 'active' : ''}`}
+          onClick={toggleCenter}
+          title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
+            {!centerCollapsed && (
+              <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
+            )}
+          </svg>
+        </button>
+      )}
+      {terminalAvailable && desktopAvailable && (
+        <button
+          className={`sidebar-control-btn ${displayMode === 'desktop' ? 'active' : ''}`}
+          onClick={toggleDisplayMode}
+          title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
+        >
+          {displayMode === 'terminal' ? (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+          )}
+        </button>
+      )}
+      <button
+        className={`sidebar-control-btn ${!awarenessCollapsed ? 'active' : ''}`}
+        onClick={toggleAwareness}
+        title={awarenessCollapsed ? 'Show awareness' : 'Hide awareness'}
+      >
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
+          <path d="M1 4h5M1 8h5M1 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+        </svg>
+      </button>
+      <button className="sidebar-control-btn" onClick={toggleTheme} title="Toggle theme">
+        {isDark ? '\u2600' : '\u263D'}
+      </button>
+    </div>
+  );
+
   const CenterPanel = () => {
     if (viewingFile) {
       return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
@@ -187,48 +239,7 @@ export function WorkspaceLayout() {
           {/* agent name removed */}
         </div>
         <div className="header-right">
-          {hasInteractivePanel && (
-            <button
-              className={`header-btn ${centerCollapsed ? 'active' : ''}`}
-              onClick={toggleCenter}
-              title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-                {!centerCollapsed && (
-                  <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
-                )}
-              </svg>
-            </button>
-          )}
-          {terminalAvailable && desktopAvailable && (
-            <button
-              className={`header-btn display-toggle ${displayMode === 'desktop' ? 'active' : ''}`}
-              onClick={toggleDisplayMode}
-              title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
-            >
-              {displayMode === 'terminal' ? (
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
-                  <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                  <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                </svg>
-              )}
-            </button>
-          )}
-          <button className="header-btn" onClick={toggleAwareness} title="Toggle awareness">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M1 4h5M1 8h5M1 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-          <button className="header-btn" onClick={toggleTheme} title="Toggle theme">
-            {isDark ? '\u2600' : '\u263D'}
-          </button>
+          <HeaderStatus />
         </div>
       </header>
 
@@ -238,6 +249,7 @@ export function WorkspaceLayout() {
         {!sidebarCollapsed && (
           <>
             <div className="sidebar-panel" style={{ width: sidebarWidth }}>
+              <SidebarControls />
               <div className="sidebar-header">
                 <span className="sidebar-title">Files</span>
                 <button className="upload-btn" onClick={upload.openFilePicker} title="Upload files" disabled={upload.uploading}>
@@ -295,6 +307,7 @@ export function WorkspaceLayout() {
         <>
           <div className="mobile-overlay" onClick={() => setMobileDrawerOpen(false)} />
           <div className="mobile-drawer">
+            <SidebarControls />
             <div className="sidebar-header">
               <span className="sidebar-title">Files</span>
             </div>

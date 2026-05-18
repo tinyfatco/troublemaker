@@ -107,7 +107,26 @@ html, body, #root {
 }
 
 .header-btn:hover { background: var(--bg-secondary); color: var(--text); }
-.header-btn.display-toggle.active { color: var(--accent); }
+.header-btn.active,
+.header-btn.display-toggle.active { color: var(--accent); background: var(--accent-muted); }
+
+.header-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.header-status-time {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Body — three-panel flex */
 .workspace-body {
@@ -145,6 +164,40 @@ html, body, #root {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
+}
+
+.sidebar-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.sidebar-control-btn:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.sidebar-control-btn.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 /* ========================================================================

@@ -12,7 +12,6 @@ import { useVoiceChat } from '../hooks/useVoiceChat';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
-import { StatusStrip } from './StatusStrip';
 
 export function AwarenessPane() {
   const {
@@ -22,15 +21,12 @@ export function AwarenessPane() {
     loadMore,
     isLoadingMore,
     allLoaded,
-    connectionState,
-    lastEventAt,
     error: streamError,
   } = useAwarenessStream();
   const {
     userEntry,
     streamingEntry,
     isStreaming,
-    status: chatStatus,
     error: chatError,
     sendMessage,
     abortStream,
@@ -119,13 +115,6 @@ export function AwarenessPane() {
 
   return (
     <div className="awareness-pane">
-      <StatusStrip
-        connectionState={connectionState}
-        chatStatus={chatStatus}
-        isLoading={isLoading}
-        isLoadingMore={isLoadingMore}
-        lastEventAt={lastEventAt}
-      />
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
