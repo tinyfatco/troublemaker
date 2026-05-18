@@ -79,5 +79,18 @@ const visibleAfterSecondResponse = getOptimisticVisibility(
 
 assert(!visibleAfterSecondResponse.showStreamingEntry, 'assistant response after the matched user hides the streaming entry');
 
+const recentlyCompletedUser = user('u-recent', '2026-05-18T00:02:05.000Z');
+const recentlyCompletedAssistant = assistant('a-recent', '2026-05-18T00:02:06.000Z');
+const rapidRepeatUser = user('live-u-rapid', '2026-05-18T00:02:07.000Z');
+const rapidRepeatStreaming = streaming('live-a-rapid', '2026-05-18T00:02:07.000Z');
+const visibleDuringRapidRepeat = getOptimisticVisibility(
+	[recentlyCompletedUser, recentlyCompletedAssistant],
+	rapidRepeatUser,
+	rapidRepeatStreaming,
+);
+
+assert(visibleDuringRapidRepeat.showUserEntry, 'recent identical previous user does not hide a new rapid-repeat user');
+assert(visibleDuringRapidRepeat.showStreamingEntry, 'recent identical previous assistant does not hide a new rapid-repeat response');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

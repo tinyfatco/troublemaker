@@ -5,6 +5,8 @@ export interface OptimisticVisibility {
   showStreamingEntry: boolean;
 }
 
+const OPTIMISTIC_MATCH_SKEW_MS = 1000;
+
 export function getOptimisticVisibility(
   entries: AwarenessEntry[],
   userEntry: AwarenessEntry | null,
@@ -58,5 +60,5 @@ function isEntryNearOrAfter(entry: { timestamp: string }, since: string): boolea
   const entryMs = Date.parse(entry.timestamp);
   const sinceMs = Date.parse(since);
   if (!Number.isFinite(entryMs) || !Number.isFinite(sinceMs)) return false;
-  return entryMs >= sinceMs - 5000;
+  return entryMs >= sinceMs - OPTIMISTIC_MATCH_SKEW_MS;
 }

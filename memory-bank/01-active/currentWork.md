@@ -26,6 +26,13 @@ thinking text renders intact; only genuinely long thinking content collapses
 to a larger 600-character / 8-line preview, with the full text available by
 expanding.
 
+2026-05-18 follow-up: #24 tracks a warm-path repeated slash-command render
+bug found by the hosted Playwright regression. The backend returned the second
+`/model` response, but optimistic dedupe treated the recently completed
+identical prior turn as the current turn and hid the new streaming response.
+The fix narrows the optimistic match skew so rapid repeated turns remain
+visible.
+
 
 ## Status: Phone Messaging Adapter Added
 
