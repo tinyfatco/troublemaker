@@ -72,6 +72,11 @@ passed, with warm `/model` at ~3.2s immediately after the cold turn. Cold
 remains ~30s because sandbox filesystem/process readiness still dominates
 before the Troublemaker gateway can accept `/web/chat`.
 
+Small visual follow-up: the streaming cursor placeholder now only appears
+while an assistant streaming entry has no visible content. As soon as text,
+thinking, or tool activity arrives from SSE, the placeholder is replaced by
+the real streaming content instead of remaining as a separate blinking block.
+
 
 ## Status: Phone Messaging Adapter Added
 

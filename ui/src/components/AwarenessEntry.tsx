@@ -1,6 +1,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import { getThinkingPreview } from '../thinkingDisplay';
+import { shouldRenderStreamingCursor, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
@@ -41,11 +42,6 @@ function EventEntry({ channel, label, description, fullDescription }: {
       )}
     </div>
   );
-}
-
-/** Strip <session_context>...</session_context> blocks from text */
-function stripSessionContext(text: string): string {
-  return text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '');
 }
 
 function ToolCallGroup({ children }: { children: ReactNode }) {
@@ -383,7 +379,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     return (
       <>
         {renderedBlocks}
-        {entry.isStreaming && (
+        {shouldRenderStreamingCursor(entry) && (
           <div className="awareness-entry assistant-entry streaming cursor-entry">
             <span className="cursor" />
           </div>
