@@ -16,13 +16,19 @@ export function getOptimisticVisibility(
   const visibleBaseEntries = [...entries, ...localEntries];
   const realUserIndex = findMatchingTurnUserIndex(visibleBaseEntries, userEntry);
   const hasRealUser = realUserIndex !== -1;
+  const keepActiveToolStream = hasActiveToolActivity(streamingEntry);
   const hasAssistantAfterUser = hasRealUser &&
+    !keepActiveToolStream &&
     visibleBaseEntries.slice(realUserIndex + 1).some((entry) => entry.role === 'assistant' && !entry.isStreaming);
 
   return {
     showUserEntry: !!userEntry && !hasRealUser,
     showStreamingEntry: !!streamingEntry && !hasAssistantAfterUser,
   };
+}
+
+function hasActiveToolActivity(entry: AwarenessEntry | null): boolean {
+  return !!entry?.isStreaming && !!entry.content?.some((block) => block.type === 'toolCall' || block.type === 'toolResult');
 }
 
 export function mergeOptimisticEntries(

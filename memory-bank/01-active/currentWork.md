@@ -82,6 +82,17 @@ awareness event time beside the connection dot. That value was the timestamp
 of the most recent delivered agent event, not a useful clock, so the header
 now only exposes connected/loading/reconnecting status.
 
+Dark-mode link polish: markdown links now get a lighter dark-theme color for
+normal, visited, and hover states so URLs in chat are readable without
+changing light-mode rendering.
+
+2026-05-18 follow-up: #25 keeps bottom tool-call accordion expansion visible
+by re-anchoring the awareness pane only when the user was already following
+the live bottom. #26 replaces the empty streaming cursor placeholder with a
+compact spinner. #27 tightens the web SSE writer lookup and optimistic merge
+logic so tool-call activity can remain visible while a tool-first response is
+still streaming.
+
 
 ## Status: Phone Messaging Adapter Added
 

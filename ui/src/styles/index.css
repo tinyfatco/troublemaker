@@ -787,18 +787,23 @@ html, body, #root {
   opacity: 0.8;
 }
 
-/* Cursor */
-.cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  background: var(--accent);
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  animation: cursor-blink 0.8s ease-in-out infinite;
+/* Waiting indicator */
+.waiting-entry {
+  min-height: 28px;
+  align-items: flex-start;
+  justify-content: center;
 }
 
-@keyframes cursor-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.waiting-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
 
 /* ========================================================================
    Tool Calls
@@ -1395,6 +1400,9 @@ html, body, #root {
 .file-viewer-markdown .markdown-content pre code { background: none; padding: 0; font-size: 12px; }
 .file-viewer-markdown .markdown-content a { color: var(--accent); text-decoration: none; }
 .file-viewer-markdown .markdown-content a:hover { text-decoration: underline; }
+.dark .markdown-content a { color: #8ec5ff; text-underline-offset: 0.15em; }
+.dark .markdown-content a:visited { color: #b8a8ff; }
+.dark .markdown-content a:hover { color: #b8dcff; }
 .file-viewer-markdown .markdown-content blockquote { border-left: 3px solid var(--border); padding-left: 12px; margin: 0 0 0.8em; color: var(--text-muted); }
 .file-viewer-markdown .markdown-content table { border-collapse: collapse; margin: 0 0 0.8em; width: 100%; }
 .file-viewer-markdown .markdown-content th,

@@ -46,6 +46,17 @@ function streaming(id: string, timestamp: string): AwarenessEntry {
 	};
 }
 
+function streamingTool(id: string, timestamp: string): AwarenessEntry {
+	return {
+		id,
+		type: 'message',
+		timestamp,
+		role: 'assistant',
+		content: [{ type: 'toolCall', id: 'tool-1', name: 'read_file', arguments: { path: 'README.md' } }],
+		isStreaming: true,
+	};
+}
+
 const firstUser = user('u1', '2026-05-18T00:01:00.000Z');
 const firstAssistant = assistant('a1', '2026-05-18T00:01:04.000Z');
 const secondOptimisticUser = user('live-u2', '2026-05-18T00:01:07.000Z');
@@ -93,6 +104,32 @@ const visibleAfterSecondResponse = getOptimisticVisibility(
 );
 
 assert(!visibleAfterSecondResponse.showStreamingEntry, 'assistant response after the matched user hides the streaming entry');
+
+const toolFirstUser = user('u-tool', '2026-05-18T00:01:11.000Z', 'check the repo');
+const earlyDurableAssistant = assistant('a-tool-durable', '2026-05-18T00:01:12.000Z', '');
+const toolStreamingEntry = streamingTool('live-tool-stream', '2026-05-18T00:01:11.000Z');
+const visibleDuringToolFirstRun = getOptimisticVisibility(
+	[toolFirstUser, earlyDurableAssistant],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	visibleDuringToolFirstRun.showStreamingEntry,
+	'active tool-call streaming remains visible even if a durable assistant entry appears after the user',
+);
+
+const settledToolEntry = { ...toolStreamingEntry, isStreaming: false };
+const visibleAfterToolRun = getOptimisticVisibility(
+	[toolFirstUser, earlyDurableAssistant],
+	toolFirstUser,
+	settledToolEntry,
+);
+
+assert(
+	!visibleAfterToolRun.showStreamingEntry,
+	'settled tool-call optimistic entry is hidden once durable assistant content exists',
+);
 
 const recentlyCompletedUser = user('u-recent', '2026-05-18T00:02:05.000Z');
 const recentlyCompletedAssistant = assistant('a-recent', '2026-05-18T00:02:06.000Z');

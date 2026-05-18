@@ -56,6 +56,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const userScrolledRef = useRef(false);
   const prevScrollHeightRef = useRef(0);
   const composerHeightRef = useRef(0);
+  const pendingExpansionFollowRef = useRef(false);
 
   const isNearBottom = useCallback((threshold = 120) => {
     const el = scrollContainerRef.current;
@@ -83,6 +84,23 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
       scrollToBottom('instant');
     }
   }, [backlogDone, isNearBottom, scrollToBottom]);
+
+  const handleExpandingContent = useCallback(() => {
+    if (!backlogDone || isLoadingMore) return;
+    const shouldFollowBottom = !userScrolledRef.current || isNearBottom(160);
+    if (!shouldFollowBottom) return;
+
+    pendingExpansionFollowRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!pendingExpansionFollowRef.current) return;
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+        userScrolledRef.current = false;
+        pendingExpansionFollowRef.current = false;
+        setShowScrollBtn(false);
+      });
+    });
+  }, [backlogDone, isLoadingMore, isNearBottom]);
 
   const liveScrollSignal = useMemo(
     () => getLiveScrollSignal(visibleEntries),
@@ -180,7 +198,11 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
               </div>
             )}
             {visibleEntries.map((entry) => (
-              <AwarenessEntryComponent key={entry.id} entry={entry} />
+              <AwarenessEntryComponent
+                key={entry.id}
+                entry={entry}
+                onExpandingContent={handleExpandingContent}
+              />
             ))}
           </div>
         )}

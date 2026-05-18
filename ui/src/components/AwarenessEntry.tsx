@@ -1,7 +1,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import { getThinkingPreview } from '../thinkingDisplay';
-import { shouldRenderStreamingCursor, stripSessionContext } from '../streamingCursor';
+import { shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
@@ -15,6 +15,7 @@ function formatTime(ts: string): string {
 
 interface AwarenessEntryProps {
   entry: AwarenessEntryType;
+  onExpandingContent?: () => void;
 }
 
 function EventEntry({ channel, label, description, fullDescription }: {
@@ -52,7 +53,12 @@ function ToolCallGroup({ children }: { children: ReactNode }) {
   );
 }
 
-function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; isRunning?: boolean; result?: ToolResultContent }) {
+function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
+  block: ToolCallContent;
+  isRunning?: boolean;
+  result?: ToolResultContent;
+  onExpandingContent?: () => void;
+}) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const args = block.arguments || {};
   const hasArgs = Object.keys(args).length > 0;
@@ -73,7 +79,11 @@ function ToolCallBlock({ block, isRunning, result }: { block: ToolCallContent; i
     <div className={`tool-call-row ${status}`}>
       <button
         className="tool-call-main"
-        onClick={() => hasDetails && setDetailsOpen(!detailsOpen)}
+        onClick={() => {
+          if (!hasDetails) return;
+          if (!detailsOpen) onExpandingContent?.();
+          setDetailsOpen(!detailsOpen);
+        }}
         aria-expanded={detailsOpen}
         disabled={!hasDetails}
       >
@@ -167,13 +177,24 @@ function getToolResultId(result: ToolResultContent): string {
   return String(raw.toolCallId || raw.tool_call_id || raw.toolUseId || raw.tool_use_id || '');
 }
 
-function ToolResultBlock({ content, isError }: { content: string; isError?: boolean }) {
+function ToolResultBlock({ content, isError, onExpandingContent }: {
+  content: string;
+  isError?: boolean;
+  onExpandingContent?: () => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const preview = content.length > 90 ? content.substring(0, 90) + '...' : content;
 
   return (
     <div className={`awareness-tool-result ${isError ? 'error' : ''}`}>
-      <button className="tool-result-toggle" onClick={() => setExpanded(!expanded)} aria-expanded={expanded}>
+      <button
+        className="tool-result-toggle"
+        onClick={() => {
+          if (!expanded) onExpandingContent?.();
+          setExpanded(!expanded);
+        }}
+        aria-expanded={expanded}
+      >
         <span className={`tool-caret ${expanded ? 'open' : ''}`} aria-hidden="true">&gt;</span>
         <span className="tool-result-preview">{preview || (isError ? 'error' : 'output')}</span>
       </button>
@@ -186,7 +207,7 @@ function ToolResultBlock({ content, isError }: { content: string; isError?: bool
   );
 }
 
-export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ entry }: AwarenessEntryProps) {
+export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ entry, onExpandingContent }: AwarenessEntryProps) {
   if (entry.type === 'session') return null;
   if (!entry.content || !Array.isArray(entry.content)) return null;
 
@@ -203,6 +224,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
             key={i}
             content={'result' in r ? String(r.result) : ''}
             isError={'isError' in r ? r.isError : false}
+            onExpandingContent={onExpandingContent}
           />
         ))}
       </div>
@@ -339,6 +361,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
               block={toolCall}
               isRunning={isToolRunning(toolCall)}
               result={getToolResult(toolCall)}
+              onExpandingContent={onExpandingContent}
             />
           ))}
         </ToolCallGroup>,
@@ -379,9 +402,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     return (
       <>
         {renderedBlocks}
-        {shouldRenderStreamingCursor(entry) && (
-          <div className="awareness-entry assistant-entry streaming cursor-entry">
-            <span className="cursor" />
+        {shouldRenderStreamingPlaceholder(entry) && (
+          <div className="awareness-entry assistant-entry streaming waiting-entry">
+            <span className="waiting-spinner" role="status" aria-label="Waiting for agent response" />
           </div>
         )}
       </>

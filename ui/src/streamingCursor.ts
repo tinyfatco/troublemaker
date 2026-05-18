@@ -4,7 +4,7 @@ export function stripSessionContext(text: string): string {
   return text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '');
 }
 
-export function shouldRenderStreamingCursor(entry: Pick<AwarenessEntry, 'content' | 'isStreaming'>): boolean {
+export function shouldRenderStreamingPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming'>): boolean {
   if (!entry.isStreaming) return false;
   return !(entry.content || []).some(isVisibleStreamingBlock);
 }
