@@ -60,6 +60,14 @@ full `ModelRegistry` just to display the current provider/model. Added a fast
 current-selection reader for `/model` no-args while leaving registry-backed
 resolution for `/model list` and `/model <name>`.
 
+Container warm-after-cold follow-up: hosted traces showed the second `/model`
+request reached `/web/chat` quickly after the Crawdad CF fast path, but the
+container delayed the first SSE chunk while the startup event watcher scanned
+and registered existing scheduled events. The watcher now arms filesystem
+watching immediately for new event files but delays its initial existing-file
+scan by 10s after boot, giving the first warm web turn a clear path before
+background scheduling work starts. Added `test:events-initial-scan-delay`.
+
 
 ## Status: Phone Messaging Adapter Added
 

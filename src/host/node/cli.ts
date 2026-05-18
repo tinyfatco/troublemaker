@@ -208,6 +208,7 @@ function parseArgs(): ParsedArgs {
 }
 
 const T_BOOT = performance.now();
+const INITIAL_EVENTS_SCAN_DELAY_MS = 10_000;
 const parsedArgs = parseArgs();
 
 // Handle --download mode (Slack-only for now)
@@ -1360,8 +1361,10 @@ To change these, edit \`settings.json\` directly.
 	log.logInfo(`Wrote compaction.json (daily 4am, tz=${tz})`);
 }
 
-// Start events watcher AFTER seeding (so it picks up heartbeat.json + compaction.json immediately)
+// Arm event-file watching after seeding, but delay the existing-file scan so
+// first web turns after cold boot are not starved by background scheduling.
 const eventsWatcher = createEventsWatcher(workingDir, adapters, {
+	initialScanDelayMs: INITIAL_EVENTS_SCAN_DELAY_MS,
 	onCompact: async () => {
 		if (!awareness) throw new Error("No awareness — nothing to compact");
 		const result = await awareness.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");

@@ -97,16 +97,19 @@ export class EventsWatcher {
 	private startTime: number;
 	private watcher: FSWatcher | null = null;
 	private knownFiles: Set<string> = new Set();
+	private initialScanTimer: NodeJS.Timeout | null = null;
 
 	private onCompact?: () => Promise<void>;
+	private initialScanDelayMs: number;
 
 	constructor(
 		private eventsDir: string,
 		private adapters: PlatformAdapter[],
-		options?: { onCompact?: () => Promise<void> },
+		options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number },
 	) {
 		this.startTime = Date.now();
 		this.onCompact = options?.onCompact;
+		this.initialScanDelayMs = options?.initialScanDelayMs ?? 0;
 	}
 
 	/**
@@ -126,17 +129,34 @@ export class EventsWatcher {
 			this.debounce(filename, () => this.handleFileChange(filename));
 		});
 
-		// Scan existing files ASYNC — don't block the event loop.
-		// On slow filesystems (s3fs/FUSE), readdir can take 60+ seconds.
-		this.scanExistingAsync().then(() => {
-			log.logInfo(`Events watcher started, tracking ${this.knownFiles.size} files`);
-		});
+		const runInitialScan = () => {
+			this.initialScanTimer = null;
+			// Scan existing files ASYNC — don't block the event loop.
+			// On slow filesystems (s3fs/FUSE), readdir can take 60+ seconds.
+			this.scanExistingAsync().then(() => {
+				log.logInfo(`Events watcher started, tracking ${this.knownFiles.size} files`);
+			});
+		};
+
+		if (this.initialScanDelayMs > 0) {
+			log.logInfo(`Events watcher initial scan delayed by ${this.initialScanDelayMs}ms`);
+			this.initialScanTimer = setTimeout(runInitialScan, this.initialScanDelayMs);
+			this.initialScanTimer.unref?.();
+			return;
+		}
+
+		runInitialScan();
 	}
 
 	/**
 	 * Stop watching and cancel all scheduled events.
 	 */
 	stop(): void {
+		if (this.initialScanTimer) {
+			clearTimeout(this.initialScanTimer);
+			this.initialScanTimer = null;
+		}
+
 		// Stop fs watcher
 		if (this.watcher) {
 			this.watcher.close();
@@ -189,6 +209,7 @@ export class EventsWatcher {
 		}
 
 		for (const filename of files) {
+			if (this.knownFiles.has(filename)) continue;
 			this.handleFile(filename);
 		}
 	}
@@ -553,7 +574,7 @@ export class EventsWatcher {
 export function createEventsWatcher(
 	workspaceDir: string,
 	adapters: PlatformAdapter[],
-	options?: { onCompact?: () => Promise<void> },
+	options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number },
 ): EventsWatcher {
 	const eventsDir = join(workspaceDir, "events");
 	return new EventsWatcher(eventsDir, adapters, options);
