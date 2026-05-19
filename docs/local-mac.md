@@ -12,7 +12,9 @@ Yappatron
 Troublemaker
   web adapter, memory, tools, web UI
 Peekaboo
-  stdio MCP child process via `peekaboo mcp`
+  stdio MCP child process via `peekaboo mcp --no-remote`
+Troublemaker.app
+  macOS TCC owner for Screen Recording and Accessibility
 ```
 
 ## Install Peekaboo
@@ -22,26 +24,27 @@ brew install steipete/tap/peekaboo
 ```
 
 Peekaboo is the local Mac automation provider. Troublemaker starts it as a
-stdio MCP child process, so there is no separate local bearer token or HTTP
-daemon to keep alive.
+stdio MCP child process in `--no-remote` mode, so Screen Recording and
+Accessibility belong to the app that launches Troublemaker instead of a
+separate Peekaboo daemon.
 
-For real computer use, macOS must grant the app that starts Peekaboo access to:
+For real computer use, macOS must grant `Troublemaker.app` access to:
 
 ```text
 System Settings -> Privacy & Security -> Accessibility
 System Settings -> Privacy & Security -> Screen & System Audio Recording
 ```
 
-To install Troublemaker local as a user LaunchAgent:
+## LaunchAgent Note
 
-```bash
-npm run install:local-mac
-```
+The old LaunchAgent path is useful for server-only testing, but the Mac
+automation path should launch through `Troublemaker.app` so TCC grants stick to
+the stable app bundle.
 
 ## Start Troublemaker
 
 ```bash
-npm run local:mac
+./run-dev.sh
 ```
 
 Defaults:
@@ -60,15 +63,17 @@ environment.
 Override with:
 
 ```bash
-TROUBLEMAKER_PORT=3003 npm run local:mac
-TROUBLEMAKER_WORKSPACE="$HOME/Troublemaker" npm run local:mac
-PEEKABOO_MCP_COMMAND=/opt/homebrew/bin/peekaboo npm run local:mac
+TROUBLEMAKER_PORT=3003 ./run-dev.sh
+TROUBLEMAKER_WORKSPACE="$HOME/Troublemaker" ./run-dev.sh
+PEEKABOO_MCP_COMMAND=/opt/homebrew/bin/peekaboo ./run-dev.sh
+PEEKABOO_MCP_ARGS="mcp --no-remote" ./run-dev.sh
 ```
 
 ## Doctor
 
 ```bash
 npm run doctor:local-mac
+npm run smoke:mac-app
 ```
 
 ## Yappatron Webhook Payload

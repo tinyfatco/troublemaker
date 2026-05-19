@@ -56,7 +56,7 @@ if command -v peekaboo >/dev/null 2>&1; then
 	if printf "%s" "$permissions" | permission_granted "Screen Recording"; then
 		ok "Peekaboo Screen Recording permission is granted"
 	else
-		warn "Peekaboo Screen Recording permission is not granted"
+		ok "Peekaboo shell Screen Recording is not the app-owned TCC source"
 	fi
 
 	if peekaboo tools --json >/dev/null 2>&1; then
@@ -65,13 +65,41 @@ if command -v peekaboo >/dev/null 2>&1; then
 		warn "Peekaboo tool catalog did not respond"
 	fi
 
-	if (cd "$PROJECT_ROOT" && node --input-type=module <<'NODE'
+	peekaboo_mcp_config="$(node - "$WORKSPACE_DIR/settings.json" <<'NODE' 2>/dev/null || true
+const fs = require("fs");
+const settingsPath = process.argv[2];
+try {
+	const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+	const servers = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
+	const peekaboo = servers.find(server => server?.alias === "peekaboo");
+	if (peekaboo?.transport !== "stdio" || !peekaboo.command) process.exit(1);
+	process.stdout.write(JSON.stringify({
+		command: peekaboo.command,
+		args: Array.isArray(peekaboo.args) ? peekaboo.args : ["mcp", "--no-remote"],
+		env: peekaboo.env && typeof peekaboo.env === "object" ? peekaboo.env : {},
+	}));
+} catch {
+	process.exit(1);
+}
+NODE
+)"
+
+	if [ -n "$peekaboo_mcp_config" ]; then
+		ok "Troublemaker workspace is configured for Peekaboo stdio MCP"
+	else
+		warn "Troublemaker workspace is not configured for Peekaboo stdio MCP"
+		peekaboo_mcp_config='{"command":"peekaboo","args":["mcp","--no-remote"],"env":{"PEEKABOO_NO_REMOTE":"1"}}'
+	fi
+
+	if (cd "$PROJECT_ROOT" && PEEKABOO_MCP_CONFIG="$peekaboo_mcp_config" node --input-type=module <<'NODE'
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+const config = JSON.parse(process.env.PEEKABOO_MCP_CONFIG);
 const transport = new StdioClientTransport({
-	command: "peekaboo",
-	args: ["mcp"],
+	command: config.command,
+	args: config.args,
+	env: { ...process.env, ...(config.env || {}) },
 	stderr: "pipe",
 });
 const client = new Client({ name: "troublemaker-doctor", version: "1.0.0" }, { capabilities: {} });
@@ -91,13 +119,16 @@ NODE
 		warn "Peekaboo stdio MCP did not respond"
 	fi
 
-	if (cd "$PROJECT_ROOT" && node --input-type=module <<'NODE'
+	run_shell_capture_smoke() {
+		(cd "$PROJECT_ROOT" && PEEKABOO_MCP_CONFIG="$peekaboo_mcp_config" node --input-type=module <<'NODE'
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
+const config = JSON.parse(process.env.PEEKABOO_MCP_CONFIG);
 const transport = new StdioClientTransport({
-	command: "peekaboo",
-	args: ["mcp"],
+	command: config.command,
+	args: config.args,
+	env: { ...process.env, ...(config.env || {}) },
 	stderr: "pipe",
 });
 const client = new Client({ name: "troublemaker-doctor", version: "1.0.0" }, { capabilities: {} });
@@ -125,28 +156,23 @@ try {
 	await client.close().catch(() => {});
 }
 NODE
-	); then
-		ok "Peekaboo stdio MCP screen capture works"
-	else
-		warn "Peekaboo stdio MCP screen capture is blocked"
-	fi
+		)
+	}
 
-	if node - "$WORKSPACE_DIR/settings.json" <<'NODE'
-const fs = require("fs");
-const settingsPath = process.argv[2];
-try {
-	const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-	const servers = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
-	const peekaboo = servers.find(server => server?.alias === "peekaboo");
-	process.exit(peekaboo?.transport === "stdio" && peekaboo?.command ? 0 : 1);
-} catch {
-	process.exit(1);
-}
-NODE
-	then
-		ok "Troublemaker workspace is configured for Peekaboo stdio MCP"
+	if [ "${TROUBLEMAKER_LAUNCHED_BY_APP:-}" = "1" ]; then
+		if run_shell_capture_smoke; then
+			ok "Peekaboo stdio MCP screen capture works inside Troublemaker.app"
+		else
+			warn "Peekaboo stdio MCP screen capture is blocked inside Troublemaker.app"
+		fi
+	elif [ -d "/Applications/Troublemaker.app" ] && [ -x "$PROJECT_ROOT/scripts/smoke-mac-app.sh" ]; then
+		if "$PROJECT_ROOT/scripts/smoke-mac-app.sh" >/dev/null 2>&1; then
+			ok "Troublemaker.app Peekaboo MCP screen capture works"
+		else
+			warn "Troublemaker.app Peekaboo MCP screen capture is blocked"
+		fi
 	else
-		warn "Troublemaker workspace is not configured for Peekaboo stdio MCP"
+		warn "Troublemaker.app is not installed; run ./run-dev.sh to test app-owned Screen Recording"
 	fi
 fi
 
@@ -160,4 +186,4 @@ echo ""
 echo "Expected local endpoints:"
 echo "  Troublemaker UI:       http://127.0.0.1:$PORT"
 echo "  Yappatron webhook:     http://127.0.0.1:$PORT/input/yappatron"
-echo "  Peekaboo MCP:          peekaboo mcp (stdio child process)"
+echo "  Peekaboo MCP:          peekaboo mcp --no-remote (stdio child process)"

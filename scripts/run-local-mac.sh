@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="${TROUBLEMAKER_WORKSPACE:-$HOME/Library/Application Support/Troublemaker/Workspace}"
 PORT="${TROUBLEMAKER_PORT:-3002}"
 PEEKABOO_MCP_COMMAND="${PEEKABOO_MCP_COMMAND:-$(command -v peekaboo || true)}"
+PEEKABOO_MCP_ARGS="${PEEKABOO_MCP_ARGS:-mcp --no-remote}"
 KEYCHAIN_SERVICE="${TROUBLEMAKER_KEYCHAIN_SERVICE:-com.tinyfatco.troublemaker.local}"
 BUILD=1
 
@@ -40,11 +41,12 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 
 echo "Configuring local MCP providers..."
-node --input-type=module - "$WORKSPACE_DIR" "$PEEKABOO_MCP_COMMAND" <<'NODE'
+node --input-type=module - "$WORKSPACE_DIR" "$PEEKABOO_MCP_COMMAND" "$PEEKABOO_MCP_ARGS" <<'NODE'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-const [workspaceDir, peekabooCommand] = process.argv.slice(2);
+const [workspaceDir, peekabooCommand, peekabooArgsRaw] = process.argv.slice(2);
+const peekabooArgs = (peekabooArgsRaw || "mcp --no-remote").trim().split(/\s+/).filter(Boolean);
 mkdirSync(workspaceDir, { recursive: true });
 
 const settingsPath = join(workspaceDir, "settings.json");
@@ -67,8 +69,11 @@ if (peekabooCommand) {
 		alias: "peekaboo",
 		transport: "stdio",
 		command: peekabooCommand,
-		args: ["mcp"],
-		scopes: ["computer:use", "accessibility:read", "accessibility:write"],
+		args: peekabooArgs,
+		env: {
+			PEEKABOO_NO_REMOTE: "1",
+		},
+		scopes: ["computer:use", "screen:record", "accessibility:read", "accessibility:write"],
 		addedBy: "scripts/run-local-mac.sh",
 	});
 } else {
