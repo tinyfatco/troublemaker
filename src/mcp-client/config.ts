@@ -5,18 +5,34 @@ import * as log from "../log.js";
 
 export interface McpServerConfig {
 	alias: string;
-	url: string;
 	scopes: string[];
 }
 
-export interface ResolvedMcpServer extends McpServerConfig {
+export interface ResolvedHttpMcpServer extends McpServerConfig {
+	transport: "http";
+	url: string;
 	token: string;
 }
+
+export interface ResolvedStdioMcpServer extends McpServerConfig {
+	transport: "stdio";
+	command: string;
+	args: string[];
+	cwd?: string;
+	env?: Record<string, string>;
+}
+
+export type ResolvedMcpServer = ResolvedHttpMcpServer | ResolvedStdioMcpServer;
 
 interface SettingsJson {
 	mcpServers?: Array<{
 		alias: string;
-		url: string;
+		transport?: "http" | "stdio";
+		url?: string;
+		command?: string;
+		args?: string[];
+		cwd?: string;
+		env?: Record<string, string>;
 		secretKey?: string;
 		token?: string;
 		tokenEnv?: string;
@@ -43,7 +59,7 @@ function readTokenFile(tokenPath: string): string | undefined {
 			return parsed.token.trim();
 		}
 	} catch {
-		// Plain token files are supported for local Mac tools such as Clawd Cursor.
+		// Plain token files are supported for local-only HTTP MCP tools.
 	}
 
 	return raw;
@@ -99,8 +115,32 @@ export function loadMcpConfigs(workspaceDir: string): ResolvedMcpServer[] {
 
 	const resolved: ResolvedMcpServer[] = [];
 	for (const entry of settings.mcpServers) {
-		if (!entry.alias || !entry.url) {
+		if (!entry.alias) {
 			log.logWarning(`[mcp-client] Skipping malformed mcpServers entry`, JSON.stringify(entry));
+			continue;
+		}
+
+		const transport = entry.transport || (entry.command ? "stdio" : "http");
+		if (transport === "stdio") {
+			if (!entry.command) {
+				log.logWarning(`[mcp-client] Skipping stdio MCP "${entry.alias}" without command`);
+				continue;
+			}
+
+			resolved.push({
+				alias: entry.alias,
+				transport: "stdio",
+				command: entry.command,
+				args: entry.args || [],
+				cwd: entry.cwd ? expandPath(entry.cwd, workspaceDir) : undefined,
+				env: entry.env,
+				scopes: entry.scopes || [],
+			});
+			continue;
+		}
+
+		if (!entry.url) {
+			log.logWarning(`[mcp-client] Skipping HTTP MCP "${entry.alias}" without url`);
 			continue;
 		}
 
@@ -112,6 +152,7 @@ export function loadMcpConfigs(workspaceDir: string): ResolvedMcpServer[] {
 
 		resolved.push({
 			alias: entry.alias,
+			transport: "http",
 			url: entry.url,
 			scopes: entry.scopes || [],
 			token,

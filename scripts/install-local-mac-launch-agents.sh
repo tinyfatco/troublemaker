@@ -30,16 +30,9 @@ install_plist() {
 	launchctl kickstart -k "$GUI_DOMAIN/$label"
 }
 
-clawd_plist="$PLIST_DIR/com.tinyfatco.clawdcursor-mcp.plist"
-rm -f "$clawd_plist"
-plist_set_base "$clawd_plist" "com.tinyfatco.clawdcursor-mcp"
-/usr/libexec/PlistBuddy -c "Add :WorkingDirectory string $HOME" "$clawd_plist"
-/usr/libexec/PlistBuddy -c "Add :StandardOutPath string $LOG_DIR/clawdcursor-agent.log" "$clawd_plist"
-/usr/libexec/PlistBuddy -c "Add :StandardErrorPath string $LOG_DIR/clawdcursor-agent.log" "$clawd_plist"
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments:0 string /bin/bash" "$clawd_plist"
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments:1 string -lc" "$clawd_plist"
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string tail -f /dev/null | clawdcursor agent --no-llm" "$clawd_plist"
-chmod 644 "$clawd_plist"
+old_clawd_plist="$PLIST_DIR/com.tinyfatco.clawdcursor-mcp.plist"
+launchctl bootout "$GUI_DOMAIN" "$old_clawd_plist" >/dev/null 2>&1 || true
+rm -f "$old_clawd_plist"
 
 troublemaker_plist="$PLIST_DIR/com.tinyfatco.troublemaker-local.plist"
 rm -f "$troublemaker_plist"
@@ -52,13 +45,10 @@ plist_set_base "$troublemaker_plist" "com.tinyfatco.troublemaker-local"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string exec npm run local:mac -- --no-build" "$troublemaker_plist"
 chmod 644 "$troublemaker_plist"
 
-install_plist "$clawd_plist" "com.tinyfatco.clawdcursor-mcp"
 install_plist "$troublemaker_plist" "com.tinyfatco.troublemaker-local"
 
 echo "Installed and started:"
-echo "  $clawd_plist"
 echo "  $troublemaker_plist"
 echo ""
 echo "Logs:"
-echo "  $LOG_DIR/clawdcursor-agent.log"
 echo "  $LOG_DIR/troublemaker-local.log"

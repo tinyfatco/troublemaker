@@ -11,41 +11,31 @@ Yappatron
   POST /input/yappatron
 Troublemaker
   web adapter, memory, tools, web UI
-Clawd Cursor
-  HTTP MCP body at 127.0.0.1:3847/mcp
+Peekaboo
+  stdio MCP child process via `peekaboo mcp`
 ```
 
-## Start Clawd Cursor
+## Install Peekaboo
 
 ```bash
-npm run local:mac
+brew install steipete/tap/peekaboo
 ```
 
-`npm run local:mac` starts Clawd Cursor automatically when `127.0.0.1:3847`
-is not already healthy. To run it manually:
+Peekaboo is the local Mac automation provider. Troublemaker starts it as a
+stdio MCP child process, so there is no separate local bearer token or HTTP
+daemon to keep alive.
 
-```bash
-scripts/start-clawdcursor-mcp.sh
-```
-
-To install both Clawd Cursor MCP and Troublemaker local as user LaunchAgents:
-
-```bash
-npm run install:local-mac
-```
-
-The local MCP token is expected at:
-
-```text
-~/.clawdcursor/token
-```
-
-Clawd Cursor also runs a native macOS host at `127.0.0.1:3848`. For real
-computer use, macOS must show `ClawdCursor` as enabled in both:
+For real computer use, macOS must grant the app that starts Peekaboo access to:
 
 ```text
 System Settings -> Privacy & Security -> Accessibility
 System Settings -> Privacy & Security -> Screen & System Audio Recording
+```
+
+To install Troublemaker local as a user LaunchAgent:
+
+```bash
+npm run install:local-mac
 ```
 
 ## Start Troublemaker
@@ -72,8 +62,7 @@ Override with:
 ```bash
 TROUBLEMAKER_PORT=3003 npm run local:mac
 TROUBLEMAKER_WORKSPACE="$HOME/Troublemaker" npm run local:mac
-CLAWDCURSOR_MCP_URL=http://127.0.0.1:3847/mcp npm run local:mac
-CLAWDCURSOR_AUTOSTART=0 npm run local:mac
+PEEKABOO_MCP_COMMAND=/opt/homebrew/bin/peekaboo npm run local:mac
 ```
 
 ## Doctor

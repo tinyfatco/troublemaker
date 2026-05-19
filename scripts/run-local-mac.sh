@@ -5,9 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WORKSPACE_DIR="${TROUBLEMAKER_WORKSPACE:-$HOME/Library/Application Support/Troublemaker/Workspace}"
 PORT="${TROUBLEMAKER_PORT:-3002}"
-CLAWDCURSOR_MCP_URL="${CLAWDCURSOR_MCP_URL:-http://127.0.0.1:3847/mcp}"
-CLAWDCURSOR_TOKEN_FILE="${CLAWDCURSOR_TOKEN_FILE:-$HOME/.clawdcursor/token}"
-CLAWDCURSOR_AUTOSTART="${CLAWDCURSOR_AUTOSTART:-1}"
+PEEKABOO_MCP_COMMAND="${PEEKABOO_MCP_COMMAND:-$(command -v peekaboo || true)}"
 KEYCHAIN_SERVICE="${TROUBLEMAKER_KEYCHAIN_SERVICE:-com.tinyfatco.troublemaker.local}"
 BUILD=1
 
@@ -41,17 +39,12 @@ if [ "$BUILD" -eq 1 ]; then
 	(cd "$PROJECT_ROOT/ui" && npm run build)
 fi
 
-if [ "$CLAWDCURSOR_AUTOSTART" = "1" ]; then
-	echo "Ensuring Clawd Cursor MCP is running..."
-	"$SCRIPT_DIR/start-clawdcursor-mcp.sh"
-fi
-
 echo "Configuring local MCP providers..."
-node --input-type=module - "$WORKSPACE_DIR" "$CLAWDCURSOR_MCP_URL" "$CLAWDCURSOR_TOKEN_FILE" <<'NODE'
+node --input-type=module - "$WORKSPACE_DIR" "$PEEKABOO_MCP_COMMAND" <<'NODE'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
-const [workspaceDir, clawdUrl, clawdTokenFile] = process.argv.slice(2);
+const [workspaceDir, peekabooCommand] = process.argv.slice(2);
 mkdirSync(workspaceDir, { recursive: true });
 
 const settingsPath = join(workspaceDir, "settings.json");
@@ -65,26 +58,32 @@ if (existsSync(settingsPath)) {
 }
 
 const servers = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
-settings.mcpServers = servers.filter((server) => server?.alias !== "clawdcursor");
+settings.mcpServers = servers.filter((server) => !["clawdcursor", "peekaboo"].includes(server?.alias));
 settings.defaultProvider = settings.defaultProvider || "fireworks";
 settings.defaultModel = settings.defaultModel || "accounts/fireworks/models/glm-5p1";
-settings.mcpServers.push({
-	alias: "clawdcursor",
-	url: clawdUrl,
-	tokenFile: clawdTokenFile,
-	scopes: ["computer:use", "accessibility:read", "accessibility:write"],
-	addedBy: "scripts/run-local-mac.sh",
-});
+
+if (peekabooCommand) {
+	settings.mcpServers.push({
+		alias: "peekaboo",
+		transport: "stdio",
+		command: peekabooCommand,
+		args: ["mcp"],
+		scopes: ["computer:use", "accessibility:read", "accessibility:write"],
+		addedBy: "scripts/run-local-mac.sh",
+	});
+} else {
+	console.warn("  peekaboo command not found; install with: brew install steipete/tap/peekaboo");
+}
 
 writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 console.log(`  ${settingsPath}`);
 NODE
 
-if [ ! -f "$CLAWDCURSOR_TOKEN_FILE" ]; then
+if [ -z "$PEEKABOO_MCP_COMMAND" ]; then
 	echo ""
-	echo "Note: Clawd Cursor token not found at $CLAWDCURSOR_TOKEN_FILE"
-	echo "Run: clawdcursor agent --no-llm"
-	echo "Then rerun this script after ~/.clawdcursor/token exists."
+	echo "Note: Peekaboo is not installed."
+	echo "Run: brew install steipete/tap/peekaboo"
+	echo "Then rerun this script."
 	echo ""
 fi
 

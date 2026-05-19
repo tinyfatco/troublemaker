@@ -1,6 +1,8 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import * as log from "../log.js";
 import { loadMcpConfigs, type ResolvedMcpServer } from "./config.js";
 import { wrapMcpTool } from "./wrap-tool.js";
@@ -8,7 +10,7 @@ import { wrapMcpTool } from "./wrap-tool.js";
 interface ConnectedServer {
 	alias: string;
 	client: Client;
-	transport: StreamableHTTPClientTransport;
+	transport: Transport;
 	tools: AgentTool<any>[];
 }
 
@@ -57,8 +59,11 @@ export class McpBridge {
 			const result = results[i];
 			const config = configs[i];
 			if (result.status === "rejected") {
+				const source = config.transport === "stdio"
+					? `${config.command} ${config.args.join(" ")}`.trim()
+					: config.url;
 				log.logWarning(
-					`[mcp-client] Failed to connect to "${config.alias}" (${config.url})`,
+					`[mcp-client] Failed to connect to "${config.alias}" (${source})`,
 					String(result.reason),
 				);
 			}
@@ -70,16 +75,28 @@ export class McpBridge {
 	}
 
 	private async connectOne(config: ResolvedMcpServer): Promise<void> {
-		const transport = new StreamableHTTPClientTransport(
-			new URL(config.url),
-			{
+		const transport: Transport = config.transport === "stdio"
+			? new StdioClientTransport({
+				command: config.command,
+				args: config.args,
+				cwd: config.cwd,
+				env: config.env,
+				stderr: "pipe",
+			})
+			: new StreamableHTTPClientTransport(new URL(config.url), {
 				requestInit: {
 					headers: {
 						Authorization: `Bearer ${config.token}`,
 					},
 				},
-			},
-		);
+			});
+
+		if (config.transport === "stdio" && transport instanceof StdioClientTransport) {
+			transport.stderr?.on("data", (chunk: Buffer) => {
+				const text = chunk.toString("utf-8").trim();
+				if (text) log.logInfo(`[mcp-client] ${config.alias} stderr: ${text.substring(0, 500)}`);
+			});
+		}
 
 		const client = new Client(
 			{ name: "tinyfat-agent", version: "1.0.0" },
@@ -95,7 +112,10 @@ export class McpBridge {
 			tools.push(wrapMcpTool(config.alias, mcpTool, client));
 		}
 
-		log.logInfo(`[mcp-client] "${config.alias}": ${tools.length} tools from ${config.url}`);
+		const source = config.transport === "stdio"
+			? `${config.command} ${config.args.join(" ")}`.trim()
+			: config.url;
+		log.logInfo(`[mcp-client] "${config.alias}": ${tools.length} tools from ${source}`);
 
 		this.servers.push({ alias: config.alias, client, transport, tools });
 	}
