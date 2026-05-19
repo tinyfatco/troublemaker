@@ -15,8 +15,20 @@ import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, Us
  * The orchestrator translates browser messages to this format.
  */
 interface WebChatPayload {
-	message: string;
+	message?: string;
+	text?: string;
+	formatted_text?: string;
+	append_text?: string;
 	channelId?: string;
+	channel_id?: string;
+	source?: string;
+}
+
+interface NormalizedWebChatPayload {
+	message: string;
+	channelId: string;
+	user: string;
+	userName: string;
 }
 
 interface WebStopPayload {
@@ -101,21 +113,9 @@ Keep responses concise and helpful.`;
 	// ==========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
-		req.on("end", () => {
-			const body = Buffer.concat(chunks).toString("utf-8");
-
-			let payload: WebChatPayload;
-			try {
-				payload = JSON.parse(body);
-			} catch {
-				res.writeHead(400);
-				res.end("Invalid JSON");
-				return;
-			}
-
-			if (!payload.message || typeof payload.message !== "string" || !payload.message.trim()) {
+		this.readPayload(req, res, (payload) => {
+			const normalized = this.normalizePayload(payload);
+			if (!normalized) {
 				res.writeHead(400);
 				res.end("Missing required field: message");
 				return;
@@ -133,9 +133,8 @@ Keep responses concise and helpful.`;
 			const writer = new SSEWriter(res);
 			writer.send({ type: "status", status: "accepted", message: "Message accepted" });
 
-			const channelId = payload.channelId || "web";
-			this.writerScope.run({ channelId, writer }, () => {
-				this.processMessage(payload, writer).catch((err) => {
+			this.writerScope.run({ channelId: normalized.channelId, writer }, () => {
+				this.processMessage(normalized, writer).catch((err) => {
 					log.logWarning("Web chat processing error", err instanceof Error ? err.message : String(err));
 					writer.send({ type: "error", message: err instanceof Error ? err.message : "Unknown error" });
 					writer.done();
@@ -176,12 +175,83 @@ Keep responses concise and helpful.`;
 		});
 	}
 
+	dispatchWebhook(req: IncomingMessage, res: ServerResponse): void {
+		this.readPayload(req, res, (payload) => {
+			const normalized = this.normalizePayload(payload);
+			if (!normalized) {
+				res.writeHead(400, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ error: "Missing required field: message or text" }));
+				return;
+			}
+
+			res.writeHead(202, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
+
+			this.processMessage(normalized).catch((err) => {
+				log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
+			});
+		});
+	}
+
+	private readPayload(
+		req: IncomingMessage,
+		res: ServerResponse,
+		onPayload: (payload: WebChatPayload) => void,
+	): void {
+		const chunks: Buffer[] = [];
+		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		req.on("end", () => {
+			const body = Buffer.concat(chunks).toString("utf-8");
+
+			let payload: WebChatPayload;
+			try {
+				payload = JSON.parse(body);
+			} catch {
+				res.writeHead(400);
+				res.end("Invalid JSON");
+				return;
+			}
+
+			onPayload(payload);
+		});
+	}
+
+	private normalizePayload(payload: WebChatPayload): NormalizedWebChatPayload | null {
+		const rawMessage = this.firstString(
+			payload.message,
+			payload.text,
+			payload.formatted_text,
+			payload.append_text,
+		);
+		const message = rawMessage.trim();
+		if (!message) return null;
+
+		const source = typeof payload.source === "string" && payload.source.trim()
+			? payload.source.trim()
+			: "web";
+		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
+
+		return {
+			message,
+			channelId,
+			user: source === "web" ? "web-user" : `${source}-user`,
+			userName: source === "web" ? "user" : source,
+		};
+	}
+
+	private firstString(...values: unknown[]): string {
+		for (const value of values) {
+			if (typeof value === "string") return value;
+		}
+		return "";
+	}
+
 	// ==========================================================================
 	// Message processing
 	// ==========================================================================
 
-	private async processMessage(payload: WebChatPayload, writer: SSEWriter): Promise<void> {
-		const channelId = payload.channelId || "web";
+	private async processMessage(payload: NormalizedWebChatPayload, writer?: SSEWriter): Promise<void> {
+		const channelId = payload.channelId;
 		const ts = String(Date.now());
 		let ownsWriter = false;
 		let keepalive: ReturnType<typeof setInterval> | undefined;
@@ -192,7 +262,7 @@ Keep responses concise and helpful.`;
 			type: "dm",
 			channel: channelId,
 			ts,
-			user: "web-user",
+			user: payload.user,
 			text: payload.message,
 		};
 
@@ -201,8 +271,8 @@ Keep responses concise and helpful.`;
 			ts,
 			channel: `web:${channelId}`,
 			channelId,
-			user: "web-user",
-			userName: "user",
+			user: payload.user,
+			userName: payload.userName,
 			text: event.text,
 			attachments: [],
 			isBot: false,
@@ -214,11 +284,13 @@ Keep responses concise and helpful.`;
 			}
 
 			if (event.text.trim().startsWith("/")) {
-				this.pendingWriters.set(channelId, writer);
-				ownsWriter = true;
-				keepalive = setInterval(() => {
-					writer.send({ type: "heartbeat", ts: Date.now() });
-				}, 12000);
+				if (writer) {
+					this.pendingWriters.set(channelId, writer);
+					ownsWriter = true;
+					keepalive = setInterval(() => {
+						writer.send({ type: "heartbeat", ts: Date.now() });
+					}, 12000);
+				}
 				const handled = await this.handler.handleSlashCommand(event, this);
 				if (handled) return;
 			}
@@ -230,29 +302,33 @@ Keep responses concise and helpful.`;
 
 			if (this.handler.isRunning(channelId)) {
 				log.logInfo(`[web] Steering active run for ${channelId}`);
+				if (writer) {
+					this.pendingWriters.set(channelId, writer);
+					ownsWriter = true;
+					keepalive = setInterval(() => {
+						writer.send({ type: "heartbeat", ts: Date.now() });
+					}, 12000);
+					writer.send({ type: "status", status: "steering", message: "Updating active run" });
+				}
+				this.handler.handleSteer(event, this);
+				if (writer) await this.waitForIdle(channelId, writer);
+				return;
+			}
+
+			if (writer) {
 				this.pendingWriters.set(channelId, writer);
 				ownsWriter = true;
 				keepalive = setInterval(() => {
 					writer.send({ type: "heartbeat", ts: Date.now() });
 				}, 12000);
-				writer.send({ type: "status", status: "steering", message: "Updating active run" });
-				this.handler.handleSteer(event, this);
-				await this.waitForIdle(channelId, writer);
-				return;
 			}
-
-			this.pendingWriters.set(channelId, writer);
-			ownsWriter = true;
-			keepalive = setInterval(() => {
-				writer.send({ type: "heartbeat", ts: Date.now() });
-			}, 12000);
 			await this.handler.handleEvent(event, this);
 		} finally {
 			if (keepalive) clearInterval(keepalive);
 			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
 				this.pendingWriters.delete(channelId);
 			}
-			writer.done();
+			writer?.done();
 		}
 	}
 
