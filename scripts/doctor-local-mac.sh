@@ -91,6 +91,46 @@ NODE
 		warn "Peekaboo stdio MCP did not respond"
 	fi
 
+	if (cd "$PROJECT_ROOT" && node --input-type=module <<'NODE'
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const transport = new StdioClientTransport({
+	command: "peekaboo",
+	args: ["mcp"],
+	stderr: "pipe",
+});
+const client = new Client({ name: "troublemaker-doctor", version: "1.0.0" }, { capabilities: {} });
+try {
+	await client.connect(transport);
+	const result = await client.callTool({
+		name: "image",
+		arguments: {
+			app_target: "screen:0",
+			path: "/tmp/troublemaker-peekaboo-doctor.png",
+			format: "png",
+		},
+	});
+	if (result.isError === true) {
+		const message = Array.isArray(result.content)
+			? result.content.map(part => part?.text).filter(Boolean).join("\n")
+			: "image tool returned an error";
+		console.error(message);
+		process.exitCode = 1;
+	}
+} catch (error) {
+	console.error(error instanceof Error ? error.message : String(error));
+	process.exitCode = 1;
+} finally {
+	await client.close().catch(() => {});
+}
+NODE
+	); then
+		ok "Peekaboo stdio MCP screen capture works"
+	else
+		warn "Peekaboo stdio MCP screen capture is blocked"
+	fi
+
 	if node - "$WORKSPACE_DIR/settings.json" <<'NODE'
 const fs = require("fs");
 const settingsPath = process.argv[2];
