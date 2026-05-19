@@ -58,7 +58,7 @@ if (existsSync(settingsPath)) {
 }
 
 const servers = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
-settings.mcpServers = servers.filter((server) => !["clawdcursor", "peekaboo"].includes(server?.alias));
+settings.mcpServers = servers.filter((server) => server?.alias !== "peekaboo");
 settings.defaultProvider = settings.defaultProvider || "fireworks";
 settings.defaultModel = settings.defaultModel || "accounts/fireworks/models/glm-5p1";
 

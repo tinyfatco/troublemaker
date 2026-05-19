@@ -30,10 +30,6 @@ install_plist() {
 	launchctl kickstart -k "$GUI_DOMAIN/$label"
 }
 
-old_clawd_plist="$PLIST_DIR/com.tinyfatco.clawdcursor-mcp.plist"
-launchctl bootout "$GUI_DOMAIN" "$old_clawd_plist" >/dev/null 2>&1 || true
-rm -f "$old_clawd_plist"
-
 troublemaker_plist="$PLIST_DIR/com.tinyfatco.troublemaker-local.plist"
 rm -f "$troublemaker_plist"
 plist_set_base "$troublemaker_plist" "com.tinyfatco.troublemaker-local"
