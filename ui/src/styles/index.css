@@ -505,9 +505,11 @@ html, body, #root {
   position: relative;
   overflow: auto;
   background: var(--bg);
+  container-type: size;
 }
 
 .plain-calendar-month {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -515,6 +517,19 @@ html, body, #root {
 .plain-calendar-month > div:nth-child(3) {
   background: var(--calendar-grid-border) !important;
   gap: 1px !important;
+}
+
+.plain-calendar-month > div:nth-child(2) {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  flex-shrink: 0;
+}
+
+.plain-calendar-month > div:nth-child(3) {
+  flex: 1;
+  min-height: 0;
+  grid-auto-rows: minmax(104px, 1fr);
 }
 
 .calendar-weekday {
@@ -528,13 +543,14 @@ html, body, #root {
 }
 
 .calendar-day {
-  min-height: 104px;
+  min-height: 0;
   padding: 6px;
   background: var(--bg);
   cursor: pointer;
   display: flex;
   flex-direction: column;
   gap: 5px;
+  overflow: hidden;
 }
 
 .calendar-day:hover {
@@ -572,6 +588,7 @@ html, body, #root {
   flex-direction: column;
   gap: 3px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .calendar-event-chip {
@@ -664,6 +681,43 @@ html, body, #root {
   margin-top: 1px;
   color: var(--text-muted);
   font-size: 0.62rem;
+}
+
+@container (max-height: 520px) {
+  .plain-calendar-month > div:nth-child(3) {
+    grid-auto-rows: minmax(76px, 1fr);
+  }
+
+  .calendar-weekday {
+    padding: 6px 4px;
+  }
+
+  .calendar-day {
+    padding: 4px;
+    gap: 3px;
+  }
+
+  .calendar-day-number {
+    width: 20px;
+    height: 20px;
+    font-size: 0.68rem;
+  }
+
+  .calendar-event-chip {
+    min-height: 18px;
+    padding: 1px 4px;
+    font-size: 0.62rem;
+  }
+}
+
+@container (min-height: 760px) {
+  .plain-calendar-month > div:nth-child(3) {
+    grid-auto-rows: minmax(112px, 1fr);
+  }
+
+  .calendar-day {
+    padding: 8px;
+  }
 }
 
 .calendar-agenda {
