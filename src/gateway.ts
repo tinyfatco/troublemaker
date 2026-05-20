@@ -1,5 +1,5 @@
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
-import type { Socket } from "net";
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
+import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
 import { ConsoleError, ConsoleService } from "./console/service.js";
@@ -27,6 +27,48 @@ const MIME_TYPES: Record<string, string> = {
 	".woff2": "font/woff2",
 	".map": "application/json",
 };
+
+interface PreviewProxyTarget {
+	port: number;
+	path: string;
+}
+
+function parsePreviewProxyTarget(rawUrl: string): PreviewProxyTarget | null {
+	const url = new URL(rawUrl || "/", "http://localhost");
+	const match = url.pathname.match(/^\/preview\/(\d{4,5})(\/.*)?$/);
+	if (!match) return null;
+	const port = Number.parseInt(match[1], 10);
+	if (!Number.isFinite(port) || port < 1024 || port > 65535 || port === 3000 || port === 3002) {
+		return null;
+	}
+	return {
+		port,
+		path: `${match[2] || "/"}${url.search}`,
+	};
+}
+
+function previewProxyHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
+	const headers: Record<string, string | string[]> = {};
+	for (const [key, value] of Object.entries(req.headers)) {
+		if (value === undefined) continue;
+		const normalized = key.toLowerCase();
+		if (
+			normalized === "connection" ||
+			normalized === "host" ||
+			normalized === "keep-alive" ||
+			normalized === "proxy-connection" ||
+			normalized === "transfer-encoding" ||
+			normalized === "upgrade"
+		) {
+			continue;
+		}
+		headers[key] = value;
+	}
+	headers.host = `127.0.0.1:${port}`;
+	headers["x-forwarded-host"] = req.headers.host || "localhost";
+	headers["x-forwarded-proto"] = "http";
+	return headers;
+}
 
 export interface GatewayOptions {
 	/** Directory containing built static files (index.html, assets/) */
@@ -120,6 +162,61 @@ export class Gateway {
 		const message = err instanceof Error ? err.message : String(err);
 		res.writeHead(fallbackStatus, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ error: message || "Request failed" }));
+	}
+
+	private handlePreviewProxy(req: IncomingMessage, res: ServerResponse): boolean {
+		const target = parsePreviewProxyTarget(req.url || "/");
+		if (!target) return false;
+
+		const upstream = httpRequest({
+			hostname: "127.0.0.1",
+			port: target.port,
+			path: target.path,
+			method: req.method,
+			headers: previewProxyHeaders(req, target.port),
+		}, (upstreamRes) => {
+			res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+			upstreamRes.pipe(res);
+		});
+
+		upstream.on("error", (err) => {
+			const message = err instanceof Error ? err.message : String(err);
+			if (!res.headersSent) {
+				res.writeHead(502, { "Content-Type": "text/plain; charset=utf-8" });
+			}
+			res.end(`Preview server is not reachable on 127.0.0.1:${target.port}: ${message}`);
+		});
+
+		req.pipe(upstream);
+		return true;
+	}
+
+	private handlePreviewUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): boolean {
+		const target = parsePreviewProxyTarget(req.url || "/");
+		if (!target) return false;
+
+		const upstream = connectSocket(target.port, "127.0.0.1");
+		upstream.on("connect", () => {
+			const headers = previewProxyHeaders(req, target.port);
+			headers.connection = "Upgrade";
+			if (req.headers.upgrade) headers.upgrade = req.headers.upgrade;
+			if (req.headers["sec-websocket-key"]) headers["sec-websocket-key"] = req.headers["sec-websocket-key"];
+			if (req.headers["sec-websocket-version"]) headers["sec-websocket-version"] = req.headers["sec-websocket-version"];
+			if (req.headers["sec-websocket-protocol"]) headers["sec-websocket-protocol"] = req.headers["sec-websocket-protocol"];
+			if (req.headers["sec-websocket-extensions"]) headers["sec-websocket-extensions"] = req.headers["sec-websocket-extensions"];
+
+			upstream.write(`${req.method || "GET"} ${target.path} HTTP/${req.httpVersion}\r\n`);
+			for (const [key, value] of Object.entries(headers)) {
+				const values = Array.isArray(value) ? value : [value];
+				for (const item of values) upstream.write(`${key}: ${item}\r\n`);
+			}
+			upstream.write("\r\n");
+			if (head.length > 0) upstream.write(head);
+			socket.pipe(upstream).pipe(socket);
+		});
+		upstream.on("error", () => socket.destroy());
+		socket.on("error", () => upstream.destroy());
+		return true;
 	}
 
 	/** Handle GET /api/config — workspace configuration for the web UI */
@@ -509,6 +606,10 @@ export class Gateway {
 				return;
 			}
 
+			if (this.handlePreviewProxy(req, res)) {
+				return;
+			}
+
 			// Static UI serving
 			if (req.method === "GET" && this.uiDir) {
 
@@ -618,6 +719,9 @@ export class Gateway {
 		// Handle WebSocket upgrades
 		this.server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
 			const urlPath = (req.url || "").split("?")[0];
+			if (this.handlePreviewUpgrade(req, socket, head)) {
+				return;
+			}
 			const handler = this.upgradeRoutes.get(urlPath);
 			if (handler) {
 				handler(req, socket, head);
