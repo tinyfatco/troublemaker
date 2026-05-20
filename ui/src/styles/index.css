@@ -554,20 +554,20 @@ html, body, #root {
   --calendar-month-event-font: 0.72rem;
 }
 
-.plain-calendar-month > div:nth-child(2),
-.plain-calendar-month > div:nth-child(3) {
+.plain-calendar-month > div:first-child,
+.plain-calendar-month > div:last-child {
   background: var(--calendar-grid-border) !important;
   gap: 1px !important;
 }
 
-.plain-calendar-month > div:nth-child(2) {
+.plain-calendar-month > div:first-child {
   position: sticky;
   top: 0;
   z-index: 20;
   flex-shrink: 0;
 }
 
-.plain-calendar-month > div:nth-child(3) {
+.plain-calendar-month > div:last-child {
   flex: 1;
   min-height: 0;
   grid-auto-rows: minmax(var(--calendar-month-row-min), 1fr);
