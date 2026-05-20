@@ -82,6 +82,7 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
 }
 
 .header-title {
@@ -110,6 +111,53 @@ html, body, #root {
 .header-btn.active,
 .header-btn.display-toggle.active { color: var(--accent); background: var(--accent-muted); }
 
+.workspace-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.canvas-placement-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+
+.workspace-control-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  flex: 0 0 auto;
+}
+
+.workspace-control-btn:hover:not(:disabled) {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.workspace-control-btn.active {
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.workspace-control-btn:disabled {
+  opacity: 0.28;
+  cursor: not-allowed;
+}
+
 .header-status {
   display: inline-flex;
   align-items: center;
@@ -120,12 +168,40 @@ html, body, #root {
   line-height: 1;
 }
 
-/* Body — three-panel flex */
+/* Body */
 .workspace-body {
   flex: 1;
   display: flex;
   min-height: 0;
   overflow: hidden;
+}
+
+.workspace-surface {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.workspace-surface.canvas-left,
+.workspace-surface.canvas-right {
+  flex-direction: row;
+}
+
+.workspace-surface.canvas-top,
+.workspace-surface.canvas-bottom {
+  flex-direction: column;
+}
+
+.workspace-empty-surface {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
 }
 
 /* ========================================================================
@@ -165,6 +241,10 @@ html, body, #root {
   padding: 8px 10px 6px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.sidebar-controls .workspace-controls {
+  flex-wrap: wrap;
 }
 
 .sidebar-control-btn {
@@ -215,16 +295,77 @@ html, body, #root {
 .resize-handle:hover { background: var(--accent); }
 
 /* ========================================================================
-   Center Panel (Terminal / Desktop / File Viewer)
+   Canvas Panel (Terminal / Desktop / Calendar / Preview / File Viewer)
    ======================================================================== */
 
-.center-panel {
+.center-panel,
+.canvas-panel {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: var(--bg);
   overflow: hidden;
+}
+
+.workspace-surface.canvas-right .canvas-panel {
+  border-left: 1px solid var(--border);
+}
+
+.workspace-surface.canvas-top .canvas-panel {
+  flex: 0 0 44%;
+  border-bottom: 1px solid var(--border);
+}
+
+.workspace-surface.canvas-bottom .canvas-panel {
+  flex: 0 0 44%;
+  border-top: 1px solid var(--border);
+}
+
+.canvas-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--text-muted);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 7%, transparent), transparent 42%),
+    var(--bg);
+}
+
+.canvas-placeholder-icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-muted);
+}
+
+.canvas-placeholder-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.canvas-placeholder-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.canvas-placeholder-title {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 650;
+}
+
+.canvas-placeholder-subtitle {
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 /* Terminal */
@@ -316,6 +457,19 @@ html, body, #root {
   border-left: 1px solid var(--border);
   height: 100%;
   overflow: hidden;
+}
+
+.workspace-surface.canvas-right .awareness-sidebar {
+  border-left: none;
+  border-right: 1px solid var(--border);
+}
+
+.workspace-surface.canvas-top .awareness-sidebar,
+.workspace-surface.canvas-bottom .awareness-sidebar {
+  width: auto !important;
+  height: auto;
+  min-height: 0;
+  border-left: none;
 }
 
 .awareness-pane {
@@ -1514,7 +1668,9 @@ html, body, #root {
   .sidebar-panel { display: none; }
   .resize-handle { display: none; }
   .awareness-sidebar { width: 100% !important; border-left: none; }
-  .center-panel { display: none; }
+  .center-panel,
+  .canvas-panel { display: none; }
+  .canvas-placement-controls { display: none; }
 
   /* Mobile input bar: more breathing room, bigger touch targets.
      No font-size changes — those made it worse last time. */

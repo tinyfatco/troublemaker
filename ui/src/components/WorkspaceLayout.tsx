@@ -1,15 +1,14 @@
 /**
- * WorkspaceLayout — three-panel IDE-like workspace.
+ * WorkspaceLayout — chat plus a movable agent canvas.
  *
  * Left:   File explorer (collapsible)
- * Center: Terminal (default) or Desktop (if display_mode='desktop')
- *         or FileViewer when a file is selected
- * Right:  Awareness stream + chat input
+ * Canvas: Terminal, Desktop, Calendar, Preview, or FileViewer
+ * Chat:   Awareness stream + chat input
  *
  * Panels are resizable via drag handles.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, type CSSProperties } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useConfig } from '../hooks/useConfig';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
@@ -21,27 +20,42 @@ import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
 
+type CanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
+type CanvasPlacement = 'left' | 'right' | 'top' | 'bottom';
+
+const CANVAS_PLACEMENTS: CanvasPlacement[] = ['left', 'top', 'right', 'bottom'];
+
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
-  const [displayOverride, setDisplayOverride] = useState<'terminal' | 'desktop' | null>(null);
+  const [canvasModeOverride, setCanvasModeOverride] = useState<CanvasMode | null>(null);
   const capabilities = config.capabilities || {};
   const terminalAvailable = capabilities.terminal !== false;
   const desktopAvailable = capabilities.desktop === true;
-  const hasInteractivePanel = terminalAvailable || desktopAvailable;
-  const requestedDisplayMode = displayOverride ?? config.display_mode;
-  const displayMode =
-    requestedDisplayMode === 'desktop' && desktopAvailable
+  const interactiveMode =
+    config.display_mode === 'desktop' && desktopAvailable
       ? 'desktop'
       : terminalAvailable
         ? 'terminal'
         : desktopAvailable
           ? 'desktop'
           : null;
+  const canvasModes = [
+    { mode: 'terminal' as const, available: terminalAvailable, title: 'Terminal canvas' },
+    { mode: 'desktop' as const, available: desktopAvailable, title: 'Desktop canvas' },
+    { mode: 'calendar' as const, available: true, title: 'Calendar canvas' },
+    { mode: 'preview' as const, available: true, title: 'Preview canvas' },
+  ];
+  const requestedCanvasMode = canvasModeOverride ?? interactiveMode ?? 'calendar';
+  const canvasMode = canvasModes.some((item) => item.mode === requestedCanvasMode && item.available)
+    ? requestedCanvasMode
+    : canvasModes.find((item) => item.available)?.mode ?? null;
+  const hasCanvas = canvasModes.some((item) => item.available);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
-  const [centerCollapsed, setCenterCollapsed] = useState(true);
+  const [canvasCollapsed, setCanvasCollapsed] = useState(true);
+  const [canvasPlacement, setCanvasPlacement] = useState<CanvasPlacement>('left');
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
@@ -68,6 +82,7 @@ export function WorkspaceLayout() {
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
     setViewingFile(path);
+    setCanvasCollapsed(false);
     setMobileDrawerOpen(false);
   };
 
@@ -136,78 +151,92 @@ export function WorkspaceLayout() {
     };
   }, []);
 
-  const toggleDisplayMode = () => {
-    if (!terminalAvailable || !desktopAvailable) return;
-    const next = displayMode === 'terminal' ? 'desktop' : 'terminal';
-    setDisplayOverride(next);
+  const showCanvasMode = (mode: CanvasMode) => {
+    const item = canvasModes.find((entry) => entry.mode === mode);
+    if (!item?.available) return;
+    setCanvasModeOverride(mode);
+    setViewingFile(null);
+    setCanvasCollapsed(false);
   };
 
-  const toggleCenter = () => {
-    if (!hasInteractivePanel) return;
-    const next = !centerCollapsed;
-    setCenterCollapsed(next);
-    // If hiding center and awareness is also hidden, show awareness
+  const toggleCanvas = () => {
+    if (!hasCanvas) return;
+    const next = !canvasCollapsed;
+    setCanvasCollapsed(next);
+    // If hiding canvas and chat is also hidden, show chat.
     if (next && awarenessCollapsed) {
       setAwarenessCollapsed(false);
     }
   };
 
-  const SidebarControls = () => (
-    <div className="sidebar-controls" aria-label="Workspace controls">
-      {hasInteractivePanel && (
+  const CanvasControls = () => (
+    <div className="workspace-controls" aria-label="Canvas controls">
+      {hasCanvas && (
         <button
-          className={`sidebar-control-btn ${centerCollapsed ? 'active' : ''}`}
-          onClick={toggleCenter}
-          title={centerCollapsed ? 'Show terminal/desktop' : 'Hide terminal/desktop'}
+          className={`workspace-control-btn ${!canvasCollapsed ? 'active' : ''}`}
+          onClick={toggleCanvas}
+          title={canvasCollapsed ? 'Show canvas' : 'Hide canvas'}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-            {!centerCollapsed && (
+            {!canvasCollapsed && (
               <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
             )}
           </svg>
         </button>
       )}
-      {terminalAvailable && desktopAvailable && (
+      {canvasModes.map((item) => (
         <button
-          className={`sidebar-control-btn ${displayMode === 'desktop' ? 'active' : ''}`}
-          onClick={toggleDisplayMode}
-          title={displayMode === 'terminal' ? 'Switch to desktop' : 'Switch to terminal'}
+          key={item.mode}
+          className={`workspace-control-btn ${canvasMode === item.mode && !canvasCollapsed ? 'active' : ''}`}
+          onClick={() => showCanvasMode(item.mode)}
+          title={item.title}
+          disabled={!item.available}
         >
-          {displayMode === 'terminal' ? (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          ) : (
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          )}
+          <CanvasModeIcon mode={item.mode} />
         </button>
+      ))}
+      {!canvasCollapsed && hasCanvas && (
+        <div className="canvas-placement-controls" aria-label="Canvas placement">
+          {CANVAS_PLACEMENTS.map((placement) => (
+            <button
+              key={placement}
+              className={`workspace-control-btn ${canvasPlacement === placement ? 'active' : ''}`}
+              onClick={() => setCanvasPlacement(placement)}
+              title={`Canvas ${placement} of chat`}
+            >
+              <CanvasPlacementIcon placement={placement} />
+            </button>
+          ))}
+        </div>
       )}
       <button
-        className={`sidebar-control-btn ${!awarenessCollapsed ? 'active' : ''}`}
+        className={`workspace-control-btn ${!awarenessCollapsed ? 'active' : ''}`}
         onClick={toggleAwareness}
-        title={awarenessCollapsed ? 'Show awareness' : 'Hide awareness'}
+        title={awarenessCollapsed ? 'Show chat' : 'Hide chat'}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
           <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
           <path d="M1 4h5M1 8h5M1 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
       </button>
-      <button className="sidebar-control-btn" onClick={toggleTheme} title="Toggle theme">
+      <button className="workspace-control-btn" onClick={toggleTheme} title="Toggle theme">
         {isDark ? '\u2600' : '\u263D'}
       </button>
     </div>
   );
 
-  const CenterPanel = () => {
+  const SidebarControls = () => (
+    <div className="sidebar-controls" aria-label="Workspace controls">
+      <CanvasControls />
+    </div>
+  );
+
+  const CanvasPanel = () => {
     if (viewingFile) {
       return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
     }
-    if (configLoading && !displayOverride) {
+    if (configLoading && !canvasModeOverride) {
       return (
         <div className="desktop-pane">
           <div className="desktop-placeholder">
@@ -216,18 +245,57 @@ export function WorkspaceLayout() {
         </div>
       );
     }
-    if (!displayMode) {
+    if (!canvasMode) {
       return (
         <div className="desktop-pane">
-          <div className="desktop-placeholder">Interactive session unavailable</div>
+          <div className="desktop-placeholder">Canvas unavailable</div>
         </div>
       );
     }
-    if (displayMode === 'desktop') {
+    if (canvasMode === 'desktop') {
       return <DesktopPane />;
+    }
+    if (canvasMode === 'calendar') {
+      return (
+        <CanvasPlaceholder
+          title="Calendar"
+          subtitle="Calendar mode placeholder"
+        />
+      );
+    }
+    if (canvasMode === 'preview') {
+      return (
+        <CanvasPlaceholder
+          title="Preview"
+          subtitle="Live app and generated UI preview placeholder"
+        />
+      );
     }
     return <TerminalPane />;
   };
+
+  const isCanvasVertical = canvasPlacement === 'top' || canvasPlacement === 'bottom';
+  const canvasFirst = canvasPlacement === 'left' || canvasPlacement === 'top';
+  const showCanvas = !canvasCollapsed && hasCanvas;
+  const chatStyle: CSSProperties = showCanvas && !isCanvasVertical ? { width: awarenessWidth } : { flex: 1 };
+
+  const CanvasRegion = () => showCanvas ? (
+    <div className="canvas-panel">
+      <CanvasPanel />
+    </div>
+  ) : null;
+
+  const ChatRegion = () => !awarenessCollapsed ? (
+    <div className="awareness-sidebar" style={chatStyle}>
+      <AwarenessPane stream={awarenessStream} />
+    </div>
+  ) : null;
+
+  const HorizontalChatResize = () => (
+    showCanvas && !isCanvasVertical && !awarenessCollapsed
+      ? <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />
+      : null
+  );
 
   return (
     <div className="workspace-root">
@@ -239,6 +307,7 @@ export function WorkspaceLayout() {
             </svg>
           </button>
           {/* agent name removed */}
+          <CanvasControls />
         </div>
         <div className="header-right">
           <HeaderStatus stream={awarenessStream} />
@@ -266,22 +335,18 @@ export function WorkspaceLayout() {
           </>
         )}
 
-        {/* Center: Terminal / Desktop / File Viewer */}
-        {!centerCollapsed && hasInteractivePanel && (
-          <div className="center-panel">
-            <CenterPanel />
-          </div>
-        )}
-
-        {/* Right: Awareness Stream */}
-        {!awarenessCollapsed && (
-          <>
-            {!centerCollapsed && hasInteractivePanel && <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />}
-            <div className="awareness-sidebar" style={centerCollapsed || !hasInteractivePanel ? { flex: 1 } : { width: awarenessWidth }}>
-              <AwarenessPane stream={awarenessStream} />
+        <div className={`workspace-surface canvas-${canvasPlacement}`}>
+          {canvasFirst && <CanvasRegion />}
+          {!canvasFirst && <ChatRegion />}
+          <HorizontalChatResize />
+          {!canvasFirst && <CanvasRegion />}
+          {canvasFirst && <ChatRegion />}
+          {awarenessCollapsed && !showCanvas && (
+            <div className="workspace-empty-surface">
+              <span>Open chat or canvas</span>
             </div>
-          </>
-        )}
+          )}
+          </div>
       </div>
 
       {/* Upload drag overlay */}
@@ -318,5 +383,76 @@ export function WorkspaceLayout() {
         </>
       )}
     </div>
+  );
+}
+
+function CanvasPlaceholder({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div className="canvas-placeholder">
+      <div className="canvas-placeholder-icon">
+        <CanvasModeIcon mode={title === 'Calendar' ? 'calendar' : 'preview'} />
+      </div>
+      <div className="canvas-placeholder-copy">
+        <span className="canvas-placeholder-title">{title}</span>
+        <span className="canvas-placeholder-subtitle">{subtitle}</span>
+      </div>
+    </div>
+  );
+}
+
+function CanvasModeIcon({ mode }: { mode: CanvasMode }) {
+  if (mode === 'desktop') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="1" y="2" width="14" height="10" rx="1" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M4 14h8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (mode === 'calendar') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <rect x="2" y="3" width="12" height="11" rx="1" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M2 6h12M5 1.5v3M11 1.5v3M5 9h1M8 9h1M11 9h1M5 12h1M8 12h1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (mode === 'preview') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M1.5 8s2.2-4 6.5-4 6.5 4 6.5 4-2.2 4-6.5 4-6.5-4-6.5-4Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    );
+  }
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CanvasPlacementIcon({ placement }: { placement: CanvasPlacement }) {
+  const isTop = placement === 'top';
+  const isRight = placement === 'right';
+  const isBottom = placement === 'bottom';
+  const isLeft = placement === 'left';
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="1.5" width="13" height="13" rx="1" stroke="currentColor" strokeWidth="1.2" />
+      {isLeft && <path d="M6 1.5v13" stroke="currentColor" strokeWidth="1.2" />}
+      {isRight && <path d="M10 1.5v13" stroke="currentColor" strokeWidth="1.2" />}
+      {isTop && <path d="M1.5 6h13" stroke="currentColor" strokeWidth="1.2" />}
+      {isBottom && <path d="M1.5 10h13" stroke="currentColor" strokeWidth="1.2" />}
+      <rect
+        x={isRight ? 10 : 1.5}
+        y={isBottom ? 10 : 1.5}
+        width={isLeft || isRight ? 4.5 : 13}
+        height={isTop || isBottom ? 4.5 : 13}
+        fill="currentColor"
+        opacity="0.18"
+      />
+    </svg>
   );
 }
