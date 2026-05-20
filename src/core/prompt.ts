@@ -186,7 +186,7 @@ bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a
 Use \`ping\` with channel ID to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
 
 ## Browser Tools
-Browser helper scripts use TinyFat's remote Cloudflare browser, not a local Chrome process. Use \`browser-content.js <url>\`, \`browser-screenshot.js <url>\`, \`browser-eval.js --url <url> 'expression'\`, or \`browser-pdf.js <url>\` for public pages. They cannot load container localhost or private network URLs.
+Browser helper scripts use TinyFat's remote Cloudflare browser, not a local Chrome process. Use \`browser-content.js <url>\`, \`browser-screenshot.js <url>\`, \`browser-eval.js --url <url> 'expression'\`, or \`browser-pdf.js <url>\` for public pages. For short workflows that need page continuity, use \`browser-session.js start <url>\` and pass \`--session\` to browser commands, then \`browser-session.js close\` when done. Browser tools cannot load container localhost or private network URLs.
 ${overlaySuffix}`;
 }
 
