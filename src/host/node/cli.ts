@@ -28,7 +28,8 @@ import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "
 import { MomSettingsManager } from "../../context.js";
 import { downloadChannel } from "../../download.js";
 import { ChannelPulse } from "../../engagement/channel-pulse.js";
-import { computeWakeManifest, createEventsWatcher } from "../../events.js";
+import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
+import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import { Gateway } from "../../gateway.js";
 import * as log from "../../log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "../../sandbox.js";
@@ -899,12 +900,11 @@ gateway.registerGet("/status", async (_req, res) => {
 	res.end(JSON.stringify({ running, idle: running.length === 0, activeRun: describeActiveRun() }));
 });
 
-// Schedule endpoint — returns next wake time for scheduled events.
+// Schedule endpoint — returns next wake time for attention queue prompts.
 // Used by the orchestrator to set alarms for sleeping containers.
 gateway.registerGet("/schedule", async (_req, res) => {
 	try {
-		const eventsDir = join(workingDir, "events");
-		const schedule = await computeWakeManifest(eventsDir);
+		const schedule = await computeWorkspaceWakeManifest(workingDir);
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify(schedule));
 	} catch (err) {
@@ -1289,11 +1289,13 @@ The more you know, the better you can help. But remember — you're learning abo
 `, "utf-8");
 		log.logInfo("Seeded USER.md");
 
-		// Create memory/ directory
-		const memoryDir = join(workingDir, "memory");
-		if (!seedExists(memoryDir)) {
-			seedMkdir(memoryDir, { recursive: true });
-			log.logInfo("Created memory/ directory");
+	}
+
+	for (const dir of ["memory", "calendar/events", ATTENTION_QUEUE_DIR, ATTENTION_HISTORY_DIR]) {
+		const fullDir = join(workingDir, dir);
+		if (!seedExists(fullDir)) {
+			seedMkdir(fullDir, { recursive: true });
+			log.logInfo(`Created ${dir}/ directory`);
 		}
 	}
 
@@ -1359,8 +1361,9 @@ To change these, edit \`settings.json\` directly.
 
 // Seed auto-compaction event — runs at 4am daily, cleans up context
 {
-	const { writeFileSync: writeCompaction } = await import("fs");
-	const compactionFile = join(workingDir, "events", "compaction.json");
+	const { existsSync: existsCompaction, unlinkSync: unlinkCompaction, writeFileSync: writeCompaction } = await import("fs");
+	const compactionFile = join(workingDir, ATTENTION_QUEUE_DIR, "compaction.json");
+	const legacyCompactionFile = join(workingDir, LEGACY_EVENTS_DIR, "compaction.json");
 	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 	const compactionEvent = {
 		type: "periodic",
@@ -1370,7 +1373,15 @@ To change these, edit \`settings.json\` directly.
 		action: "compact",
 	};
 	writeCompaction(compactionFile, JSON.stringify(compactionEvent, null, 2), "utf-8");
-	log.logInfo(`Wrote compaction.json (daily 4am, tz=${tz})`);
+	if (existsCompaction(legacyCompactionFile)) {
+		try {
+			unlinkCompaction(legacyCompactionFile);
+			log.logInfo("Removed legacy events/compaction.json after attention queue migration");
+		} catch (err) {
+			log.logWarning("Failed to remove legacy events/compaction.json", err instanceof Error ? err.message : String(err));
+		}
+	}
+	log.logInfo(`Wrote ${ATTENTION_QUEUE_DIR}/compaction.json (daily 4am, tz=${tz})`);
 }
 
 // Arm event-file watching after seeding, but delay the existing-file scan so
@@ -1384,7 +1395,7 @@ const eventsWatcher = createEventsWatcher(workingDir, adapters, {
 	},
 });
 eventsWatcher.start();
-log.logInfo(`[perf] events watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+log.logInfo(`[perf] scheduled prompt watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 

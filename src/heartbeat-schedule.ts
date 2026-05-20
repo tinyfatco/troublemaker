@@ -1,6 +1,7 @@
 /**
  * Heartbeat schedule writer — translates `settings.spontaneity` into
- * `events/heartbeat.json` so the EventsWatcher picks up the new cadence.
+ * `attention/queue/heartbeat.json` so the scheduled prompt watcher picks up
+ * the new cadence.
  *
  * Previously inlined in `main.ts` boot sequence. Extracted so the Agency
  * MCP operator intake can call it after `configure spontaneity.*` edits,
@@ -10,6 +11,7 @@
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from "fs";
 import { join } from "path";
 import { HEARTBEAT_CHANNEL_ID } from "./adapters/heartbeat.js";
+import { ATTENTION_QUEUE_DIR, attentionQueueDir, legacyEventsDir } from "./attention/paths.js";
 import type { MomSpontaneitySettings } from "./context.js";
 import * as log from "./log.js";
 
@@ -27,24 +29,26 @@ export interface HeartbeatScheduleResult {
 /**
  * Translate spontaneity settings into a periodic event file.
  *
- * - If `enabled`, writes `events/heartbeat.json` with a cron + jitter + quiet hours.
- * - If disabled, removes `events/heartbeat.json` if present.
+ * - If `enabled`, writes `attention/queue/heartbeat.json` with a cron + jitter + quiet hours.
+ * - If disabled, removes `attention/queue/heartbeat.json` if present.
  *
  * Safe to call repeatedly. Caller is responsible for triggering any wake
- * manifest resync (the EventsWatcher picks up the file change via inotify).
+ * manifest resync (the scheduled prompt watcher picks up the file change via inotify).
  */
 export function syncHeartbeatFromSpontaneity(
 	workingDir: string,
 	spontaneity: MomSpontaneitySettings,
 ): HeartbeatScheduleResult {
-	const eventsDir = join(workingDir, "events");
+	const eventsDir = attentionQueueDir(workingDir);
 	const heartbeatFile = join(eventsDir, "heartbeat.json");
+	const legacyHeartbeatFile = join(legacyEventsDir(workingDir), "heartbeat.json");
 
 	if (!spontaneity.enabled) {
 		if (existsSync(heartbeatFile)) {
 			unlinkSync(heartbeatFile);
-			log.logInfo("Removed heartbeat.json (spontaneity disabled)");
+			log.logInfo(`Removed ${ATTENTION_QUEUE_DIR}/heartbeat.json (spontaneity disabled)`);
 		}
+		removeLegacyHeartbeat(legacyHeartbeatFile, "spontaneity disabled");
 		return { enabled: false, path: heartbeatFile };
 	}
 
@@ -79,9 +83,23 @@ export function syncHeartbeatFromSpontaneity(
 	};
 
 	writeFileSync(heartbeatFile, JSON.stringify(event, null, 2), "utf-8");
+	removeLegacyHeartbeat(legacyHeartbeatFile, "attention queue migration");
 	log.logInfo(
-		`Wrote heartbeat.json (every ${mins}min, spontaneity=${spontaneity.spontaneity}, tz=${tz})`,
+		`Wrote ${ATTENTION_QUEUE_DIR}/heartbeat.json (every ${mins}min, spontaneity=${spontaneity.spontaneity}, tz=${tz})`,
 	);
 
 	return { enabled: true, path: heartbeatFile, schedule, timezone: tz };
+}
+
+function removeLegacyHeartbeat(path: string, reason: string): void {
+	if (!existsSync(path)) return;
+	try {
+		unlinkSync(path);
+		log.logInfo(`Removed legacy events/heartbeat.json (${reason})`);
+	} catch (err) {
+		log.logWarning(
+			"Failed to remove legacy events/heartbeat.json",
+			err instanceof Error ? err.message : String(err),
+		);
+	}
 }

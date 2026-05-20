@@ -1,8 +1,9 @@
 import { Cron } from "croner";
 import { existsSync, type FSWatcher, mkdirSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from "fs";
 import { readFile, readdir } from "fs/promises";
-import { join } from "path";
+import { basename, join } from "path";
 import type { MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
+import { attentionHistoryDir, attentionQueueDir, legacyEventsDir } from "./attention/paths.js";
 import * as log from "./log.js";
 
 // ============================================================================
@@ -37,6 +38,11 @@ export interface PeriodicEvent {
 }
 
 export type ScheduledEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
+
+export interface ScheduledWatcher {
+	start(): void;
+	stop(): void;
+}
 
 // ============================================================================
 // EventsWatcher
@@ -101,27 +107,38 @@ export class EventsWatcher {
 
 	private onCompact?: () => Promise<void>;
 	private initialScanDelayMs: number;
+	private historyDir?: string;
+	private ensureDir: boolean;
+	private label: string;
 
 	constructor(
 		private eventsDir: string,
 		private adapters: PlatformAdapter[],
-		options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number },
+		options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number; historyDir?: string; ensureDir?: boolean; label?: string },
 	) {
 		this.startTime = Date.now();
 		this.onCompact = options?.onCompact;
 		this.initialScanDelayMs = options?.initialScanDelayMs ?? 0;
+		this.historyDir = options?.historyDir;
+		this.ensureDir = options?.ensureDir ?? true;
+		this.label = options?.label ?? basename(eventsDir);
 	}
 
 	/**
 	 * Start watching for events. Call this after adapter is ready.
 	 */
 	start(): void {
-		// Ensure events directory exists
+		// Ensure attention queue directory exists. Legacy events watchers can opt
+		// out so we do not recreate the old path on fresh workspaces.
 		if (!existsSync(this.eventsDir)) {
+			if (!this.ensureDir) {
+				log.logInfo(`Scheduled prompt watcher skipped missing ${this.label} dir: ${this.eventsDir}`);
+				return;
+			}
 			mkdirSync(this.eventsDir, { recursive: true });
 		}
 
-		log.logInfo(`Events watcher starting, dir: ${this.eventsDir}`);
+		log.logInfo(`Scheduled prompt watcher starting, dir: ${this.eventsDir}`);
 
 		// Watch for changes immediately (fast)
 		this.watcher = watch(this.eventsDir, (_eventType, filename) => {
@@ -134,12 +151,12 @@ export class EventsWatcher {
 			// Scan existing files ASYNC — don't block the event loop.
 			// On slow filesystems (s3fs/FUSE), readdir can take 60+ seconds.
 			this.scanExistingAsync().then(() => {
-				log.logInfo(`Events watcher started, tracking ${this.knownFiles.size} files`);
+				log.logInfo(`Scheduled prompt watcher started (${this.label}), tracking ${this.knownFiles.size} files`);
 			});
 		};
 
 		if (this.initialScanDelayMs > 0) {
-			log.logInfo(`Events watcher initial scan delayed by ${this.initialScanDelayMs}ms`);
+			log.logInfo(`Scheduled prompt watcher initial scan delayed by ${this.initialScanDelayMs}ms (${this.label})`);
 			this.initialScanTimer = setTimeout(runInitialScan, this.initialScanDelayMs);
 			this.initialScanTimer.unref?.();
 			return;
@@ -182,7 +199,7 @@ export class EventsWatcher {
 		this.crons.clear();
 
 		this.knownFiles.clear();
-		log.logInfo("Events watcher stopped");
+		log.logInfo(`Scheduled prompt watcher stopped (${this.label})`);
 	}
 
 	private debounce(filename: string, fn: () => void): void {
@@ -204,7 +221,7 @@ export class EventsWatcher {
 		try {
 			files = (await readdir(this.eventsDir)).filter((f) => f.endsWith(".json"));
 		} catch (err) {
-			log.logWarning("Failed to read events directory", String(err));
+			log.logWarning(`Failed to read scheduled prompt directory (${this.label})`, String(err));
 			return;
 		}
 
@@ -233,7 +250,7 @@ export class EventsWatcher {
 	private handleDelete(filename: string): void {
 		if (!this.knownFiles.has(filename)) return;
 
-		log.logInfo(`Event file deleted: ${filename}`);
+		log.logInfo(`Scheduled prompt file deleted: ${filename}`);
 		this.cancelScheduled(filename);
 		this.knownFiles.delete(filename);
 	}
@@ -273,7 +290,7 @@ export class EventsWatcher {
 		}
 
 		if (!event) {
-			log.logWarning(`Failed to parse event file after ${MAX_RETRIES} retries: ${filename}`, lastError?.message);
+			log.logWarning(`Failed to parse scheduled prompt file after ${MAX_RETRIES} retries: ${filename}`, lastError?.message);
 			this.deleteFile(filename);
 			return;
 		}
@@ -352,7 +369,7 @@ export class EventsWatcher {
 			return;
 		}
 
-		log.logInfo(`Executing immediate event: ${filename}`);
+		log.logInfo(`Executing immediate scheduled prompt: ${filename}`);
 		this.execute(filename, event);
 	}
 
@@ -365,22 +382,22 @@ export class EventsWatcher {
 			if (ageMs <= COLD_WAKE_GRACE_MS) {
 				// Past but within grace window — execute immediately.
 				// Covers cold-start delay where container boots after the event's target time.
-				log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (within grace window), executing: ${filename}`);
+				log.logInfo(`One-shot scheduled prompt ${Math.round(ageMs / 1000)}s past due (within grace window), executing: ${filename}`);
 				this.execute(filename, event);
 				return;
 			}
 			// Too old — mark expired
-			log.logInfo(`One-shot event ${Math.round(ageMs / 1000)}s past due (beyond grace window), expiring: ${filename}`);
+			log.logInfo(`One-shot scheduled prompt ${Math.round(ageMs / 1000)}s past due (beyond grace window), expiring: ${filename}`);
 			this.completeFile(filename, "expired");
 			return;
 		}
 
 		const delay = atTime - now;
-		log.logInfo(`Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s`);
+		log.logInfo(`Scheduling one-shot scheduled prompt: ${filename} in ${Math.round(delay / 1000)}s`);
 
 		const timer = setTimeout(() => {
 			this.timers.delete(filename);
-			log.logInfo(`Executing one-shot event: ${filename}`);
+			log.logInfo(`Executing one-shot scheduled prompt: ${filename}`);
 			this.execute(filename, event);
 		}, delay);
 
@@ -395,15 +412,15 @@ export class EventsWatcher {
 			} else {
 				// Standard cron: exact timing
 				const cron = new Cron(event.schedule, { timezone: event.timezone }, () => {
-					log.logInfo(`Executing periodic event: ${filename}`);
+					log.logInfo(`Executing periodic scheduled prompt: ${filename}`);
 					this.execute(filename, event, false);
 				});
 				this.crons.set(filename, cron);
 				const next = cron.nextRun();
-				log.logInfo(`Scheduled periodic event: ${filename}, next run: ${next?.toISOString() ?? "unknown"}`);
+				log.logInfo(`Scheduled periodic prompt: ${filename}, next run: ${next?.toISOString() ?? "unknown"}`);
 			}
 		} catch (err) {
-			log.logWarning(`Invalid cron schedule for ${filename}: ${event.schedule}`, String(err));
+			log.logWarning(`Invalid cron schedule for scheduled prompt ${filename}: ${event.schedule}`, String(err));
 			this.deleteFile(filename);
 		}
 	}
@@ -436,11 +453,11 @@ export class EventsWatcher {
 			}
 
 			const fireTime = new Date(now + delayMs).toISOString();
-			log.logInfo(`Scheduled jittered periodic: ${filename}, next fire: ${fireTime} (${Math.round(delayMs / 1000)}s, spontaneity=${event.spontaneity})`);
+			log.logInfo(`Scheduled jittered periodic prompt: ${filename}, next fire: ${fireTime} (${Math.round(delayMs / 1000)}s, spontaneity=${event.spontaneity})`);
 
 			const timer = setTimeout(() => {
 				this.timers.delete(filename);
-				log.logInfo(`Executing jittered periodic event: ${filename}`);
+				log.logInfo(`Executing jittered periodic scheduled prompt: ${filename}`);
 				this.execute(filename, event, false);
 				// Reschedule with fresh jitter
 				this.scheduleJitteredPeriodic(filename, event);
@@ -448,7 +465,7 @@ export class EventsWatcher {
 
 			this.timers.set(filename, timer);
 		} catch (err) {
-			log.logWarning(`Failed to schedule jittered periodic ${filename}`, String(err));
+			log.logWarning(`Failed to schedule jittered periodic prompt ${filename}`, String(err));
 		}
 	}
 
@@ -480,7 +497,7 @@ export class EventsWatcher {
 			return;
 		}
 
-		const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
+		const message = `[ATTENTION:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
 
 		// Create synthetic event
 		const syntheticEvent: MomIncomingEvent = {
@@ -504,7 +521,7 @@ export class EventsWatcher {
 			// Move to completed/ after successful enqueue (immediate and one-shot)
 			this.completeFile(filename, "fired");
 		} else if (!enqueued) {
-			log.logWarning(`Event queue full, discarded: ${filename}`);
+			log.logWarning(`Scheduled prompt queue full, discarded: ${filename}`);
 			// Still remove immediate/one-shot even if discarded
 			if (deleteAfter) {
 				this.completeFile(filename, "expired");
@@ -526,12 +543,12 @@ export class EventsWatcher {
 	}
 
 	/**
-	 * Move a fired/expired event to events/completed/ with metadata.
+	 * Move a fired/expired scheduled prompt to attention/history/ with metadata.
 	 * Provides an audit trail instead of silent deletion.
 	 */
 	private completeFile(filename: string, outcome: "fired" | "expired"): void {
 		const filePath = join(this.eventsDir, filename);
-		const completedDir = join(this.eventsDir, "completed");
+		const completedDir = this.historyDir ?? join(this.eventsDir, "completed");
 
 		try {
 			// Read the original event
@@ -552,11 +569,11 @@ export class EventsWatcher {
 
 			// Remove the original
 			unlinkSync(filePath);
-			log.logInfo(`Event ${outcome}: ${filename} → completed/`);
+			log.logInfo(`Scheduled prompt ${outcome}: ${filename} → ${completedDir}`);
 		} catch (err) {
 			// Fall back to plain delete if anything goes wrong
 			const msg = err instanceof Error ? err.message : String(err);
-			log.logWarning(`completeFile failed for ${filename} (falling back to delete): ${msg}`);
+			log.logWarning(`completeFile failed for scheduled prompt ${filename} (falling back to delete): ${msg}`);
 			try { unlinkSync(filePath); } catch {}
 		}
 
@@ -575,9 +592,27 @@ export function createEventsWatcher(
 	workspaceDir: string,
 	adapters: PlatformAdapter[],
 	options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number },
-): EventsWatcher {
-	const eventsDir = join(workspaceDir, "events");
-	return new EventsWatcher(eventsDir, adapters, options);
+): ScheduledWatcher {
+	const primary = new EventsWatcher(attentionQueueDir(workspaceDir), adapters, {
+		...options,
+		historyDir: attentionHistoryDir(workspaceDir),
+		label: "attention/queue",
+	});
+	const legacyDir = legacyEventsDir(workspaceDir);
+	const legacy = existsSync(legacyDir)
+		? new EventsWatcher(legacyDir, adapters, { ...options, ensureDir: false, label: "events (legacy)" })
+		: null;
+
+	return {
+		start(): void {
+			primary.start();
+			legacy?.start();
+		},
+		stop(): void {
+			primary.stop();
+			legacy?.stop();
+		},
+	};
 }
 
 // ============================================================================
@@ -607,6 +642,7 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 					type: "periodic", channelId, text: data.text,
 					schedule: data.schedule, timezone: data.timezone,
 					spontaneity: data.spontaneity, quietHours: data.quietHours,
+					action: data.action,
 				};
 			default:
 				return null;
@@ -623,6 +659,27 @@ export function parseEventContent(content: string): ScheduledEvent | null {
  * `nextWake` is derived (earliest timestamp) for backwards compat.
  */
 export async function computeWakeManifest(eventsDir: string): Promise<{
+	nextWake: string | null;
+	events: Array<{ file: string; type: string; nextFire: string }>;
+}> {
+	return computeWakeManifestForDir(eventsDir);
+}
+
+export async function computeWorkspaceWakeManifest(workspaceDir: string): Promise<{
+	nextWake: string | null;
+	events: Array<{ file: string; type: string; nextFire: string }>;
+}> {
+	const manifests = await Promise.all([
+		computeWakeManifestForDir(attentionQueueDir(workspaceDir), "attention/queue/"),
+		computeWakeManifestForDir(legacyEventsDir(workspaceDir), "events/"),
+	]);
+	const events = manifests.flatMap((manifest) => manifest.events)
+		.sort((a, b) => a.nextFire.localeCompare(b.nextFire));
+	const nextWake = events[0]?.nextFire ?? null;
+	return { nextWake, events };
+}
+
+async function computeWakeManifestForDir(eventsDir: string, filePrefix = ""): Promise<{
 	nextWake: string | null;
 	events: Array<{ file: string; type: string; nextFire: string }>;
 }> {
@@ -650,7 +707,7 @@ export async function computeWakeManifest(eventsDir: string): Promise<{
 					const cron = new Cron(event.schedule, { timezone: event.timezone });
 					const next = cron.nextRun();
 					if (next) {
-						result.push({ file: filename, type: "periodic", nextFire: next.toISOString() });
+						result.push({ file: `${filePrefix}${filename}`, type: "periodic", nextFire: next.toISOString() });
 					}
 				} catch {
 					// Invalid cron — skip
@@ -658,7 +715,7 @@ export async function computeWakeManifest(eventsDir: string): Promise<{
 			} else if (event.type === "one-shot") {
 				const at = new Date(event.at);
 				if (at.getTime() > Date.now()) {
-					result.push({ file: filename, type: "one-shot", nextFire: at.toISOString() });
+					result.push({ file: `${filePrefix}${filename}`, type: "one-shot", nextFire: at.toISOString() });
 				}
 			}
 			// Skip immediate events — they fire on creation, not on schedule

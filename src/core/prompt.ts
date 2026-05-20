@@ -140,21 +140,29 @@ ${workspacePath}/
 ├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
 ├── settings.json              # Model & preferences (change model here or /model <name>)
 ├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)
-├── events/                    # Scheduled wake events (JSON files)
+├── calendar/events/           # Calendar items shown in the workspace calendar
+├── attention/queue/           # Scheduled prompts that trigger future attention
+├── attention/history/         # Fired/expired scheduled prompts with metadata
 └── attachments/               # Files shared by users
 
-## Events
-JSON files in \`${workspacePath}/events/\`. Three types:
+## Calendar Events
+JSON files in \`${workspacePath}/calendar/events/\` are user-world calendar items. Use this shape:
+- \`{"id": "...", "title": "...", "start": "ISO8601+offset", "end": "ISO8601+offset", "allDay": false}\`
+
+These files render in the workspace calendar. They do not wake you by themselves.
+
+## Attention Queue
+JSON files in \`${workspacePath}/attention/queue/\` are scheduled prompts that bring something back into your awareness. Three types:
 - \`{"type": "immediate", "text": "..."}\` — triggers immediately, auto-deletes
 - \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
 - \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
 
-Do NOT specify \`channelId\` — events run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack, Discord), use \`send_message_to_channel\` during execution.
+Do NOT specify \`channelId\` — attention prompts run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack, Discord), use \`send_message_to_channel\` during execution.
 
-Use unique filenames (include timestamp suffix). Max 5 queued events.
-Triggered events appear as: \`[EVENT:filename.json:type:time] text\`
-For periodic events with nothing to report, respond with just \`[SILENT]\`.
-Debounce immediate events — batch multiple signals into one rather than creating many.
+Use unique filenames (include timestamp suffix). Max 5 queued prompts.
+Triggered prompts appear as: \`[ATTENTION:filename.json:type:time] text\`
+For periodic prompts with nothing to report, respond with just \`[SILENT]\`.
+Debounce immediate prompts — batch multiple signals into one rather than creating many.
 Timezone: ${tz}. Assume this when users don't specify.
 
 ## Tools

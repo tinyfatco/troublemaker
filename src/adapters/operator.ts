@@ -37,6 +37,7 @@ import { randomUUID } from "crypto";
 import { join } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
+import { ATTENTION_QUEUE_DIR } from "../attention/paths.js";
 import { MomSettingsManager, type MomVerboseSettings, type VerbosityLevel } from "../context.js";
 import { syncHeartbeatFromSpontaneity } from "../heartbeat-schedule.js";
 import type { ChannelStore } from "../store.js";
@@ -704,9 +705,9 @@ Replies to the operator happen through whatever channel you were already using w
 
 	/**
 	 * Spontaneity edits go through MomSettingsManager so the level/interval
-	 * sync logic runs, then trigger a live reschedule of `events/heartbeat.json`
-	 * so the EventsWatcher + DO wake manifest pick up the new cadence without
-	 * waiting for the next container boot.
+	 * sync logic runs, then trigger a live reschedule of
+	 * `attention/queue/heartbeat.json` so the scheduled prompt watcher + DO wake
+	 * manifest pick up the new cadence without waiting for the next container boot.
 	 */
 	private configureSpontaneity(
 		originalTarget: string,
@@ -809,7 +810,7 @@ Replies to the operator happen through whatever channel you were already using w
 
 		const merged = manager.setSpontaneity(patch);
 
-		// Live reschedule: rewrite events/heartbeat.json so the next fire
+		// Live reschedule: rewrite attention/queue/heartbeat.json so the next fire
 		// reflects the new cadence instead of waiting for a full boot.
 		let scheduleResult: ReturnType<typeof syncHeartbeatFromSpontaneity> | null = null;
 		try {
@@ -962,7 +963,7 @@ Replies to the operator happen through whatever channel you were already using w
 			heartbeatChecklist = null;
 		}
 
-		const heartbeatFile = join(this.workingDir, "events", "heartbeat.json");
+		const heartbeatFile = join(this.workingDir, ATTENTION_QUEUE_DIR, "heartbeat.json");
 		let heartbeatScheduleFile: unknown = null;
 		try {
 			if (existsSync(heartbeatFile)) {

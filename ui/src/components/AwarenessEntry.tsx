@@ -235,9 +235,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
   if (entry.role === 'user') {
     const text = entry.strippedText || extractText(entry.content);
 
-    // Event triggers (heartbeat, scheduled) — compact indicator
-    // Formats: [EVENT:name:type:cron] [source] label  OR  [EVENT:name:type:cron] label
-    const eventMatch = text.match(/^\[EVENT:([^:\]]+)[^\]]*\]\s*(?:\[([^\]]+)\]\s*)?([\s\S]*)$/);
+    // Attention triggers (heartbeat, scheduled) — compact indicator
+    // Formats: [ATTENTION:name:type:cron] [source] label OR legacy [EVENT:...]
+    const eventMatch = text.match(/^\[(?:EVENT|ATTENTION):([^:\]]+)[^\]]*\]\s*(?:\[([^\]]+)\]\s*)?([\s\S]*)$/);
     if (eventMatch) {
       const eventFile = eventMatch[1].replace(/\.json$/, ''); // e.g. "daily-5am-checkin"
       const eventSource = eventMatch[2]; // e.g. "heartbeat" (optional)

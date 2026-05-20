@@ -22,6 +22,12 @@ export interface AwarenessBacklog {
   offset: number;
 }
 
+export interface CalendarEventFile {
+  name: string;
+  path: string;
+  content: string;
+}
+
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
 function currentAgentId(): string {
@@ -86,6 +92,31 @@ export async function readFile(path: string): Promise<string> {
   const resp = await fetchWithTimeout(consoleAgentUrl(`/file?${params}`), {}, 15000);
   if (!resp.ok) throw await readError(resp, `File read failed: ${resp.status}`);
   return resp.text();
+}
+
+export async function fetchCalendarEventFiles(): Promise<CalendarEventFile[]> {
+  let files: FileNode[];
+  try {
+    files = await listFiles('calendar/events');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes('not found')) return [];
+    throw err;
+  }
+
+  const jsonFiles = files
+    .filter((file) => file.type === 'file' && file.name.endsWith('.json'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const results = await Promise.allSettled(
+    jsonFiles.map(async (file) => ({
+      name: file.name,
+      path: file.path,
+      content: await readFile(file.path),
+    })),
+  );
+
+  return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
 }
 
 export async function saveWorkspaceFile(path: string, content: string): Promise<void> {

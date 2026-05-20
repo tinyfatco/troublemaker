@@ -16,6 +16,7 @@ import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
 import { DesktopPane } from './DesktopPane';
+import { CalendarPane } from './CalendarPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
@@ -256,12 +257,7 @@ export function WorkspaceLayout() {
       return <DesktopPane />;
     }
     if (canvasMode === 'calendar') {
-      return (
-        <CanvasPlaceholder
-          title="Calendar"
-          subtitle="Calendar mode placeholder"
-        />
-      );
+      return <CalendarPane />;
     }
     if (canvasMode === 'preview') {
       return (

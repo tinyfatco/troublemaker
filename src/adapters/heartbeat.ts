@@ -11,8 +11,9 @@
  *   - File exists but empty → heartbeat run is skipped entirely
  *   - File doesn't exist → run with default generic prompt
  *
- * Scheduling is handled by the events system (periodic event file in events/).
- * This adapter just accepts and runs the events headlessly.
+ * Scheduling is handled by the attention queue (periodic prompt file in
+ * attention/queue/). This adapter just accepts and runs those prompts
+ * headlessly.
  */
 
 import { appendFileSync, existsSync, readFileSync } from "fs";

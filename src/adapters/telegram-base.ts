@@ -330,7 +330,7 @@ When mentioning users, use @username format.`;
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
 		const user = this.users.get(event.user);
-		const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+		const eventFilename = isEvent ? event.text.match(/^\[(?:EVENT|ATTENTION):([^:]+):/)?.[1] : undefined;
 
 		const headerLine = eventFilename
 			? `<i>Starting event: ${escapeHtml(eventFilename)}</i>`

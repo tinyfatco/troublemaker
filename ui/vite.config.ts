@@ -4,6 +4,12 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   base: './',
+  resolve: {
+    alias: {
+      '@plain-calendar/core': '/src/vendor/plain-calendar/core',
+      '@plain-calendar/react': '/src/vendor/plain-calendar/react',
+    },
+  },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
