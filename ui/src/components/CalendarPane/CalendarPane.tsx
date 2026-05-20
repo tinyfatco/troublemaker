@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import {
   Calendar,
   Timeline,
@@ -11,11 +11,49 @@ import {
   useCalendarState,
   type CalendarView,
   type PositionedEvent,
+  type TimeAxisLabel,
 } from '@plain-calendar/react';
 import { useCalendarEvents } from '../../hooks/useCalendarEvents';
+import { usePersistentState } from '../../hooks/usePersistentState';
 import type { AgentCalendarEvent, ParsedCalendarEventFile } from './calendarAdapter';
 
 const VIEWS: CalendarView[] = ['month', 'week', 'day', 'agenda'];
+const HOUR_HEIGHTS = [44, 56, 72, 88] as const;
+const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function parseCalendarView(value: unknown): CalendarView | null {
+  return typeof value === 'string' && VIEWS.includes(value as CalendarView)
+    ? value as CalendarView
+    : null;
+}
+
+function parseBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function parseHourHeightIndex(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(HOUR_HEIGHTS.length - 1, Math.round(value)))
+    : null;
+}
+
+function toDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function dateFromKey(key: string): Date {
+  const [year, month, day] = key.split('-').map(Number);
+  return startOfDay(new Date(year, month - 1, day));
+}
+
+function parseDateKey(value: unknown): string | null {
+  if (typeof value !== 'string' || !DATE_KEY_PATTERN.test(value)) return null;
+  const date = dateFromKey(value);
+  return Number.isNaN(date.getTime()) || toDateKey(date) !== value ? null : value;
+}
 
 function formatClock(date: Date): string {
   return date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
@@ -55,12 +93,38 @@ function upcomingEvents(events: AgentCalendarEvent[], date: Date): AgentCalendar
 }
 
 export function CalendarPane() {
-  const [view, setView] = useState<CalendarView>('month');
+  const [view, setView] = usePersistentState<CalendarView>(
+    'troublemaker.calendar.view',
+    'month',
+    { parse: parseCalendarView },
+  );
+  const [selectedDateKey, setSelectedDateKey] = usePersistentState(
+    'troublemaker.calendar.selectedDate',
+    toDateKey(new Date()),
+    { parse: parseDateKey },
+  );
   const [selectedEvent, setSelectedEvent] = useState<AgentCalendarEvent | null>(null);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const calendar = useCalendarState({ view, weekStartsOn: 0 });
+  const [detailOpen, setDetailOpen] = usePersistentState(
+    'troublemaker.calendar.detailOpen',
+    false,
+    { parse: parseBoolean },
+  );
+  const [hourHeightIndex, setHourHeightIndex] = usePersistentState(
+    'troublemaker.calendar.hourHeightIndex',
+    1,
+    { parse: parseHourHeightIndex },
+  );
+  const initialDate = useMemo(() => dateFromKey(selectedDateKey), [selectedDateKey]);
+  const calendar = useCalendarState({ initialDate, view, weekStartsOn: 0 });
   const query = useCalendarEvents();
   const parsedFiles = query.data ?? [];
+
+  useEffect(() => {
+    const nextDateKey = toDateKey(calendar.selectedDate);
+    setSelectedDateKey((currentDateKey) => (
+      currentDateKey === nextDateKey ? currentDateKey : nextDateKey
+    ));
+  }, [calendar.selectedDate, setSelectedDateKey]);
 
   const { events, invalidFiles } = useMemo(() => {
     const valid: AgentCalendarEvent[] = [];
@@ -82,10 +146,25 @@ export function CalendarPane() {
     [events, calendar.selectedDate],
   );
   const showDetails = detailOpen;
+  const hourHeight = HOUR_HEIGHTS[hourHeightIndex];
+  const timeGridStyle = { minHeight: `${24 * hourHeight}px` };
   const selectEvent = (event: AgentCalendarEvent) => {
     setSelectedEvent(event);
     setDetailOpen(true);
   };
+  const openDay = (date: Date) => {
+    calendar.setSelectedDate(date);
+    setSelectedEvent(null);
+    setView('day');
+  };
+  const activateDay = (date: Date, event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openDay(date);
+    }
+  };
+  const isTimedView = view === 'week' || view === 'day';
 
   return (
     <div className="calendar-pane">
@@ -115,6 +194,26 @@ export function CalendarPane() {
             </button>
           ))}
         </div>
+        {isTimedView && (
+          <div className="calendar-density-controls" aria-label="Time scale">
+            <button
+              className="calendar-icon-btn"
+              onClick={() => setHourHeightIndex((index) => Math.max(0, index - 1))}
+              disabled={hourHeightIndex === 0}
+              title="Compact time grid"
+            >
+              <MinusIcon />
+            </button>
+            <button
+              className="calendar-icon-btn"
+              onClick={() => setHourHeightIndex((index) => Math.min(HOUR_HEIGHTS.length - 1, index + 1))}
+              disabled={hourHeightIndex === HOUR_HEIGHTS.length - 1}
+              title="Expand time grid"
+            >
+              <PlusIcon />
+            </button>
+          </div>
+        )}
         <button
           className={`calendar-icon-btn calendar-detail-toggle ${showDetails ? 'active' : ''}`}
           onClick={() => setDetailOpen((open) => !open)}
@@ -149,7 +248,11 @@ export function CalendarPane() {
                     isCurrentMonth ? '' : 'muted',
                     isToday ? 'today' : '',
                   ].filter(Boolean).join(' ')}
-                  onClick={() => calendar.setSelectedDate(date)}
+                  onClick={() => openDay(date)}
+                  onKeyDown={(event) => activateDay(date, event)}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Open ${date.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })} day view`}
                 >
                   <div className="calendar-day-number">{date.getDate()}</div>
                   <div className="calendar-day-events">
@@ -182,6 +285,8 @@ export function CalendarPane() {
               weekStart={startOfWeek(calendar.currentViewingDate)}
               startHour={0}
               endHour={24}
+              style={timeGridStyle}
+              renderTimeAxis={renderTimeAxis}
               renderEvent={(event) => (
                 <CalendarTimedEvent event={event} onSelect={selectEvent} />
               )}
@@ -195,6 +300,8 @@ export function CalendarPane() {
               date={calendar.selectedDate}
               startHour={0}
               endHour={24}
+              style={timeGridStyle}
+              renderTimeAxis={renderTimeAxis}
               renderEvent={(event) => (
                 <CalendarTimedEvent event={event} onSelect={selectEvent} />
               )}
@@ -208,6 +315,22 @@ export function CalendarPane() {
 
         {showDetails && <CalendarDetail event={selectedEvent} invalidFiles={invalidFiles} />}
       </div>
+    </div>
+  );
+}
+
+function renderTimeAxis(labels: TimeAxisLabel[]) {
+  return (
+    <div className="calendar-time-axis">
+      {labels.slice(1).map((label) => (
+        <div
+          key={label.hour}
+          className="calendar-time-label"
+          style={{ top: `${label.position}%` }}
+        >
+          {label.label}
+        </div>
+      ))}
     </div>
   );
 }
@@ -347,6 +470,22 @@ function DetailsIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M3 3h10M3 8h10M3 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MinusIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M4 8h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M8 4v8M4 8h8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

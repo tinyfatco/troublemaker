@@ -405,7 +405,8 @@ html, body, #root {
 }
 
 .calendar-nav,
-.calendar-view-tabs {
+.calendar-view-tabs,
+.calendar-density-controls {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -442,6 +443,11 @@ html, body, #root {
   padding: 0;
 }
 
+.calendar-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 .calendar-today-btn {
   border-radius: 6px;
   padding: 0 10px;
@@ -463,6 +469,10 @@ html, body, #root {
 }
 
 .calendar-view-tabs button:last-child { border-right: none; }
+
+.calendar-density-controls {
+  padding-left: 2px;
+}
 
 .calendar-icon-btn:hover,
 .calendar-today-btn:hover,
@@ -531,6 +541,11 @@ html, body, #root {
   background: var(--bg-secondary);
 }
 
+.calendar-day:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
 .calendar-day.muted {
   color: var(--text-muted);
   background: color-mix(in srgb, var(--surface) 70%, var(--bg));
@@ -594,6 +609,21 @@ html, body, #root {
 .plain-calendar-week > div,
 .plain-calendar-day > div {
   color: var(--text-muted);
+}
+
+.calendar-time-axis {
+  position: relative;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.calendar-time-label {
+  position: absolute;
+  right: 8px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  transform: translateY(-50%);
+  white-space: nowrap;
 }
 
 .calendar-timed-event {

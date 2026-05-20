@@ -8,10 +8,11 @@
  * Panels are resizable via drag handles.
  */
 
-import { useState, useRef, useCallback, useEffect, type CSSProperties } from 'react';
+import { useState, useRef, useCallback, useEffect, type CSSProperties, type ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useConfig } from '../hooks/useConfig';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
+import { usePersistentState } from '../hooks/usePersistentState';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
@@ -27,15 +28,46 @@ type CanvasPlacement = 'left' | 'right' | 'top' | 'bottom';
 const CANVAS_PLACEMENTS: CanvasPlacement[] = ['left', 'top', 'right', 'bottom'];
 const MIN_CANVAS_SPLIT = 8;
 const MAX_CANVAS_SPLIT = 92;
+const CANVAS_MODES: CanvasMode[] = ['terminal', 'desktop', 'calendar', 'preview'];
 
 function clampCanvasSplit(value: number): number {
   return Math.max(MIN_CANVAS_SPLIT, Math.min(MAX_CANVAS_SPLIT, value));
 }
 
+function parseCanvasMode(value: unknown): CanvasMode | null {
+  return typeof value === 'string' && CANVAS_MODES.includes(value as CanvasMode)
+    ? value as CanvasMode
+    : null;
+}
+
+function parseCanvasModePreference(value: unknown): CanvasMode | null {
+  return value === null ? null : parseCanvasMode(value);
+}
+
+function parseCanvasPlacement(value: unknown): CanvasPlacement | null {
+  return typeof value === 'string' && CANVAS_PLACEMENTS.includes(value as CanvasPlacement)
+    ? value as CanvasPlacement
+    : null;
+}
+
+function parseBoolean(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
+function parseNumberInRange(value: unknown, min: number, max: number): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(min, Math.min(max, value))
+    : null;
+}
+
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
-  const [canvasModeOverride, setCanvasModeOverride] = useState<CanvasMode | null>(null);
+  const [canvasModeOverride, setCanvasModeOverride] = usePersistentState<CanvasMode | null>(
+    'troublemaker.ui.canvasMode',
+    null,
+    { parse: parseCanvasModePreference },
+  );
   const capabilities = config.capabilities || {};
   const terminalAvailable = capabilities.terminal !== false;
   const desktopAvailable = capabilities.desktop === true;
@@ -59,15 +91,39 @@ export function WorkspaceLayout() {
     : canvasModes.find((item) => item.available)?.mode ?? null;
   const hasCanvas = canvasModes.some((item) => item.available);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
-  const [awarenessCollapsed, setAwarenessCollapsed] = useState(false);
-  const [canvasCollapsed, setCanvasCollapsed] = useState(true);
-  const [canvasPlacement, setCanvasPlacement] = useState<CanvasPlacement>('left');
+  const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState(
+    'troublemaker.ui.sidebarCollapsed',
+    true,
+    { parse: parseBoolean },
+  );
+  const [awarenessCollapsed, setAwarenessCollapsed] = usePersistentState(
+    'troublemaker.ui.awarenessCollapsed',
+    false,
+    { parse: parseBoolean },
+  );
+  const [canvasCollapsed, setCanvasCollapsed] = usePersistentState(
+    'troublemaker.ui.canvasCollapsed',
+    true,
+    { parse: parseBoolean },
+  );
+  const [canvasPlacement, setCanvasPlacement] = usePersistentState<CanvasPlacement>(
+    'troublemaker.ui.canvasPlacement',
+    'left',
+    { parse: parseCanvasPlacement },
+  );
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
-  const [sidebarWidth, setSidebarWidth] = useState(220);
-  const [canvasSplitPercent, setCanvasSplitPercent] = useState(58);
+  const [sidebarWidth, setSidebarWidth] = usePersistentState(
+    'troublemaker.ui.sidebarWidth',
+    220,
+    { parse: (value) => parseNumberInRange(value, 160, 400) },
+  );
+  const [canvasSplitPercent, setCanvasSplitPercent] = usePersistentState(
+    'troublemaker.ui.canvasSplitPercent',
+    58,
+    { parse: (value) => parseNumberInRange(value, MIN_CANVAS_SPLIT, MAX_CANVAS_SPLIT) },
+  );
 
   const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -266,43 +322,6 @@ export function WorkspaceLayout() {
     </div>
   );
 
-  const CanvasPanel = () => {
-    if (viewingFile) {
-      return <FileViewer path={viewingFile} onClose={closeFileViewer} />;
-    }
-    if (configLoading && !canvasModeOverride) {
-      return (
-        <div className="desktop-pane">
-          <div className="desktop-placeholder">
-            <span className="tool-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
-          </div>
-        </div>
-      );
-    }
-    if (!canvasMode) {
-      return (
-        <div className="desktop-pane">
-          <div className="desktop-placeholder">Canvas unavailable</div>
-        </div>
-      );
-    }
-    if (canvasMode === 'desktop') {
-      return <DesktopPane />;
-    }
-    if (canvasMode === 'calendar') {
-      return <CalendarPane />;
-    }
-    if (canvasMode === 'preview') {
-      return (
-        <CanvasPlaceholder
-          title="Preview"
-          subtitle="Live app and generated UI preview placeholder"
-        />
-      );
-    }
-    return <TerminalPane />;
-  };
-
   const isCanvasVertical = canvasPlacement === 'top' || canvasPlacement === 'bottom';
   const canvasFirst = canvasPlacement === 'left' || canvasPlacement === 'top';
   const showCanvas = !canvasCollapsed && hasCanvas;
@@ -313,28 +332,58 @@ export function WorkspaceLayout() {
     ? { flex: `0 0 ${100 - canvasSplitPercent}%` }
     : { flex: 1 };
 
-  const CanvasRegion = () => showCanvas ? (
+  let canvasPanelContent: ReactNode;
+  if (viewingFile) {
+    canvasPanelContent = <FileViewer path={viewingFile} onClose={closeFileViewer} />;
+  } else if (configLoading && !canvasModeOverride) {
+    canvasPanelContent = (
+      <div className="desktop-pane">
+        <div className="desktop-placeholder">
+          <span className="tool-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
+        </div>
+      </div>
+    );
+  } else if (!canvasMode) {
+    canvasPanelContent = (
+      <div className="desktop-pane">
+        <div className="desktop-placeholder">Canvas unavailable</div>
+      </div>
+    );
+  } else if (canvasMode === 'desktop') {
+    canvasPanelContent = <DesktopPane />;
+  } else if (canvasMode === 'calendar') {
+    canvasPanelContent = <CalendarPane />;
+  } else if (canvasMode === 'preview') {
+    canvasPanelContent = (
+      <CanvasPlaceholder
+        title="Preview"
+        subtitle="Live app and generated UI preview placeholder"
+      />
+    );
+  } else {
+    canvasPanelContent = <TerminalPane />;
+  }
+
+  const canvasRegion = showCanvas ? (
     <div className="canvas-panel" style={canvasStyle}>
-      <CanvasPanel />
+      {canvasPanelContent}
     </div>
   ) : null;
 
-  const ChatRegion = () => !awarenessCollapsed ? (
+  const chatRegion = !awarenessCollapsed ? (
     <div className="awareness-sidebar" style={chatStyle}>
       <AwarenessPane stream={awarenessStream} />
     </div>
   ) : null;
 
-  const CanvasResizeHandle = () => (
-    showCanvas && !awarenessCollapsed
-      ? (
-        <div
-          className={`resize-handle canvas-split-handle ${isCanvasVertical ? 'resize-handle-vertical' : ''}`}
-          onMouseDown={handleCanvasDragStart}
-        />
-      )
-      : null
-  );
+  const canvasResizeHandle = showCanvas && !awarenessCollapsed
+    ? (
+      <div
+        className={`resize-handle canvas-split-handle ${isCanvasVertical ? 'resize-handle-vertical' : ''}`}
+        onMouseDown={handleCanvasDragStart}
+      />
+    )
+    : null;
 
   return (
     <div className="workspace-root">
@@ -375,11 +424,11 @@ export function WorkspaceLayout() {
         )}
 
         <div className={`workspace-surface canvas-${canvasPlacement}`}>
-          {canvasFirst && <CanvasRegion />}
-          {!canvasFirst && <ChatRegion />}
-          <CanvasResizeHandle />
-          {!canvasFirst && <CanvasRegion />}
-          {canvasFirst && <ChatRegion />}
+          {canvasFirst && canvasRegion}
+          {!canvasFirst && chatRegion}
+          {canvasResizeHandle}
+          {!canvasFirst && canvasRegion}
+          {canvasFirst && chatRegion}
           {awarenessCollapsed && !showCanvas && (
             <div className="workspace-empty-surface">
               <span>Open chat or canvas</span>
