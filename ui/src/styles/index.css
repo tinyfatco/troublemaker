@@ -606,6 +606,17 @@ html, body, #root {
   background: var(--bg);
 }
 
+.plain-calendar-week > div:first-child {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--surface);
+}
+
+.plain-calendar-week > div:first-child > div {
+  background: var(--surface);
+}
+
 .plain-calendar-week > div,
 .plain-calendar-day > div {
   color: var(--text-muted);
