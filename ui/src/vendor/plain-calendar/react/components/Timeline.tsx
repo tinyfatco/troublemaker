@@ -169,6 +169,7 @@ export function Timeline<T extends CalendarEvent = CalendarEvent>({
   const { positionedEvents } = useEventLayout(events, { startHour, endHour });
   const timeLabels = useTimeAxis({ startHour, endHour, format: timeFormat });
   const gridLines = useGridLines({ startHour, endHour });
+  const visibleGridLines = gridLines.filter((line) => line.position > 0);
   const currentTime = useCurrentTimeIndicator({ startHour, endHour, date });
 
   const containerStyle: React.CSSProperties = {
@@ -196,9 +197,9 @@ export function Timeline<T extends CalendarEvent = CalendarEvent>({
       <div style={contentStyle}>
         {/* Grid lines */}
         {renderGridLines ? (
-          renderGridLines(gridLines)
+          renderGridLines(visibleGridLines)
         ) : (
-          <DefaultGridLines lines={gridLines} />
+          <DefaultGridLines lines={visibleGridLines} />
         )}
 
         {/* Events */}

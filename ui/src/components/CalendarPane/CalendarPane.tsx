@@ -10,7 +10,6 @@ import {
   startOfWeek,
   useCalendarState,
   type CalendarView,
-  type GridLine,
   type PositionedEvent,
   type TimeAxisLabel,
 } from '@plain-calendar/react';
@@ -327,7 +326,6 @@ export function CalendarPane() {
               endHour={24}
               style={timeGridStyle}
               renderTimeAxis={renderTimeAxis}
-              renderGridLines={renderDayGridLines}
               renderEvent={(event) => (
                 <CalendarTimedEvent event={event} onSelect={selectEvent} />
               )}
@@ -374,21 +372,6 @@ function renderTimeAxis(labels: TimeAxisLabel[]) {
       ))}
     </div>
   );
-}
-
-function renderDayGridLines(lines: GridLine[]) {
-  return lines.slice(1).map((line) => (
-    <div
-      key={line.minutes}
-      style={{
-        position: 'absolute',
-        top: `${line.position}%`,
-        left: 0,
-        right: 0,
-        borderTop: '1px solid var(--calendar-grid-border, #d1d5db)',
-      }}
-    />
-  ));
 }
 
 function CalendarTimedEvent({
