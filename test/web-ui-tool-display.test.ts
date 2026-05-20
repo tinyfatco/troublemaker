@@ -36,8 +36,28 @@ const result: ToolResultContent = {
 	result: "one\ntwo\nthree",
 };
 
+const yieldNoActionCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-2",
+	name: "yield_no_action",
+	arguments: {
+		reason: "heartbeat only; nothing useful to add",
+	},
+};
+
+const namespacedYieldNoActionCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-3",
+	name: "functions.yield_no_action",
+	arguments: {
+		reason: "ambient conversation; no direct address",
+	},
+};
+
 assert(getToolTitle(bashCall) === "Find WorkspaceLayout source", "tool title prefers human label over raw tool name");
 assert(getToolDetail(bashCall) === "rg -n \"WorkspaceLayout\" ui/src", "tool detail uses command as secondary text");
+assert(getToolDetail(yieldNoActionCall) === "heartbeat only; nothing useful to add", "yield_no_action reason is shown as secondary text");
+assert(getToolDetail(namespacedYieldNoActionCall) === "ambient conversation; no direct address", "namespaced yield_no_action reason is shown as secondary text");
 assert(getToolStatus(false) === "done", "historical tool call without a result is done, not pending");
 assert(getToolStatus(true, result) === "running", "streaming unresolved call is running");
 assert(getToolStatus(false, { ...result, isError: true }) === "error", "errored result reports error");

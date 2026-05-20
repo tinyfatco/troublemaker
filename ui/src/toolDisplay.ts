@@ -4,6 +4,7 @@ export type ToolDisplayStatus = 'running' | 'error' | 'done';
 
 const TITLE_KEYS = ['label', 'description', 'summary', 'title', 'action'];
 const DETAIL_KEYS = ['path', 'file', 'filePath', 'targetPath', 'command', 'cmd', 'query', 'pattern', 'url'];
+const YIELD_NO_ACTION_TOOL_NAMES = new Set(['yield_no_action', 'functions.yield_no_action']);
 
 export function getToolTitle(block: ToolCallContent): string {
   const args = block.arguments || {};
@@ -16,6 +17,10 @@ export function getToolTitle(block: ToolCallContent): string {
 
 export function getToolDetail(block: ToolCallContent): string | null {
   const args = block.arguments || {};
+  if (YIELD_NO_ACTION_TOOL_NAMES.has(block.name)) {
+    const reason = args.reason;
+    if (typeof reason === 'string' && reason.trim()) return reason.trim();
+  }
   for (const key of DETAIL_KEYS) {
     const value = args[key];
     if (typeof value === 'string' && value.trim()) return value.trim();
