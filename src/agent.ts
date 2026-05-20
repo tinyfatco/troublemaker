@@ -785,7 +785,7 @@ function createRunner(
 			}
 
 			// GPT-5 planning-only retry: if the model narrated a plan without acting, nudge and re-prompt once
-			if (runState.stopReason !== "error") {
+			if (runState.stopReason !== "error" && !wasYielded()) {
 				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
 				const assistantText =

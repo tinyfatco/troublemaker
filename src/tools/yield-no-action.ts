@@ -53,6 +53,7 @@ export function createYieldNoActionTool(): AgentTool<any> {
 			return {
 				content: [{ type: "text" as const, text: "Yielding. Do not produce any further output — the run is ending silently." }],
 				details: undefined,
+				terminate: true,
 			};
 		},
 	};
