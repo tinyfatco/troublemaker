@@ -294,6 +294,19 @@ html, body, #root {
 
 .resize-handle:hover { background: var(--accent); }
 
+.resize-handle-vertical {
+  width: 100%;
+  height: 3px;
+  cursor: row-resize;
+}
+
+.resize-handle-vertical::after {
+  top: -2px;
+  bottom: -2px;
+  left: 0;
+  right: 0;
+}
+
 /* ========================================================================
    Canvas Panel (Terminal / Desktop / Calendar / Preview / File Viewer)
    ======================================================================== */
@@ -370,6 +383,7 @@ html, body, #root {
 
 /* Calendar canvas */
 .calendar-pane {
+  --calendar-grid-border: var(--border);
   flex: 1;
   min-height: 0;
   display: flex;
@@ -381,7 +395,7 @@ html, body, #root {
 .calendar-toolbar {
   height: 42px;
   display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) auto;
+  grid-template-columns: auto minmax(140px, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
@@ -453,6 +467,7 @@ html, body, #root {
 .calendar-icon-btn:hover,
 .calendar-today-btn:hover,
 .calendar-view-tabs button:hover,
+.calendar-icon-btn.active,
 .calendar-view-tabs button.active {
   color: var(--accent);
   background: var(--accent-muted);
@@ -462,11 +477,15 @@ html, body, #root {
   flex: 1;
   min-height: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.calendar-content.with-detail {
   grid-template-columns: minmax(0, 1fr) 280px;
 }
 
-.workspace-surface.canvas-top .calendar-content,
-.workspace-surface.canvas-bottom .calendar-content {
+.workspace-surface.canvas-top .calendar-content.with-detail,
+.workspace-surface.canvas-bottom .calendar-content.with-detail {
   grid-template-columns: minmax(0, 1fr) 240px;
 }
 
@@ -484,7 +503,7 @@ html, body, #root {
 
 .plain-calendar-month > div:nth-child(2),
 .plain-calendar-month > div:nth-child(3) {
-  background: var(--border) !important;
+  background: var(--calendar-grid-border) !important;
   gap: 1px !important;
 }
 

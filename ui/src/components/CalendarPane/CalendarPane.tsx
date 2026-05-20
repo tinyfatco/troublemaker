@@ -57,6 +57,7 @@ function upcomingEvents(events: AgentCalendarEvent[], date: Date): AgentCalendar
 export function CalendarPane() {
   const [view, setView] = useState<CalendarView>('month');
   const [selectedEvent, setSelectedEvent] = useState<AgentCalendarEvent | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const calendar = useCalendarState({ view, weekStartsOn: 0 });
   const query = useCalendarEvents();
   const parsedFiles = query.data ?? [];
@@ -80,6 +81,11 @@ export function CalendarPane() {
     () => upcomingEvents(events, calendar.selectedDate),
     [events, calendar.selectedDate],
   );
+  const showDetails = detailOpen;
+  const selectEvent = (event: AgentCalendarEvent) => {
+    setSelectedEvent(event);
+    setDetailOpen(true);
+  };
 
   return (
     <div className="calendar-pane">
@@ -109,9 +115,16 @@ export function CalendarPane() {
             </button>
           ))}
         </div>
+        <button
+          className={`calendar-icon-btn calendar-detail-toggle ${showDetails ? 'active' : ''}`}
+          onClick={() => setDetailOpen((open) => !open)}
+          title={showDetails ? 'Hide event details' : 'Show event details'}
+        >
+          <DetailsIcon />
+        </button>
       </div>
 
-      <div className="calendar-content">
+      <div className={`calendar-content ${showDetails ? 'with-detail' : ''}`}>
         <div className="calendar-main">
           {query.isLoading && (
             <div className="calendar-state">
@@ -147,7 +160,7 @@ export function CalendarPane() {
                         style={{ '--event-color': event.color } as CSSProperties}
                         onClick={(e) => {
                           e.stopPropagation();
-                          setSelectedEvent(event as AgentCalendarEvent);
+                          selectEvent(event as AgentCalendarEvent);
                         }}
                       >
                         {event.title}
@@ -167,10 +180,10 @@ export function CalendarPane() {
               className="plain-calendar-week"
               events={events}
               weekStart={startOfWeek(calendar.currentViewingDate)}
-              startHour={6}
-              endHour={22}
+              startHour={0}
+              endHour={24}
               renderEvent={(event) => (
-                <CalendarTimedEvent event={event} onSelect={setSelectedEvent} />
+                <CalendarTimedEvent event={event} onSelect={selectEvent} />
               )}
             />
           )}
@@ -180,24 +193,20 @@ export function CalendarPane() {
               className="plain-calendar-day"
               events={dayEvents}
               date={calendar.selectedDate}
-              startHour={6}
-              endHour={22}
+              startHour={0}
+              endHour={24}
               renderEvent={(event) => (
-                <CalendarTimedEvent event={event} onSelect={setSelectedEvent} />
+                <CalendarTimedEvent event={event} onSelect={selectEvent} />
               )}
             />
           )}
 
           {!query.isLoading && view === 'agenda' && (
-            <AgendaView events={agendaEvents} onSelect={setSelectedEvent} />
-          )}
-
-          {!query.isLoading && events.length === 0 && invalidFiles.length === 0 && (
-            <div className="calendar-state">No calendar events</div>
+            <AgendaView events={agendaEvents} onSelect={selectEvent} />
           )}
         </div>
 
-        <CalendarDetail event={selectedEvent} invalidFiles={invalidFiles} />
+        {showDetails && <CalendarDetail event={selectedEvent} invalidFiles={invalidFiles} />}
       </div>
     </div>
   );
@@ -330,6 +339,14 @@ function ChevronRightIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M6 3l5 5-5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DetailsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M3 3h10M3 8h10M3 13h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

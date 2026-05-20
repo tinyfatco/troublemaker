@@ -84,7 +84,7 @@ export function Calendar<T extends CalendarEvent = CalendarEvent>({
     display: 'grid',
     gridTemplateColumns: 'repeat(7, 1fr)',
     gap: '1px',
-    backgroundColor: '#e5e5e5',
+    backgroundColor: 'var(--calendar-grid-border, #d1d5db)',
   };
 
   return (

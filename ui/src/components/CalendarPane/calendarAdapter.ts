@@ -79,7 +79,7 @@ export function parseCalendarEventFile(file: CalendarEventFile): ParsedCalendarE
     color: stringValue(data.color) ?? eventColor(source, status),
     source,
     status,
-    description: stringValue(data.description ?? data.notes),
+    description: stringValue(data.description ?? data.notes) ?? undefined,
     data,
     raw: data,
     path: file.path,

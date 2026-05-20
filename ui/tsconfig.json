@@ -9,7 +9,12 @@
     "skipLibCheck": true,
     "noEmit": true,
     "isolatedModules": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "baseUrl": ".",
+    "paths": {
+      "@plain-calendar/core": ["src/vendor/plain-calendar/core"],
+      "@plain-calendar/react": ["src/vendor/plain-calendar/react"]
+    }
   },
   "include": ["src"]
 }

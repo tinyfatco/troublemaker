@@ -76,7 +76,7 @@ function DefaultGridLines({ lines }: { lines: GridLine[] }): React.ReactElement 
             top: `${line.position}%`,
             left: 0,
             right: 0,
-            borderTop: '1px solid #e5e5e5',
+            borderTop: '1px solid var(--calendar-grid-border, #d1d5db)',
           }}
         />
       ))}

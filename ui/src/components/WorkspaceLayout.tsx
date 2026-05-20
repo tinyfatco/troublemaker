@@ -25,6 +25,12 @@ type CanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
 type CanvasPlacement = 'left' | 'right' | 'top' | 'bottom';
 
 const CANVAS_PLACEMENTS: CanvasPlacement[] = ['left', 'top', 'right', 'bottom'];
+const MIN_CANVAS_SPLIT = 8;
+const MAX_CANVAS_SPLIT = 92;
+
+function clampCanvasSplit(value: number): number {
+  return Math.max(MIN_CANVAS_SPLIT, Math.min(MAX_CANVAS_SPLIT, value));
+}
 
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
@@ -61,11 +67,11 @@ export function WorkspaceLayout() {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(220);
-  const [awarenessWidth, setAwarenessWidth] = useState(360);
+  const [canvasSplitPercent, setCanvasSplitPercent] = useState(58);
 
   const queryClient = useQueryClient();
   const containerRef = useRef<HTMLDivElement>(null);
-  const draggingRef = useRef<'sidebar' | 'awareness' | null>(null);
+  const draggingRef = useRef<'sidebar' | 'canvas' | null>(null);
 
   // File upload — target the currently-selected directory, or 'attachments' by default
   const uploadTargetDir = selectedPath
@@ -119,12 +125,14 @@ export function WorkspaceLayout() {
     document.body.style.userSelect = 'none';
   }, []);
 
-  const handleAwarenessDragStart = useCallback((e: React.MouseEvent) => {
+  const handleCanvasDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    draggingRef.current = 'awareness';
-    document.body.style.cursor = 'col-resize';
+    draggingRef.current = 'canvas';
+    document.body.style.cursor = canvasPlacement === 'top' || canvasPlacement === 'bottom'
+      ? 'row-resize'
+      : 'col-resize';
     document.body.style.userSelect = 'none';
-  }, []);
+  }, [canvasPlacement]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -133,8 +141,33 @@ export function WorkspaceLayout() {
 
       if (draggingRef.current === 'sidebar') {
         setSidebarWidth(Math.max(160, Math.min(400, e.clientX - rect.left)));
-      } else if (draggingRef.current === 'awareness') {
-        setAwarenessWidth(Math.max(280, Math.min(600, rect.right - e.clientX)));
+      } else if (draggingRef.current === 'canvas') {
+        let canvasPixels: number;
+        let totalPixels: number;
+
+        switch (canvasPlacement) {
+          case 'right':
+            canvasPixels = rect.right - e.clientX;
+            totalPixels = rect.width;
+            break;
+          case 'top':
+            canvasPixels = e.clientY - rect.top;
+            totalPixels = rect.height;
+            break;
+          case 'bottom':
+            canvasPixels = rect.bottom - e.clientY;
+            totalPixels = rect.height;
+            break;
+          case 'left':
+          default:
+            canvasPixels = e.clientX - rect.left;
+            totalPixels = rect.width;
+            break;
+        }
+
+        if (totalPixels > 0) {
+          setCanvasSplitPercent(clampCanvasSplit((canvasPixels / totalPixels) * 100));
+        }
       }
     };
 
@@ -150,7 +183,7 @@ export function WorkspaceLayout() {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, []);
+  }, [canvasPlacement]);
 
   const showCanvasMode = (mode: CanvasMode) => {
     const item = canvasModes.find((entry) => entry.mode === mode);
@@ -273,10 +306,15 @@ export function WorkspaceLayout() {
   const isCanvasVertical = canvasPlacement === 'top' || canvasPlacement === 'bottom';
   const canvasFirst = canvasPlacement === 'left' || canvasPlacement === 'top';
   const showCanvas = !canvasCollapsed && hasCanvas;
-  const chatStyle: CSSProperties = showCanvas && !isCanvasVertical ? { width: awarenessWidth } : { flex: 1 };
+  const canvasStyle: CSSProperties = showCanvas
+    ? { flex: `0 0 ${canvasSplitPercent}%` }
+    : {};
+  const chatStyle: CSSProperties = showCanvas
+    ? { flex: `0 0 ${100 - canvasSplitPercent}%` }
+    : { flex: 1 };
 
   const CanvasRegion = () => showCanvas ? (
-    <div className="canvas-panel">
+    <div className="canvas-panel" style={canvasStyle}>
       <CanvasPanel />
     </div>
   ) : null;
@@ -287,9 +325,14 @@ export function WorkspaceLayout() {
     </div>
   ) : null;
 
-  const HorizontalChatResize = () => (
-    showCanvas && !isCanvasVertical && !awarenessCollapsed
-      ? <div className="resize-handle" onMouseDown={handleAwarenessDragStart} />
+  const CanvasResizeHandle = () => (
+    showCanvas && !awarenessCollapsed
+      ? (
+        <div
+          className={`resize-handle canvas-split-handle ${isCanvasVertical ? 'resize-handle-vertical' : ''}`}
+          onMouseDown={handleCanvasDragStart}
+        />
+      )
       : null
   );
 
@@ -334,7 +377,7 @@ export function WorkspaceLayout() {
         <div className={`workspace-surface canvas-${canvasPlacement}`}>
           {canvasFirst && <CanvasRegion />}
           {!canvasFirst && <ChatRegion />}
-          <HorizontalChatResize />
+          <CanvasResizeHandle />
           {!canvasFirst && <CanvasRegion />}
           {canvasFirst && <ChatRegion />}
           {awarenessCollapsed && !showCanvas && (

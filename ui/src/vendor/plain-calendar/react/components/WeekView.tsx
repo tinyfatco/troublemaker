@@ -67,7 +67,7 @@ function DayColumn<T extends CalendarEvent>({
   const currentTime = useCurrentTimeIndicator({ startHour, endHour, date });
 
   return (
-    <div style={{ position: 'relative', flex: 1, borderLeft: '1px solid #e5e5e5' }}>
+    <div style={{ position: 'relative', flex: 1, borderLeft: '1px solid var(--calendar-grid-border, #d1d5db)' }}>
       {positionedEvents.map((pe) => {
         if (renderEvent) {
           return <React.Fragment key={pe.event.id}>{renderEvent(pe)}</React.Fragment>;
@@ -153,7 +153,7 @@ export function WeekView<T extends CalendarEvent = CalendarEvent>({
   return (
     <div className={className} style={containerStyle}>
       {/* Header row with day names */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #e5e5e5' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--calendar-grid-border, #d1d5db)' }}>
         {/* Time axis spacer */}
         <div style={{ width: '60px', flexShrink: 0 }} />
         
@@ -168,7 +168,7 @@ export function WeekView<T extends CalendarEvent = CalendarEvent>({
                 flex: 1,
                 textAlign: 'center',
                 padding: '8px',
-                borderLeft: '1px solid #e5e5e5',
+                borderLeft: '1px solid var(--calendar-grid-border, #d1d5db)',
                 fontWeight: today ? 'bold' : 'normal',
               }}
             >
@@ -237,7 +237,7 @@ export function WeekView<T extends CalendarEvent = CalendarEvent>({
                     top: `${line.position}%`,
                     left: 0,
                     right: 0,
-                    borderTop: '1px solid #e5e5e5',
+                    borderTop: '1px solid var(--calendar-grid-border, #d1d5db)',
                   }}
                 />
               ))
