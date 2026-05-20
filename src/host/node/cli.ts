@@ -1291,7 +1291,7 @@ The more you know, the better you can help. But remember — you're learning abo
 
 	}
 
-	for (const dir of ["memory", "calendar/events", ATTENTION_QUEUE_DIR, ATTENTION_HISTORY_DIR]) {
+	for (const dir of ["memory", "calendar/events", ATTENTION_QUEUE_DIR, ATTENTION_HISTORY_DIR, "display/projects"]) {
 		const fullDir = join(workingDir, dir);
 		if (!seedExists(fullDir)) {
 			seedMkdir(fullDir, { recursive: true });
@@ -1367,6 +1367,77 @@ Accepted aliases: \`start_at\`, \`at\`, or \`date\` for \`start\`; \`end_at\` fo
 When a user gives a fuzzy time like "tomorrow afternoon," convert it to a concrete ISO timestamp in their timezone before writing the event.
 `, "utf-8");
 		log.logInfo("Seeded calendar/README.md");
+	}
+
+	const displayReadmePath = join(workingDir, "display", "README.md");
+	if (!seedExists(displayReadmePath)) {
+		seedWrite(displayReadmePath, `# Display Projects
+
+This directory registers things that can appear on the workspace canvas and in
+the top display bar. Use it for app previews, single-file generated UI, and
+other user-facing displays.
+
+Create one folder per display project:
+
+\`display/projects/my-app/display.json\`
+
+## Preview A Running App
+
+Use \`kind: "preview"\` when you have a dev server running inside the agent
+container. Bind servers to localhost only.
+
+\`\`\`json
+{
+  "id": "my-app",
+  "title": "My App",
+  "icon": "briefcase",
+  "accent": "#0f766e",
+  "kind": "preview",
+  "preview": {
+    "port": 4321,
+    "path": "/"
+  }
+}
+\`\`\`
+
+Start the server separately, for example:
+
+\`\`\`bash
+npm run dev -- --host 127.0.0.1 --port 4321
+\`\`\`
+
+## Single-File Generated UI
+
+Use \`kind: "html"\` for a self-contained HTML file in the same project folder:
+
+\`\`\`json
+{
+  "id": "sales-board",
+  "title": "Sales Board",
+  "icon": "chart-column",
+  "accent": "#2563eb",
+  "kind": "html",
+  "entry": "index.html"
+}
+\`\`\`
+
+Then create:
+
+\`display/projects/sales-board/index.html\`
+
+## Fields
+
+- \`id\` should be a stable lowercase slug.
+- \`title\` is shown in the display bar and pane header.
+- \`icon\` supports common names such as \`briefcase\`, \`chart-column\`, \`sparkles\`, \`calendar\`, and \`terminal\`.
+- \`accent\` can be a CSS color such as \`#0f766e\`.
+- \`kind: "preview"\` requires \`preview.port\`.
+- \`kind: "html"\` reads \`entry\` from the project folder.
+
+Display project files define things the user can open. The user's currently
+selected display is UI preference state and does not need to be written here.
+`, "utf-8");
+		log.logInfo("Seeded display/README.md");
 	}
 	// Seed HEARTBEAT.md if missing (both fresh and existing agents)
 	const heartbeatMdPath = join(workingDir, "HEARTBEAT.md");

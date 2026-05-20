@@ -28,6 +28,13 @@ export interface CalendarEventFile {
   content: string;
 }
 
+export interface DisplayProjectManifestFile {
+  name: string;
+  path: string;
+  projectPath: string;
+  content: string;
+}
+
 export interface AgentScheduleManifestEvent {
   file: string;
   type: string;
@@ -54,6 +61,19 @@ export function consoleAgentUrl(endpoint: string): string {
 export function agentWorkspaceUrl(endpoint: string): string {
   const suffix = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   return `/agents/${encodeURIComponent(currentAgentId())}${suffix}`;
+}
+
+export async function fetchDisplayPreviewUrl(input: { id: string; port: number; path?: string }): Promise<string> {
+  const params = new URLSearchParams({
+    port: String(input.port),
+    name: input.id,
+  });
+  if (input.path) params.set('path', input.path);
+  const resp = await fetchWithTimeout(agentWorkspaceUrl(`/preview-url?${params}`), {}, 12000);
+  if (!resp.ok) throw await readError(resp, `Preview failed: ${resp.status}`);
+  const data = await resp.json() as { url?: string };
+  if (!data.url) throw new Error('Preview URL missing');
+  return data.url;
 }
 
 async function readError(resp: Response, fallback: string): Promise<Error> {
@@ -137,6 +157,35 @@ async function fetchJsonWorkspaceFiles(path: string): Promise<CalendarEventFile[
 
 export async function fetchCalendarEventFiles(): Promise<CalendarEventFile[]> {
   return fetchJsonWorkspaceFiles('calendar/events');
+}
+
+export async function fetchDisplayProjectManifestFiles(): Promise<DisplayProjectManifestFile[]> {
+  let entries: FileNode[];
+  try {
+    entries = await listFiles('display/projects');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.toLowerCase().includes('not found') || message.toLowerCase().includes('missing')) return [];
+    throw err;
+  }
+
+  const manifestEntries = entries
+    .filter((entry) => entry.type === 'directory' || entry.name.endsWith('.json'))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const results = await Promise.allSettled(
+    manifestEntries.map(async (entry) => {
+      const path = entry.type === 'directory' ? `${entry.path}/display.json` : entry.path;
+      return {
+        name: entry.name,
+        path,
+        projectPath: entry.type === 'directory' ? entry.path : entry.path.replace(/\/[^/]+$/, ''),
+        content: await readFile(path),
+      };
+    }),
+  );
+
+  return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
 }
 
 export async function fetchAgentSchedulePromptFiles(): Promise<CalendarEventFile[]> {

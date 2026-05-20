@@ -12,32 +12,36 @@ import { useState, useRef, useCallback, useEffect, type CSSProperties, type Reac
 import { useQueryClient } from '@tanstack/react-query';
 import { useConfig } from '../hooks/useConfig';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
+import { useDisplayProjects } from '../hooks/useDisplayProjects';
 import { usePersistentState } from '../hooks/usePersistentState';
 import { FileTree } from './FileTree';
 import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
 import { DesktopPane } from './DesktopPane';
 import { CalendarPane } from './CalendarPane';
+import { DisplayPane, type DisplayProject } from './DisplayPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
 
-type CanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
+type BuiltInCanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
+type CanvasMode = BuiltInCanvasMode | `project:${string}`;
 type CanvasPlacement = 'left' | 'right' | 'top' | 'bottom';
 
 const CANVAS_PLACEMENTS: CanvasPlacement[] = ['left', 'top', 'right', 'bottom'];
 const MIN_CANVAS_SPLIT = 8;
 const MAX_CANVAS_SPLIT = 92;
-const CANVAS_MODES: CanvasMode[] = ['terminal', 'desktop', 'calendar', 'preview'];
+const BUILT_IN_CANVAS_MODES: BuiltInCanvasMode[] = ['terminal', 'desktop', 'calendar', 'preview'];
 
 function clampCanvasSplit(value: number): number {
   return Math.max(MIN_CANVAS_SPLIT, Math.min(MAX_CANVAS_SPLIT, value));
 }
 
 function parseCanvasMode(value: unknown): CanvasMode | null {
-  return typeof value === 'string' && CANVAS_MODES.includes(value as CanvasMode)
-    ? value as CanvasMode
-    : null;
+  if (typeof value !== 'string') return null;
+  if (BUILT_IN_CANVAS_MODES.includes(value as BuiltInCanvasMode)) return value as BuiltInCanvasMode;
+  if (/^project:[a-z0-9][a-z0-9_-]{0,63}$/.test(value)) return value as `project:${string}`;
+  return null;
 }
 
 function parseCanvasModePreference(value: unknown): CanvasMode | null {
@@ -60,9 +64,21 @@ function parseNumberInRange(value: unknown, min: number, max: number): number | 
     : null;
 }
 
+function projectCanvasMode(projectId: string): CanvasMode {
+  return `project:${projectId}`;
+}
+
+function projectIdFromCanvasMode(mode: CanvasMode | null): string | null {
+  return typeof mode === 'string' && mode.startsWith('project:')
+    ? mode.slice('project:'.length)
+    : null;
+}
+
 export function WorkspaceLayout() {
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
+  const displayProjectsQuery = useDisplayProjects();
+  const displayProjects = displayProjectsQuery.data?.projects ?? [];
   const [canvasModeOverride, setCanvasModeOverride] = usePersistentState<CanvasMode | null>(
     'troublemaker.ui.canvasMode',
     null,
@@ -83,13 +99,23 @@ export function WorkspaceLayout() {
     { mode: 'terminal' as const, available: terminalAvailable, title: 'Terminal canvas' },
     { mode: 'desktop' as const, available: desktopAvailable, title: 'Desktop canvas' },
     { mode: 'calendar' as const, available: true, title: 'Calendar canvas' },
-    { mode: 'preview' as const, available: true, title: 'Preview canvas' },
+    { mode: 'preview' as const, available: true, title: 'Display projects' },
   ];
+  const isCanvasModeAvailable = (mode: CanvasMode | null): mode is CanvasMode => {
+    if (!mode) return false;
+    const projectId = projectIdFromCanvasMode(mode);
+    if (projectId) return displayProjects.some((project) => project.id === projectId);
+    return canvasModes.some((item) => item.mode === mode && item.available);
+  };
   const requestedCanvasMode = canvasModeOverride ?? interactiveMode ?? 'calendar';
-  const canvasMode = canvasModes.some((item) => item.mode === requestedCanvasMode && item.available)
+  const canvasMode = isCanvasModeAvailable(requestedCanvasMode)
     ? requestedCanvasMode
     : canvasModes.find((item) => item.available)?.mode ?? null;
-  const hasCanvas = canvasModes.some((item) => item.available);
+  const selectedDisplayProjectId = projectIdFromCanvasMode(canvasMode);
+  const selectedDisplayProject = selectedDisplayProjectId
+    ? displayProjects.find((project) => project.id === selectedDisplayProjectId) ?? null
+    : null;
+  const hasCanvas = canvasModes.some((item) => item.available) || displayProjects.length > 0;
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState(
     'troublemaker.ui.sidebarCollapsed',
@@ -242,8 +268,7 @@ export function WorkspaceLayout() {
   }, [canvasPlacement]);
 
   const showCanvasMode = (mode: CanvasMode) => {
-    const item = canvasModes.find((entry) => entry.mode === mode);
-    if (!item?.available) return;
+    if (!isCanvasModeAvailable(mode)) return;
     setCanvasModeOverride(mode);
     setViewingFile(null);
     setCanvasCollapsed(false);
@@ -286,6 +311,24 @@ export function WorkspaceLayout() {
           <CanvasModeIcon mode={item.mode} />
         </button>
       ))}
+      {displayProjects.length > 0 && (
+        <div className="display-project-controls" aria-label="Display projects">
+          {displayProjects.map((project) => {
+            const mode = projectCanvasMode(project.id);
+            return (
+              <button
+                key={project.id}
+                className={`workspace-control-btn display-project-btn ${canvasMode === mode && !canvasCollapsed ? 'active' : ''}`}
+                onClick={() => showCanvasMode(mode)}
+                title={project.title}
+                style={{ '--display-project-accent': project.accent || 'var(--accent)' } as CSSProperties}
+              >
+                <DisplayProjectIcon project={project} />
+              </button>
+            );
+          })}
+        </div>
+      )}
       {!canvasCollapsed && hasCanvas && (
         <div className="canvas-placement-controls" aria-label="Canvas placement">
           {CANVAS_PLACEMENTS.map((placement) => (
@@ -356,10 +399,12 @@ export function WorkspaceLayout() {
   } else if (canvasMode === 'preview') {
     canvasPanelContent = (
       <CanvasPlaceholder
-        title="Preview"
-        subtitle="Live app and generated UI preview placeholder"
+        title="Display"
+        subtitle={displayProjectsQuery.isLoading ? 'Loading display projects...' : 'Add projects in display/projects'}
       />
     );
+  } else if (selectedDisplayProject) {
+    canvasPanelContent = <DisplayPane project={selectedDisplayProject} />;
   } else {
     canvasPanelContent = <TerminalPane />;
   }
@@ -488,7 +533,7 @@ function CanvasPlaceholder({ title, subtitle }: { title: string; subtitle: strin
   );
 }
 
-function CanvasModeIcon({ mode }: { mode: CanvasMode }) {
+function CanvasModeIcon({ mode }: { mode: BuiltInCanvasMode }) {
   if (mode === 'desktop') {
     return (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
@@ -517,6 +562,47 @@ function CanvasModeIcon({ mode }: { mode: CanvasMode }) {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function DisplayProjectIcon({ project }: { project: DisplayProject }) {
+  const icon = project.icon.toLowerCase();
+  if (icon === 'briefcase' || icon === 'work') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        <rect x="2" y="4" width="12" height="9.5" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+        <path d="M2 7.5h12M7 8.5h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (icon === 'chart' || icon === 'chart-column' || icon === 'dashboard') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M3 13.5V8.5M8 13.5V4.5M13 13.5V6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+        <path d="M2 13.5h12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (icon === 'sparkles' || icon === 'generated') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+        <path d="M8 1.5l1.1 3.1L12 6 9.1 7.4 8 10.5 6.9 7.4 4 6l2.9-1.4L8 1.5Z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
+        <path d="M12.5 9.5l.6 1.6 1.4.7-1.4.7-.6 1.6-.6-1.6-1.4-.7 1.4-.7.6-1.6Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (icon === 'calendar') {
+    return <CanvasModeIcon mode="calendar" />;
+  }
+  if (icon === 'terminal') {
+    return <CanvasModeIcon mode="terminal" />;
+  }
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="2" y="2.5" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M5 6h6M5 9h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

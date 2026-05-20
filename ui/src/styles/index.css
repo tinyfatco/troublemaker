@@ -127,6 +127,15 @@ html, body, #root {
   border-left: 1px solid var(--border);
 }
 
+.display-project-controls {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-left: 4px;
+  margin-left: 2px;
+  border-left: 1px solid var(--border);
+}
+
 .workspace-control-btn {
   display: flex;
   align-items: center;
@@ -151,6 +160,16 @@ html, body, #root {
   background: var(--accent-muted);
   color: var(--accent);
   border-color: color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.display-project-btn {
+  color: var(--display-project-accent, var(--text-muted));
+}
+
+.display-project-btn.active {
+  background: color-mix(in srgb, var(--display-project-accent, var(--accent)) 13%, transparent);
+  color: var(--display-project-accent, var(--accent));
+  border-color: color-mix(in srgb, var(--display-project-accent, var(--accent)) 35%, transparent);
 }
 
 .workspace-control-btn:disabled {
@@ -1028,6 +1047,100 @@ html, body, #root {
   height: 100%;
   border: none;
   background: #000;
+}
+
+/* Display projects */
+.display-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.display-toolbar {
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.display-toolbar-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.display-toolbar-title span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.display-toolbar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.display-toolbar-link {
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.display-toolbar-link:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+
+.display-iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  background: white;
+}
+
+.display-placeholder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.display-placeholder-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.display-placeholder-subtitle {
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 /* ========================================================================

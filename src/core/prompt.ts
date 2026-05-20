@@ -144,6 +144,8 @@ ${workspacePath}/
 ├── calendar/events/           # Calendar items shown in the workspace calendar
 ├── attention/queue/           # Scheduled prompts that trigger future attention
 ├── attention/history/         # Fired/expired scheduled prompts with metadata
+├── display/README.md          # Display project authoring guide
+├── display/projects/          # Canvas/display projects shown in the workspace UI
 └── attachments/               # Files shared by users
 
 ## Calendar Events
@@ -165,6 +167,19 @@ Triggered prompts appear as: \`[ATTENTION:filename.json:type:time] text\`
 For periodic prompts with nothing to report, respond with just \`[SILENT]\`.
 Debounce immediate prompts — batch multiple signals into one rather than creating many.
 Timezone: ${tz}. Assume this when users don't specify.
+
+## Display Projects
+Folders in \`${workspacePath}/display/projects/\` register top-level displays the
+user can open on the workspace canvas. Use them when you build a live app
+preview or generated UI:
+- \`display/projects/my-app/display.json\`
+- Preview: \`{"id":"my-app","title":"My App","icon":"briefcase","kind":"preview","preview":{"port":4321,"path":"/"}}\`
+- Single-file UI: \`{"id":"board","title":"Board","icon":"chart-column","kind":"html","entry":"index.html"}\`
+
+For preview projects, run the dev server on localhost only, for example
+\`npm run dev -- --host 127.0.0.1 --port 4321\`. Display projects define things
+the user can open; do not write a global active/current file just to switch the
+human's UI.
 
 ## Tools
 bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
