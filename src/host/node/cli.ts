@@ -997,7 +997,7 @@ for (let i = 0; i < adapters.length; i++) {
 			gateway.register("/web/stop", (req, res) => (adapter as any).dispatchStop(req, res));
 		}
 		if (adapterName === "web" && adapter instanceof WebAdapter) {
-			gateway.register("/input/yappatron", (req, res) => adapter.dispatchWebhook(req, res));
+			gateway.register("/input/webhook", (req, res) => adapter.dispatchWebhook(req, res));
 		}
 		// Discord: also register /discord/messages for Gateway relay traffic
 		if (adapterName === "discord:webhook") {
@@ -1019,7 +1019,7 @@ await Promise.all(adapters.map(async (adapter, i) => {
 			}
 		}
 		if (adapterName === "web" && adapter instanceof WebAdapter) {
-			gateway.markReady("/input/yappatron");
+			gateway.markReady("/input/webhook");
 		}
 		// Discord: also mark /discord/messages as ready
 		if (adapterName === "discord:webhook") {

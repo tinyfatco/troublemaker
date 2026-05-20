@@ -185,5 +185,5 @@ fi
 echo ""
 echo "Expected local endpoints:"
 echo "  Troublemaker UI:       http://127.0.0.1:$PORT"
-echo "  Yappatron webhook:     http://127.0.0.1:$PORT/input/yappatron"
+echo "  Input webhook:         http://127.0.0.1:$PORT/input/webhook"
 echo "  Peekaboo MCP:          peekaboo mcp --no-remote (stdio child process)"

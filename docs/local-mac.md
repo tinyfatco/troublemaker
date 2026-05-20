@@ -1,14 +1,13 @@
 # Local Mac Runtime
 
 This profile runs Troublemaker as a local Mac agent runtime and lets native
-voice tools such as Yappatron send final utterances into the agent over a local
-webhook.
+voice tools send final utterances into the agent over a local webhook.
 
 ## Shape
 
 ```text
-Yappatron
-  POST /input/yappatron
+Local voice tool
+  POST /input/webhook
 Troublemaker
   web adapter, memory, tools, web UI
 Peekaboo
@@ -51,7 +50,7 @@ Defaults:
 
 ```text
 UI:        http://127.0.0.1:3002
-Webhook:   http://127.0.0.1:3002/input/yappatron
+Webhook:   http://127.0.0.1:3002/input/webhook
 Workspace: ~/Library/Application Support/Troublemaker/Workspace
 Model:     fireworks/accounts/fireworks/models/glm-5p1
 ```
@@ -76,15 +75,15 @@ npm run doctor:local-mac
 npm run smoke:mac-app
 ```
 
-## Yappatron Webhook Payload
+## Input Webhook Payload
 
-In Yappatron, enable **Send Final Utterances to Webhook** and use:
+In Yappatron or another local voice tool, send final utterances to:
 
 ```text
-http://127.0.0.1:3002/input/yappatron
+http://127.0.0.1:3002/input/webhook
 ```
 
-Yappatron can post a final utterance to `/input/yappatron`:
+A local client can post a final utterance to `/input/webhook`:
 
 ```json
 {
