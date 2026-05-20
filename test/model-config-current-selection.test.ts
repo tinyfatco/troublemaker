@@ -55,8 +55,8 @@ try {
 
 	withEnv({ MOM_MODEL_PROVIDER: undefined, MOM_MODEL_ID: undefined }, () => {
 		const selected = getCurrentModelSelection();
-		assert(selected.provider === "anthropic", "default provider is used without env or settings");
-		assert(selected.id === "claude-sonnet-4-6", "default model is used without env or settings");
+		assert(selected.provider === "fireworks", "default provider is used without env or settings");
+		assert(selected.id === "accounts/fireworks/models/minimax-m2p7", "default model is used without env or settings");
 	});
 
 	console.log(`\n${passed} passed, ${failed} failed`);

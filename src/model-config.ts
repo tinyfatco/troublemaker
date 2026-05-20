@@ -14,8 +14,8 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import * as log from "./log.js";
 
-const DEFAULT_PROVIDER = "anthropic";
-const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+const DEFAULT_PROVIDER = "fireworks";
+const DEFAULT_MODEL_ID = "accounts/fireworks/models/minimax-m2p7";
 
 /**
  * Friendly aliases for Fireworks-backed models.
@@ -209,7 +209,7 @@ function resolveFireworksAliasModel(
  * Priority:
  * 1. MOM_MODEL_PROVIDER + MOM_MODEL_ID env vars (set by platform)
  * 2. settings.json defaultProvider + defaultModel (set by /model command or agent)
- * 3. anthropic / claude-sonnet-4-5
+ * 3. fireworks / accounts/fireworks/models/minimax-m2p7
  */
 export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
 	const { provider, id: modelId } = getCurrentModelSelection(workingDir);
