@@ -395,7 +395,7 @@ html, body, #root {
 .calendar-toolbar {
   height: 42px;
   display: grid;
-  grid-template-columns: auto minmax(140px, 1fr) auto auto;
+  grid-template-columns: auto minmax(110px, 1fr) auto auto auto auto;
   align-items: center;
   gap: 10px;
   padding: 6px 10px;
@@ -406,7 +406,8 @@ html, body, #root {
 
 .calendar-nav,
 .calendar-view-tabs,
-.calendar-density-controls {
+.calendar-density-controls,
+.calendar-layer-controls {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -472,6 +473,42 @@ html, body, #root {
 
 .calendar-density-controls {
   padding-left: 2px;
+}
+
+.calendar-layer-controls {
+  min-width: 0;
+  gap: 3px;
+}
+
+.calendar-layer-controls label {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.calendar-layer-controls label:hover {
+  color: var(--text);
+  background: var(--bg-secondary);
+}
+
+.calendar-layer-controls input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.calendar-layer-controls input:checked + span {
+  color: var(--accent);
 }
 
 .calendar-icon-btn:hover,
@@ -653,6 +690,15 @@ html, body, #root {
   background: color-mix(in srgb, var(--event-color, var(--accent)) 21%, var(--surface));
 }
 
+.calendar-event-chip.agent-schedule-event {
+  border-left-style: double;
+  background: color-mix(in srgb, var(--event-color, var(--accent)) 10%, var(--surface));
+}
+
+.calendar-event-chip.system-event {
+  opacity: 0.82;
+}
+
 .calendar-more {
   color: var(--text-muted);
   font-size: 0.65rem;
@@ -724,6 +770,15 @@ html, body, #root {
   font-size: 0.62rem;
 }
 
+.calendar-timed-event.agent-schedule-event {
+  border-style: dashed;
+  border-left-style: solid;
+}
+
+.calendar-timed-event.system-event {
+  opacity: 0.82;
+}
+
 .calendar-agenda {
   display: flex;
   flex-direction: column;
@@ -747,6 +802,14 @@ html, body, #root {
 
 .calendar-agenda-row:hover {
   background: var(--bg-secondary);
+}
+
+.calendar-agenda-row.agent-schedule-event {
+  background: color-mix(in srgb, var(--entry-tool) 5%, transparent);
+}
+
+.calendar-agenda-row.system-event {
+  opacity: 0.82;
 }
 
 .calendar-agenda-date,

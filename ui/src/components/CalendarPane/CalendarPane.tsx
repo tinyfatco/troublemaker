@@ -131,6 +131,21 @@ export function CalendarPane() {
     0,
     { parse: parseMonthSpacingIndex },
   );
+  const [showCalendarLayer, setShowCalendarLayer] = usePersistentState(
+    'troublemaker.calendar.layers.calendar',
+    true,
+    { parse: parseBoolean },
+  );
+  const [showAgentScheduleLayer, setShowAgentScheduleLayer] = usePersistentState(
+    'troublemaker.calendar.layers.agentSchedule',
+    true,
+    { parse: parseBoolean },
+  );
+  const [showSystemWakeupsLayer, setShowSystemWakeupsLayer] = usePersistentState(
+    'troublemaker.calendar.layers.systemWakeups',
+    false,
+    { parse: parseBoolean },
+  );
   const initialDate = useMemo(() => dateFromKey(selectedDateKey), [selectedDateKey]);
   const calendar = useCalendarState({ initialDate, view, weekStartsOn: 0 });
   const query = useCalendarEvents();
@@ -147,12 +162,24 @@ export function CalendarPane() {
     const valid: AgentCalendarEvent[] = [];
     const invalid: ParsedCalendarEventFile[] = [];
     for (const file of parsedFiles) {
-      if (file.event) valid.push(file.event);
-      else invalid.push(file);
+      if (file.event) {
+        if (file.event.layer === 'calendar' && showCalendarLayer) valid.push(file.event);
+        if (file.event.layer === 'agent-schedule' && showAgentScheduleLayer) {
+          if (!file.event.isSystem || showSystemWakeupsLayer) valid.push(file.event);
+        }
+      } else if (file.error) {
+        invalid.push(file);
+      }
     }
     valid.sort((a, b) => a.start.getTime() - b.start.getTime());
     return { events: valid, invalidFiles: invalid };
-  }, [parsedFiles]);
+  }, [parsedFiles, showAgentScheduleLayer, showCalendarLayer, showSystemWakeupsLayer]);
+
+  useEffect(() => {
+    if (selectedEvent && !events.some((event) => event.id === selectedEvent.id)) {
+      setSelectedEvent(null);
+    }
+  }, [events, selectedEvent]);
 
   const dayEvents = useMemo(
     () => filterDayEvents(events, calendar.selectedDate),
@@ -233,6 +260,14 @@ export function CalendarPane() {
             </button>
           ))}
         </div>
+        <CalendarLayerControls
+          showCalendarLayer={showCalendarLayer}
+          showAgentScheduleLayer={showAgentScheduleLayer}
+          showSystemWakeupsLayer={showSystemWakeupsLayer}
+          onToggleCalendar={setShowCalendarLayer}
+          onToggleAgentSchedule={setShowAgentScheduleLayer}
+          onToggleSystemWakeups={setShowSystemWakeupsLayer}
+        />
         {hasSpacingControls && (
           <div className="calendar-density-controls" aria-label={`${view} spacing`}>
             <button
@@ -298,7 +333,7 @@ export function CalendarPane() {
                     {dayEventsForCell.slice(0, monthSpacing.maxEvents).map((event) => (
                       <button
                         key={event.id}
-                        className="calendar-event-chip"
+                        className={calendarEventClassName('calendar-event-chip', event as AgentCalendarEvent)}
                         style={{ '--event-color': event.color } as CSSProperties}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -358,6 +393,59 @@ export function CalendarPane() {
   );
 }
 
+function CalendarLayerControls({
+  showCalendarLayer,
+  showAgentScheduleLayer,
+  showSystemWakeupsLayer,
+  onToggleCalendar,
+  onToggleAgentSchedule,
+  onToggleSystemWakeups,
+}: {
+  showCalendarLayer: boolean;
+  showAgentScheduleLayer: boolean;
+  showSystemWakeupsLayer: boolean;
+  onToggleCalendar: (value: boolean | ((value: boolean) => boolean)) => void;
+  onToggleAgentSchedule: (value: boolean | ((value: boolean) => boolean)) => void;
+  onToggleSystemWakeups: (value: boolean | ((value: boolean) => boolean)) => void;
+}) {
+  return (
+    <div className="calendar-layer-controls" aria-label="Calendar layers">
+      <label title="Show calendar events">
+        <input
+          type="checkbox"
+          checked={showCalendarLayer}
+          onChange={(event) => onToggleCalendar(event.currentTarget.checked)}
+        />
+        <span>Calendar</span>
+      </label>
+      <label title="Show agent schedule">
+        <input
+          type="checkbox"
+          checked={showAgentScheduleLayer}
+          onChange={(event) => onToggleAgentSchedule(event.currentTarget.checked)}
+        />
+        <span>Agent</span>
+      </label>
+      <label title="Show system wakeups">
+        <input
+          type="checkbox"
+          checked={showSystemWakeupsLayer}
+          onChange={(event) => onToggleSystemWakeups(event.currentTarget.checked)}
+        />
+        <span>System</span>
+      </label>
+    </div>
+  );
+}
+
+function calendarEventClassName(baseClassName: string, event: AgentCalendarEvent): string {
+  return [
+    baseClassName,
+    event.layer === 'agent-schedule' ? 'agent-schedule-event' : '',
+    event.isSystem ? 'system-event' : '',
+  ].filter(Boolean).join(' ');
+}
+
 function renderTimeAxis(labels: TimeAxisLabel[]) {
   return (
     <div className="calendar-time-axis">
@@ -386,7 +474,7 @@ function CalendarTimedEvent({
 
   return (
     <button
-      className="calendar-timed-event"
+      className={calendarEventClassName('calendar-timed-event', event.event)}
       style={{
         top: `${event.top}%`,
         height: `${event.height}%`,
@@ -417,7 +505,7 @@ function AgendaView({
   return (
     <div className="calendar-agenda">
       {events.map((event) => (
-        <button key={event.id} className="calendar-agenda-row" onClick={() => onSelect(event)}>
+        <button key={event.id} className={calendarEventClassName('calendar-agenda-row', event)} onClick={() => onSelect(event)}>
           <span className="calendar-agenda-date">{formatDate(event.start, { month: 'short', day: 'numeric' })}</span>
           <span className="calendar-agenda-dot" style={{ background: event.color }} />
           <span className="calendar-agenda-title">{event.title}</span>
@@ -452,6 +540,10 @@ function CalendarDetail({
               <dd>{event.start.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</dd>
             </div>
             <div>
+              <dt>Layer</dt>
+              <dd>{event.layer === 'agent-schedule' ? 'Agent schedule' : 'Calendar'}</dd>
+            </div>
+            <div>
               <dt>Source</dt>
               <dd>{event.source ?? 'agent'}</dd>
             </div>
@@ -459,6 +551,24 @@ function CalendarDetail({
               <div>
                 <dt>Status</dt>
                 <dd>{event.status}</dd>
+              </div>
+            )}
+            {event.scheduleType && (
+              <div>
+                <dt>Schedule Type</dt>
+                <dd>{event.scheduleType}</dd>
+              </div>
+            )}
+            {event.schedule && (
+              <div>
+                <dt>Schedule</dt>
+                <dd>{event.schedule}</dd>
+              </div>
+            )}
+            {event.timezone && (
+              <div>
+                <dt>Timezone</dt>
+                <dd>{event.timezone}</dd>
               </div>
             )}
             <div>
@@ -472,7 +582,7 @@ function CalendarDetail({
       ) : (
         <div className="calendar-detail-empty">
           <h3>Calendar</h3>
-          <p>{invalidFiles.length > 0 ? `${invalidFiles.length} invalid event file${invalidFiles.length === 1 ? '' : 's'}` : 'calendar/events'}</p>
+          <p>{invalidFiles.length > 0 ? `${invalidFiles.length} invalid event file${invalidFiles.length === 1 ? '' : 's'}` : 'calendar/events + Agent schedule'}</p>
         </div>
       )}
       {invalidFiles.length > 0 && (

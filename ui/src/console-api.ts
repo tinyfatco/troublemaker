@@ -28,6 +28,17 @@ export interface CalendarEventFile {
   content: string;
 }
 
+export interface AgentScheduleManifestEvent {
+  file: string;
+  type: string;
+  nextFire: string;
+}
+
+export interface AgentScheduleManifest {
+  nextWake: string | null;
+  events: AgentScheduleManifestEvent[];
+}
+
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
 function currentAgentId(): string {
@@ -38,6 +49,11 @@ function currentAgentId(): string {
 export function consoleAgentUrl(endpoint: string): string {
   const suffix = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   return `/api/v2/agents/${encodeURIComponent(currentAgentId())}${suffix}`;
+}
+
+export function agentWorkspaceUrl(endpoint: string): string {
+  const suffix = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `/agents/${encodeURIComponent(currentAgentId())}${suffix}`;
 }
 
 async function readError(resp: Response, fallback: string): Promise<Error> {
@@ -94,13 +110,13 @@ export async function readFile(path: string): Promise<string> {
   return resp.text();
 }
 
-export async function fetchCalendarEventFiles(): Promise<CalendarEventFile[]> {
+async function fetchJsonWorkspaceFiles(path: string): Promise<CalendarEventFile[]> {
   let files: FileNode[];
   try {
-    files = await listFiles('calendar/events');
+    files = await listFiles(path);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message.toLowerCase().includes('not found')) return [];
+    if (message.toLowerCase().includes('not found') || message.toLowerCase().includes('missing')) return [];
     throw err;
   }
 
@@ -117,6 +133,22 @@ export async function fetchCalendarEventFiles(): Promise<CalendarEventFile[]> {
   );
 
   return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+}
+
+export async function fetchCalendarEventFiles(): Promise<CalendarEventFile[]> {
+  return fetchJsonWorkspaceFiles('calendar/events');
+}
+
+export async function fetchAgentSchedulePromptFiles(): Promise<CalendarEventFile[]> {
+  return fetchJsonWorkspaceFiles('attention/queue');
+}
+
+export async function fetchAgentScheduleManifest(): Promise<AgentScheduleManifest | null> {
+  const resp = await fetchWithTimeout(agentWorkspaceUrl('/schedule'), {}, 6000);
+  if (!resp.ok) return null;
+  const data = await resp.json() as AgentScheduleManifest;
+  if (!data || !Array.isArray(data.events)) return null;
+  return data;
 }
 
 export async function saveWorkspaceFile(path: string, content: string): Promise<void> {
