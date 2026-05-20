@@ -1299,6 +1299,75 @@ The more you know, the better you can help. But remember — you're learning abo
 		}
 	}
 
+	const calendarReadmePath = join(workingDir, "calendar", "README.md");
+	if (!seedExists(calendarReadmePath)) {
+		seedWrite(calendarReadmePath, `# Calendar
+
+This directory is for user-world calendar items: meetings, calls, deadlines,
+travel, reminders the user expects to see on the workspace calendar, and other
+time-bound context.
+
+Calendar events are visual context. They do not wake you up by themselves. If
+something should trigger a future prompt, put that scheduled prompt in
+\`attention/queue/\` instead.
+
+## Where Events Go
+
+Create one JSON file per event in:
+
+\`calendar/events/\`
+
+Use unique filenames, usually with a date prefix and a short slug:
+
+\`calendar/events/2026-05-21-demo-call.json\`
+
+## Basic Timed Event
+
+\`\`\`json
+{
+  "id": "2026-05-21-demo-call",
+  "title": "Demo call",
+  "start": "2026-05-21T14:00:00-05:00",
+  "end": "2026-05-21T14:30:00-05:00",
+  "allDay": false,
+  "source": "agent",
+  "status": "confirmed",
+  "description": "Optional notes or context for the event."
+}
+\`\`\`
+
+## All-Day Event
+
+Use explicit midnight timestamps with timezone offsets so the event lands on the
+right local day.
+
+\`\`\`json
+{
+  "id": "2026-05-22-launch-day",
+  "title": "Launch day",
+  "start": "2026-05-22T00:00:00-05:00",
+  "end": "2026-05-23T00:00:00-05:00",
+  "allDay": true,
+  "source": "agent"
+}
+\`\`\`
+
+## Fields
+
+- \`start\` is required. Use ISO 8601 with an explicit timezone offset.
+- \`end\` is recommended. If omitted, the calendar assumes 30 minutes for timed events or 24 hours for all-day events.
+- \`title\` is recommended. If omitted, the filename becomes the title.
+- \`description\` or \`notes\` can hold optional context.
+- \`source\` can be \`agent\`, \`user\`, or \`google\`; it affects default color.
+- \`status: "cancelled"\` renders the event muted.
+- \`color\` can override the default event color with a CSS color such as \`#0f766e\`.
+
+Accepted aliases: \`start_at\`, \`at\`, or \`date\` for \`start\`; \`end_at\` for \`end\`; \`all_day\` for \`allDay\`; \`summary\` or \`text\` for \`title\`; \`notes\` for \`description\`.
+
+When a user gives a fuzzy time like "tomorrow afternoon," convert it to a concrete ISO timestamp in their timezone before writing the event.
+`, "utf-8");
+		log.logInfo("Seeded calendar/README.md");
+	}
 	// Seed HEARTBEAT.md if missing (both fresh and existing agents)
 	const heartbeatMdPath = join(workingDir, "HEARTBEAT.md");
 	if (!seedExists(heartbeatMdPath)) {

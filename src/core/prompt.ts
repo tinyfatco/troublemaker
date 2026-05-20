@@ -140,6 +140,7 @@ ${workspacePath}/
 ├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
 ├── settings.json              # Model & preferences (change model here or /model <name>)
 ├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)
+├── calendar/README.md         # Calendar event authoring guide
 ├── calendar/events/           # Calendar items shown in the workspace calendar
 ├── attention/queue/           # Scheduled prompts that trigger future attention
 ├── attention/history/         # Fired/expired scheduled prompts with metadata
