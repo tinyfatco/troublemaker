@@ -16,7 +16,13 @@ import { McpAdapter } from "../../adapters/mcp.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "../../adapters/web-voice.js";
 import { handleTerminalUpgrade } from "../../terminal.js";
-import type { MomEvent, MomHandler, PlatformAdapter } from "../../adapters/types.js";
+import {
+	slashCommandHandled,
+	type MomEvent,
+	type MomHandler,
+	type PlatformAdapter,
+	type SlashCommandResult,
+} from "../../adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
 import { MomSettingsManager } from "../../context.js";
@@ -725,7 +731,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	// wait for MCP bridge/runner initialization.
 	if (trimmed.startsWith("/") && !isEvent && !slashCommandNeedsRunner(trimmed)) {
 		const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform);
-		if (handled) return;
+		if (slashCommandHandled(handled)) return;
 	}
 
 	// Ensure awareness is initialized for agent runs and runner-backed commands.
@@ -739,7 +745,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	// Intercept slash commands before spinning up the agent
 	if (trimmed.startsWith("/") && !isEvent) {
 		const handled = await executeSlashCommand(trimmed, event.channel, workingDir, platform, state.runner);
-		if (handled) return;
+		if (slashCommandHandled(handled)) return;
 	}
 
 	// Start run
@@ -806,7 +812,7 @@ const handler: MomHandler = {
 		return isRunBusy();
 	},
 
-	async handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<boolean> {
+	async handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<SlashCommandResult> {
 		const trimmed = event.text.trim();
 		if (!trimmed.startsWith("/")) return false;
 

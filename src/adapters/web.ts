@@ -4,7 +4,16 @@ import { AsyncLocalStorage } from "async_hooks";
 import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
-import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
+import {
+	slashCommandHandled,
+	slashCommandPending,
+	type ChannelInfo,
+	type MomContext,
+	type MomEvent,
+	type MomHandler,
+	type PlatformAdapter,
+	type UserInfo,
+} from "./types.js";
 
 // ============================================================================
 // WebAdapter — HTTP POST with SSE response (for web chat)
@@ -291,8 +300,12 @@ Keep responses concise and helpful.`;
 						writer.send({ type: "heartbeat", ts: Date.now() });
 					}, 12000);
 				}
-				const handled = await this.handler.handleSlashCommand(event, this);
-				if (handled) return;
+				const commandResult = await this.handler.handleSlashCommand(event, this);
+				const pending = slashCommandPending(commandResult);
+				if (pending && writer) {
+					await pending;
+				}
+				if (slashCommandHandled(commandResult)) return;
 			}
 
 			if (event.text.toLowerCase().trim() === "stop") {

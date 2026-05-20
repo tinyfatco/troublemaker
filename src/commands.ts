@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
-import type { PlatformAdapter } from "./adapters/types.js";
+import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
 import { MomSettingsManager } from "./context.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
@@ -21,20 +21,50 @@ import { AuthStorage } from "@mariozechner/pi-coding-agent";
  * Pending input — when a command needs the user's next message (e.g. /login),
  * it registers a resolver here. handleEvent checks this before processing.
  */
-const pendingInput = new Map<string, (text: string) => void>();
+interface PendingInput {
+	resolve: (text: string) => void;
+	reject: (err: Error) => void;
+}
+
+const pendingInput = new Map<string, PendingInput>();
+
+function handled(pending?: Promise<void>): SlashCommandResult {
+	return pending ? { handled: true, pending } : true;
+}
 
 /**
  * Check if a channel has a pending input request.
  * If so, resolve it with the given text and return true.
  */
 export function resolvePendingInput(channelId: string, text: string): boolean {
-	const resolver = pendingInput.get(channelId);
-	if (resolver) {
+	const pending = pendingInput.get(channelId);
+	if (pending) {
+		const trimmed = text.trim();
+		const lower = trimmed.toLowerCase();
+		if (trimmed.startsWith("/") && lower !== "/cancel") {
+			return false;
+		}
 		pendingInput.delete(channelId);
-		resolver(text);
+		if (lower === "/cancel") {
+			pending.reject(new Error("Cancelled"));
+		} else {
+			pending.resolve(text);
+		}
 		return true;
 	}
 	return false;
+}
+
+export function cancelPendingInput(channelId: string): boolean {
+	const pending = pendingInput.get(channelId);
+	if (!pending) return false;
+	pendingInput.delete(channelId);
+	pending.reject(new Error("Cancelled"));
+	return true;
+}
+
+export function hasPendingInput(channelId: string): boolean {
+	return pendingInput.has(channelId);
 }
 
 /**
@@ -42,8 +72,8 @@ export function resolvePendingInput(channelId: string, text: string): boolean {
  * Returns a promise that resolves with the message text.
  */
 function waitForInput(channelId: string): Promise<string> {
-	return new Promise((resolve) => {
-		pendingInput.set(channelId, resolve);
+	return new Promise((resolve, reject) => {
+		pendingInput.set(channelId, { resolve, reject });
 	});
 }
 
@@ -76,7 +106,7 @@ export async function handleSlashCommand(
 	workingDir: string,
 	platform: PlatformAdapter,
 	runner?: AgentRunner,
-): Promise<boolean> {
+): Promise<SlashCommandResult> {
 	const parts = text.trim().split(/\s+/);
 	const cmd = parts[0].toLowerCase();
 
@@ -97,8 +127,10 @@ export async function handleSlashCommand(
 			await handleClearCommand(channelId, platform, runner);
 			return true;
 		case "/login":
-			await handleLoginCommand(parts.slice(1), channelId, workingDir, platform);
-			return true;
+			return handleLoginCommand(parts.slice(1), channelId, workingDir, platform);
+		case "/cancel":
+			await handleCancelCommand(channelId, platform);
+			return handled();
 		default:
 			return false;
 	}
@@ -340,9 +372,14 @@ async function handleLoginCommand(
 	channelId: string,
 	workingDir: string,
 	platform: PlatformAdapter,
-): Promise<void> {
+): Promise<SlashCommandResult> {
 	const authStorage = AuthStorage.create();
 	const providers = authStorage.getOAuthProviders();
+
+	if (hasPendingInput(channelId)) {
+		await platform.postMessage(channelId, "_Input is already pending. Paste the callback URL, or send `/cancel`._");
+		return handled();
+	}
 
 	if (args.length === 0) {
 		// List available providers and their auth status
@@ -354,7 +391,7 @@ async function handleLoginCommand(
 		}
 		response += `\nUse \`/login <provider>\` to log in. Example: \`/login openai-codex\``;
 		await platform.postMessage(channelId, response);
-		return;
+		return handled();
 	}
 
 	const providerId = args[0].toLowerCase();
@@ -366,17 +403,16 @@ async function handleLoginCommand(
 			channelId,
 			`Unknown provider: "${providerId}"\n\nAvailable: ${available}`,
 		);
-		return;
+		return handled();
 	}
 
 	await platform.postMessage(channelId, `_Starting ${provider.name} login..._`);
 
-	// Fire-and-forget: the login flow waits for user input via waitForInput(),
-	// which is resolved by adapter-level resolvePendingInput(). If we awaited
-	// this here, we'd block the adapter's work queue and deadlock — subsequent
-	// messages (including the pasted URL) would never reach the resolver.
+	// Most adapters treat this as fire-and-forget so their inbound queues stay
+	// open. The web adapter can keep its SSE writer attached by awaiting the
+	// returned pending promise.
 	const LOGIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
-	(async () => {
+	const pending = (async () => {
 		try {
 			const loginPromise = authStorage.login(providerId, {
 				onAuth: async (info) => {
@@ -462,4 +498,13 @@ async function handleLoginCommand(
 			await platform.postMessage(channelId, `_Login failed: ${msg}_`);
 		}
 	})();
+	return handled(pending);
+}
+
+async function handleCancelCommand(channelId: string, platform: PlatformAdapter): Promise<void> {
+	if (cancelPendingInput(channelId)) {
+		await platform.postMessage(channelId, "_Cancelled pending input_");
+	} else {
+		await platform.postMessage(channelId, "_Nothing to cancel_");
+	}
 }

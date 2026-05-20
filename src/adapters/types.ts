@@ -36,6 +36,20 @@ export interface SendFinalResponseOptions {
 	force?: boolean;
 }
 
+export type SlashCommandResult = boolean | {
+	handled: boolean;
+	/** Resolves when an interactive command has finished sending follow-up output. */
+	pending?: Promise<void>;
+};
+
+export function slashCommandHandled(result: SlashCommandResult): boolean {
+	return typeof result === "boolean" ? result : result.handled;
+}
+
+export function slashCommandPending(result: SlashCommandResult): Promise<void> | undefined {
+	return typeof result === "boolean" ? undefined : result.pending;
+}
+
 /**
  * The context object passed to the agent for each run.
  * Platform-agnostic — adapters create this from their platform primitives.
@@ -86,7 +100,7 @@ export interface MomHandler {
 	 * Handle a slash command before busy/steer routing.
 	 * Returns true when the message was consumed as a command.
 	 */
-	handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<boolean>;
+	handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<SlashCommandResult>;
 
 	/**
 	 * Handle a message that arrives while the runtime is busy.
