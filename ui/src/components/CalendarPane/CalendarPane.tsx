@@ -18,7 +18,13 @@ import { usePersistentState } from '../../hooks/usePersistentState';
 import type { AgentCalendarEvent, ParsedCalendarEventFile } from './calendarAdapter';
 
 const VIEWS: CalendarView[] = ['month', 'week', 'day', 'agenda'];
-const HOUR_HEIGHTS = [44, 56, 72, 88] as const;
+const HOUR_HEIGHTS = [44, 56, 72, 88, 112, 144] as const;
+const MONTH_SPACINGS = [
+  { id: 'fit', maxEvents: 2 },
+  { id: 'balanced', maxEvents: 4 },
+  { id: 'spacious', maxEvents: 6 },
+  { id: 'airy', maxEvents: 8 },
+] as const;
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function parseCalendarView(value: unknown): CalendarView | null {
@@ -34,6 +40,12 @@ function parseBoolean(value: unknown): boolean | null {
 function parseHourHeightIndex(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.max(0, Math.min(HOUR_HEIGHTS.length - 1, Math.round(value)))
+    : null;
+}
+
+function parseMonthSpacingIndex(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(MONTH_SPACINGS.length - 1, Math.round(value)))
     : null;
 }
 
@@ -114,6 +126,11 @@ export function CalendarPane() {
     1,
     { parse: parseHourHeightIndex },
   );
+  const [monthSpacingIndex, setMonthSpacingIndex] = usePersistentState(
+    'troublemaker.calendar.monthSpacingIndex',
+    0,
+    { parse: parseMonthSpacingIndex },
+  );
   const initialDate = useMemo(() => dateFromKey(selectedDateKey), [selectedDateKey]);
   const calendar = useCalendarState({ initialDate, view, weekStartsOn: 0 });
   const query = useCalendarEvents();
@@ -147,10 +164,31 @@ export function CalendarPane() {
   );
   const showDetails = detailOpen;
   const hourHeight = HOUR_HEIGHTS[hourHeightIndex];
+  const monthSpacing = MONTH_SPACINGS[monthSpacingIndex];
   const timeGridStyle = { minHeight: `${24 * hourHeight}px` };
+  const canMakeDenser = view === 'month'
+    ? monthSpacingIndex > 0
+    : hourHeightIndex > 0;
+  const canMakeSparser = view === 'month'
+    ? monthSpacingIndex < MONTH_SPACINGS.length - 1
+    : hourHeightIndex < HOUR_HEIGHTS.length - 1;
   const selectEvent = (event: AgentCalendarEvent) => {
     setSelectedEvent(event);
     setDetailOpen(true);
+  };
+  const makeViewDenser = () => {
+    if (view === 'month') {
+      setMonthSpacingIndex((index) => Math.max(0, index - 1));
+      return;
+    }
+    setHourHeightIndex((index) => Math.max(0, index - 1));
+  };
+  const makeViewSparser = () => {
+    if (view === 'month') {
+      setMonthSpacingIndex((index) => Math.min(MONTH_SPACINGS.length - 1, index + 1));
+      return;
+    }
+    setHourHeightIndex((index) => Math.min(HOUR_HEIGHTS.length - 1, index + 1));
   };
   const openDay = (date: Date) => {
     calendar.setSelectedDate(date);
@@ -165,6 +203,7 @@ export function CalendarPane() {
     }
   };
   const isTimedView = view === 'week' || view === 'day';
+  const hasSpacingControls = view === 'month' || isTimedView;
 
   return (
     <div className="calendar-pane">
@@ -194,21 +233,21 @@ export function CalendarPane() {
             </button>
           ))}
         </div>
-        {isTimedView && (
-          <div className="calendar-density-controls" aria-label="Time scale">
+        {hasSpacingControls && (
+          <div className="calendar-density-controls" aria-label={`${view} spacing`}>
             <button
               className="calendar-icon-btn"
-              onClick={() => setHourHeightIndex((index) => Math.max(0, index - 1))}
-              disabled={hourHeightIndex === 0}
-              title="Compact time grid"
+              onClick={makeViewDenser}
+              disabled={!canMakeDenser}
+              title="Make denser"
             >
               <MinusIcon />
             </button>
             <button
               className="calendar-icon-btn"
-              onClick={() => setHourHeightIndex((index) => Math.min(HOUR_HEIGHTS.length - 1, index + 1))}
-              disabled={hourHeightIndex === HOUR_HEIGHTS.length - 1}
-              title="Expand time grid"
+              onClick={makeViewSparser}
+              disabled={!canMakeSparser}
+              title="Make sparser"
             >
               <PlusIcon />
             </button>
@@ -233,10 +272,10 @@ export function CalendarPane() {
 
           {!query.isLoading && view === 'month' && (
             <Calendar
-              className="plain-calendar-month"
+              className={`plain-calendar-month month-spacing-${monthSpacing.id}`}
               events={events}
               month={calendar.currentViewingDate}
-              maxEventsPerDay={4}
+              maxEventsPerDay={monthSpacing.maxEvents}
               renderHeader={() => null}
               renderWeekdayHeader={(weekday) => (
                 <div className="calendar-weekday">{weekday}</div>
@@ -256,7 +295,7 @@ export function CalendarPane() {
                 >
                   <div className="calendar-day-number">{date.getDate()}</div>
                   <div className="calendar-day-events">
-                    {dayEventsForCell.slice(0, 4).map((event) => (
+                    {dayEventsForCell.slice(0, monthSpacing.maxEvents).map((event) => (
                       <button
                         key={event.id}
                         className="calendar-event-chip"
@@ -269,8 +308,8 @@ export function CalendarPane() {
                         {event.title}
                       </button>
                     ))}
-                    {dayEventsForCell.length > 4 && (
-                      <span className="calendar-more">+{dayEventsForCell.length - 4}</span>
+                    {dayEventsForCell.length > monthSpacing.maxEvents && (
+                      <span className="calendar-more">+{dayEventsForCell.length - monthSpacing.maxEvents}</span>
                     )}
                   </div>
                 </div>
