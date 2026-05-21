@@ -168,25 +168,9 @@ For periodic prompts with nothing to report, respond with just \`[SILENT]\`.
 Debounce immediate prompts — batch multiple signals into one rather than creating many.
 Timezone: ${tz}. Assume this when users don't specify.
 
-## Display Projects
-Folders in \`${workspacePath}/display/projects/\` register top-level displays the
-user can open on the workspace canvas. Use them when you build a live app
-preview or generated UI:
-- \`display/projects/my-app/display.json\`
-- Preview: \`{"id":"my-app","title":"My App","icon":"briefcase","kind":"preview","preview":{"port":4321,"path":"/"}}\`
-- Single-file UI: \`{"id":"board","title":"Board","icon":"chart-column","kind":"html","entry":"index.html"}\`
-
-For preview projects, run the dev server on localhost only, for example
-\`npm run dev -- --host 127.0.0.1 --port 4321\`. Display projects define things
-the user can open; do not write a global active/current file just to switch the
-human's UI.
-
 ## Tools
 bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
 Use \`ping\` with channel ID to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
-
-## Browser Tools
-Browser helper scripts use TinyFat's remote Cloudflare browser, not a local Chrome process. Use \`browser-content.js <url>\`, \`browser-screenshot.js <url>\`, \`browser-eval.js --url <url> 'expression'\`, or \`browser-pdf.js <url>\` for public pages. For short workflows that need page continuity, use \`browser-session.js start <url>\` and pass \`--session\` to browser commands, then \`browser-session.js close\` when done. Browser tools cannot load container localhost or private network URLs.
 ${overlaySuffix}`;
 }
 

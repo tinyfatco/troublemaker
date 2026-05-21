@@ -62,7 +62,7 @@ function PreviewPane({ project }: DisplayPaneProps) {
   if (status === 'error') {
     return (
       <div className="display-pane">
-        <DisplayToolbar project={project} src={src} />
+        <DisplayToolbar project={project} src={src} allowOpenExternal={false} />
         <div className="display-placeholder">
           <span className="display-placeholder-title">{project.title}</span>
           <span className="display-placeholder-subtitle">{error || 'Preview is unavailable'}</span>
@@ -74,7 +74,7 @@ function PreviewPane({ project }: DisplayPaneProps) {
 
   return (
     <div className="display-pane">
-      <DisplayToolbar project={project} src={src} />
+      <DisplayToolbar project={project} src={src} allowOpenExternal={false} />
       {status === 'loading' && (
         <div className="display-placeholder">
           <span className="tool-spinner" style={{ width: 24, height: 24, borderWidth: 3 }} />
@@ -86,6 +86,7 @@ function PreviewPane({ project }: DisplayPaneProps) {
           className="display-iframe"
           src={src}
           title={project.title}
+          sandbox="allow-forms allow-modals allow-popups allow-scripts"
           allow="clipboard-read; clipboard-write"
         />
       )}
@@ -144,7 +145,7 @@ function GeneratedHtmlPane({ project }: DisplayPaneProps) {
   );
 }
 
-function DisplayToolbar({ project, src }: { project: DisplayProject; src?: string | null }) {
+function DisplayToolbar({ project, src, allowOpenExternal = true }: { project: DisplayProject; src?: string | null; allowOpenExternal?: boolean }) {
   return (
     <div className="display-toolbar">
       <div className="display-toolbar-title">
@@ -154,7 +155,7 @@ function DisplayToolbar({ project, src }: { project: DisplayProject; src?: strin
         />
         <span>{project.title}</span>
       </div>
-      {src && (
+      {src && allowOpenExternal && (
         <a className="display-toolbar-link" href={src} target="_blank" rel="noreferrer" title="Open in new tab">
           <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
             <path d="M6 3H3.5A1.5 1.5 0 0 0 2 4.5v8A1.5 1.5 0 0 0 3.5 14h8A1.5 1.5 0 0 0 13 12.5V10" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />

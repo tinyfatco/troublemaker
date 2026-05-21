@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } fro
 import { join, extname, resolve, normalize } from "path";
 import { ConsoleError, ConsoleService } from "./console/service.js";
 import * as log from "./log.js";
+import { validatePreviewPort } from "./preview/ports.js";
 import { FilesystemAwarenessStore } from "./storage/node/filesystem-awareness.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 
@@ -37,10 +38,8 @@ function parsePreviewProxyTarget(rawUrl: string): PreviewProxyTarget | null {
 	const url = new URL(rawUrl || "/", "http://localhost");
 	const match = url.pathname.match(/^\/preview\/(\d{4,5})(\/.*)?$/);
 	if (!match) return null;
-	const port = Number.parseInt(match[1], 10);
-	if (!Number.isFinite(port) || port < 1024 || port > 65535 || port === 3000 || port === 3002) {
-		return null;
-	}
+	const port = validatePreviewPort(match[1]);
+	if (!port) return null;
 	return {
 		port,
 		path: `${match[2] || "/"}${url.search}`,
@@ -49,16 +48,23 @@ function parsePreviewProxyTarget(rawUrl: string): PreviewProxyTarget | null {
 
 function previewProxyHeaders(req: IncomingMessage, port: number): Record<string, string | string[]> {
 	const headers: Record<string, string | string[]> = {};
+	const blockedPrefixes = ["cf-", "x-authenticated-"];
 	for (const [key, value] of Object.entries(req.headers)) {
 		if (value === undefined) continue;
 		const normalized = key.toLowerCase();
 		if (
+			normalized === "authorization" ||
 			normalized === "connection" ||
+			normalized === "cookie" ||
 			normalized === "host" ||
 			normalized === "keep-alive" ||
 			normalized === "proxy-connection" ||
+			normalized === "x-forwarded-for" ||
+			normalized === "x-real-ip" ||
+			normalized === "x-tools-token" ||
 			normalized === "transfer-encoding" ||
-			normalized === "upgrade"
+			normalized === "upgrade" ||
+			blockedPrefixes.some((prefix) => normalized.startsWith(prefix))
 		) {
 			continue;
 		}
@@ -175,7 +181,11 @@ export class Gateway {
 			method: req.method,
 			headers: previewProxyHeaders(req, target.port),
 		}, (upstreamRes) => {
-			res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+			const headers = { ...upstreamRes.headers };
+			delete headers["set-cookie"];
+			delete headers["set-cookie2"];
+			delete headers["x-frame-options"];
+			res.writeHead(upstreamRes.statusCode || 502, headers);
 			upstreamRes.pipe(res);
 		});
 

@@ -29,6 +29,7 @@ export interface ParsedDisplayProjectFile {
 
 const ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const SAFE_ENTRY_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,240}$/;
+const RESERVED_PREVIEW_PORTS = new Set([3000, 3002, 6080, 8765, 9222]);
 
 function stringValue(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -38,6 +39,14 @@ function numberValue(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number.parseInt(value.trim(), 10);
   return null;
+}
+
+function isReservedPreviewPort(port: number): boolean {
+  return RESERVED_PREVIEW_PORTS.has(port) || (port >= 5900 && port <= 5999);
+}
+
+function isValidPreviewPort(port: number | null): port is number {
+  return Number.isInteger(port) && port >= 1024 && port <= 65535 && !isReservedPreviewPort(port);
 }
 
 function normalizeId(value: string | null, fallback: string): string {
@@ -105,8 +114,13 @@ export function parseDisplayProjectFile(file: DisplayProjectManifestFile): Parse
       : 'preview';
 
   if (kind === 'preview') {
-    if (!previewPort || previewPort < 1024 || previewPort > 65535 || previewPort === 3000) {
-      return { path: file.path, name: file.name, project: null, error: 'Preview projects need a valid port from 1024-65535, excluding 3000' };
+    if (!isValidPreviewPort(previewPort)) {
+      return {
+        path: file.path,
+        name: file.name,
+        project: null,
+        error: 'Preview projects need a port from 1024-65535, excluding 3000, 3002, 6080, 8765, 9222, and 5900-5999',
+      };
     }
   }
 

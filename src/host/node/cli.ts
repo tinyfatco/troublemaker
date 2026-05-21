@@ -1403,8 +1403,11 @@ container. Bind servers to localhost only.
 Start the server separately, for example:
 
 \`\`\`bash
-npm run dev -- --host 127.0.0.1 --port 4321
+npm run dev -- --port 4321
 \`\`\`
+
+Use an app port such as \`4321\` or \`5173\`. Do not use TinyFat reserved ports:
+\`3000\`, \`3002\`, \`6080\`, \`8765\`, \`9222\`, or \`5900-5999\`.
 
 ## Single-File Generated UI
 
