@@ -16,6 +16,7 @@ export function DisplayPane({ project }: DisplayPaneProps) {
 
 function PreviewPane({ project }: DisplayPaneProps) {
   const [src, setSrc] = useState<string | null>(null);
+  const [isIsolatedPreview, setIsIsolatedPreview] = useState(false);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -24,6 +25,7 @@ function PreviewPane({ project }: DisplayPaneProps) {
     setStatus('loading');
     setError(null);
     setSrc(null);
+    setIsIsolatedPreview(false);
     setAttempt((value) => value + 1);
   }, []);
 
@@ -45,6 +47,7 @@ function PreviewPane({ project }: DisplayPaneProps) {
         });
         if (!cancelled) {
           setSrc(previewUrl);
+          setIsIsolatedPreview(isIsolatedPreviewUrl(previewUrl));
           setStatus('ready');
         }
       } catch (err) {
@@ -86,12 +89,22 @@ function PreviewPane({ project }: DisplayPaneProps) {
           className="display-iframe"
           src={src}
           title={project.title}
-          sandbox="allow-forms allow-modals allow-popups allow-scripts"
+          sandbox={isIsolatedPreview
+            ? 'allow-forms allow-modals allow-popups allow-same-origin allow-scripts'
+            : 'allow-forms allow-modals allow-popups allow-scripts'}
           allow="clipboard-read; clipboard-write"
         />
       )}
     </div>
   );
+}
+
+function isIsolatedPreviewUrl(value: string): boolean {
+  try {
+    return new URL(value, window.location.href).hostname.endsWith('preview.tinyfat.dev');
+  } catch {
+    return false;
+  }
 }
 
 function GeneratedHtmlPane({ project }: DisplayPaneProps) {
