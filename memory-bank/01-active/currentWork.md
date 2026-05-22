@@ -1,8 +1,34 @@
 # Current Work
 
-**Last updated:** 2026-05-18
+**Last updated:** 2026-05-22
+
+## Status: Pi Distribution Migration Queued
+
+2026-05-22: TroubleMaker still depends on the deprecated
+`@mariozechner/pi-*` npm distribution. The next runtime-maintenance slice
+should move to the Earendil Works distribution of Pi before upstream drift gets
+more expensive. This was intentionally left out of the workspace UI reliability
+deploy because catching up the Pi API surface may require broader runtime
+refactoring and focused validation.
+
+Near-term scope:
+
+- Identify the current Earendil Works Pi package names and migration notes.
+- Update TroubleMaker imports/dependency pins and any changed event/tool-call
+  streaming API shapes.
+- Re-run web chat, adapter, model-selection, and hosted workspace smoke tests
+  before baking into Crawdad.
 
 ## Status: Hosted Workspace Reliability Polish In Progress
+
+2026-05-22: Follow-up reliability slice shipped the Zip PR for
+`yield_no_action` reason subtext and extended tool-card subtext to
+`send_message_to_channel` / `send_message` calls so outbound messages show the
+target plus message preview. It also forwards Pi `toolcall_delta` /
+`toolcall_end` events through web SSE so tool-call arguments stream into the
+workspace UI, dedupes active optimistic tool cards once durable awareness
+covers the same tool id, and makes bottom-pin state respect explicit upward
+scroll intent.
 
 2026-05-18: Active work is on the Crawdad-hosted Troublemaker workspace
 inside the fat-platform iframe. The immediate target is GitHub issues #21
