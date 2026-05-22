@@ -131,6 +131,36 @@ assert(
 	'settled tool-call optimistic entry is hidden once durable assistant content exists',
 );
 
+const durableToolAssistant = {
+	...earlyDurableAssistant,
+	content: [{ type: 'toolCall' as const, id: 'tool-1', name: 'read_file', arguments: { path: 'README.md' } }],
+};
+const visibleAfterDurableToolArrives = getOptimisticVisibility(
+	[toolFirstUser, durableToolAssistant],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	!visibleAfterDurableToolArrives.showStreamingEntry,
+	'active tool-call optimistic entry is hidden once durable awareness has the same tool call',
+);
+
+const durableDifferentToolAssistant = {
+	...earlyDurableAssistant,
+	content: [{ type: 'toolCall' as const, id: 'tool-2', name: 'bash', arguments: { command: 'pwd' } }],
+};
+const visibleWithDifferentDurableTool = getOptimisticVisibility(
+	[toolFirstUser, durableDifferentToolAssistant],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	visibleWithDifferentDurableTool.showStreamingEntry,
+	'active tool-call optimistic entry remains visible when durable awareness has a different tool call',
+);
+
 const recentlyCompletedUser = user('u-recent', '2026-05-18T00:02:05.000Z');
 const recentlyCompletedAssistant = assistant('a-recent', '2026-05-18T00:02:06.000Z');
 const rapidRepeatUser = user('live-u-rapid', '2026-05-18T00:02:07.000Z');

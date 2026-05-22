@@ -5,7 +5,7 @@
  * Loads recent entries first (tail-first), lazy-loads older entries on scroll-up.
  */
 
-import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties } from 'react';
+import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties, type TouchEvent, type WheelEvent } from 'react';
 import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
@@ -57,8 +57,12 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const prevScrollHeightRef = useRef(0);
   const composerHeightRef = useRef(0);
   const pendingExpansionFollowRef = useRef(false);
+  const pinnedToBottomRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const touchStartYRef = useRef<number | null>(null);
 
-  const isNearBottom = useCallback((threshold = 120) => {
+  const isNearBottom = useCallback((threshold = 48) => {
     const el = scrollContainerRef.current;
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
@@ -67,16 +71,22 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     // Use requestAnimationFrame to ensure DOM has settled
     requestAnimationFrame(() => {
+      programmaticScrollRef.current = true;
       messagesEndRef.current?.scrollIntoView({ behavior });
+      pinnedToBottomRef.current = true;
       userScrolledRef.current = false;
       setShowScrollBtn(false);
+      window.setTimeout(() => {
+        programmaticScrollRef.current = false;
+        lastScrollTopRef.current = scrollContainerRef.current?.scrollTop || 0;
+      }, 80);
     });
   }, []);
 
   const handleComposerHeightChange = useCallback((height: number) => {
     if (Math.abs(height - composerHeightRef.current) < 1) return;
 
-    const shouldFollowBottom = !userScrolledRef.current || isNearBottom(160);
+    const shouldFollowBottom = pinnedToBottomRef.current || isNearBottom();
     composerHeightRef.current = height;
     setComposerHeight(height);
 
@@ -87,17 +97,23 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
 
   const handleExpandingContent = useCallback(() => {
     if (!backlogDone || isLoadingMore) return;
-    const shouldFollowBottom = !userScrolledRef.current || isNearBottom(160);
+    const shouldFollowBottom = pinnedToBottomRef.current || isNearBottom();
     if (!shouldFollowBottom) return;
 
     pendingExpansionFollowRef.current = true;
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (!pendingExpansionFollowRef.current) return;
+        programmaticScrollRef.current = true;
         messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+        pinnedToBottomRef.current = true;
         userScrolledRef.current = false;
         pendingExpansionFollowRef.current = false;
         setShowScrollBtn(false);
+        window.setTimeout(() => {
+          programmaticScrollRef.current = false;
+          lastScrollTopRef.current = scrollContainerRef.current?.scrollTop || 0;
+        }, 80);
       });
     });
   }, [backlogDone, isLoadingMore, isNearBottom]);
@@ -144,7 +160,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   useEffect(() => {
     if (!backlogDone || isLoadingMore) return;
 
-    if (!userScrolledRef.current || isNearBottom(160)) {
+    if (pinnedToBottomRef.current || isNearBottom()) {
       scrollToBottom(isStreaming ? 'instant' : 'smooth');
     }
   }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
@@ -154,14 +170,29 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
     const el = scrollContainerRef.current;
     if (!el) return;
 
+    const scrollingUp = el.scrollTop < lastScrollTopRef.current - 2;
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    if (distFromBottom > 100) {
+    const atBottom = distFromBottom <= 48;
+
+    if (programmaticScrollRef.current) {
+      lastScrollTopRef.current = el.scrollTop;
+      return;
+    }
+
+    if (scrollingUp && !atBottom) {
+      pinnedToBottomRef.current = false;
+    } else if (atBottom) {
+      pinnedToBottomRef.current = true;
+    }
+
+    if (!pinnedToBottomRef.current && !atBottom) {
       userScrolledRef.current = true;
       setShowScrollBtn(true);
     } else {
       userScrolledRef.current = false;
       setShowScrollBtn(false);
     }
+    lastScrollTopRef.current = el.scrollTop;
 
     // Load more when scrolled near the top
     if (el.scrollTop < 200 && !isLoadingMore && !allLoaded && backlogDone) {
@@ -169,12 +200,38 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
     }
   }, [loadMore, isLoadingMore, allLoaded, backlogDone]);
 
+  const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < -2 && !isNearBottom()) {
+      pinnedToBottomRef.current = false;
+      userScrolledRef.current = true;
+      setShowScrollBtn(true);
+    }
+  }, [isNearBottom]);
+
+  const handleTouchStart = useCallback((event: TouchEvent<HTMLDivElement>) => {
+    touchStartYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+
+  const handleTouchMove = useCallback((event: TouchEvent<HTMLDivElement>) => {
+    const startY = touchStartYRef.current;
+    const currentY = event.touches[0]?.clientY;
+    if (startY === null || currentY === undefined) return;
+    if (currentY > startY + 4 && !isNearBottom()) {
+      pinnedToBottomRef.current = false;
+      userScrolledRef.current = true;
+      setShowScrollBtn(true);
+    }
+  }, [isNearBottom]);
+
   return (
     <div className="awareness-pane" style={paneStyle}>
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
         onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
       >
         {isLoading ? (
           <div className="awareness-pane-empty">

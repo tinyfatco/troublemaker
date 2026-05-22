@@ -10,6 +10,7 @@
 import { useState, useCallback, useRef } from 'react';
 import { postMessageUrl, stopActiveMessage } from '../console-api';
 import type { AwarenessEntry } from '../types';
+import { getWebChatStreamEffect, reduceWebChatStreamEntry } from '../webChatStream';
 import { shouldSendAsSteering } from '../webChatRouting';
 
 export type StreamStatus =
@@ -300,91 +301,12 @@ function processEvent(
 ): boolean {
   try {
     const parsed = JSON.parse(data);
+    const effect = getWebChatStreamEffect(parsed);
+    if (effect.status) setStatus(effect.status);
+    if (effect.error !== undefined) setError(effect.error);
 
-    // Token-level streaming deltas — append to last block of same type
-    if (parsed.type === 'text_delta' && parsed.delta) {
-      setStatus('streaming');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        const content = [...(prev.content || [])];
-        const last = content[content.length - 1];
-        if (last && last.type === 'text') {
-          content[content.length - 1] = { ...last, text: last.text + parsed.delta };
-        } else {
-          content.push({ type: 'text' as const, text: parsed.delta });
-        }
-        return { ...prev, content };
-      });
-    } else if (parsed.type === 'thinking_delta' && parsed.delta) {
-      setStatus('streaming');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        const content = [...(prev.content || [])];
-        const last = content[content.length - 1];
-        if (last && last.type === 'thinking') {
-          content[content.length - 1] = { ...last, thinking: (last as any).thinking + parsed.delta };
-        } else {
-          content.push({ type: 'thinking' as const, thinking: parsed.delta });
-        }
-        return { ...prev, content };
-      });
-    // Complete content blocks from message_end — replace delta-built content
-    } else if (parsed.type === 'text' && parsed.text) {
-      setEntry((prev) => {
-        if (!prev) return prev;
-        // Replace all text blocks with the final complete version
-        const nonText = (prev.content || []).filter((c) => c.type !== 'text');
-        return { ...prev, content: [...nonText, { type: 'text' as const, text: parsed.text }] };
-      });
-    } else if (parsed.type === 'thinking' && parsed.thinking) {
-      setEntry((prev) => {
-        if (!prev) return prev;
-        // Replace all thinking blocks with the final complete version
-        const nonThinking = (prev.content || []).filter((c) => c.type !== 'thinking');
-        return { ...prev, content: [{ type: 'thinking' as const, thinking: parsed.thinking }, ...nonThinking] };
-      });
-    } else if (parsed.type === 'toolCall') {
-      setStatus('tool_running');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), {
-          type: 'toolCall' as const,
-          id: parsed.id || `tool-${Date.now()}`,
-          name: parsed.name,
-          arguments: parsed.arguments || {},
-        }] };
-      });
-    } else if (parsed.type === 'toolResult') {
-      setStatus('streaming');
-      setEntry((prev) => {
-        if (!prev) return prev;
-        return { ...prev, content: [...(prev.content || []), {
-          type: 'toolResult' as const,
-          toolCallId: parsed.toolCallId || '',
-          result: parsed.result || '',
-          isError: parsed.isError,
-        }] };
-      });
-    } else if (parsed.type === 'status') {
-      if (parsed.status === 'waking') {
-        setStatus('waking');
-      } else if (parsed.status === 'connecting' || parsed.status === 'container') {
-        setStatus('connecting');
-      } else if (parsed.status === 'steering') {
-        setStatus('steering');
-      }
-    } else if (parsed.type === 'error') {
-      const message = parsed.message || 'Stream error';
-      setStatus('error');
-      setError(message);
-      setEntry((prev) => {
-        if (!prev) return prev;
-        const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
-        if (hasContent) return { ...prev, isStreaming: false };
-        return { ...prev, content: [{ type: 'text' as const, text: message }], isStreaming: false };
-      });
-      return true;
-    }
+    setEntry((prev) => reduceWebChatStreamEntry(prev, parsed));
+    if (effect.endedWithError) return true;
     // heartbeat and run_complete are ignored
   } catch {
     // Non-JSON — skip

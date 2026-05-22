@@ -16,10 +16,11 @@ export function getOptimisticVisibility(
   const visibleBaseEntries = [...entries, ...localEntries];
   const realUserIndex = findMatchingTurnUserIndex(visibleBaseEntries, userEntry);
   const hasRealUser = realUserIndex !== -1;
-  const keepActiveToolStream = hasActiveToolActivity(streamingEntry);
+  const entriesAfterUser = hasRealUser ? visibleBaseEntries.slice(realUserIndex + 1) : [];
+  const keepActiveToolStream = hasUncoveredActiveToolActivity(streamingEntry, entriesAfterUser);
   const hasAssistantAfterUser = hasRealUser &&
     !keepActiveToolStream &&
-    visibleBaseEntries.slice(realUserIndex + 1).some((entry) => entry.role === 'assistant' && !entry.isStreaming);
+    entriesAfterUser.some((entry) => entry.role === 'assistant' && !entry.isStreaming);
 
   return {
     showUserEntry: !!userEntry && !hasRealUser,
@@ -27,8 +28,39 @@ export function getOptimisticVisibility(
   };
 }
 
-function hasActiveToolActivity(entry: AwarenessEntry | null): boolean {
-  return !!entry?.isStreaming && !!entry.content?.some((block) => block.type === 'toolCall' || block.type === 'toolResult');
+function hasUncoveredActiveToolActivity(entry: AwarenessEntry | null, laterEntries: AwarenessEntry[]): boolean {
+  if (!entry?.isStreaming) return false;
+  const activeIds = new Set<string>();
+  let hasAnonymousToolActivity = false;
+
+  for (const block of entry.content || []) {
+    if (block.type === 'toolCall') {
+      if (block.id) activeIds.add(block.id);
+      else hasAnonymousToolActivity = true;
+    } else if (block.type === 'toolResult') {
+      if (block.toolCallId) activeIds.add(block.toolCallId);
+      else hasAnonymousToolActivity = true;
+    }
+  }
+
+  if (activeIds.size === 0) return hasAnonymousToolActivity;
+  const coveredIds = collectToolIds(laterEntries);
+  for (const id of activeIds) {
+    if (!coveredIds.has(id)) return true;
+  }
+  return false;
+}
+
+function collectToolIds(entries: AwarenessEntry[]): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of entries) {
+    if (entry.role !== 'assistant' || !entry.content) continue;
+    for (const block of entry.content) {
+      if (block.type === 'toolCall' && block.id) ids.add(block.id);
+      if (block.type === 'toolResult' && block.toolCallId) ids.add(block.toolCallId);
+    }
+  }
+  return ids;
 }
 
 export function mergeOptimisticEntries(

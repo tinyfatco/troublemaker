@@ -147,8 +147,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       oldestOffsetRef.current = data.offset;
       if (data.offset === 0) setAllLoaded(true);
 
-      // Prepend older entries
-      setEntries((prev) => [...parsed, ...prev]);
+      setEntries((prev) => prependAwarenessEntries(prev, parsed));
     } catch {
       setError('Failed to load older messages');
     } finally {
@@ -173,6 +172,17 @@ function mergeAwarenessEntries(existing: AwarenessEntry[], incoming: AwarenessEn
   const seen = new Set(existing.map((entry) => entry.id));
   const merged = [...existing];
   for (const entry of incoming) {
+    if (seen.has(entry.id)) continue;
+    seen.add(entry.id);
+    merged.push(entry);
+  }
+  return merged;
+}
+
+function prependAwarenessEntries(existing: AwarenessEntry[], incoming: AwarenessEntry[]): AwarenessEntry[] {
+  const seen = new Set<string>();
+  const merged: AwarenessEntry[] = [];
+  for (const entry of [...incoming, ...existing]) {
     if (seen.has(entry.id)) continue;
     seen.add(entry.id);
     merged.push(entry);

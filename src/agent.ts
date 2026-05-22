@@ -95,6 +95,21 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
+function normalizeStreamingToolCall(raw: unknown): { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } | null {
+	if (!raw || typeof raw !== "object") return null;
+	const toolCall = raw as Record<string, unknown>;
+	if (toolCall.type !== "toolCall") return null;
+	const args = toolCall.arguments;
+	return {
+		type: "toolCall",
+		id: typeof toolCall.id === "string" ? toolCall.id : "",
+		name: typeof toolCall.name === "string" ? toolCall.name : "tool",
+		arguments: args && typeof args === "object" && !Array.isArray(args)
+			? args as Record<string, unknown>
+			: {},
+	};
+}
+
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
 const skillsCache = new Map<string, { skills: Skill[]; workspaceMtime: number }>();
 
@@ -446,6 +461,16 @@ function createRunner(
 				ctx.emitContentBlock?.({ type: "text_delta", delta: ame.delta });
 			} else if (ame.type === "thinking_delta") {
 				ctx.emitContentBlock?.({ type: "thinking_delta", delta: ame.delta });
+			} else if (ame.type === "toolcall_delta" || ame.type === "toolcall_end") {
+				const toolCall = normalizeStreamingToolCall(ame.toolCall || ame.partial?.content?.[ame.contentIndex]);
+				if (toolCall) {
+					ctx.emitContentBlock?.({
+						type: ame.type,
+						contentIndex: ame.contentIndex,
+						delta: ame.delta,
+						toolCall,
+					});
+				}
 			}
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
