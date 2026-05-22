@@ -95,7 +95,15 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function normalizeStreamingToolCall(raw: unknown): { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> } | null {
+type StreamingToolCall = {
+	type: "toolCall";
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	contentIndex?: number;
+};
+
+function normalizeStreamingToolCall(raw: unknown, contentIndex?: number): StreamingToolCall | null {
 	if (!raw || typeof raw !== "object") return null;
 	const toolCall = raw as Record<string, unknown>;
 	if (toolCall.type !== "toolCall") return null;
@@ -107,7 +115,53 @@ function normalizeStreamingToolCall(raw: unknown): { type: "toolCall"; id: strin
 		arguments: args && typeof args === "object" && !Array.isArray(args)
 			? args as Record<string, unknown>
 			: {},
+		...(typeof contentIndex === "number" ? { contentIndex } : {}),
 	};
+}
+
+function normalizeStreamingToolCalls(event: Record<string, unknown>): StreamingToolCall[] {
+	const calls: StreamingToolCall[] = [];
+	const seen = new Set<string>();
+	const add = (raw: unknown, contentIndex?: number) => {
+		const call = normalizeStreamingToolCall(raw, contentIndex);
+		if (!call) return;
+		const key = call.id ? `id:${call.id}` : `index:${call.contentIndex ?? calls.length}`;
+		if (seen.has(key)) return;
+		seen.add(key);
+		calls.push(call);
+	};
+
+	if (Array.isArray(event.toolCalls)) {
+		event.toolCalls.forEach((raw, index) => add(raw, typeof (raw as { contentIndex?: unknown })?.contentIndex === "number"
+			? (raw as { contentIndex: number }).contentIndex
+			: index));
+	}
+	add(event.toolCall, typeof event.contentIndex === "number" ? event.contentIndex : undefined);
+
+	const partial = event.partial as { content?: unknown } | undefined;
+	if (Array.isArray(partial?.content)) {
+		partial.content.forEach((raw, index) => add(raw, index));
+	}
+
+	return calls;
+}
+
+function partialText(event: Record<string, unknown>): string | undefined {
+	if (typeof event.content === "string") return event.content;
+	const partial = event.partial as { content?: unknown } | undefined;
+	const contentIndex = event.contentIndex;
+	if (!Array.isArray(partial?.content) || typeof contentIndex !== "number") return undefined;
+	const block = partial.content[contentIndex] as Record<string, unknown> | undefined;
+	return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
+}
+
+function partialThinking(event: Record<string, unknown>): string | undefined {
+	if (typeof event.content === "string") return event.content;
+	const partial = event.partial as { content?: unknown } | undefined;
+	const contentIndex = event.contentIndex;
+	if (!Array.isArray(partial?.content) || typeof contentIndex !== "number") return undefined;
+	const block = partial.content[contentIndex] as Record<string, unknown> | undefined;
+	return block?.type === "thinking" && typeof block.thinking === "string" ? block.thinking : undefined;
 }
 
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
@@ -458,17 +512,46 @@ function createRunner(
 			const agentEvent = event as AgentEvent & { type: "message_update" };
 			const ame = agentEvent.assistantMessageEvent as any;
 			if (ame.type === "text_delta") {
-				ctx.emitContentBlock?.({ type: "text_delta", delta: ame.delta });
+				ctx.emitContentBlock?.({
+					type: "text_delta",
+					contentIndex: ame.contentIndex,
+					delta: typeof ame.delta === "string" ? ame.delta : "",
+					text: partialText(ame),
+				});
+			} else if (ame.type === "text_start" || ame.type === "text_end") {
+				const text = partialText(ame);
+				if (text !== undefined) {
+					ctx.emitContentBlock?.({
+						type: "text_patch",
+						contentIndex: ame.contentIndex,
+						text,
+					});
+				}
 			} else if (ame.type === "thinking_delta") {
-				ctx.emitContentBlock?.({ type: "thinking_delta", delta: ame.delta });
-			} else if (ame.type === "toolcall_delta" || ame.type === "toolcall_end") {
-				const toolCall = normalizeStreamingToolCall(ame.toolCall || ame.partial?.content?.[ame.contentIndex]);
-				if (toolCall) {
+				ctx.emitContentBlock?.({
+					type: "thinking_delta",
+					contentIndex: ame.contentIndex,
+					delta: typeof ame.delta === "string" ? ame.delta : "",
+					thinking: partialThinking(ame),
+				});
+			} else if (ame.type === "thinking_start" || ame.type === "thinking_end") {
+				const thinking = partialThinking(ame);
+				if (thinking !== undefined) {
+					ctx.emitContentBlock?.({
+						type: "thinking_patch",
+						contentIndex: ame.contentIndex,
+						thinking,
+					});
+				}
+			} else if (ame.type === "toolcall_start" || ame.type === "toolcall_delta" || ame.type === "toolcall_end") {
+				const toolCalls = normalizeStreamingToolCalls(ame);
+				if (toolCalls.length > 0) {
 					ctx.emitContentBlock?.({
 						type: ame.type,
 						contentIndex: ame.contentIndex,
 						delta: ame.delta,
-						toolCall,
+						toolCall: toolCalls[0],
+						toolCalls,
 					});
 				}
 			}

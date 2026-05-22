@@ -1648,6 +1648,11 @@ html, body, #root {
   padding: 0.15rem 0.65rem;
 }
 
+.waiting-entry.continuation {
+  min-height: 20px;
+  padding-top: 0;
+}
+
 .waiting-spinner {
   display: inline-block;
   flex: 0 0 auto;

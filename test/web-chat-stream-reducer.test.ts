@@ -71,5 +71,58 @@ const results = entry?.content?.filter((block) => block.type === 'toolResult') |
 assert(results.length === 1, 'tool results update by id instead of duplicating');
 assert((results[0] as any)?.result === 'sent again', 'latest tool result is retained');
 
+let multi = reduceWebChatStreamEntry(assistant(), {
+	type: 'toolcall_delta',
+	toolCalls: [
+		{ type: 'toolCall', id: 'tool-a', name: 'read_file', arguments: { path: 'README.md' }, contentIndex: 0 },
+		{ type: 'toolCall', id: 'tool-b', name: 'bash', arguments: { command: 'pwd' }, contentIndex: 1 },
+	],
+});
+
+let multiCalls = multi?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];
+assert(multiCalls.length === 2, 'toolcall_delta can insert multiple live tool call blocks');
+assert(multiCalls[1]?.arguments.command === 'pwd', 'second streamed tool call keeps its arguments');
+
+multi = reduceWebChatStreamEntry(multi, {
+	type: 'toolcall_delta',
+	partial: {
+		content: [
+			{ type: 'toolCall', id: 'tool-a', name: 'read_file', arguments: { path: 'README.md' } },
+			{ type: 'toolCall', id: 'tool-b', name: 'bash', arguments: { command: 'pwd && ls' } },
+		],
+	},
+});
+
+multiCalls = multi?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];
+assert(multiCalls.length === 2, 'multi-tool partial updates do not duplicate cards');
+assert(multiCalls[1]?.arguments.command === 'pwd && ls', 'multi-tool partial updates merge by tool id');
+
+let postTool = reduceWebChatStreamEntry(assistant(), {
+	type: 'toolcall_delta',
+	contentIndex: 0,
+	partial: {
+		content: [{ type: 'toolCall', id: 'tool-post', name: 'read_file', arguments: { path: 'plan.md' } }],
+	},
+});
+postTool = reduceWebChatStreamEntry(postTool, {
+	type: 'toolResult',
+	toolCallId: 'tool-post',
+	result: 'ok',
+});
+postTool = reduceWebChatStreamEntry(postTool, {
+	type: 'text_patch',
+	contentIndex: 1,
+	text: 'The plan',
+});
+postTool = reduceWebChatStreamEntry(postTool, {
+	type: 'text_delta',
+	contentIndex: 1,
+	delta: ' is ready.',
+});
+
+const postToolText = postTool?.content?.filter((block) => block.type === 'text') || [];
+assert(postToolText.length === 1, 'post-tool text patch creates one streaming text block');
+assert((postToolText[0] as any)?.text === 'The plan is ready.', 'post-tool text deltas append to the indexed text block');
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

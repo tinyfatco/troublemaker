@@ -1,7 +1,7 @@
 import { memo, useState, type ReactNode } from 'react';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import { getThinkingPreview } from '../thinkingDisplay';
-import { shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
+import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
@@ -405,6 +405,11 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
         {shouldRenderStreamingPlaceholder(entry) && (
           <div className="waiting-entry">
             <span className="waiting-spinner" role="status" aria-label="Waiting for agent response" />
+          </div>
+        )}
+        {shouldRenderContinuationPlaceholder(entry) && (
+          <div className="waiting-entry continuation">
+            <span className="waiting-spinner" role="status" aria-label="Agent is writing" />
           </div>
         )}
       </>
