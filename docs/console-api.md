@@ -33,6 +33,14 @@ POST /api/v2/agents/:id/upload
 For Troublemaker standalone, `:id` may be `current`. Hosted Crawdad uses the
 real agent UUID or name.
 
+Hosted Crawdad also exposes control routes on the same `/api/v2` boundary:
+`POST /api/v2/list`, `POST /api/v2/agents/:id/message`,
+`POST /api/v2/agents/:id/configure`, `POST /api/v2/agents/:id/assign`,
+`POST /api/v2/agents/:id/stop`, and `POST /api/v2/agents/:id/restart`.
+Secret writes go through `configure` with either `target: "secrets.<key>"` or
+`target: "secrets"` plus an object value. Crawdad stores those values in
+`encrypted_secrets_v2`; responses return secret names only.
+
 ## Auth
 
 Crawdad CF accepts:
@@ -51,6 +59,9 @@ future mobile clients. Crawdad CF can satisfy cheap reads and status from the
 Worker/R2 side when that is practical, but agent turns are container-backed:
 `POST /messages` streams from Troublemaker's `/web/chat` gateway. The Worker is
 not an agent runtime.
+
+Fat Platform `/api/v1` is retired. New product integrations should use Crawdad
+`/api/v2` with `tfat_live_*` API keys.
 
 ## Chat And Event Semantics
 
