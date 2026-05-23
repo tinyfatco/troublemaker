@@ -1,5 +1,5 @@
-import { Agent, type AgentEvent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { type ImageContent } from "@mariozechner/pi-ai";
+import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
+import { type ImageContent } from "@earendil-works/pi-ai";
 import {
 	AgentSession,
 	AuthStorage,
@@ -10,7 +10,7 @@ import {
 	type ResourceLoader,
 	SessionManager,
 	type Skill,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";

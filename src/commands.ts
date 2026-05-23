@@ -15,7 +15,7 @@ import { MomSettingsManager } from "./context.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
-import { AuthStorage } from "@mariozechner/pi-coding-agent";
+import { AuthStorage } from "@earendil-works/pi-coding-agent";
 
 /**
  * Pending input — when a command needs the user's next message (e.g. /login),
@@ -423,6 +423,13 @@ async function handleLoginCommand(
 					msg += `After authorizing, your browser will redirect to a \`localhost\` URL that won't load — that's expected. Copy the *full URL* from your browser's address bar and paste it here.`;
 					await platform.postMessage(channelId, msg);
 				},
+				onDeviceCode: async (info) => {
+					let msg = `*Device code login:*\n\nOpen this URL in your browser:\n${info.verificationUri}\n\nEnter code: \`${info.userCode}\``;
+					if (info.expiresInSeconds) {
+						msg += `\n\nCode expires in ${Math.round(info.expiresInSeconds / 60)} minutes.`;
+					}
+					await platform.postMessage(channelId, msg);
+				},
 				onPrompt: async (prompt) => {
 					await platform.postMessage(channelId, prompt.message);
 					const input = await waitForInput(channelId);
@@ -434,6 +441,26 @@ async function handleLoginCommand(
 				},
 				onProgress: async (message) => {
 					await platform.postMessage(channelId, `_${message}_`);
+				},
+				onSelect: async (prompt) => {
+					const options = prompt.options
+						.map((option, index) => `${index + 1}. \`${option.id}\` — ${option.label}`)
+						.join("\n");
+					await platform.postMessage(channelId, `${prompt.message}\n\n${options}\n\nReply with an option id or number.`);
+
+					const input = (await waitForInput(channelId)).trim();
+					if (!input) return undefined;
+
+					const numeric = Number(input);
+					if (Number.isInteger(numeric) && numeric >= 1 && numeric <= prompt.options.length) {
+						return prompt.options[numeric - 1].id;
+					}
+
+					const selected = prompt.options.find((option) => option.id.toLowerCase() === input.toLowerCase());
+					if (selected) return selected.id;
+
+					await platform.postMessage(channelId, `_Unknown selection: ${input}_`);
+					return undefined;
 				},
 			});
 

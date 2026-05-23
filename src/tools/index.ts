@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { HostServices } from "../core/host.js";
 import type { Executor } from "../sandbox.js";
 import { attachTool } from "./attach.js";

@@ -1,4 +1,4 @@
-import { formatSkillsForPrompt, type Skill } from "@mariozechner/pi-coding-agent";
+import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
 import type { ChannelInfo, UserInfo } from "../adapters/types.js";
 import type { VerbosityLevel } from "../context.js";
 import * as log from "../log.js";

@@ -11,7 +11,7 @@
  *   - It's the same data the agent sees in its own awareness stream
  */
 
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";

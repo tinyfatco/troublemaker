@@ -9,7 +9,7 @@
  * channel, decides it has nothing to add, and yields.
  */
 
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import * as log from "../log.js";
 

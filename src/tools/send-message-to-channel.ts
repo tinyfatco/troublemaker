@@ -15,7 +15,7 @@
  *   phone-{hash}                   → SMS/iMessage phone messaging
  */
 
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";

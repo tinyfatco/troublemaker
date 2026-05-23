@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { TextContent } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { TextContent } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import * as log from "../log.js";

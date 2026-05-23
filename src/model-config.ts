@@ -8,8 +8,8 @@
  * and runtime resolution.
  */
 
-import { getModel, type Api, type Model } from "@mariozechner/pi-ai";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import * as log from "./log.js";
