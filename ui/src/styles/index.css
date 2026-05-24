@@ -1802,11 +1802,40 @@ html, body, #root {
 }
 
 .tool-accordion {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin: 0 0.2rem 0 1.45rem;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition:
+    grid-template-rows 0.22s ease,
+    margin 0.22s ease,
+    opacity 0.18s ease,
+    transform 0.22s ease;
+}
+
+.tool-accordion.open {
+  grid-template-rows: 1fr;
   margin: 0.15rem 0.2rem 0.35rem 1.45rem;
-  padding: 0.4rem 0.5rem;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.tool-accordion-inner {
+  min-height: 0;
+  overflow: hidden;
+  padding: 0 0.5rem;
   border-left: 1px solid color-mix(in srgb, var(--entry-color) 28%, transparent);
   background: color-mix(in srgb, var(--surface) 95%, var(--text-muted) 5%);
   border-radius: 3px;
+  transition: padding 0.22s ease;
+}
+
+.tool-accordion.open .tool-accordion-inner {
+  padding: 0.4rem 0.5rem;
 }
 
 .tool-detail-section + .tool-detail-section {

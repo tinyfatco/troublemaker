@@ -1,6 +1,12 @@
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { debugStream, summarizeToolCall } from '../streamDebug';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
+import {
+  isToolDetailsExpanded,
+  shouldAutoCollapseToolDetails,
+  shouldAutoOpenToolDetails,
+  TOOL_AUTO_COLLAPSE_DELAY_MS,
+} from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
@@ -60,15 +66,19 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
   result?: ToolResultContent;
   onExpandingContent?: () => void;
 }) {
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const args = block.arguments || {};
   const hasArgs = Object.keys(args).length > 0;
   const resultText = result?.result ? String(result.result) : '';
   const hasDetails = hasArgs || !!resultText;
+  const [manualDetailsOpen, setManualDetailsOpen] = useState(false);
+  const [autoDetailsOpen, setAutoDetailsOpen] = useState(() => shouldAutoOpenToolDetails(hasDetails, isRunning));
+  const autoExpandedRef = useRef(autoDetailsOpen);
+  const autoCollapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const status = getToolStatus(!!isRunning, result);
   const statusText = getToolStatusText(status, result);
   const title = getToolTitle(block);
   const detail = getToolDetail(block);
+  const detailsOpen = isToolDetailsExpanded(hasDetails, manualDetailsOpen, autoDetailsOpen);
   const debugSignature = useMemo(() => JSON.stringify({
     id: block.id,
     name: block.name,
@@ -79,6 +89,41 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
     resultLen: resultText.length,
     isRunning: !!isRunning,
   }), [args, block.id, block.name, detail, isRunning, resultText.length, status, title]);
+
+  useEffect(() => {
+    return () => {
+      if (autoCollapseTimerRef.current) clearTimeout(autoCollapseTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (autoCollapseTimerRef.current) {
+      clearTimeout(autoCollapseTimerRef.current);
+      autoCollapseTimerRef.current = null;
+    }
+
+    if (!hasDetails) {
+      autoExpandedRef.current = false;
+      setAutoDetailsOpen(false);
+      setManualDetailsOpen(false);
+      return;
+    }
+
+    if (shouldAutoOpenToolDetails(hasDetails, isRunning)) {
+      if (!autoDetailsOpen) onExpandingContent?.();
+      autoExpandedRef.current = true;
+      setAutoDetailsOpen(true);
+      return;
+    }
+
+    if (shouldAutoCollapseToolDetails(autoExpandedRef.current, isRunning)) {
+      autoCollapseTimerRef.current = setTimeout(() => {
+        autoExpandedRef.current = false;
+        setAutoDetailsOpen(false);
+        autoCollapseTimerRef.current = null;
+      }, TOOL_AUTO_COLLAPSE_DELAY_MS);
+    }
+  }, [autoDetailsOpen, hasDetails, isRunning, onExpandingContent]);
 
   useEffect(() => {
     debugStream('render:tool-call', {
@@ -105,7 +150,7 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
         onClick={() => {
           if (!hasDetails) return;
           if (!detailsOpen) onExpandingContent?.();
-          setDetailsOpen(!detailsOpen);
+          setManualDetailsOpen(!detailsOpen);
         }}
         aria-expanded={detailsOpen}
         disabled={!hasDetails}
@@ -119,20 +164,22 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
         {hasDetails && <span className={`tool-caret ${detailsOpen ? 'open' : ''}`} aria-hidden="true">&gt;</span>}
       </button>
 
-      {detailsOpen && (
-        <div className="tool-accordion">
-          {hasArgs && (
-            <div className="tool-detail-section">
-              <span className="tool-detail-label">details</span>
-              <StructuredValue value={args} />
-            </div>
-          )}
-          {resultText && (
-            <div className="tool-detail-section">
-              <span className="tool-detail-label">{result?.isError ? 'error' : 'output'}</span>
-              <pre className="tool-output-pre">{resultText}</pre>
-            </div>
-          )}
+      {hasDetails && (
+        <div className={`tool-accordion ${detailsOpen ? 'open' : 'closed'}`} aria-hidden={!detailsOpen}>
+          <div className="tool-accordion-inner">
+            {hasArgs && (
+              <div className="tool-detail-section">
+                <span className="tool-detail-label">details</span>
+                <StructuredValue value={args} />
+              </div>
+            )}
+            {resultText && (
+              <div className="tool-detail-section">
+                <span className="tool-detail-label">{result?.isError ? 'error' : 'output'}</span>
+                <pre className="tool-output-pre">{resultText}</pre>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
