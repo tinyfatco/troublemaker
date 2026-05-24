@@ -47,7 +47,7 @@ export function getToolStatus(isRunning: boolean, result?: ToolResultContent): T
 export function getToolStatusText(status: ToolDisplayStatus, _result?: ToolResultContent): string {
   if (status === 'running') return 'running';
   if (status === 'error') return 'error';
-  return 'done';
+  return '';
 }
 
 export function summarizeToolResult(result: string): string {

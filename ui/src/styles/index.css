@@ -1690,6 +1690,7 @@ html, body, #root {
   --tool-state-color: var(--success);
   border-radius: 3px;
   background: transparent;
+  transition: background 0.24s ease, box-shadow 0.24s ease;
 }
 
 .tool-call-row.running {
@@ -1740,6 +1741,10 @@ html, body, #root {
 .tool-status-icon.success { color: var(--success); }
 .tool-status-icon.error { color: var(--error); }
 
+.tool-call-row.done .tool-status-icon.success {
+  animation: tool-complete-pop 0.32s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
 .tool-spinner {
   width: 10px;
   height: 10px;
@@ -1750,6 +1755,12 @@ html, body, #root {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+@keyframes tool-complete-pop {
+  0% { opacity: 0; transform: scale(0.72); }
+  70% { opacity: 1; transform: scale(1.12); }
+  100% { opacity: 1; transform: scale(1); }
+}
 
 .tool-call-copy {
   flex: 1;
@@ -1810,11 +1821,12 @@ html, body, #root {
   overflow: hidden;
   pointer-events: none;
   transform: translateY(-2px);
+  will-change: grid-template-rows, margin, opacity, transform;
   transition:
-    grid-template-rows 0.22s ease,
-    margin 0.22s ease,
+    grid-template-rows 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
+    margin 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
     opacity 0.18s ease,
-    transform 0.22s ease;
+    transform 0.34s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .tool-accordion.open {
@@ -1829,20 +1841,12 @@ html, body, #root {
   min-height: 0;
   overflow: hidden;
   padding: 0 0.6rem;
-  border: 1px solid color-mix(in srgb, var(--entry-color) 16%, transparent);
-  border-left-color: color-mix(in srgb, var(--entry-color) 44%, transparent);
-  border-left-width: 2px;
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--entry-color) 8%, transparent), transparent 28%),
-    color-mix(in srgb, var(--surface) 94%, var(--text-muted) 6%);
+  background: color-mix(in srgb, var(--surface) 94%, var(--text-muted) 6%);
   border-radius: 4px;
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent),
-    0 6px 18px color-mix(in srgb, var(--surface-inverse, #000) 9%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--text) 5%, transparent);
   transition:
-    padding 0.22s ease,
-    border-color 0.22s ease,
-    background 0.22s ease;
+    padding 0.34s cubic-bezier(0.2, 0.8, 0.2, 1),
+    background 0.24s ease;
 }
 
 .tool-accordion.open .tool-accordion-inner {
@@ -1850,30 +1854,11 @@ html, body, #root {
 }
 
 .tool-call-row.running .tool-accordion-inner {
-  border-color: color-mix(in srgb, var(--entry-tool) 24%, transparent);
-  border-left-color: color-mix(in srgb, var(--entry-tool) 58%, transparent);
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--entry-tool) 12%, transparent), transparent 30%),
-    color-mix(in srgb, var(--surface) 92%, var(--entry-tool) 8%);
+  background: color-mix(in srgb, var(--surface) 92%, var(--entry-tool) 8%);
 }
 
 .tool-detail-section + .tool-detail-section {
   margin-top: 0.7rem;
-}
-
-.tool-detail-label {
-  display: inline-flex;
-  align-items: center;
-  height: 17px;
-  padding: 0 0.32rem;
-  color: color-mix(in srgb, var(--text-muted) 78%, var(--tool-state-color) 22%);
-  background: color-mix(in srgb, var(--tool-state-color) 7%, transparent);
-  border: 1px solid color-mix(in srgb, var(--tool-state-color) 12%, transparent);
-  border-radius: 3px;
-  font-size: 0.6rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.35rem;
 }
 
 .tool-output-pre,
@@ -1902,12 +1887,17 @@ html, body, #root {
 
 .structured-row {
   display: grid;
-  grid-template-columns: minmax(5rem, 0.34fr) minmax(0, 1fr);
+  grid-template-columns: 5.4rem minmax(0, 1fr);
   gap: 0.65rem;
   align-items: baseline;
   min-width: 0;
   padding: 0.22rem 0.28rem;
   border-radius: 3px;
+  transition: background 0.18s ease, transform 0.18s ease;
+}
+
+.tool-call-row.running .structured-row {
+  animation: structured-row-arrive 0.22s ease-out;
 }
 
 .structured-row:nth-child(odd) {
@@ -1918,6 +1908,7 @@ html, body, #root {
   color: color-mix(in srgb, var(--text-muted) 84%, var(--tool-state-color) 16%);
   font-size: 0.66rem;
   line-height: 1.35;
+  text-align: right;
   text-transform: lowercase;
 }
 
@@ -1944,6 +1935,11 @@ html, body, #root {
   border-radius: 3px;
   background: color-mix(in srgb, var(--entry-tool) 10%, var(--surface) 90%);
   border: 1px solid color-mix(in srgb, var(--entry-tool) 12%, transparent);
+}
+
+@keyframes structured-row-arrive {
+  from { opacity: 0.72; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .structured-number { color: color-mix(in srgb, var(--accent) 78%, var(--text) 22%); }

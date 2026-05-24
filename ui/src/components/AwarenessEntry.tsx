@@ -160,7 +160,7 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
           <span className="tool-title">{title}</span>
           {detail && <span className="tool-subtitle">{detail}</span>}
         </span>
-        <span className="tool-result-summary">{statusText}</span>
+        {statusText && <span className="tool-result-summary">{statusText}</span>}
         {hasDetails && <span className={`tool-caret ${detailsOpen ? 'open' : ''}`} aria-hidden="true">&gt;</span>}
       </button>
 
@@ -169,13 +169,11 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
           <div className="tool-accordion-inner">
             {hasArgs && (
               <div className="tool-detail-section">
-                <span className="tool-detail-label">details</span>
                 <StructuredValue value={args} />
               </div>
             )}
             {resultText && (
               <div className="tool-detail-section">
-                <span className="tool-detail-label">{result?.isError ? 'error' : 'output'}</span>
                 <pre className="tool-output-pre">{resultText}</pre>
               </div>
             )}

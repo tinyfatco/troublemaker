@@ -85,7 +85,7 @@ assert(getToolDetail(sendEmailCall) === "Email alex@tinyfat.com: Line one Line t
 assert(getToolStatus(false) === "done", "historical tool call without a result is done, not pending");
 assert(getToolStatus(true, result) === "running", "streaming unresolved call is running");
 assert(getToolStatus(false, { ...result, isError: true }) === "error", "errored result reports error");
-assert(getToolStatusText("done", result) === "done", "completed tool status stays done even with multiline output");
+assert(getToolStatusText("done", result) === "", "completed tool status omits redundant done text");
 assert(summarizeToolResult(result.result) === "3 lines", "result summaries remain available for compact output metadata");
 assert(humanizeToolName("send_message_to_channel") === "Send Message To Channel", "fallback tool names are readable");
 
