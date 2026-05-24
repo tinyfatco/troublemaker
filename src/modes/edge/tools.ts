@@ -4,9 +4,13 @@ import {
 	DEFAULT_BASH_TIMEOUT_SECONDS,
 	type BashToolInput,
 } from "../../core/tool-definitions.js";
+import type { RuntimeEventSink } from "../../core/runtime-contract.js";
 import type { EdgeHostBridge } from "./host-bridge.js";
 
-export function createEdgeBashTool(hostBridge: EdgeHostBridge): AgentTool<typeof bashToolSchema> {
+export function createEdgeBashTool(
+	hostBridge: EdgeHostBridge,
+	emit?: RuntimeEventSink,
+): AgentTool<typeof bashToolSchema> {
 	return {
 		name: "bash",
 		label: "bash",
@@ -17,7 +21,17 @@ export function createEdgeBashTool(hostBridge: EdgeHostBridge): AgentTool<typeof
 			const result = await hostBridge.executeBash({
 				...input,
 				timeout: input.timeout ?? DEFAULT_BASH_TIMEOUT_SECONDS,
-			}, signal);
+			}, signal, (event) => {
+				return emit?.({
+					type: "toolResultDelta",
+					toolCallId: _toolCallId,
+					stream: event.stream,
+					text: event.text,
+					pid: event.pid,
+					sequence: event.sequence,
+					mode: "host",
+				});
+			});
 
 			let text = "";
 			if (result.stdout) text += result.stdout;

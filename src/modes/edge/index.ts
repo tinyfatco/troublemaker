@@ -67,7 +67,7 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 		thinkingLevel: normalizeThinkingLevel(options.settings?.thinkingLevel),
 		sessionId: options.input.channelId,
 		initialMessages: options.history,
-		tools: [createEdgeBashTool(options.hostBridge)],
+		tools: [createEdgeBashTool(options.hostBridge, options.emit)],
 		emit: options.emit,
 	});
 

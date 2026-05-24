@@ -104,6 +104,18 @@ function summarizeContentBlock(block: unknown, index?: number): Record<string, u
       resultPreview: preview(raw.result),
     });
   }
+  if (raw.type === 'toolOutput') {
+    return compact({
+      index,
+      type: raw.type,
+      toolCallId: preview(raw.toolCallId, 80),
+      stream: raw.stream,
+      textLen: stringLength(raw.text),
+      textPreview: preview(raw.text),
+      pid: raw.pid,
+      sequence: raw.sequence,
+    });
+  }
   return compact({ index, type: rawRecord.type });
 }
 

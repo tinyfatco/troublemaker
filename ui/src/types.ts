@@ -34,7 +34,16 @@ export interface ToolResultContent {
   isError?: boolean;
 }
 
-export type ContentBlock = TextContent | ThinkingContent | ToolCallContent | ToolResultContent;
+export interface ToolOutputContent {
+  type: 'toolOutput';
+  toolCallId: string;
+  stream: 'stdout' | 'stderr' | 'system';
+  text: string;
+  pid?: number;
+  sequence?: number;
+}
+
+export type ContentBlock = TextContent | ThinkingContent | ToolCallContent | ToolOutputContent | ToolResultContent;
 
 export interface AwarenessEntry {
   id: string;
@@ -175,8 +184,22 @@ function normalizeContentBlock(block: unknown): ContentBlock | null {
       isError: Boolean(raw.isError ?? raw.is_error),
     };
   }
+  if (raw.type === 'toolOutput' || raw.type === 'toolResultDelta' || raw.type === 'tool_result_delta') {
+    return {
+      type: 'toolOutput',
+      toolCallId: String(raw.toolCallId ?? raw.tool_call_id ?? raw.toolUseId ?? raw.tool_use_id ?? ''),
+      stream: normalizeToolOutputStream(raw.stream),
+      text: typeof raw.text === 'string' ? raw.text : '',
+      pid: typeof raw.pid === 'number' ? raw.pid : undefined,
+      sequence: typeof raw.sequence === 'number' ? raw.sequence : undefined,
+    };
+  }
 
   return null;
+}
+
+function normalizeToolOutputStream(value: unknown): ToolOutputContent['stream'] {
+  return value === 'stderr' || value === 'system' ? value : 'stdout';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

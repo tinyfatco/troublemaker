@@ -1861,6 +1861,14 @@ html, body, #root {
   margin-top: 0.7rem;
 }
 
+.tool-output-meta {
+  margin: 0 0 0.3rem;
+  color: color-mix(in srgb, var(--text-muted) 82%, var(--tool-state-color) 18%);
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  line-height: 1.3;
+}
+
 .tool-output-pre,
 .structured-string-block {
   margin: 0;

@@ -335,6 +335,8 @@ function getContentBlockSignal(block: ContentBlock): string {
       return `thinking:${block.thinking.length}`;
     case 'toolCall':
       return `tool:${block.id}:${block.name}:${JSON.stringify(block.arguments || {}).length}`;
+    case 'toolOutput':
+      return `output:${block.toolCallId}:${block.stream}:${block.pid || ''}:${block.text.length}`;
     case 'toolResult':
       return `result:${block.toolCallId}:${block.isError ? 'error' : 'ok'}:${block.result.length}`;
     default:

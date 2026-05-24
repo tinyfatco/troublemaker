@@ -93,12 +93,24 @@ export interface Executor {
 export interface ExecOptions {
 	timeout?: number;
 	signal?: AbortSignal;
+	onStart?: (info: ExecStartInfo) => void;
+	onOutput?: (chunk: ExecOutputChunk) => void;
 }
 
 export interface ExecResult {
 	stdout: string;
 	stderr: string;
 	code: number;
+}
+
+export interface ExecStartInfo {
+	pid?: number;
+	command: string;
+}
+
+export interface ExecOutputChunk {
+	stream: "stdout" | "stderr";
+	text: string;
 }
 
 class HostExecutor implements Executor {
@@ -111,6 +123,8 @@ class HostExecutor implements Executor {
 				detached: true,
 				stdio: ["ignore", "pipe", "pipe"],
 			});
+
+			options?.onStart?.({ pid: child.pid, command });
 
 			let stdout = "";
 			let stderr = "";
@@ -137,14 +151,18 @@ class HostExecutor implements Executor {
 			}
 
 			child.stdout?.on("data", (data) => {
-				stdout += data.toString();
+				const text = data.toString();
+				stdout += text;
+				options?.onOutput?.({ stream: "stdout", text });
 				if (stdout.length > 10 * 1024 * 1024) {
 					stdout = stdout.slice(0, 10 * 1024 * 1024);
 				}
 			});
 
 			child.stderr?.on("data", (data) => {
-				stderr += data.toString();
+				const text = data.toString();
+				stderr += text;
+				options?.onOutput?.({ stream: "stderr", text });
 				if (stderr.length > 10 * 1024 * 1024) {
 					stderr = stderr.slice(0, 10 * 1024 * 1024);
 				}

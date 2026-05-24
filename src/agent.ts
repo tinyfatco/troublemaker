@@ -31,6 +31,7 @@ import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { withToolOutputStream } from "./tools/tool-output-stream.js";
 import { wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 
@@ -868,9 +869,14 @@ function createRunner(
 
 			const tPrompt = performance.now();
 			try {
-				await currentSession.prompt(finalUserMessage, {
-					...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-					streamingBehavior: "steer" as const,
+				await withToolOutputStream((event) => {
+					ctx.emitContentBlock?.(event as unknown as { type: string; [key: string]: unknown });
+					onActivity?.();
+				}, async () => {
+					await currentSession.prompt(finalUserMessage, {
+						...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
+						streamingBehavior: "steer" as const,
+					});
 				});
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
@@ -907,8 +913,13 @@ function createRunner(
 					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
-						await currentSession.prompt(retryInstruction, {
-							streamingBehavior: "steer" as const,
+						await withToolOutputStream((event) => {
+							ctx.emitContentBlock?.(event as unknown as { type: string; [key: string]: unknown });
+							onActivity?.();
+						}, async () => {
+							await currentSession.prompt(retryInstruction, {
+								streamingBehavior: "steer" as const,
+							});
 						});
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);

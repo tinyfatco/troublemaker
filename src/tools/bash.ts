@@ -6,6 +6,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { bashToolSchema, DEFAULT_BASH_TIMEOUT_SECONDS, type BashToolInput } from "../core/tool-definitions.js";
 import type { Executor } from "../sandbox.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
+import { emitToolOutput } from "./tool-output-stream.js";
 
 /**
  * Generate a unique temp file path for bash output
@@ -34,8 +35,45 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashToolSch
 			// Track output for potential temp file writing
 			let tempFilePath: string | undefined;
 			let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
+			let pid: number | undefined;
+			let streamedBytes = 0;
+			let streamingTruncated = false;
 
-			const result = await executor.exec(command, { timeout: timeout ?? DEFAULT_BASH_TIMEOUT_SECONDS, signal });
+			const emitLiveOutput = (stream: "stdout" | "stderr", text: string) => {
+				if (!text || streamingTruncated) return;
+
+				const remainingBytes = DEFAULT_MAX_BYTES - streamedBytes;
+				const bytes = Buffer.from(text, "utf-8");
+				if (bytes.length <= remainingBytes) {
+					streamedBytes += bytes.length;
+					emitToolOutput({ toolCallId: _toolCallId, stream, text, pid });
+					return;
+				}
+
+				if (remainingBytes > 0) {
+					const partial = bytes.subarray(0, remainingBytes).toString("utf-8");
+					streamedBytes += Buffer.byteLength(partial, "utf-8");
+					emitToolOutput({ toolCallId: _toolCallId, stream, text: partial, pid });
+				}
+
+				streamingTruncated = true;
+				emitToolOutput({
+					toolCallId: _toolCallId,
+					stream: "system",
+					text: `\n[Live output truncated at ${formatSize(DEFAULT_MAX_BYTES)}; final result will include the tail.]\n`,
+					pid,
+				});
+			};
+
+			const result = await executor.exec(command, {
+				timeout: timeout ?? DEFAULT_BASH_TIMEOUT_SECONDS,
+				signal,
+				onStart: (info) => {
+					pid = info.pid;
+					emitToolOutput({ toolCallId: _toolCallId, stream: "system", text: "", pid });
+				},
+				onOutput: (chunk) => emitLiveOutput(chunk.stream, chunk.text),
+			});
 			let output = "";
 			if (result.stdout) output += result.stdout;
 			if (result.stderr) {

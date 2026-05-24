@@ -25,11 +25,11 @@ export function shouldRenderContinuationPlaceholder(entry: Pick<AwarenessEntry, 
   if (!toolCallIds.every((id) => resultIds.has(id))) return false;
 
   const lastVisible = [...content].reverse().find(isVisibleStreamingBlock);
-  return lastVisible?.type === 'toolCall' || lastVisible?.type === 'toolResult';
+  return lastVisible?.type === 'toolCall' || lastVisible?.type === 'toolOutput' || lastVisible?.type === 'toolResult';
 }
 
 function isVisibleStreamingBlock(block: ContentBlock): boolean {
   if (block.type === 'text') return stripSessionContext(block.text).trim().length > 0;
   if (block.type === 'thinking') return block.thinking.trim().length > 0;
-  return block.type === 'toolCall' || block.type === 'toolResult';
+  return block.type === 'toolCall' || block.type === 'toolOutput' || block.type === 'toolResult';
 }

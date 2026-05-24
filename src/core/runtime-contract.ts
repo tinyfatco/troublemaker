@@ -84,6 +84,18 @@ export interface RuntimeToolResultEvent {
 	isError?: boolean;
 }
 
+export type RuntimeToolOutputStream = "stdout" | "stderr" | "system";
+
+export interface RuntimeToolResultDeltaEvent {
+	type: "toolResultDelta";
+	toolCallId: string;
+	stream: RuntimeToolOutputStream;
+	text: string;
+	pid?: number;
+	sequence?: number;
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeRunCompleteEvent {
 	type: "run_complete";
 	channelId?: string;
@@ -98,6 +110,7 @@ export type RuntimeStreamEvent =
 	| RuntimeThinkingDeltaEvent
 	| RuntimeThinkingPatchEvent
 	| RuntimeToolCallEvent
+	| RuntimeToolResultDeltaEvent
 	| RuntimeToolResultEvent
 	| RuntimeRunCompleteEvent;
 

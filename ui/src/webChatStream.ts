@@ -1,4 +1,4 @@
-import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from './types';
+import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from './types';
 import { debugStream, summarizeEntry, summarizeEvent, summarizeToolCall } from './streamDebug';
 
 export type WebChatStreamEffect = {
@@ -35,7 +35,13 @@ export function getWebChatStreamEffect(parsed: any): WebChatStreamEffect {
   ) {
     return { status: 'streaming' };
   }
-  if (parsed.type === 'toolCall' || parsed.type === 'toolcall_start' || parsed.type === 'toolcall_delta' || parsed.type === 'toolcall_end') {
+  if (
+    parsed.type === 'toolCall' ||
+    parsed.type === 'toolcall_start' ||
+    parsed.type === 'toolcall_delta' ||
+    parsed.type === 'toolcall_end' ||
+    parsed.type === 'toolResultDelta'
+  ) {
     return { status: 'tool_running' };
   }
   if (parsed.type === 'toolResult') {
@@ -119,6 +125,16 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
       toolCallId: parsed.toolCallId || '',
       result: parsed.result || '',
       isError: parsed.isError,
+    });
+  }
+  if (parsed.type === 'toolResultDelta') {
+    return upsertToolOutput(prev, {
+      type: 'toolOutput',
+      toolCallId: parsed.toolCallId || '',
+      stream: normalizeToolOutputStream(parsed.stream),
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      pid: typeof parsed.pid === 'number' ? parsed.pid : undefined,
+      sequence: typeof parsed.sequence === 'number' ? parsed.sequence : undefined,
     });
   }
   if (parsed.type === 'error') {
@@ -268,6 +284,46 @@ function upsertToolResult(entry: AwarenessEntry, result: ToolResultContent): Awa
   return { ...entry, content };
 }
 
+function upsertToolOutput(entry: AwarenessEntry, output: ToolOutputContent): AwarenessEntry {
+  if (!output.toolCallId) return entry;
+
+  const content = [...(entry.content || [])];
+  const existingIndex = content.findIndex((block) =>
+    block.type === 'toolOutput' && getToolOutputId(block) === getToolOutputId(output)
+  );
+  if (existingIndex === -1) {
+    debugStream('reducer:tooloutput:insert', {
+      entryId: entry.id,
+      toolCallId: output.toolCallId,
+      stream: output.stream,
+      textLen: output.text.length,
+      pid: output.pid,
+      sequence: output.sequence,
+    });
+    return { ...entry, content: [...content, output] };
+  }
+
+  const existing = content[existingIndex] as ToolOutputContent;
+  content[existingIndex] = {
+    ...existing,
+    stream: output.stream || existing.stream,
+    text: existing.text + output.text,
+    pid: output.pid ?? existing.pid,
+    sequence: output.sequence ?? existing.sequence,
+  };
+  debugStream('reducer:tooloutput:update', {
+    entryId: entry.id,
+    existingIndex,
+    toolCallId: output.toolCallId,
+    stream: output.stream,
+    textLen: output.text.length,
+    totalLen: (content[existingIndex] as ToolOutputContent).text.length,
+    pid: (content[existingIndex] as ToolOutputContent).pid,
+    sequence: output.sequence,
+  });
+  return { ...entry, content };
+}
+
 function isSameToolCall(block: ContentBlock, toolCall: ToolCallPatch): boolean {
   if (block.type !== 'toolCall') return false;
   const existing = block as ToolCallPatch;
@@ -339,6 +395,18 @@ function getToolResultId(result: ToolResultContent): string {
     toolUseId?: string;
     tool_use_id?: string;
   }).toolCallId || (result as any).tool_call_id || (result as any).toolUseId || (result as any).tool_use_id || '');
+}
+
+function getToolOutputId(output: ToolOutputContent): string {
+  return String((output as ToolOutputContent & {
+    tool_call_id?: string;
+    toolUseId?: string;
+    tool_use_id?: string;
+  }).toolCallId || (output as any).tool_call_id || (output as any).toolUseId || (output as any).tool_use_id || '');
+}
+
+function normalizeToolOutputStream(stream: unknown): ToolOutputContent['stream'] {
+  return stream === 'stderr' || stream === 'system' ? stream : 'stdout';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

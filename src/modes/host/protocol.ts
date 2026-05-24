@@ -3,6 +3,7 @@ import type { BashToolInput, BashToolResult } from "../../core/tool-definitions.
 export interface HostToolRequest<T = unknown> {
 	tool: string;
 	args: T;
+	stream?: boolean;
 }
 
 export interface HostToolSuccess<T = unknown> {
@@ -29,5 +30,6 @@ export function isHostBashRequest(value: unknown): value is HostBashRequest {
 		&& typeof args === "object"
 		&& typeof args.command === "string"
 		&& typeof args.label === "string"
-		&& (args.timeout === undefined || typeof args.timeout === "number");
+		&& (args.timeout === undefined || typeof args.timeout === "number")
+		&& (request.stream === undefined || typeof request.stream === "boolean");
 }

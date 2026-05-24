@@ -40,6 +40,9 @@ function hasUncoveredActiveToolActivity(entry: AwarenessEntry | null, laterEntri
     } else if (block.type === 'toolResult') {
       if (block.toolCallId) activeIds.add(block.toolCallId);
       else hasAnonymousToolActivity = true;
+    } else if (block.type === 'toolOutput') {
+      if (block.toolCallId) activeIds.add(block.toolCallId);
+      else hasAnonymousToolActivity = true;
     }
   }
 
@@ -57,6 +60,7 @@ function collectToolIds(entries: AwarenessEntry[]): Set<string> {
     if (!entry.content) continue;
     for (const block of entry.content) {
       if (block.type === 'toolCall' && block.id) ids.add(block.id);
+      if (block.type === 'toolOutput' && block.toolCallId) ids.add(block.toolCallId);
       if (block.type === 'toolResult' && block.toolCallId) ids.add(block.toolCallId);
     }
   }

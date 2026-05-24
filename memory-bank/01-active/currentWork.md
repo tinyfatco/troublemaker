@@ -32,6 +32,13 @@ follow-ups: `td-eaa2` (recover active working state after refresh), `td-1879`
 `td-3474` (stream tool execution output/PID/result chunks inside the same tool
 accordion).
 
+2026-05-24 follow-up: `td-3474` now has an implementation slice in progress
+that emits live bash stdout/stderr as `toolResultDelta` events and renders the
+accumulated `toolOutput` inside the same tool accordion with PID metadata. The
+next styling pass is intentionally separate: `td-2fb3` tracks a larger redesign
+of the expanded detail state so metadata labels/chrome stop stealing space from
+the actual command/output text.
+
 2026-05-22: Follow-up reliability slice shipped the Zip PR for
 `yield_no_action` reason subtext and extended tool-card subtext to
 `send_message_to_channel` / `send_message` calls so outbound messages show the

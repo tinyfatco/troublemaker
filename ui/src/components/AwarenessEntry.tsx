@@ -9,7 +9,7 @@ import {
 } from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
-import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
+import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
 
@@ -60,16 +60,19 @@ function ToolCallGroup({ children }: { children: ReactNode }) {
   );
 }
 
-function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
+function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }: {
   block: ToolCallContent;
   isRunning?: boolean;
+  output?: ToolOutputContent;
   result?: ToolResultContent;
   onExpandingContent?: () => void;
 }) {
   const args = block.arguments || {};
   const hasArgs = Object.keys(args).length > 0;
-  const resultText = result?.result ? String(result.result) : '';
-  const hasDetails = hasArgs || !!resultText;
+  const liveOutputText = output?.text ? String(output.text) : '';
+  const resultText = result?.result ? String(result.result) : liveOutputText;
+  const hasOutputMeta = typeof output?.pid === 'number';
+  const hasDetails = hasArgs || !!resultText || hasOutputMeta;
   const [manualDetailsOpen, setManualDetailsOpen] = useState(false);
   const [autoDetailsOpen, setAutoDetailsOpen] = useState(() => shouldAutoOpenToolDetails(hasDetails, isRunning));
   const autoExpandedRef = useRef(autoDetailsOpen);
@@ -87,8 +90,10 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
     title,
     detail,
     resultLen: resultText.length,
+    liveOutputLen: liveOutputText.length,
+    pid: output?.pid,
     isRunning: !!isRunning,
-  }), [args, block.id, block.name, detail, isRunning, resultText.length, status, title]);
+  }), [args, block.id, block.name, detail, isRunning, liveOutputText.length, output?.pid, resultText.length, status, title]);
 
   useEffect(() => {
     return () => {
@@ -134,8 +139,10 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
       status,
       statusText,
       resultLen: resultText.length,
+      liveOutputLen: liveOutputText.length,
+      pid: output?.pid,
     });
-  }, [block, debugSignature, detail, resultText.length, status, statusText, title]);
+  }, [block, debugSignature, detail, liveOutputText.length, output?.pid, resultText.length, status, statusText, title]);
 
   const statusIcon = status === 'running'
     ? <span className="tool-spinner" />
@@ -172,9 +179,10 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
                 <StructuredValue value={args} />
               </div>
             )}
-            {resultText && (
+            {(resultText || hasOutputMeta) && (
               <div className="tool-detail-section">
-                <pre className="tool-output-pre">{resultText}</pre>
+                {hasOutputMeta && <div className="tool-output-meta">pid {output?.pid}</div>}
+                {resultText && <pre className="tool-output-pre">{resultText}</pre>}
               </div>
             )}
           </div>
@@ -238,6 +246,15 @@ function isCodeLikeKey(key?: string): boolean {
 
 function getToolResultId(result: ToolResultContent): string {
   const raw = result as ToolResultContent & {
+    tool_call_id?: string;
+    toolUseId?: string;
+    tool_use_id?: string;
+  };
+  return String(raw.toolCallId || raw.tool_call_id || raw.toolUseId || raw.tool_use_id || '');
+}
+
+function getToolOutputId(output: ToolOutputContent): string {
+  const raw = output as ToolOutputContent & {
     tool_call_id?: string;
     toolUseId?: string;
     tool_use_id?: string;
@@ -389,12 +406,15 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
     const thinkingBlocks = entry.content.filter((c) => c.type === 'thinking');
     const textBlocks = entry.content.filter((c) => c.type === 'text');
     const toolCallBlocks = entry.content.filter((c) => c.type === 'toolCall') as ToolCallContent[];
+    const toolOutputs = entry.content.filter((c) => c.type === 'toolOutput') as ToolOutputContent[];
     const toolResults = entry.content.filter((c) => c.type === 'toolResult') as ToolResultContent[];
     const rawText = textBlocks.map((c) => c.type === 'text' ? c.text : '').join('').trim();
     const hasText = textBlocks.some((c) => c.type === 'text' && stripSessionContext(c.text).trim());
 
     const getToolResult = (tc: ToolCallContent): ToolResultContent | undefined =>
       tc.id ? toolResults.find((r) => getToolResultId(r) === tc.id) : undefined;
+    const getToolOutput = (tc: ToolCallContent): ToolOutputContent | undefined =>
+      tc.id ? toolOutputs.find((output) => getToolOutputId(output) === tc.id) : undefined;
 
     const isToolRunning = (tc: ToolCallContent): boolean =>
       !!entry.isStreaming && !getToolResult(tc);
@@ -428,6 +448,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
               key={toolCall.id || `${toolCall.name}-${key}-${index}`}
               block={toolCall}
               isRunning={isToolRunning(toolCall)}
+              output={getToolOutput(toolCall)}
               result={getToolResult(toolCall)}
               onExpandingContent={onExpandingContent}
             />
@@ -441,7 +462,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
         pendingToolCalls.push(block as ToolCallContent);
         return;
       }
-      if (block.type === 'toolResult') return;
+      if (block.type === 'toolOutput' || block.type === 'toolResult') return;
 
       flushToolCalls(`tools-${i}`);
 

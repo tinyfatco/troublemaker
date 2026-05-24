@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import type { RuntimeToolOutputStream } from "../../core/runtime-contract.js";
 import type { Executor } from "../../sandbox.js";
 import { isHostBashRequest, type HostBashResponse } from "./protocol.js";
 
@@ -18,6 +19,29 @@ function writeJson(res: ServerResponse, status: number, body: HostBashResponse):
 		"Cache-Control": "no-store",
 	});
 	res.end(JSON.stringify(body));
+}
+
+function writeSseHead(res: ServerResponse): void {
+	res.writeHead(200, {
+		"Content-Type": "text/event-stream",
+		"Cache-Control": "no-store",
+		"Connection": "keep-alive",
+	});
+}
+
+function writeSse(res: ServerResponse, event: unknown): void {
+	if (event === "[DONE]") {
+		res.write("data: [DONE]\n\n");
+		return;
+	}
+	res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+function writeHostOutput(
+	res: ServerResponse,
+	event: { stream: RuntimeToolOutputStream; text: string; pid?: number; sequence: number },
+): void {
+	writeSse(res, { type: "hostToolOutput", ...event });
 }
 
 function isAuthorized(req: IncomingMessage, authToken?: string): boolean {
@@ -45,12 +69,36 @@ export function createHostBashRoute(options: HostBashRouteOptions) {
 					return;
 				}
 
-				const result = await options.executor.exec(payload.args.command, {
-					timeout: payload.args.timeout,
-				});
+				if (payload.stream) {
+					writeSseHead(res);
+					let pid: number | undefined;
+					let sequence = 0;
+					const result = await options.executor.exec(payload.args.command, {
+						timeout: payload.args.timeout,
+						onStart: (info) => {
+							pid = info.pid;
+							writeHostOutput(res, { stream: "system", text: "", pid, sequence: ++sequence });
+						},
+						onOutput: (chunk) => {
+							writeHostOutput(res, { stream: chunk.stream, text: chunk.text, pid, sequence: ++sequence });
+						},
+					});
+					writeSse(res, { type: "hostToolResult", ok: true, result });
+					writeSse(res, "[DONE]");
+					res.end();
+					return;
+				}
+
+				const result = await options.executor.exec(payload.args.command, { timeout: payload.args.timeout });
 				writeJson(res, 200, { ok: true, result });
 			})
 			.catch((err) => {
+				if (res.headersSent) {
+					writeSse(res, { type: "error", error: err instanceof Error ? err.message : String(err) });
+					writeSse(res, "[DONE]");
+					res.end();
+					return;
+				}
 				writeJson(res, 500, {
 					ok: false,
 					error: err instanceof Error ? err.message : String(err),

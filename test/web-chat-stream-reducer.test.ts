@@ -1,5 +1,5 @@
 import { reduceWebChatStreamEntry } from '../ui/src/webChatStream.ts';
-import type { AwarenessEntry, ToolCallContent } from '../ui/src/types.ts';
+import type { AwarenessEntry, ToolCallContent, ToolOutputContent } from '../ui/src/types.ts';
 
 let passed = 0;
 let failed = 0;
@@ -55,6 +55,36 @@ entry = reduceWebChatStreamEntry(entry, {
 const startedCalls = entry?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];
 assert(startedCalls.length === 1, 'tool execution start does not duplicate a streamed tool call');
 assert(startedCalls[0]?.arguments.label === 'Notify', 'tool execution start merges final validated args');
+
+entry = reduceWebChatStreamEntry(entry, {
+	type: 'toolResultDelta',
+	toolCallId: 'tool-1',
+	stream: 'system',
+	text: '',
+	pid: 4242,
+	sequence: 1,
+});
+entry = reduceWebChatStreamEntry(entry, {
+	type: 'toolResultDelta',
+	toolCallId: 'tool-1',
+	stream: 'stdout',
+	text: 'line one\n',
+	pid: 4242,
+	sequence: 2,
+});
+entry = reduceWebChatStreamEntry(entry, {
+	type: 'toolResultDelta',
+	toolCallId: 'tool-1',
+	stream: 'stderr',
+	text: 'line two\n',
+	pid: 4242,
+	sequence: 3,
+});
+
+const outputs = entry?.content?.filter((block) => block.type === 'toolOutput') as ToolOutputContent[];
+assert(outputs.length === 1, 'tool result deltas accumulate in one live output block');
+assert(outputs[0]?.text === 'line one\nline two\n', 'tool output chunks append in stream order');
+assert(outputs[0]?.pid === 4242, 'tool output keeps execution pid metadata');
 
 entry = reduceWebChatStreamEntry(entry, {
 	type: 'toolResult',

@@ -380,7 +380,7 @@ function hasRenderableContent(entry: AwarenessEntry): boolean {
   return !!entry.content?.some((block) => {
     if (block.type === 'text') return block.text.trim().length > 0;
     if (block.type === 'thinking') return block.thinking.trim().length > 0;
-    return block.type === 'toolCall' || block.type === 'toolResult';
+    return block.type === 'toolCall' || block.type === 'toolOutput' || block.type === 'toolResult';
   });
 }
 
