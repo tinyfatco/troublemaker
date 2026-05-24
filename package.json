@@ -49,6 +49,7 @@
 		"test:web-direct-chat-preamble": "npx tsx test/web-direct-chat-preamble.test.ts",
 		"test:web-login-command": "npx tsx test/web-login-command.test.ts",
 		"test:web-chat-stream-reducer": "npx tsx test/web-chat-stream-reducer.test.ts",
+		"test:web-chat-steering-request-gate": "npx tsx test/web-chat-steering-request-gate.test.ts",
 		"test:web-slash-command": "npx tsx test/web-slash-command.test.ts",
 		"test:web-ui-optimistic-dedupe": "npx tsx test/web-ui-optimistic-dedupe.test.ts",
 		"test:web-ui-streaming-cursor": "npx tsx test/web-ui-streaming-cursor.test.ts",
@@ -58,7 +59,7 @@
 		"test:web-adapter-writer-scope": "npx tsx test/web-adapter-writer-scope.test.ts",
 		"test:edge-runtime-import": "npx tsx test/edge-runtime-import.test.ts",
 		"test:host-protocol": "npx tsx test/host-protocol.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:events-initial-scan-delay && npm run test:model-config-current-selection && npm run test:yield-no-action && npm run test:web-direct-chat-preamble && npm run test:web-login-command && npm run test:web-chat-stream-reducer && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-streaming-cursor && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display && npm run test:web-adapter-writer-scope && npm run test:edge-runtime-import && npm run test:host-protocol",
+		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:events-initial-scan-delay && npm run test:model-config-current-selection && npm run test:yield-no-action && npm run test:web-direct-chat-preamble && npm run test:web-login-command && npm run test:web-chat-stream-reducer && npm run test:web-chat-steering-request-gate && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-streaming-cursor && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display && npm run test:web-adapter-writer-scope && npm run test:edge-runtime-import && npm run test:host-protocol",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {

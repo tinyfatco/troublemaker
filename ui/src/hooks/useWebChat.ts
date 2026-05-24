@@ -9,6 +9,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { postMessageUrl, stopActiveMessage } from '../console-api';
+import { createStreamRequestGate } from '../streamRequestGate';
 import { debugStream, summarizeEntry, summarizeEvent } from '../streamDebug';
 import type { AwarenessEntry } from '../types';
 import { getWebChatStreamEffect, reduceWebChatStreamEntry } from '../webChatStream';
@@ -50,6 +51,7 @@ export function useWebChat(): UseWebChatReturn {
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeStreamingEntryRef = useRef<AwarenessEntry | null>(null);
+  const requestGateRef = useRef(createStreamRequestGate());
 
   const setActiveStreamingEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>> = useCallback((next) => {
     const value = typeof next === 'function'
@@ -59,6 +61,47 @@ export function useWebChat(): UseWebChatReturn {
     debugStream('active-entry:set', { next: summarizeEntry(value) });
     setStreamingEntry(value);
   }, []);
+
+  const activateStreamingEntry = useCallback((label: string, assistant: AwarenessEntry): number => {
+    const requestId = requestGateRef.current.activate();
+    debugStream(`request:${label}:activate`, {
+      requestId,
+      previous: summarizeEntry(activeStreamingEntryRef.current),
+      next: summarizeEntry(assistant),
+    });
+    setActiveStreamingEntry(assistant);
+    return requestId;
+  }, [setActiveStreamingEntry]);
+
+  const makeScopedStreamControls = useCallback((requestId: number) => {
+    const isActive = () => requestGateRef.current.isActive(requestId);
+    const stalePayload = () => ({ requestId, activeRequestId: requestGateRef.current.current() });
+
+    return {
+      isActive,
+      setEntry: ((next) => {
+        if (!isActive()) {
+          debugStream('request:stale-entry:ignored', stalePayload());
+          return;
+        }
+        setActiveStreamingEntry(next);
+      }) as React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
+      setStatus: (next: StreamStatus) => {
+        if (!isActive()) {
+          debugStream('request:stale-status:ignored', { ...stalePayload(), status: next });
+          return;
+        }
+        setStatus(next);
+      },
+      setError: (next: string | null) => {
+        if (!isActive()) {
+          debugStream('request:stale-error:ignored', { ...stalePayload(), hasError: !!next });
+          return;
+        }
+        setError(next);
+      },
+    };
+  }, [setActiveStreamingEntry]);
 
   const sendSteeringMessage = useCallback(async (trimmed: string) => {
     const now = new Date().toISOString();
@@ -73,10 +116,28 @@ export function useWebChat(): UseWebChatReturn {
       strippedText: trimmed,
     };
 
+    const assistant: AwarenessEntry = {
+      id: `live-assistant-steer-${Date.now()}`,
+      type: 'message',
+      timestamp: now,
+      role: 'assistant',
+      content: [],
+      isStreaming: true,
+    };
+
+    const requestId = activateStreamingEntry('steering', assistant);
+    const controls = makeScopedStreamControls(requestId);
+    const controller = new AbortController();
+    let endedWithError = false;
+
     setUserEntry(user);
     setError(null);
+    setIsStreaming(true);
     setStatus('steering');
+    setStartedAt(now);
+    abortControllerRef.current = controller;
     debugStream('send:steering:start', {
+      requestId,
       textLen: trimmed.length,
       hasActiveRequest: !!abortControllerRef.current,
       activeEntry: summarizeEntry(activeStreamingEntryRef.current),
@@ -87,12 +148,16 @@ export function useWebChat(): UseWebChatReturn {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmed }),
+        signal: controller.signal,
       });
       debugStream('send:steering:response', {
+        requestId,
         ok: response.ok,
         status: response.status,
         contentType: response.headers.get('content-type'),
       });
+
+      if (!controls.isActive()) return;
 
       if (!response.ok) {
         const errText = await response.text();
@@ -100,18 +165,43 @@ export function useWebChat(): UseWebChatReturn {
       }
 
       if (response.body) {
-        const endedWithError = await readSseResponse(response, setStreamingEntry, setStatus, setError);
+        endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError);
         if (endedWithError) return;
       }
 
-      setStatus(abortControllerRef.current ? 'streaming' : 'idle');
+      controls.setStatus(abortControllerRef.current ? 'streaming' : 'idle');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      debugStream('send:steering:error', { message: msg });
-      setError(msg);
-      setStatus('error');
+      if (err instanceof Error && err.name === 'AbortError') {
+        debugStream('send:steering:abort', { requestId });
+        controls.setError(null);
+      } else {
+        const msg = err instanceof Error ? err.message : 'Unknown error';
+        debugStream('send:steering:error', { requestId, message: msg });
+        endedWithError = true;
+        controls.setError(msg);
+        controls.setStatus('error');
+        controls.setEntry((prev) => {
+          if (!prev) return null;
+          const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
+          if (hasContent) return { ...prev, isStreaming: false };
+          return { ...prev, content: [{ type: 'text', text: 'Failed to get response.' }], isStreaming: false };
+        });
+      }
+    } finally {
+      debugStream('send:steering:finally', {
+        requestId,
+        active: controls.isActive(),
+        endedWithError,
+        finalAssistant: summarizeEntry(activeStreamingEntryRef.current),
+      });
+      if (!controls.isActive()) return;
+      setActiveStreamingEntry((prev) => prev ? { ...prev, isStreaming: false } : null);
+      setIsStreaming(false);
+      setStatus(endedWithError ? 'error' : 'idle');
+      setStartedAt(null);
+      abortControllerRef.current = null;
     }
-  }, []);
+  }, [activateStreamingEntry, makeScopedStreamControls, setActiveStreamingEntry]);
 
   const sendMessage = useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -145,14 +235,16 @@ export function useWebChat(): UseWebChatReturn {
       isStreaming: true,
     };
 
+    const requestId = activateStreamingEntry('normal', assistant);
+    const controls = makeScopedStreamControls(requestId);
+
     setUserEntry(user);
-    activeStreamingEntryRef.current = assistant;
-    setStreamingEntry(assistant);
     setIsStreaming(true);
     setStatus('connecting');
     setError(null);
     setStartedAt(now);
     debugStream('send:normal:start', {
+      requestId,
       textLen: trimmed.length,
       assistant: summarizeEntry(assistant),
       hadActiveRequest: !!abortControllerRef.current,
@@ -166,7 +258,7 @@ export function useWebChat(): UseWebChatReturn {
       // Retry loop for cold starts
       let response: Response | null = null;
       for (let attempt = 1; attempt <= 30; attempt++) {
-        debugStream('send:normal:attempt', { attempt });
+        debugStream('send:normal:attempt', { requestId, attempt });
         response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -174,13 +266,15 @@ export function useWebChat(): UseWebChatReturn {
           signal: controller.signal,
         });
         debugStream('send:normal:response', {
+          requestId,
           attempt,
           ok: response.ok,
           status: response.status,
           contentType: response.headers.get('content-type'),
         });
+        if (!controls.isActive()) return;
         if (response.status === 503) {
-          setStatus('connecting');
+          controls.setStatus('connecting');
           await new Promise((r) => setTimeout(r, 2000));
           continue;
         }
@@ -194,18 +288,18 @@ export function useWebChat(): UseWebChatReturn {
 
       if (!response.body) throw new Error('No response body');
 
-      endedWithError = await readSseResponse(response, setActiveStreamingEntry, setStatus, setError);
+      endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
-        debugStream('send:normal:abort');
-        setError(null);
+        debugStream('send:normal:abort', { requestId });
+        controls.setError(null);
       } else {
         const msg = err instanceof Error ? err.message : 'Unknown error';
-        debugStream('send:normal:error', { message: msg });
+        debugStream('send:normal:error', { requestId, message: msg });
         endedWithError = true;
-        setError(msg);
-        setStatus('error');
-        setActiveStreamingEntry((prev) => {
+        controls.setError(msg);
+        controls.setStatus('error');
+        controls.setEntry((prev) => {
           if (!prev) return null;
           const hasContent = prev.content?.some((c) => c.type === 'text' && c.text.trim());
           if (hasContent) return { ...prev, isStreaming: false };
@@ -213,13 +307,17 @@ export function useWebChat(): UseWebChatReturn {
         });
       }
     } finally {
+      const active = controls.isActive();
       const finalAssistant = activeStreamingEntryRef.current
         ? { ...activeStreamingEntryRef.current, isStreaming: false }
         : null;
       debugStream('send:normal:finally', {
+        requestId,
+        active,
         endedWithError,
         finalAssistant: summarizeEntry(finalAssistant),
       });
+      if (!active) return;
       if (trimmed.startsWith('/')) {
         setLocalEntries((prev) => appendLocalSlashTurn(prev, user, finalAssistant));
         setUserEntry(null);
@@ -234,11 +332,15 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [sendSteeringMessage, setActiveStreamingEntry]);
+  }, [activateStreamingEntry, makeScopedStreamControls, sendSteeringMessage, setActiveStreamingEntry]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
-      debugStream('send:abort', { activeEntry: summarizeEntry(activeStreamingEntryRef.current) });
+      debugStream('send:abort', {
+        requestId: requestGateRef.current.current(),
+        activeEntry: summarizeEntry(activeStreamingEntryRef.current),
+      });
+      requestGateRef.current.deactivate();
       setStatus('stopping');
       stopActiveMessage().catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to stop active run');
