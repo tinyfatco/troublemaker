@@ -9,12 +9,14 @@
 export interface TextContent {
   type: 'text';
   text: string;
+  contentIndex?: number;
 }
 
 export interface ThinkingContent {
   type: 'thinking';
   thinking: string;
   thinkingSignature?: string;
+  contentIndex?: number;
 }
 
 export interface ToolCallContent {
@@ -22,6 +24,7 @@ export interface ToolCallContent {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  contentIndex?: number;
 }
 
 export interface ToolResultContent {

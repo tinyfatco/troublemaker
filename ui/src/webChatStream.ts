@@ -1,4 +1,5 @@
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from './types';
+import { debugStream, summarizeEntry, summarizeEvent, summarizeToolCall } from './streamDebug';
 
 export type WebChatStreamEffect = {
   status?: 'waking' | 'connecting' | 'steering' | 'streaming' | 'tool_running' | 'error';
@@ -52,7 +53,10 @@ export function getWebChatStreamEffect(parsed: any): WebChatStreamEffect {
 }
 
 export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: any): AwarenessEntry | null {
-  if (!prev) return prev;
+  if (!prev) {
+    debugStream('reducer:no-prev-entry', { event: summarizeEvent(parsed) });
+    return prev;
+  }
 
   if (parsed.type === 'text_delta' && (parsed.delta || parsed.text)) {
     return appendTextDelta(prev, String(parsed.delta || ''), numberOrUndefined(parsed.contentIndex), stringOrUndefined(parsed.text));
@@ -92,7 +96,15 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
   }
   if (parsed.type === 'toolcall_start' || parsed.type === 'toolcall_delta' || parsed.type === 'toolcall_end') {
     const toolCalls = normalizeToolCallPatches(parsed);
-    if (toolCalls.length === 0) return prev;
+    debugStream('reducer:toolcall:normalized', {
+      event: summarizeEvent(parsed),
+      patchCount: toolCalls.length,
+      patches: toolCalls.map((toolCall) => summarizeToolCall(toolCall)),
+    });
+    if (toolCalls.length === 0) {
+      debugStream('reducer:toolcall:no-patches', { event: summarizeEvent(parsed) });
+      return prev;
+    }
     return toolCalls.reduce(
       (entry, toolCall) => upsertToolCall(entry, {
         ...toolCall,
@@ -132,6 +144,13 @@ function appendTextDelta(entry: AwarenessEntry, delta: string, contentIndex?: nu
   } else {
     content.push({ type: 'text', text: text ?? delta, contentIndex });
   }
+  debugStream('reducer:text-delta', {
+    entryId: entry.id,
+    contentIndex,
+    deltaLen: delta.length,
+    textLen: text?.length,
+    existingIndex,
+  });
   return { ...entry, content };
 }
 
@@ -148,12 +167,25 @@ function appendThinkingDelta(entry: AwarenessEntry, delta: string, contentIndex?
   } else {
     content.push({ type: 'thinking', thinking: thinking ?? delta, contentIndex });
   }
+  debugStream('reducer:thinking-delta', {
+    entryId: entry.id,
+    contentIndex,
+    deltaLen: delta.length,
+    thinkingLen: thinking?.length,
+    existingIndex,
+  });
   return { ...entry, content };
 }
 
 function upsertTextBlock(entry: AwarenessEntry, patch: TextPatch): AwarenessEntry {
   const content = [...(entry.content || [])];
   const existingIndex = findTextIndex(content, patch.contentIndex);
+  debugStream('reducer:text-patch', {
+    entryId: entry.id,
+    contentIndex: patch.contentIndex,
+    textLen: patch.text.length,
+    existingIndex,
+  });
   if (existingIndex === -1) return { ...entry, content: [...content, patch] };
   content[existingIndex] = {
     ...(content[existingIndex] as TextPatch),
@@ -165,6 +197,12 @@ function upsertTextBlock(entry: AwarenessEntry, patch: TextPatch): AwarenessEntr
 function upsertThinkingBlock(entry: AwarenessEntry, patch: ThinkingPatch): AwarenessEntry {
   const content = [...(entry.content || [])];
   const existingIndex = findThinkingIndex(content, patch.contentIndex);
+  debugStream('reducer:thinking-patch', {
+    entryId: entry.id,
+    contentIndex: patch.contentIndex,
+    thinkingLen: patch.thinking.length,
+    existingIndex,
+  });
   if (existingIndex === -1) return { ...entry, content: [...content, patch] };
   content[existingIndex] = {
     ...(content[existingIndex] as ThinkingPatch),
@@ -177,6 +215,10 @@ function upsertToolCall(entry: AwarenessEntry, toolCall: ToolCallPatch): Awarene
   const content = [...(entry.content || [])];
   const existingIndex = content.findIndex((block) => isSameToolCall(block, toolCall));
   if (existingIndex === -1) {
+    debugStream('reducer:toolcall:insert', {
+      entry: summarizeEntry(entry),
+      toolCall: summarizeToolCall(toolCall),
+    });
     return { ...entry, content: [...content, toolCall] };
   }
 
@@ -191,6 +233,13 @@ function upsertToolCall(entry: AwarenessEntry, toolCall: ToolCallPatch): Awarene
       ...(toolCall.arguments || {}),
     },
   };
+  debugStream('reducer:toolcall:update', {
+    entryId: entry.id,
+    existingIndex,
+    existing: summarizeToolCall(existing),
+    patch: summarizeToolCall(toolCall),
+    merged: summarizeToolCall(content[existingIndex]),
+  });
   return { ...entry, content };
 }
 
@@ -200,9 +249,22 @@ function upsertToolResult(entry: AwarenessEntry, result: ToolResultContent): Awa
     block.type === 'toolResult' && getToolResultId(block) === getToolResultId(result)
   );
   if (existingIndex === -1) {
+    debugStream('reducer:toolresult:insert', {
+      entryId: entry.id,
+      toolCallId: result.toolCallId,
+      resultLen: result.result.length,
+      isError: result.isError,
+    });
     return { ...entry, content: [...content, result] };
   }
   content[existingIndex] = result;
+  debugStream('reducer:toolresult:update', {
+    entryId: entry.id,
+    existingIndex,
+    toolCallId: result.toolCallId,
+    resultLen: result.result.length,
+    isError: result.isError,
+  });
   return { ...entry, content };
 }
 

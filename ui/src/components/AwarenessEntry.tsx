@@ -1,4 +1,5 @@
-import { memo, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { debugStream, summarizeToolCall } from '../streamDebug';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
@@ -68,6 +69,28 @@ function ToolCallBlock({ block, isRunning, result, onExpandingContent }: {
   const statusText = getToolStatusText(status, result);
   const title = getToolTitle(block);
   const detail = getToolDetail(block);
+  const debugSignature = useMemo(() => JSON.stringify({
+    id: block.id,
+    name: block.name,
+    status,
+    argKeys: Object.keys(args),
+    title,
+    detail,
+    resultLen: resultText.length,
+    isRunning: !!isRunning,
+  }), [args, block.id, block.name, detail, isRunning, resultText.length, status, title]);
+
+  useEffect(() => {
+    debugStream('render:tool-call', {
+      signature: debugSignature,
+      toolCall: summarizeToolCall(block),
+      title,
+      detail,
+      status,
+      statusText,
+      resultLen: resultText.length,
+    });
+  }, [block, debugSignature, detail, resultText.length, status, statusText, title]);
 
   const statusIcon = status === 'running'
     ? <span className="tool-spinner" />

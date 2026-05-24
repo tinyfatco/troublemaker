@@ -9,6 +9,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { postMessageUrl, stopActiveMessage } from '../console-api';
+import { debugStream, summarizeEntry, summarizeEvent } from '../streamDebug';
 import type { AwarenessEntry } from '../types';
 import { getWebChatStreamEffect, reduceWebChatStreamEntry } from '../webChatStream';
 import { shouldSendAsSteering } from '../webChatRouting';
@@ -55,6 +56,7 @@ export function useWebChat(): UseWebChatReturn {
       ? (next as (prev: AwarenessEntry | null) => AwarenessEntry | null)(activeStreamingEntryRef.current)
       : next;
     activeStreamingEntryRef.current = value;
+    debugStream('active-entry:set', { next: summarizeEntry(value) });
     setStreamingEntry(value);
   }, []);
 
@@ -74,12 +76,22 @@ export function useWebChat(): UseWebChatReturn {
     setUserEntry(user);
     setError(null);
     setStatus('steering');
+    debugStream('send:steering:start', {
+      textLen: trimmed.length,
+      hasActiveRequest: !!abortControllerRef.current,
+      activeEntry: summarizeEntry(activeStreamingEntryRef.current),
+    });
 
     try {
       const response = await fetch(postMessageUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: trimmed }),
+      });
+      debugStream('send:steering:response', {
+        ok: response.ok,
+        status: response.status,
+        contentType: response.headers.get('content-type'),
       });
 
       if (!response.ok) {
@@ -95,6 +107,7 @@ export function useWebChat(): UseWebChatReturn {
       setStatus(abortControllerRef.current ? 'streaming' : 'idle');
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
+      debugStream('send:steering:error', { message: msg });
       setError(msg);
       setStatus('error');
     }
@@ -139,6 +152,11 @@ export function useWebChat(): UseWebChatReturn {
     setStatus('connecting');
     setError(null);
     setStartedAt(now);
+    debugStream('send:normal:start', {
+      textLen: trimmed.length,
+      assistant: summarizeEntry(assistant),
+      hadActiveRequest: !!abortControllerRef.current,
+    });
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
@@ -148,11 +166,18 @@ export function useWebChat(): UseWebChatReturn {
       // Retry loop for cold starts
       let response: Response | null = null;
       for (let attempt = 1; attempt <= 30; attempt++) {
+        debugStream('send:normal:attempt', { attempt });
         response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: trimmed }),
           signal: controller.signal,
+        });
+        debugStream('send:normal:response', {
+          attempt,
+          ok: response.ok,
+          status: response.status,
+          contentType: response.headers.get('content-type'),
         });
         if (response.status === 503) {
           setStatus('connecting');
@@ -172,9 +197,11 @@ export function useWebChat(): UseWebChatReturn {
       endedWithError = await readSseResponse(response, setActiveStreamingEntry, setStatus, setError);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
+        debugStream('send:normal:abort');
         setError(null);
       } else {
         const msg = err instanceof Error ? err.message : 'Unknown error';
+        debugStream('send:normal:error', { message: msg });
         endedWithError = true;
         setError(msg);
         setStatus('error');
@@ -189,6 +216,10 @@ export function useWebChat(): UseWebChatReturn {
       const finalAssistant = activeStreamingEntryRef.current
         ? { ...activeStreamingEntryRef.current, isStreaming: false }
         : null;
+      debugStream('send:normal:finally', {
+        endedWithError,
+        finalAssistant: summarizeEntry(finalAssistant),
+      });
       if (trimmed.startsWith('/')) {
         setLocalEntries((prev) => appendLocalSlashTurn(prev, user, finalAssistant));
         setUserEntry(null);
@@ -207,6 +238,7 @@ export function useWebChat(): UseWebChatReturn {
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
+      debugStream('send:abort', { activeEntry: summarizeEntry(activeStreamingEntryRef.current) });
       setStatus('stopping');
       stopActiveMessage().catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to stop active run');
@@ -266,19 +298,38 @@ async function readSseResponse(
   const decoder = new TextDecoder();
   let buffer = '';
   let endedWithError = false;
+  let chunkCount = 0;
+  let eventCount = 0;
+  debugStream('sse:read:start', {
+    status: response.status,
+    contentType: response.headers.get('content-type'),
+  });
 
   while (true) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      debugStream('sse:read:done', { chunkCount, eventCount, remainingBufferLen: buffer.length });
+      break;
+    }
 
     buffer += decoder.decode(value, { stream: true });
+    chunkCount += 1;
+    debugStream('sse:chunk', {
+      chunkCount,
+      bytes: value?.byteLength ?? 0,
+      bufferLen: buffer.length,
+    });
     const lines = buffer.split('\n');
     buffer = lines.pop() || '';
 
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue;
       const data = line.slice(6);
-      if (data === '[DONE]') continue;
+      if (data === '[DONE]') {
+        debugStream('sse:event:done', { eventCount });
+        continue;
+      }
+      eventCount += 1;
       if (processEvent(data, setEntry, setStatus, setError)) endedWithError = true;
     }
   }
@@ -286,10 +337,15 @@ async function readSseResponse(
   if (buffer.startsWith('data: ')) {
     const remaining = buffer.slice(6);
     if (remaining !== '[DONE]') {
+      eventCount += 1;
+      debugStream('sse:remaining', { eventCount, bytes: remaining.length });
       if (processEvent(remaining, setEntry, setStatus, setError)) endedWithError = true;
+    } else {
+      debugStream('sse:remaining:done', { eventCount });
     }
   }
 
+  debugStream('sse:read:end', { chunkCount, eventCount, endedWithError });
   return endedWithError;
 }
 
@@ -302,13 +358,29 @@ function processEvent(
   try {
     const parsed = JSON.parse(data);
     const effect = getWebChatStreamEffect(parsed);
+    debugStream('sse:event', {
+      event: summarizeEvent(parsed),
+      effect,
+    });
     if (effect.status) setStatus(effect.status);
     if (effect.error !== undefined) setError(effect.error);
 
-    setEntry((prev) => reduceWebChatStreamEntry(prev, parsed));
+    setEntry((prev) => {
+      const next = reduceWebChatStreamEntry(prev, parsed);
+      debugStream('sse:reduce', {
+        eventType: parsed.type,
+        prev: summarizeEntry(prev),
+        next: summarizeEntry(next),
+      });
+      return next;
+    });
     if (effect.endedWithError) return true;
     // heartbeat and run_complete are ignored
-  } catch {
+  } catch (err) {
+    debugStream('sse:event:parse-error', {
+      message: err instanceof Error ? err.message : 'Non-JSON SSE event',
+      preview: data.slice(0, 200),
+    });
     // Non-JSON — skip
   }
   return false;
