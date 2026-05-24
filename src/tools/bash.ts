@@ -3,11 +3,9 @@ import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Type } from "typebox";
+import { bashToolSchema, DEFAULT_BASH_TIMEOUT_SECONDS, type BashToolInput } from "../core/tool-definitions.js";
 import type { Executor } from "../sandbox.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
-
-const DEFAULT_TIMEOUT = 60;
 
 /**
  * Generate a unique temp file path for bash output
@@ -17,33 +15,27 @@ function getTempFilePath(): string {
 	return join(tmpdir(), `mom-bash-${id}.log`);
 }
 
-const bashSchema = Type.Object({
-	label: Type.String({ description: "Brief description of what this command does (shown to user)" }),
-	command: Type.String({ description: "Bash command to execute" }),
-	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (default: 60s). Increase for intentionally long-running commands." })),
-});
-
 interface BashToolDetails {
 	truncation?: TruncationResult;
 	fullOutputPath?: string;
 }
 
-export function createBashTool(executor: Executor): AgentTool<typeof bashSchema> {
+export function createBashTool(executor: Executor): AgentTool<typeof bashToolSchema> {
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_TIMEOUT}s. Increase for intentionally long-running commands.`,
-		parameters: bashSchema,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Default timeout: ${DEFAULT_BASH_TIMEOUT_SECONDS}s. Increase for intentionally long-running commands.`,
+		parameters: bashToolSchema,
 		execute: async (
 			_toolCallId: string,
-			{ command, timeout }: { label: string; command: string; timeout?: number },
+			{ command, timeout }: BashToolInput,
 			signal?: AbortSignal,
 		) => {
 			// Track output for potential temp file writing
 			let tempFilePath: string | undefined;
 			let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
 
-			const result = await executor.exec(command, { timeout: timeout ?? DEFAULT_TIMEOUT, signal });
+			const result = await executor.exec(command, { timeout: timeout ?? DEFAULT_BASH_TIMEOUT_SECONDS, signal });
 			let output = "";
 			if (result.stdout) output += result.stdout;
 			if (result.stderr) {

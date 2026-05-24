@@ -32,9 +32,10 @@ import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from ".
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import { Gateway } from "../../gateway.js";
 import * as log from "../../log.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "../../sandbox.js";
+import { createExecutor, parseSandboxArg, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
+import { createHostBashRoute } from "../../modes/host/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
 import { createSendMessageToChannelTool } from "../../tools/send-message-to-channel.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
@@ -917,6 +918,14 @@ gateway.registerGet("/schedule", async (_req, res) => {
 // When crawdad-cf is in front, it intercepts /agents/{id}/terminal at the Worker
 // level (sandbox.terminal()) so this handler never fires.
 gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
+
+// Host tool bridge — lets the Worker edge runtime wake this container only when
+// host-local execution is required. Crawdad calls this via sandbox.fetch.
+gateway.register("/host/tools/bash", createHostBashRoute({
+	executor: createExecutor(sandbox),
+	authToken: process.env.FAT_TOOLS_TOKEN,
+}));
+gateway.markReady("/host/tools/bash");
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
 // authenticates the operator upstream; the container trusts the worker.

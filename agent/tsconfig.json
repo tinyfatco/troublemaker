@@ -1,0 +1,14 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"lib": ["ES2022", "WebWorker"],
+		"strict": true,
+		"skipLibCheck": true,
+		"isolatedModules": true,
+		"forceConsistentCasingInFileNames": true,
+		"types": []
+	},
+	"include": ["src/**/*.ts", "../src/modes/edge/**/*.ts", "../src/core/runtime-contract.ts", "../src/core/tool-definitions.ts"]
+}

@@ -7,6 +7,14 @@
 		".": {
 			"types": "./dist/index.d.ts",
 			"import": "./dist/index.js"
+		},
+		"./edge": {
+			"types": "./dist/modes/edge/index.d.ts",
+			"import": "./dist/modes/edge/index.js"
+		},
+		"./host": {
+			"types": "./dist/modes/host/index.d.ts",
+			"import": "./dist/modes/host/index.js"
 		}
 	},
 	"bin": {
@@ -47,7 +55,9 @@
 		"test:web-ui-webchat-routing": "npx tsx test/web-ui-webchat-routing.test.ts",
 		"test:web-ui-tool-display": "npx tsx test/web-ui-tool-display.test.ts",
 		"test:web-adapter-writer-scope": "npx tsx test/web-adapter-writer-scope.test.ts",
-		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:events-initial-scan-delay && npm run test:model-config-current-selection && npm run test:yield-no-action && npm run test:web-login-command && npm run test:web-chat-stream-reducer && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-streaming-cursor && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display && npm run test:web-adapter-writer-scope",
+		"test:edge-runtime-import": "npx tsx test/edge-runtime-import.test.ts",
+		"test:host-protocol": "npx tsx test/host-protocol.test.ts",
+		"validate:local": "npm run typecheck && npm run build && npm run test:send-message-to-channel && npm run test:context-messages-only-error && npm run test:discord-ambient && npm run test:awareness-stream && npm run test:events-initial-scan-delay && npm run test:model-config-current-selection && npm run test:yield-no-action && npm run test:web-login-command && npm run test:web-chat-stream-reducer && npm run test:web-slash-command && npm run test:web-ui-optimistic-dedupe && npm run test:web-ui-streaming-cursor && npm run test:web-ui-thinking-display && npm run test:web-ui-webchat-routing && npm run test:web-ui-tool-display && npm run test:web-adapter-writer-scope && npm run test:edge-runtime-import && npm run test:host-protocol",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
 	"dependencies": {
