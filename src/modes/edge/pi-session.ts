@@ -7,6 +7,7 @@ export interface EdgeAgentSessionOptions {
 	model: Model<Api>;
 	apiKey: string;
 	tools: AgentTool<any>[];
+	initialMessages?: AgentMessage[];
 	thinkingLevel?: ModelThinkingLevel;
 	sessionId?: string;
 	emit: RuntimeEventSink;
@@ -108,6 +109,7 @@ export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent 
 			model: options.model,
 			thinkingLevel: options.thinkingLevel ?? "off",
 			tools: options.tools,
+			messages: options.initialMessages ?? [],
 		},
 		convertToLlm,
 		sessionId: options.sessionId,

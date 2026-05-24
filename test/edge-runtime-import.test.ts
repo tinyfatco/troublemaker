@@ -1,9 +1,39 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { runEdgeWebChat } from "../src/modes/edge/index.js";
+import { runEdgeWebChat, type EdgeAgentMessage } from "../src/modes/edge/index.js";
+import { createEdgeAgentSession } from "../src/modes/edge/pi-session.js";
 
 assert.equal(typeof runEdgeWebChat, "function");
+
+const initialMessages = [{
+	role: "user",
+	content: [{ type: "text", text: "[2026-05-23T12:00:00.000Z] [web] [user]: remember this" }],
+	timestamp: Date.parse("2026-05-23T12:00:00.000Z"),
+}] as EdgeAgentMessage[];
+
+const agent = createEdgeAgentSession({
+	systemPrompt: "test",
+	model: {
+		id: "test-model",
+		name: "test-model",
+		api: "openai-completions",
+		provider: "test",
+		baseUrl: "https://example.test/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 1024,
+		maxTokens: 128,
+	},
+	apiKey: "test-key",
+	tools: [],
+	initialMessages,
+	emit: () => {},
+});
+
+assert.equal(agent.state.messages.length, 1);
+assert.equal((agent.state.messages[0] as { role?: string }).role, "user");
 
 const edgeFiles = [
 	"src/modes/edge/index.ts",

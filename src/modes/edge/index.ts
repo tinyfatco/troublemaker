@@ -1,4 +1,5 @@
 import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RuntimeEventSink, WebTurnInput, WebTurnSettings } from "../../core/runtime-contract.js";
 import type { EdgeHostBridge } from "./host-bridge.js";
 import { createEdgeAgentSession } from "./pi-session.js";
@@ -6,11 +7,18 @@ import { createEdgeBashTool } from "./tools.js";
 
 export interface EdgeWebChatOptions {
 	input: WebTurnInput;
+	history?: AgentMessage[];
+	promptMessage?: AgentMessage;
 	settings?: WebTurnSettings;
 	modelApiKey: string;
 	modelBaseUrl?: string;
 	hostBridge: EdgeHostBridge;
 	emit: RuntimeEventSink;
+}
+
+export interface EdgeWebChatResult {
+	messages: AgentMessage[];
+	newMessages: AgentMessage[];
 }
 
 const DEFAULT_SYSTEM_PROMPT = `You are Troublemaker, a practical AI agent running in TinyFat's hosted web console.
@@ -48,7 +56,7 @@ function normalizeThinkingLevel(value: WebTurnSettings["thinkingLevel"]): ModelT
 	return "off";
 }
 
-export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<void> {
+export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeWebChatResult> {
 	await options.emit({ type: "status", status: "accepted", message: "Edge turn accepted", mode: "edge" });
 
 	const model = createFireworksModel(options.settings, options.modelBaseUrl);
@@ -58,12 +66,27 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<void>
 		apiKey: options.modelApiKey,
 		thinkingLevel: normalizeThinkingLevel(options.settings?.thinkingLevel),
 		sessionId: options.input.channelId,
+		initialMessages: options.history,
 		tools: [createEdgeBashTool(options.hostBridge)],
 		emit: options.emit,
 	});
 
+	const initialMessageCount = agent.state.messages.length;
+	const promptMessage = options.promptMessage ?? options.input.message;
 	await options.emit({ type: "status", status: "connecting", message: "Edge runtime ready", mode: "edge" });
-	await agent.prompt(options.input.message);
+	if (typeof promptMessage === "string") {
+		await agent.prompt(promptMessage);
+	} else {
+		await agent.prompt(promptMessage);
+	}
 	await agent.waitForIdle();
 	await options.emit({ type: "run_complete", channelId: options.input.channelId, mode: "edge" });
+
+	const messages = agent.state.messages.slice();
+	return {
+		messages,
+		newMessages: messages.slice(initialMessageCount),
+	};
 }
+
+export type { AgentMessage as EdgeAgentMessage };

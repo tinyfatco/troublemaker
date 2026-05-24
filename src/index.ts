@@ -8,7 +8,7 @@ export type {
 	WebTurnInput,
 	WebTurnSettings,
 } from "./core/runtime-contract.js";
-export { runEdgeWebChat, type EdgeWebChatOptions } from "./modes/edge/index.js";
+export { runEdgeWebChat, type EdgeAgentMessage, type EdgeWebChatOptions, type EdgeWebChatResult } from "./modes/edge/index.js";
 export type { EdgeHostBridge } from "./modes/edge/host-bridge.js";
 export { createHostBashRoute } from "./modes/host/index.js";
 export type { HostBashRequest, HostBashResponse, HostToolRequest, HostToolResponse } from "./modes/host/protocol.js";
