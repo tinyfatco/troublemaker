@@ -1695,6 +1695,7 @@ html, body, #root {
 .tool-call-row.running {
   --tool-state-color: var(--entry-tool);
   background: color-mix(in srgb, var(--tool-state-color) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tool-state-color) 10%, transparent);
 }
 
 .tool-call-row.error {
@@ -1804,7 +1805,7 @@ html, body, #root {
 .tool-accordion {
   display: grid;
   grid-template-rows: 0fr;
-  margin: 0 0.2rem 0 1.45rem;
+  margin: 0 0.3rem 0 1.55rem;
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
@@ -1818,7 +1819,7 @@ html, body, #root {
 
 .tool-accordion.open {
   grid-template-rows: 1fr;
-  margin: 0.15rem 0.2rem 0.35rem 1.45rem;
+  margin: 0.2rem 0.3rem 0.45rem 1.55rem;
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
@@ -1827,36 +1828,61 @@ html, body, #root {
 .tool-accordion-inner {
   min-height: 0;
   overflow: hidden;
-  padding: 0 0.5rem;
-  border-left: 1px solid color-mix(in srgb, var(--entry-color) 28%, transparent);
-  background: color-mix(in srgb, var(--surface) 95%, var(--text-muted) 5%);
-  border-radius: 3px;
-  transition: padding 0.22s ease;
+  padding: 0 0.6rem;
+  border: 1px solid color-mix(in srgb, var(--entry-color) 16%, transparent);
+  border-left-color: color-mix(in srgb, var(--entry-color) 44%, transparent);
+  border-left-width: 2px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--entry-color) 8%, transparent), transparent 28%),
+    color-mix(in srgb, var(--surface) 94%, var(--text-muted) 6%);
+  border-radius: 4px;
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text) 6%, transparent),
+    0 6px 18px color-mix(in srgb, var(--surface-inverse, #000) 9%, transparent);
+  transition:
+    padding 0.22s ease,
+    border-color 0.22s ease,
+    background 0.22s ease;
 }
 
 .tool-accordion.open .tool-accordion-inner {
-  padding: 0.4rem 0.5rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.tool-call-row.running .tool-accordion-inner {
+  border-color: color-mix(in srgb, var(--entry-tool) 24%, transparent);
+  border-left-color: color-mix(in srgb, var(--entry-tool) 58%, transparent);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--entry-tool) 12%, transparent), transparent 30%),
+    color-mix(in srgb, var(--surface) 92%, var(--entry-tool) 8%);
 }
 
 .tool-detail-section + .tool-detail-section {
-  margin-top: 0.55rem;
+  margin-top: 0.7rem;
 }
 
 .tool-detail-label {
-  display: block;
-  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 0.32rem;
+  color: color-mix(in srgb, var(--text-muted) 78%, var(--tool-state-color) 22%);
+  background: color-mix(in srgb, var(--tool-state-color) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--tool-state-color) 12%, transparent);
+  border-radius: 3px;
   font-size: 0.6rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  margin-bottom: 0.2rem;
+  margin-bottom: 0.35rem;
 }
 
 .tool-output-pre,
 .structured-string-block {
   margin: 0;
-  padding: 0.45rem 0.55rem;
-  background: color-mix(in srgb, var(--surface) 96%, var(--text-muted) 4%);
-  border-radius: 3px;
+  padding: 0.55rem 0.65rem;
+  background: color-mix(in srgb, var(--surface) 90%, var(--text-muted) 10%);
+  border: 1px solid color-mix(in srgb, var(--text-muted) 12%, transparent);
+  border-radius: 4px;
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -1870,20 +1896,26 @@ html, body, #root {
 .structured-value {
   display: flex;
   flex-direction: column;
-  gap: 0.18rem;
+  gap: 0.12rem;
   min-width: 0;
 }
 
 .structured-row {
   display: grid;
   grid-template-columns: minmax(5rem, 0.34fr) minmax(0, 1fr);
-  gap: 0.5rem;
+  gap: 0.65rem;
   align-items: baseline;
   min-width: 0;
+  padding: 0.22rem 0.28rem;
+  border-radius: 3px;
+}
+
+.structured-row:nth-child(odd) {
+  background: color-mix(in srgb, var(--surface) 86%, var(--text-muted) 14%);
 }
 
 .structured-key {
-  color: var(--text-muted);
+  color: color-mix(in srgb, var(--text-muted) 84%, var(--tool-state-color) 16%);
   font-size: 0.66rem;
   line-height: 1.35;
   text-transform: lowercase;
@@ -1908,9 +1940,10 @@ html, body, #root {
 }
 
 .structured-code {
-  padding: 0.04rem 0.25rem;
+  padding: 0.08rem 0.3rem;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--entry-tool) 7%, var(--surface) 93%);
+  background: color-mix(in srgb, var(--entry-tool) 10%, var(--surface) 90%);
+  border: 1px solid color-mix(in srgb, var(--entry-tool) 12%, transparent);
 }
 
 .structured-number { color: color-mix(in srgb, var(--accent) 78%, var(--text) 22%); }
