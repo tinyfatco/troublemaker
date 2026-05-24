@@ -57,6 +57,16 @@ function streamingTool(id: string, timestamp: string): AwarenessEntry {
 	};
 }
 
+function standaloneToolResult(id: string, timestamp: string, toolCallId = 'tool-1'): AwarenessEntry {
+	return {
+		id,
+		type: 'message',
+		timestamp,
+		role: 'toolResult',
+		content: [{ type: 'toolResult', toolCallId, result: 'ok' }],
+	};
+}
+
 const firstUser = user('u1', '2026-05-18T00:01:00.000Z');
 const firstAssistant = assistant('a1', '2026-05-18T00:01:04.000Z');
 const secondOptimisticUser = user('live-u2', '2026-05-18T00:01:07.000Z');
@@ -159,6 +169,28 @@ const visibleWithDifferentDurableTool = getOptimisticVisibility(
 assert(
 	visibleWithDifferentDurableTool.showStreamingEntry,
 	'active tool-call optimistic entry remains visible when durable awareness has a different tool call',
+);
+
+const visibleAfterStandaloneToolResult = getOptimisticVisibility(
+	[toolFirstUser, earlyDurableAssistant, standaloneToolResult('tr-tool-1', '2026-05-18T00:01:13.000Z')],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	!visibleAfterStandaloneToolResult.showStreamingEntry,
+	'active tool-call optimistic entry is hidden once durable tool result covers the same tool id',
+);
+
+const visibleAfterDifferentStandaloneToolResult = getOptimisticVisibility(
+	[toolFirstUser, earlyDurableAssistant, standaloneToolResult('tr-tool-2', '2026-05-18T00:01:13.000Z', 'tool-2')],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	visibleAfterDifferentStandaloneToolResult.showStreamingEntry,
+	'active tool-call optimistic entry remains visible when durable tool result belongs to a different tool id',
 );
 
 const recentlyCompletedUser = user('u-recent', '2026-05-18T00:02:05.000Z');

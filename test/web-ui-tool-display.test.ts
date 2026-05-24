@@ -4,6 +4,7 @@ import {
 	getToolStatusText,
 	getToolTitle,
 	humanizeToolName,
+	summarizeToolResult,
 } from "../ui/src/toolDisplay.ts";
 import type { ToolCallContent, ToolResultContent } from "../ui/src/types.ts";
 
@@ -84,7 +85,8 @@ assert(getToolDetail(sendEmailCall) === "Email alex@tinyfat.com: Line one Line t
 assert(getToolStatus(false) === "done", "historical tool call without a result is done, not pending");
 assert(getToolStatus(true, result) === "running", "streaming unresolved call is running");
 assert(getToolStatus(false, { ...result, isError: true }) === "error", "errored result reports error");
-assert(getToolStatusText("done", result) === "3 lines", "multi-line result summary is compact");
+assert(getToolStatusText("done", result) === "done", "completed tool status stays done even with multiline output");
+assert(summarizeToolResult(result.result) === "3 lines", "result summaries remain available for compact output metadata");
 assert(humanizeToolName("send_message_to_channel") === "Send Message To Channel", "fallback tool names are readable");
 
 console.log(`\n${passed} passed, ${failed} failed`);

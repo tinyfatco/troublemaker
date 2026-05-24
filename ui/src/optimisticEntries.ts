@@ -54,7 +54,7 @@ function hasUncoveredActiveToolActivity(entry: AwarenessEntry | null, laterEntri
 function collectToolIds(entries: AwarenessEntry[]): Set<string> {
   const ids = new Set<string>();
   for (const entry of entries) {
-    if (entry.role !== 'assistant' || !entry.content) continue;
+    if (!entry.content) continue;
     for (const block of entry.content) {
       if (block.type === 'toolCall' && block.id) ids.add(block.id);
       if (block.type === 'toolResult' && block.toolCallId) ids.add(block.toolCallId);
