@@ -190,7 +190,11 @@ export function buildSessionPreamble(
 	const skillsSection = skills.length > 0 ? formatSkillsForPrompt(skills) : "(none)";
 	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
 
-	const verbosityNote = verbosity === "messages-only"
+	const isWebDirectChat = [displayChannelId, displayChannelName]
+		.filter((value): value is string => typeof value === "string")
+		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
+
+	const verbosityNote = verbosity === "messages-only" && !isWebDirectChat
 		? "\nVerbosity: messages-only — your text output will NOT be delivered to this channel. Use send_message_to_channel for ALL communication."
 		: "";
 

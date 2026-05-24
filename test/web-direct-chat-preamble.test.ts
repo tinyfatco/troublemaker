@@ -1,0 +1,45 @@
+import { buildSessionPreamble } from "../src/core/prompt.js";
+
+let passed = 0;
+let failed = 0;
+
+function assert(condition: boolean, msg: string) {
+	if (condition) {
+		passed++;
+		console.log(`  ✓ ${msg}`);
+	} else {
+		failed++;
+		console.error(`  ✗ ${msg}`);
+	}
+}
+
+const workspaceContext = "Workspace:\n(none)";
+
+const webPreamble = buildSessionPreamble(
+	workspaceContext,
+	[],
+	[],
+	[],
+	"web",
+	undefined,
+	"messages-only",
+);
+
+assert(webPreamble.includes("Attending: web"), "web preamble still identifies the attending channel");
+assert(!webPreamble.includes("send_message_to_channel for ALL communication"), "web direct chat does not instruct the agent to use send_message_to_channel");
+assert(!webPreamble.includes("your text output will NOT be delivered"), "web direct chat does not claim direct text output is undeliverable");
+
+const telegramPreamble = buildSessionPreamble(
+	workspaceContext,
+	[],
+	[],
+	[],
+	"8389147137",
+	"telegram",
+	"messages-only",
+);
+
+assert(telegramPreamble.includes("send_message_to_channel for ALL communication"), "non-web messages-only channels keep the cross-channel delivery reminder");
+
+console.log(`\n${passed} passed, ${failed} failed`);
+process.exit(failed > 0 ? 1 : 0);
