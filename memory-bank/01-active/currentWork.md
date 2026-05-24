@@ -21,6 +21,17 @@ Near-term scope:
 
 ## Status: Hosted Workspace Reliability Polish In Progress
 
+2026-05-24: Active tool-call streaming UI work exposed a deeper state-model
+gap. A user can refresh the hosted workspace while Zip is still working; the
+agent/runtime continues and tool calls may still appear, but the web UI loses
+the local `useWebChat` request state and therefore may show no clear "agent is
+still working" indication. Track this as a separate durable/recoverable
+agent-working state problem, not just a tool-card styling issue. Related
+follow-ups: `td-eaa2` (recover active working state after refresh), `td-1879`
+(separate global agent-working state from local message request state), and
+`td-3474` (stream tool execution output/PID/result chunks inside the same tool
+accordion).
+
 2026-05-22: Follow-up reliability slice shipped the Zip PR for
 `yield_no_action` reason subtext and extended tool-card subtext to
 `send_message_to_channel` / `send_message` calls so outbound messages show the
