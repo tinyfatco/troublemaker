@@ -68,7 +68,8 @@ function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }:
   onExpandingContent?: () => void;
 }) {
   const args = block.arguments || {};
-  const hasArgs = Object.keys(args).length > 0;
+  const detailFrames = buildToolDetailFrames(args);
+  const hasArgs = detailFrames.length > 0;
   const liveOutputText = output?.text ? String(output.text) : '';
   const resultText = result?.result ? String(result.result) : liveOutputText;
   const hasOutputMeta = typeof output?.pid === 'number';
@@ -176,13 +177,24 @@ function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }:
           <div className="tool-accordion-inner">
             {hasArgs && (
               <div className="tool-detail-section">
-                <StructuredValue value={args} />
+                {detailFrames.map((frame, index) => (
+                  <ToolDetailFrame
+                    key={`${frame.kind}-${index}`}
+                    text={frame.text}
+                    chips={frame.chips}
+                    kind={frame.kind}
+                  />
+                ))}
               </div>
             )}
             {(resultText || hasOutputMeta) && (
               <div className="tool-detail-section">
-                {hasOutputMeta && <div className="tool-output-meta">pid {output?.pid}</div>}
-                {resultText && <pre className="tool-output-pre">{resultText}</pre>}
+                <ToolDetailFrame
+                  text={resultText}
+                  placeholder={isRunning ? 'waiting for output...' : ''}
+                  chips={buildOutputChips(output, result)}
+                  kind="output"
+                />
               </div>
             )}
           </div>
@@ -190,6 +202,170 @@ function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }:
       )}
     </div>
   );
+}
+
+interface ToolDetailChip {
+  label?: string;
+  value: string;
+  tone?: 'accent' | 'muted' | 'error';
+}
+
+interface ToolDetailFrameModel {
+  text: string;
+  kind: 'code' | 'text' | 'output';
+  chips: ToolDetailChip[];
+}
+
+function ToolDetailFrame({ text, placeholder, chips, kind }: {
+  text: string;
+  placeholder?: string;
+  chips: ToolDetailChip[];
+  kind: ToolDetailFrameModel['kind'];
+}) {
+  const displayText = text || placeholder || '';
+
+  return (
+    <div className={`tool-detail-frame ${kind}`}>
+      {chips.length > 0 && (
+        <div className="tool-detail-chips" aria-label="tool metadata">
+          {chips.map((chip, index) => (
+            <span className={`tool-detail-chip ${chip.tone || 'muted'}`} key={`${chip.label || 'chip'}-${chip.value}-${index}`}>
+              {chip.label && <span className="tool-detail-chip-label">{chip.label}</span>}
+              <span className="tool-detail-chip-value">{chip.value}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {displayText && (
+        <pre className={`tool-detail-text ${text ? '' : 'placeholder'}`}>{displayText}</pre>
+      )}
+    </div>
+  );
+}
+
+function buildToolDetailFrames(args: Record<string, unknown>): ToolDetailFrameModel[] {
+  const entries = Object.entries(args);
+  if (entries.length === 0) return [];
+
+  const consumed = new Set<string>();
+  const primary = findPrimaryToolDetail(args);
+  const chips = buildArgumentChips(args, primary?.key);
+
+  if (primary) {
+    consumed.add(primary.key);
+  }
+  for (const key of ['label', 'timeout', 'offset', 'limit', 'path', 'file', 'filePath', 'targetPath', 'channel', 'url']) {
+    if (key in args) consumed.add(key);
+  }
+
+  const frames: ToolDetailFrameModel[] = [];
+  if (primary) {
+    frames.push({
+      text: primary.text,
+      kind: primary.kind,
+      chips,
+    });
+  } else if (chips.length > 0) {
+    frames.push({ text: '', kind: 'code', chips });
+  }
+
+  const remaining = Object.fromEntries(entries.filter(([key]) => !consumed.has(key)));
+  if (Object.keys(remaining).length > 0) {
+    frames.push({
+      text: JSON.stringify(remaining, null, 2),
+      kind: 'code',
+      chips: [{ label: 'extra', value: `${Object.keys(remaining).length}` }],
+    });
+  }
+
+  if (frames.length === 0) {
+    frames.push({ text: JSON.stringify(args, null, 2), kind: 'code', chips: [] });
+  }
+
+  return frames;
+}
+
+function findPrimaryToolDetail(args: Record<string, unknown>): { key: string; text: string; kind: 'code' | 'text' } | null {
+  const candidates: Array<{ key: string; kind: 'code' | 'text' }> = [
+    { key: 'command', kind: 'code' },
+    { key: 'cmd', kind: 'code' },
+    { key: 'content', kind: 'code' },
+    { key: 'newContent', kind: 'code' },
+    { key: 'text', kind: 'text' },
+    { key: 'message', kind: 'text' },
+    { key: 'path', kind: 'code' },
+    { key: 'file', kind: 'code' },
+    { key: 'filePath', kind: 'code' },
+    { key: 'targetPath', kind: 'code' },
+    { key: 'url', kind: 'code' },
+    { key: 'query', kind: 'text' },
+    { key: 'pattern', kind: 'code' },
+  ];
+
+  for (const candidate of candidates) {
+    const value = args[candidate.key];
+    if (typeof value === 'string' && value.trim()) {
+      return { key: candidate.key, text: value, kind: candidate.kind };
+    }
+  }
+  return null;
+}
+
+function buildArgumentChips(args: Record<string, unknown>, primaryKey?: string): ToolDetailChip[] {
+  const chips: ToolDetailChip[] = [];
+  const add = (label: string, value: unknown, tone: ToolDetailChip['tone'] = 'muted') => {
+    if (value === undefined || value === null || value === '') return;
+    chips.push({ label, value: compactChipValue(value), tone });
+  };
+
+  addPrimaryKindChip(primaryKey, chips);
+
+  if (typeof args.label === 'string' && args.label.trim()) {
+    add('label', args.label, 'accent');
+  }
+  if (typeof args.timeout === 'number') {
+    add('timeout', `${args.timeout}s`, 'accent');
+  }
+  if (typeof args.offset === 'number' || typeof args.limit === 'number') {
+    const start = typeof args.offset === 'number' ? args.offset : 1;
+    const end = typeof args.limit === 'number' ? start + args.limit : undefined;
+    add('lines', end ? `${start}-${end}` : `${start}+`);
+  }
+
+  const pathKey = ['path', 'file', 'filePath', 'targetPath'].find((key) => key !== primaryKey && typeof args[key] === 'string');
+  if (pathKey) add(humanizeKey(pathKey), args[pathKey]);
+  if (primaryKey !== 'channel' && typeof args.channel === 'string') add('channel', args.channel);
+  if (primaryKey !== 'url' && typeof args.url === 'string') add('url', args.url);
+
+  return chips;
+}
+
+function addPrimaryKindChip(primaryKey: string | undefined, chips: ToolDetailChip[]) {
+  if (!primaryKey) return;
+  const label = ['command', 'cmd'].includes(primaryKey)
+    ? 'command'
+    : ['content', 'newContent'].includes(primaryKey)
+      ? 'content'
+      : ['path', 'file', 'filePath', 'targetPath'].includes(primaryKey)
+        ? 'path'
+        : humanizeKey(primaryKey);
+  chips.push({ value: label, tone: 'muted' });
+}
+
+function buildOutputChips(output?: ToolOutputContent, result?: ToolResultContent): ToolDetailChip[] {
+  const chips: ToolDetailChip[] = [];
+  if (typeof output?.pid === 'number') chips.push({ label: 'pid', value: String(output.pid), tone: 'accent' });
+  if (result?.isError) chips.push({ value: 'error', tone: 'error' });
+  else if (result) chips.push({ value: 'result', tone: 'muted' });
+  else if (output?.stream) chips.push({ value: output.stream, tone: 'muted' });
+  return chips;
+}
+
+function compactChipValue(value: unknown): string {
+  const raw = typeof value === 'string' ? value : String(value);
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  if (compact.length <= 42) return compact;
+  return `${compact.slice(0, 39)}...`;
 }
 
 function StructuredValue({ value, name, depth = 0 }: { value: unknown; name?: string; depth?: number }) {
