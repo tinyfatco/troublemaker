@@ -25,7 +25,7 @@ import {
 	resolveThinkingLevel,
 } from "./core/prompt.js";
 import * as log from "./log.js";
-import { resolveModel, resolveApiKey, registerFireworksProvider } from "./model-config.js";
+import { resolveModel, resolveApiKey } from "./model-config.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import type { ChannelStore } from "./store.js";
@@ -323,9 +323,6 @@ function createRunner(
 	// Create AuthStorage and ModelRegistry
 	const authStorage = AuthStorage.create();
 	const modelRegistry = ModelRegistry.create(authStorage, join(workspaceDir, "models.json"));
-
-	// Register Fireworks provider
-	registerFireworksProvider(modelRegistry);
 
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModel(workspaceDir, modelRegistry);

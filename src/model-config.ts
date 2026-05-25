@@ -3,9 +3,8 @@
  *
  * Priority: env vars > settings.json > defaults.
  *
- * Models are resolved through ModelRegistry so custom providers from
- * /data/models.json (e.g. Fireworks proxy models) are available to /model
- * and runtime resolution.
+ * Models are resolved through ModelRegistry so built-in pi-ai providers plus
+ * any workspace models.json entries are available to /model and runtime resolution.
  */
 
 import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
@@ -17,10 +16,6 @@ import * as log from "./log.js";
 const DEFAULT_PROVIDER = "fireworks";
 const DEFAULT_MODEL_ID = "accounts/fireworks/models/minimax-m2p7";
 
-/**
- * Friendly aliases for Fireworks-backed models.
- * Includes legacy aliases for backwards compatibility.
- */
 /**
  * Friendly aliases for Anthropic models.
  */
@@ -56,121 +51,23 @@ const ANTHROPIC_LISTED_MODELS = new Set([
 
 const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	minimax: "accounts/fireworks/models/minimax-m2p7",
-	"minimax-m2p1": "accounts/fireworks/models/minimax-m2p5",
-	"minimax-m2p5": "accounts/fireworks/models/minimax-m2p5",
-	"minimax-2.5": "accounts/fireworks/models/minimax-m2p5",
-	"minimax-m2p7": "accounts/fireworks/models/minimax-m2p7",
-	"minimax-2.7": "accounts/fireworks/models/minimax-m2p7",
-	deepseek: "accounts/fireworks/models/deepseek-v3p1",
-	"deepseek-v3": "accounts/fireworks/models/deepseek-v3p1",
-	"deepseek-v3p1": "accounts/fireworks/models/deepseek-v3p1",
-	"deepseek-r1": "accounts/fireworks/models/deepseek-v3p1",
-	kimi: "accounts/fireworks/models/kimi-k2p5",
-	"kimi-k2p5": "accounts/fireworks/models/kimi-k2p5",
+	deepseek: "accounts/fireworks/models/deepseek-v4-pro",
+	kimi: "accounts/fireworks/models/kimi-k2p6",
 	glm: "accounts/fireworks/models/glm-5p1",
 	glm5: "accounts/fireworks/models/glm-5p1",
-	"glm-5": "accounts/fireworks/models/glm-5",
 	"glm-5p1": "accounts/fireworks/models/glm-5p1",
 	"glm-5.1": "accounts/fireworks/models/glm-5p1",
-	"glm-4p7": "accounts/fireworks/models/glm-4p7",
-	glm4: "accounts/fireworks/models/glm-4p7",
+	qwen: "accounts/fireworks/models/qwen3p6-plus",
+	"qwen3p6": "accounts/fireworks/models/qwen3p6-plus",
+	"qwen3.6": "accounts/fireworks/models/qwen3p6-plus",
+	"glm-fast": "accounts/fireworks/routers/glm-5p1-fast",
+	"kimi-turbo": "accounts/fireworks/routers/kimi-k2p6-turbo",
 };
-
-/**
- * Fireworks model definitions. US-hosted inference for models that
- * would otherwise route through China (MiniMax) or other regions.
- */
-const FIREWORKS_MODELS = [
-	{
-		id: "accounts/fireworks/models/minimax-m2p5",
-		name: "MiniMax M2.5 (Fireworks)",
-		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 0.30, output: 1.20, cacheRead: 0.03, cacheWrite: 0 },
-		contextWindow: 196608,
-		maxTokens: 24576,
-	},
-	{
-		id: "accounts/fireworks/models/minimax-m2p7",
-		name: "MiniMax M2.7 (Fireworks)",
-		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 0.30, output: 1.20, cacheRead: 0.06, cacheWrite: 0 },
-		contextWindow: 196608,
-		maxTokens: 24576,
-	},
-	{
-		id: "accounts/fireworks/models/deepseek-v3p1",
-		name: "DeepSeek V3.1 (Fireworks)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 0.56, output: 1.68, cacheRead: 0.28, cacheWrite: 0 },
-		contextWindow: 163840,
-		maxTokens: 20480,
-	},
-	{
-		id: "accounts/fireworks/models/kimi-k2p5",
-		name: "Kimi K2.5 (Fireworks)",
-		reasoning: true,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 0.60, output: 3.00, cacheRead: 0.10, cacheWrite: 0 },
-		contextWindow: 262144,
-		maxTokens: 32768,
-	},
-	{
-		id: "accounts/fireworks/models/glm-5",
-		name: "GLM-5 (Fireworks)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 1.00, output: 3.20, cacheRead: 0.20, cacheWrite: 0 },
-		contextWindow: 202752,
-		maxTokens: 32768,
-	},
-	{
-		id: "accounts/fireworks/models/glm-5p1",
-		name: "GLM-5.1 (Fireworks)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 1.40, output: 4.40, cacheRead: 0.26, cacheWrite: 0 },
-		contextWindow: 202752,
-		maxTokens: 32768,
-	},
-	{
-		id: "accounts/fireworks/models/glm-4p7",
-		name: "GLM-4.7 (Fireworks)",
-		reasoning: false,
-		input: ["text"] as ("text" | "image")[],
-		cost: { input: 0.60, output: 2.20, cacheRead: 0.30, cacheWrite: 0 },
-		contextWindow: 202752,
-		maxTokens: 32768,
-	},
-];
-
-/**
- * Register the Fireworks provider on a ModelRegistry.
- * Only registers if FIREWORKS_API_KEY is set in the environment.
- */
-export function registerFireworksProvider(registry: ModelRegistry): void {
-	if (!process.env.FIREWORKS_API_KEY) {
-		return;
-	}
-
-	registry.registerProvider("fireworks", {
-		baseUrl: process.env.FIREWORKS_BASE_URL || "https://api.fireworks.ai/inference/v1",
-		apiKey: "FIREWORKS_API_KEY",
-		api: "openai-completions" as Api,
-		models: FIREWORKS_MODELS,
-	});
-
-	log.logInfo(`Registered fireworks provider (${FIREWORKS_MODELS.length} models)`);
-}
 
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
-	const registry = ModelRegistry.create(authStorage, modelsJsonPath);
-	registerFireworksProvider(registry);
-	return registry;
+	return ModelRegistry.create(authStorage, modelsJsonPath);
 }
 
 function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {

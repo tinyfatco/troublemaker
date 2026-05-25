@@ -1,4 +1,4 @@
-import type { Api, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getModel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RuntimeEventSink, WebTurnInput, WebTurnSettings } from "../../core/runtime-contract.js";
 import type { EdgeHostBridge } from "./host-bridge.js";
@@ -25,28 +25,15 @@ const DEFAULT_SYSTEM_PROMPT = `You are Troublemaker, a practical AI agent runnin
 
 You can answer directly for ordinary conversation. Use the bash tool only when shell access, repository inspection, or local execution is required. In edge mode bash wakes the host container, so batch related shell work thoughtfully.`;
 
-function createFireworksModel(settings: WebTurnSettings = {}, baseUrl = "https://tinyfat.com/api/fireworks/v1"): Model<Api> {
-	const modelId = settings.modelId || "accounts/fireworks/models/glm-5p1";
-	return {
-		id: modelId,
-		name: modelId.includes("glm-5p1") ? "GLM-5.1 (Fireworks)" : modelId,
-		api: "openai-completions",
-		provider: "fireworks",
-		baseUrl,
-		reasoning: false,
-		input: ["text"],
-		cost: { input: 1.40, output: 4.40, cacheRead: 0.26, cacheWrite: 0 },
-		contextWindow: 202752,
-		maxTokens: 32768,
-		compat: {
-			supportsStore: false,
-			supportsDeveloperRole: false,
-			supportsReasoningEffort: false,
-			supportsUsageInStreaming: true,
-			maxTokensField: "max_tokens",
-			supportsStrictMode: false,
-		},
-	};
+const DEFAULT_EDGE_FIREWORKS_MODEL_ID = "accounts/fireworks/models/glm-5p1";
+
+function createFireworksModel(settings: WebTurnSettings = {}, baseUrl = "https://tinyfat.com/api/fireworks"): Model<Api> {
+	const modelId = settings.modelId || DEFAULT_EDGE_FIREWORKS_MODEL_ID;
+	const model = getModel("fireworks" as any, modelId as any);
+	if (!model) {
+		throw new Error(`Fireworks model not found: ${modelId}`);
+	}
+	return { ...model, baseUrl };
 }
 
 function normalizeThinkingLevel(value: WebTurnSettings["thinkingLevel"]): ModelThinkingLevel {
