@@ -1,4 +1,4 @@
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ModelThinkingLevel, SimpleStreamOptions } from "@earendil-works/pi-ai";
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -27,4 +27,17 @@ export function normalizeThinkingLevelForModel(model: RuntimeModel, requested: u
 	if (level === "medium" || level === "high") return level;
 	if (level === "xhigh") return "high";
 	return "low";
+}
+
+export function normalizeSimpleStreamOptionsForModel(
+	model: RuntimeModel,
+	options?: SimpleStreamOptions,
+): SimpleStreamOptions | undefined {
+	const effective = normalizeThinkingLevelForModel(model, options?.reasoning);
+	if (effective === "off") {
+		if (!options?.reasoning) return options;
+		const { reasoning: _reasoning, ...rest } = options;
+		return rest;
+	}
+	return { ...options, reasoning: effective };
 }

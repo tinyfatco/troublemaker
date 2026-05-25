@@ -1,5 +1,5 @@
-import { Agent, type AgentEvent, type AgentTool } from "@earendil-works/pi-agent-core";
-import { type ImageContent } from "@earendil-works/pi-ai";
+import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
+import { streamSimple, type ImageContent } from "@earendil-works/pi-ai";
 import {
 	AgentSession,
 	AuthStorage,
@@ -26,7 +26,7 @@ import {
 } from "./core/prompt.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey } from "./model-config.js";
-import { normalizeThinkingLevelForModel } from "./model-thinking.js";
+import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } from "./model-thinking.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import type { ChannelStore } from "./store.js";
@@ -335,6 +335,8 @@ function createRunner(
 	if (initialThinkingLevel !== requestedInitialThinkingLevel) {
 		log.logInfo(`[thinking] Effective thinking ${requestedInitialThinkingLevel} -> ${initialThinkingLevel} for ${model.provider}/${model.id}`);
 	}
+	const streamFn: StreamFn = (streamModel, context, options) =>
+		streamSimple(streamModel, context, normalizeSimpleStreamOptionsForModel(streamModel, options));
 
 	// Create agent
 	const agent = new Agent({
@@ -345,6 +347,7 @@ function createRunner(
 			tools,
 		},
 		convertToLlm,
+		streamFn,
 		getApiKey: async (provider: string) => resolveApiKey(authStorage, provider),
 	});
 

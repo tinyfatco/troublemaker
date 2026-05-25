@@ -1,6 +1,7 @@
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import { streamSimple, type Api, type Message, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { RuntimeEventSink } from "../../core/runtime-contract.js";
+import { normalizeSimpleStreamOptionsForModel } from "../../model-thinking.js";
 
 export interface EdgeAgentSessionOptions {
 	systemPrompt: string;
@@ -113,10 +114,15 @@ export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent 
 		},
 		convertToLlm,
 		sessionId: options.sessionId,
-		streamFn: async (model, context, streamOptions) => streamSimple(model, context, {
-			...streamOptions,
-			apiKey: options.apiKey,
-		}),
+		streamFn: async (model, context, streamOptions) =>
+			streamSimple(
+				model,
+				context,
+				normalizeSimpleStreamOptionsForModel(model, {
+					...streamOptions,
+					apiKey: options.apiKey,
+				}),
+			),
 	});
 
 	agent.subscribe(async (event: AgentEvent) => {
