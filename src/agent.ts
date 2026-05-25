@@ -26,6 +26,7 @@ import {
 } from "./core/prompt.js";
 import * as log from "./log.js";
 import { resolveModel, resolveApiKey } from "./model-config.js";
+import { normalizeThinkingLevelForModel } from "./model-thinking.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import type { ChannelStore } from "./store.js";
@@ -327,9 +328,13 @@ function createRunner(
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModel(workspaceDir, modelRegistry);
 
-	// FAT-275 — read thinking_level from settings.json. Defaults to "off" for
-	// backwards compatibility. Accepts off|low|medium|high.
-	const initialThinkingLevel = resolveThinkingLevel(workspaceStore);
+	// FAT-275: read thinking_level from settings.json and clamp it to the
+	// selected provider/model's supported runtime shape.
+	const requestedInitialThinkingLevel = resolveThinkingLevel(workspaceStore);
+	const initialThinkingLevel = normalizeThinkingLevelForModel(model, requestedInitialThinkingLevel);
+	if (initialThinkingLevel !== requestedInitialThinkingLevel) {
+		log.logInfo(`[thinking] Effective thinking ${requestedInitialThinkingLevel} -> ${initialThinkingLevel} for ${model.provider}/${model.id}`);
+	}
 
 	// Create agent
 	const agent = new Agent({
@@ -725,6 +730,14 @@ function createRunner(
 			if (!agentModel || currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider) {
 				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
 				agent.state.model = currentModel;
+			}
+			const requestedThinkingLevel = resolveThinkingLevel(workspaceStore);
+			const effectiveThinkingLevel = normalizeThinkingLevelForModel(agent.state.model, requestedThinkingLevel);
+			if (agent.state.thinkingLevel !== effectiveThinkingLevel) {
+				if (effectiveThinkingLevel !== requestedThinkingLevel) {
+					log.logInfo(`[thinking] Effective thinking ${requestedThinkingLevel} -> ${effectiveThinkingLevel} for ${agent.state.model.provider}/${agent.state.model.id}`);
+				}
+				agent.state.thinkingLevel = effectiveThinkingLevel;
 			}
 
 			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions, agent.state.model);

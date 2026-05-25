@@ -1,6 +1,7 @@
-import { getModel, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { RuntimeEventSink, WebTurnInput, WebTurnSettings } from "../../core/runtime-contract.js";
+import { normalizeThinkingLevelForModel } from "../../model-thinking.js";
 import type { EdgeHostBridge } from "./host-bridge.js";
 import { createEdgeAgentSession } from "./pi-session.js";
 import { createEdgeBashTool } from "./tools.js";
@@ -36,13 +37,6 @@ function createFireworksModel(settings: WebTurnSettings = {}, baseUrl = "https:/
 	return { ...model, baseUrl };
 }
 
-function normalizeThinkingLevel(value: WebTurnSettings["thinkingLevel"]): ModelThinkingLevel {
-	if (value === "minimal" || value === "low" || value === "medium" || value === "high" || value === "xhigh") {
-		return value;
-	}
-	return "off";
-}
-
 export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeWebChatResult> {
 	await options.emit({ type: "status", status: "accepted", message: "Edge turn accepted", mode: "edge" });
 
@@ -51,7 +45,7 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 		systemPrompt: options.settings?.systemPrompt || DEFAULT_SYSTEM_PROMPT,
 		model,
 		apiKey: options.modelApiKey,
-		thinkingLevel: normalizeThinkingLevel(options.settings?.thinkingLevel),
+		thinkingLevel: normalizeThinkingLevelForModel(model, options.settings?.thinkingLevel),
 		sessionId: options.input.channelId,
 		initialMessages: options.history,
 		tools: [createEdgeBashTool(options.hostBridge, options.emit)],

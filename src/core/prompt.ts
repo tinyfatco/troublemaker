@@ -2,6 +2,7 @@ import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-age
 import type { ChannelInfo, UserInfo } from "../adapters/types.js";
 import type { VerbosityLevel } from "../context.js";
 import * as log from "../log.js";
+import { normalizeThinkingLevel } from "../model-thinking.js";
 import { resolveOpenAIOverlay } from "../openai-overlay.js";
 import type { SandboxConfig } from "../sandbox.js";
 import type { WorkspaceStore } from "../storage/workspace.js";
@@ -42,10 +43,7 @@ export function resolveThinkingLevel(workspace: WorkspaceStore): any {
 			defaultThinkingLevel?: string;
 		};
 		const level = settings.thinking_level ?? settings.defaultThinkingLevel;
-		if (!level) return "off";
-		const allowed = ["off", "minimal", "low", "medium", "high", "xhigh"];
-		if (allowed.includes(level)) return level;
-		return "off";
+		return normalizeThinkingLevel(level);
 	} catch {
 		return "off";
 	}
