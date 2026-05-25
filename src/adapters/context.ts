@@ -65,7 +65,7 @@ export function createTwoMessageContext(
 		sendTyping?: () => Promise<void>;
 		/** Upload a file */
 		uploadFile?: (filePath: string, title?: string) => Promise<void>;
-		/** Delete the working + final messages (for [SILENT] handling) */
+		/** Delete the working + final messages for legacy quiet-event handling */
 		deleteMessages?: (workingId: string | null, finalId: string | null) => Promise<void>;
 	},
 ): MomContext {

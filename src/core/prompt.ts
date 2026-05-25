@@ -162,7 +162,7 @@ Do NOT specify \`channelId\` — attention prompts run in the heartbeat channel 
 
 Use unique filenames (include timestamp suffix). Max 5 queued prompts.
 Triggered prompts appear as: \`[ATTENTION:filename.json:type:time] text\`
-For periodic prompts with nothing to report, respond with just \`[SILENT]\`.
+For periodic prompts with nothing to report, use \`yield_no_action\` so the quiet is recorded without posting a response.
 Debounce immediate prompts — batch multiple signals into one rather than creating many.
 Timezone: ${tz}. Assume this when users don't specify.
 

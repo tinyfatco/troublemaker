@@ -33,7 +33,7 @@ MomContext
 ├── setTyping()    — show typing/thinking indicator
 ├── setWorking()   — show/hide working indicator (" ...")
 ├── uploadFile()   — attach a file to the conversation
-└── deleteMessage() — delete the response (used for [SILENT] events)
+└── deleteMessage() — delete the response for legacy quiet-event handling
 ```
 
 ### MomHandler

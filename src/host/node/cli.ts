@@ -1204,7 +1204,7 @@ You have access to your human's stuff. That doesn't mean you _share_ their stuff
 
 ## Heartbeats
 
-When you wake for a heartbeat, read \`HEARTBEAT.md\` for your checklist. If nothing needs doing, respond with just \`[SILENT]\`.
+When you wake for a heartbeat, read \`HEARTBEAT.md\` for your checklist. If nothing needs doing, use \`yield_no_action\` so the quiet is recorded without posting a response.
 
 Things you can do proactively during heartbeats:
 
