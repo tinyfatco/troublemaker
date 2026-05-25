@@ -320,9 +320,6 @@ function buildArgumentChips(args: Record<string, unknown>, primaryKey?: string):
 
   addPrimaryKindChip(primaryKey, chips);
 
-  if (typeof args.label === 'string' && args.label.trim()) {
-    add('label', args.label, 'accent');
-  }
   if (typeof args.timeout === 'number') {
     add('timeout', `${args.timeout}s`, 'accent');
   }
