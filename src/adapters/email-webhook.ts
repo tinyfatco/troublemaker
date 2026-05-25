@@ -4,6 +4,8 @@ import { basename, join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { composeEmailReplyBody, type EmailReplyQuote } from "./email/reply-composer.js";
+import { buildReplyThreadHeaders } from "./email/thread-headers.js";
+import { appendEmailThreadEvent } from "./email/thread-ledger.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
@@ -16,10 +18,11 @@ import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, Us
  */
 interface EmailPayload {
 	from: string;
+	fromFull?: string;
 	to: string;
 	subject: string;
 	body: string;
-	messageId: string;
+	messageId?: string;
 	inReplyTo?: string;
 	references?: string;
 	allRecipients?: string[];
@@ -170,17 +173,29 @@ Keep responses concise and professional. The user will receive one email with yo
 		this.pendingPayloads.set(channelId, payload);
 
 		// Log the inbound message
-		this.logToFile({
-			date: new Date().toISOString(),
-			ts,
+			this.logToFile({
+				date: new Date().toISOString(),
+				ts,
 			channel: `email:${payload.from}`,
 			channelId,
 			user: payload.from,
 			userName: payload.from.split("@")[0],
 			text: event.text,
-			attachments: [],
-			isBot: false,
-		});
+				attachments: [],
+				isBot: false,
+			});
+			this.logThreadEvent({
+				type: "inbound",
+				at: new Date().toISOString(),
+				channelId,
+				from: payload.from,
+				to: [payload.to],
+				subject: payload.subject,
+				body: payload.body,
+				messageId: payload.messageId,
+				inReplyTo: payload.inReplyTo,
+				references: payload.references,
+			});
 
 		if (this.handler.isRunning(channelId)) {
 			log.logInfo(`[email] Already running for ${channelId}, queuing`);
@@ -368,7 +383,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		if (!body?.trim()) return undefined;
 		return {
 			body,
-			from: payload.replyQuote?.from || payload.from,
+			from: payload.replyQuote?.from || payload.fromFull || payload.from,
 			sentAt: payload.replyQuote?.sentAt || fallbackSentAt,
 		};
 	}
@@ -430,12 +445,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			body,
 		};
 
-		if (replyContext?.messageId) {
-			emailMetadata.in_reply_to = replyContext.messageId;
-			emailMetadata.references = replyContext.references
-				? `${replyContext.references} ${replyContext.messageId}`
-				: replyContext.messageId;
-		}
+		Object.assign(emailMetadata, buildReplyThreadHeaders(replyContext?.messageId, replyContext?.references));
 
 		let response: Response;
 
@@ -478,6 +488,17 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		const result = (await response.json()) as { ok: boolean; messageId?: string };
 		log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
+		this.logThreadEvent({
+			type: "outbound",
+			at: new Date().toISOString(),
+			channelId: channel,
+			to: [toAddress],
+			subject: resolvedSubject,
+			body: text,
+			providerMessageId: result.messageId,
+			inReplyTo: typeof emailMetadata.in_reply_to === "string" ? emailMetadata.in_reply_to : undefined,
+			references: typeof emailMetadata.references === "string" ? emailMetadata.references : undefined,
+		});
 		return result.messageId || String(Date.now());
 	}
 
@@ -504,6 +525,14 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	logToFile(entry: object): void {
 		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+	}
+
+	private logThreadEvent(event: Parameters<typeof appendEmailThreadEvent>[1]): void {
+		try {
+			appendEmailThreadEvent(this.workingDir, event);
+		} catch (err) {
+			log.logWarning("[email] Failed to append thread ledger event", err instanceof Error ? err.message : String(err));
+		}
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
@@ -727,13 +756,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			emailMetadata.log_content = conciseLog;
 		}
 
-		// Add threading headers (reply to the original message)
-		if (meta.messageId) {
-			emailMetadata.in_reply_to = meta.messageId;
-			emailMetadata.references = meta.references
-				? `${meta.references} ${meta.messageId}`
-				: meta.messageId;
-		}
+		Object.assign(emailMetadata, buildReplyThreadHeaders(meta.messageId, meta.references));
 
 		log.logInfo(`[email] Sending reply to ${toList}: ${replySubject}`);
 
@@ -784,10 +807,21 @@ Keep responses concise and professional. The user will receive one email with yo
 				// can include the agent's prior content in the quoted body.
 				// Without this, buildConversationReplyBody finds no isBot:true entries
 				// for this channelId and the agent loses its own context across turns.
-				if (channelId) {
-					this.logBotResponse(channelId, finalText, String(Date.now()));
+					if (channelId) {
+						this.logBotResponse(channelId, finalText, String(Date.now()));
+					}
+					this.logThreadEvent({
+						type: "outbound",
+						at: new Date().toISOString(),
+						channelId: channelId || "",
+						to: toList.split(",").map((addr) => addr.trim()).filter(Boolean),
+						subject: replySubject,
+						body: finalText,
+						providerMessageId: result.messageId,
+						inReplyTo: typeof emailMetadata.in_reply_to === "string" ? emailMetadata.in_reply_to : undefined,
+						references: typeof emailMetadata.references === "string" ? emailMetadata.references : undefined,
+					});
 				}
-			}
 		} catch (err) {
 			log.logWarning("[email] Send error", err instanceof Error ? err.message : String(err));
 		}
