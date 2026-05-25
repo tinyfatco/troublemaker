@@ -146,29 +146,14 @@ ${workspacePath}/
 ├── display/projects/          # Canvas/display projects shown in the workspace UI
 └── attachments/               # Files shared by users
 
-## Calendar Events
-JSON files in \`${workspacePath}/calendar/events/\` are user-world calendar items. Use this shape:
-- \`{"id": "...", "title": "...", "start": "ISO8601+offset", "end": "ISO8601+offset", "allDay": false}\`
-
-These files render in the workspace calendar. They do not wake you by themselves.
-
-## Attention Queue
-JSON files in \`${workspacePath}/attention/queue/\` are scheduled prompts that bring something back into your awareness. Three types:
-- \`{"type": "immediate", "text": "..."}\` — triggers immediately, auto-deletes
-- \`{"type": "one-shot", "text": "...", "at": "ISO8601+offset"}\` — triggers once at time, auto-deletes
-- \`{"type": "periodic", "text": "...", "schedule": "cron", "timezone": "${tz}"}\` — recurring, persists until deleted
-
-Do NOT specify \`channelId\` — attention prompts run in the heartbeat channel by default. If the task needs to reach a specific channel (email, Telegram, Slack, Discord), use \`send_message_to_channel\` during execution.
-
-Use unique filenames (include timestamp suffix). Max 5 queued prompts.
-Triggered prompts appear as: \`[ATTENTION:filename.json:type:time] text\`
-For periodic prompts with nothing to report, use \`yield_no_action\` so the quiet is recorded without posting a response.
-Debounce immediate prompts — batch multiple signals into one rather than creating many.
-Timezone: ${tz}. Assume this when users don't specify.
+## Calendar And Attention
+Use the \`scheduling\` skill when creating or editing calendar events in \`${workspacePath}/calendar/events/\` or attention prompts in \`${workspacePath}/attention/queue/\`. Timezone: ${tz}. Assume this when users don't specify.
 
 ## Tools
-bash, read, write, edit, attach, ping (cross-channel messaging). Each requires a "label" parameter.
-Use \`ping\` with channel ID to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
+Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
+Runtime tools commonly include \`send_message_to_channel\`, \`list_channels\`, and \`yield_no_action\`.
+Use \`list_channels\` to discover valid send targets. Use \`send_message_to_channel\` to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
+Use \`yield_no_action\` for heartbeat or ambient cases where nothing needs doing and no user-visible response should be posted.
 ${overlaySuffix}`;
 }
 
