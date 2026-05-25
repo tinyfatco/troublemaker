@@ -1882,15 +1882,12 @@ html, body, #root {
 }
 
 .tool-detail-chips {
-  position: absolute;
-  top: 0.28rem;
-  right: 0.32rem;
-  z-index: 1;
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 0.18rem;
-  max-width: calc(100% - 0.64rem);
+  max-width: 100%;
+  margin: 0 0 0.36rem;
   pointer-events: none;
 }
 
@@ -1943,10 +1940,6 @@ html, body, #root {
   overflow-x: auto;
   overflow-y: auto;
   max-height: 260px;
-}
-
-.tool-detail-frame:has(.tool-detail-chips) .tool-detail-text {
-  padding-top: 1.15rem;
 }
 
 .tool-detail-frame.text .tool-detail-text {
