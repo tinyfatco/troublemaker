@@ -2,10 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+	collectSlackThreadMessages,
 	collectSlackThreadMessagesFromLog,
 	formatSlackThreadTranscript,
 	parseSlackThreadTarget,
 } from "../src/tools/read-thread.js";
+import type { PlatformAdapter } from "../src/adapters/types.js";
 
 let passed = 0;
 let failed = 0;
@@ -77,6 +79,7 @@ try {
 	const missing = collectSlackThreadMessagesFromLog(workingDir, "slack:C0AN1GL51K7:1779777999.999999");
 
 	assert(first?.messages.length === 2, "first thread transcript includes only first thread messages");
+	assert(first?.source === "log", "log transcript source is labeled");
 	assert(first?.messages.some((m) => m.text.includes("deploy QA")), "first transcript preserves deploy QA nuance");
 	assert(!first?.messages.some((m) => m.text.includes("product feedback")), "first transcript excludes second thread nuance");
 	assert(first?.messages[0]?.isRoot === true, "root message is marked root");
@@ -87,9 +90,62 @@ try {
 
 	const formatted = formatSlackThreadTranscript(second!);
 	assert(formatted.includes("slack:C0AN1GL51K7:1779777100.000300"), "formatted transcript names exact target");
+	assert(formatted.includes("Source: local log"), "formatted transcript shows local log source");
 	assert(formatted.includes("[root]"), "formatted transcript marks root");
 	assert(formatted.includes("[reply]"), "formatted transcript marks replies");
 	assert(!formatted.includes("deploy QA"), "formatted transcript does not leak other thread text");
+
+	const slackApiAdapter = {
+		name: "slack",
+		readThread: async (channel: string, threadTs: string) => [
+			{
+				date: "2026-05-26T09:00:00.000Z",
+				ts: threadTs,
+				threadTs,
+				channelId: channel,
+				channelName: "tinyfat",
+				sender: "Alex",
+				text: "Authoritative Slack API root about billing",
+				isRoot: true,
+				isBot: false,
+				sourceEventType: "slack_conversations_replies",
+			},
+			{
+				date: "2026-05-26T09:01:00.000Z",
+				ts: "1779777201.000600",
+				threadTs,
+				channelId: channel,
+				channelName: "tinyfat",
+				sender: "Mike",
+				text: "API-only reply not present in log",
+				isRoot: false,
+				isBot: false,
+				sourceEventType: "slack_conversations_replies",
+			},
+		],
+	} as unknown as PlatformAdapter;
+	const apiResult = await collectSlackThreadMessages(
+		workingDir,
+		"slack:C0AN1GL51K7:1779777200.000500",
+		[slackApiAdapter],
+	);
+	assert(apiResult?.source === "slack-api", "read_thread prefers live Slack API transcript when available");
+	assert(apiResult?.messages.some((m) => m.text.includes("API-only reply")), "Slack API transcript can include messages not present in local log");
+	assert(formatSlackThreadTranscript(apiResult!).includes("Source: Slack API"), "formatted API transcript shows Slack API source");
+
+	const failingSlackApiAdapter = {
+		name: "slack",
+		readThread: async () => {
+			throw new Error("missing_scope");
+		},
+	} as unknown as PlatformAdapter;
+	const fallbackResult = await collectSlackThreadMessages(
+		workingDir,
+		"slack:C0AN1GL51K7:1779777000.000100",
+		[failingSlackApiAdapter],
+	);
+	assert(fallbackResult?.source === "log", "Slack API failure falls back to local log transcript");
+	assert(fallbackResult?.warning?.includes("missing_scope"), "fallback transcript preserves Slack API failure warning");
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });
 }
