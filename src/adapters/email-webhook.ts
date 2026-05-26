@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
+import { MomSettingsManager } from "../context.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { composeEmailReplyBody, type EmailReplyQuote } from "./email/reply-composer.js";
@@ -55,6 +56,7 @@ interface ActiveEmailReplyContext {
 	messageId?: string;
 	references?: string;
 	replyQuote?: EmailReplyQuote;
+	explicitOutboundSent?: boolean;
 }
 
 interface LoggedEmailThreadEntry {
@@ -488,6 +490,9 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		const result = (await response.json()) as { ok: boolean; messageId?: string };
 		log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
+		if (replyContext) {
+			replyContext.explicitOutboundSent = true;
+		}
 		this.logThreadEvent({
 			type: "outbound",
 			at: new Date().toISOString(),
@@ -607,8 +612,10 @@ Keep responses concise and professional. The user will receive one email with yo
 		const toolLog: string[] = [];
 		const pendingAttachments: Array<{ filename: string; filePath: string }> = [];
 		let finalText = "";
+		let forceFinalResponse = false;
 		const payload = this.pendingPayloads.get(event.channel);
 		const activeReplyContext = payload ? this.registerActiveReplyContext(event.channel, payload, event.ts) : undefined;
+		const messagesOnly = new MomSettingsManager(this.workingDir).getVerbose(event.channel, "email") === "messages-only";
 		const emailMeta = {
 			from: event.user,
 			selfEmail: payload?.to?.toLowerCase(), // agent's own address — exclude from reply-all
@@ -655,12 +662,19 @@ Keep responses concise and professional. The user will receive one email with yo
 				}
 
 				// Actual response text
-				if (shouldLog) {
+				if (shouldLog && !messagesOnly) {
 					finalText = finalText ? `${finalText}\n${text}` : text;
 				}
 			},
 
-			sendFinalResponse: async (text: string) => {
+			sendFinalResponse: async (text: string, options = {}) => {
+				const force = (options as { force?: boolean }).force === true;
+				if (messagesOnly && !force) {
+					finalText = "";
+					forceFinalResponse = false;
+					return;
+				}
+				forceFinalResponse = force;
 				finalText = text;
 			},
 
@@ -690,6 +704,10 @@ Keep responses concise and professional. The user will receive one email with yo
 				if (!working) {
 					// Run complete — send the email reply
 					try {
+						if (activeReplyContext?.explicitOutboundSent && !forceFinalResponse) {
+							log.logInfo(`[email] Explicit outbound already sent for ${event.channel}; suppressing adapter final reply`);
+							return;
+						}
 						await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments, event.channel);
 					} finally {
 						this.clearActiveReplyContext(activeReplyContext);
