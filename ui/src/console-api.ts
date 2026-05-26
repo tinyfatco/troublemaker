@@ -46,6 +46,29 @@ export interface AgentScheduleManifest {
   events: AgentScheduleManifestEvent[];
 }
 
+export interface AgentSettingsSnapshot {
+  spontaneity?: {
+    enabled?: boolean;
+    level?: number;
+    spontaneity?: number;
+    intervalMinutes?: number;
+    quietHours?: { start: string; end: string };
+    timezone?: string;
+  };
+  verbose?: unknown;
+  model?: string | null;
+  provider?: string | null;
+  thinking_level?: string | null;
+  thinking_level_accepted?: string[];
+  heartbeat?: {
+    checklist?: string | null;
+    checklist_present?: boolean;
+    checklist_empty?: boolean;
+    schedule_file?: unknown;
+  };
+  described_at?: string;
+}
+
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 
 function currentAgentId(): string {
@@ -101,6 +124,25 @@ export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {
   const resp = await fetchWithTimeout(consoleAgentUrl('/status'));
   if (!resp.ok) throw await readError(resp, `Status failed: ${resp.status}`);
   return resp.json();
+}
+
+export async function fetchAgentSettings(): Promise<AgentSettingsSnapshot> {
+  const resp = await fetchWithTimeout(consoleAgentUrl('/describe'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  }, 20000);
+  if (!resp.ok) throw await readError(resp, `Settings failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function configureAgentSetting(target: string, value: unknown): Promise<void> {
+  const resp = await fetchWithTimeout(consoleAgentUrl('/configure'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, value }),
+  }, 20000);
+  if (!resp.ok) throw await readError(resp, `Configure failed: ${resp.status}`);
 }
 
 export async function fetchAwarenessBacklog(limit: number, before?: number): Promise<AwarenessBacklog> {
