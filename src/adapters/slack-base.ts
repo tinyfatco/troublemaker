@@ -181,13 +181,14 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return result.ts as string;
 	}
 
-	protected slackPulseMetadata(channel: string, ts: string, threadTs?: string): PulseRecordMetadata {
-		if (channel.startsWith("D")) return { messageId: ts };
+	protected slackPulseMetadata(channel: string, ts: string, threadTs?: string, directlyAddressed = false): PulseRecordMetadata {
+		if (channel.startsWith("D")) return { messageId: ts, directlyAddressed };
 		const rootThreadTs = threadTs ?? ts;
 		return {
 			messageId: ts,
 			threadTs: rootThreadTs,
 			replyTarget: `slack:${channel}:${rootThreadTs}`,
+			directlyAddressed,
 			replyTargetDescription: threadTs
 				? "Slack thread containing this message"
 				: "Slack thread rooted under this message",

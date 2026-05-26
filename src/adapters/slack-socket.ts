@@ -52,7 +52,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts));
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts, true));
 			}
 
 			if (e.channel.startsWith("D")) {
@@ -137,9 +137,12 @@ export class SlackSocketAdapter extends SlackBase {
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
 
+			const isDM = e.channel_type === "im";
+			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
+
 			// Feed pulse before any filtering — pulse needs to see everything
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts));
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts, !isDM && Boolean(isBotMention)));
 			}
 
 			// Ignore own messages only — bots are just participants
@@ -163,8 +166,6 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			const userId = e.user || e.bot_id || "unknown";
-			const isDM = e.channel_type === "im";
-			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
 			const threadTs = isDM ? undefined : e.thread_ts ?? e.ts;
 
 			if (!isDM && isBotMention) {

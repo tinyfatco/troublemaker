@@ -128,9 +128,13 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		const event = payload.event;
 
+		const isDirectlyAddressed = event.type === "app_mention"
+			|| event.channel_type === "im"
+			|| Boolean(event.text?.includes(`<@${this.botUserId}>`));
+
 		// Feed pulse on every message (before any filtering) — pulse needs to see everything
 		if (this.pulse && event.ts && (event.user || event.bot_id)) {
-			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text, this.slackPulseMetadata(event.channel, event.ts, event.thread_ts));
+			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text, this.slackPulseMetadata(event.channel, event.ts, event.thread_ts, isDirectlyAddressed));
 		}
 
 		// Ignore own messages only — bots are just participants

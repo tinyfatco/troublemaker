@@ -59,5 +59,24 @@ const inboundAmbient = pulse.recentMessages("C0AN1GL51K7").filter((entry) => !pu
 assert(inboundAmbient.length === 1, "only inbound messages remain ambient candidates");
 assert(inboundAmbient[0]?.replyTarget === "slack:C0AN1GL51K7:1779777014.658729", "inbound ambient candidate keeps the Slack thread reply target");
 
+
+pulse.record("C0AN1GL51K7", "U09V58YC33R", "direct mention".length, "direct mention", {
+	messageId: "1779777030.000100",
+	threadTs: "1779777030.000100",
+	replyTarget: "slack:C0AN1GL51K7:1779777030.000100",
+	directlyAddressed: true,
+});
+const ambientCandidates = pulse.recentMessages("C0AN1GL51K7").filter((entry) => pulse.isAmbientCandidate(entry));
+assert(ambientCandidates.length === 1, "directly addressed messages are not ambient candidates");
+assert(ambientCandidates[0]?.messageId === "1779777020.000100", "only passive inbound messages stay ambient candidates");
+
+pulse.record("C0AN1GL51K7", "U09V58YC33R", "duplicate starts ambient".length, "duplicate starts ambient", {
+	messageId: "1779777040.000100",
+});
+pulse.record("C0AN1GL51K7", "U09V58YC33R", "duplicate starts ambient".length, "duplicate starts ambient", {
+	messageId: "1779777040.000100",
+	directlyAddressed: true,
+});
+assert(!pulse.isAmbientCandidate(pulse.recentMessages("C0AN1GL51K7").find((entry) => entry.messageId === "1779777040.000100")!), "direct mention metadata wins across duplicate events");
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

@@ -18,6 +18,8 @@ export interface PulseEntry {
 	replyTarget?: string;
 	/** Human-readable explanation of the reply target. */
 	replyTargetDescription?: string;
+	/** True when this message already triggered a direct run. */
+	directlyAddressed?: boolean;
 	textLength: number;
 	/** Full message text, for ambient context. Never truncated. */
 	text?: string;
@@ -28,6 +30,7 @@ export interface PulseRecordMetadata {
 	threadTs?: string;
 	replyTarget?: string;
 	replyTargetDescription?: string;
+	directlyAddressed?: boolean;
 }
 
 const BUFFER_SIZE = 50;
@@ -62,7 +65,7 @@ export class ChannelPulse {
 			this.buffers.set(channelId, buf);
 		}
 
-		const { messageId, threadTs, replyTarget, replyTargetDescription } = metadata;
+		const { messageId, threadTs, replyTarget, replyTargetDescription, directlyAddressed } = metadata;
 		if (messageId) {
 			const existingIndex = buf.findIndex((entry) => entry.messageId === messageId);
 			if (existingIndex >= 0) {
@@ -75,12 +78,13 @@ export class ChannelPulse {
 					threadTs: existing.threadTs ?? threadTs,
 					replyTarget: existing.replyTarget ?? replyTarget,
 					replyTargetDescription: existing.replyTargetDescription ?? replyTargetDescription,
+					directlyAddressed: existing.directlyAddressed || directlyAddressed,
 				};
 				return;
 			}
 		}
 
-		buf.push({ ts: Date.now(), participantId, messageId, threadTs, replyTarget, replyTargetDescription, textLength, text });
+		buf.push({ ts: Date.now(), participantId, messageId, threadTs, replyTarget, replyTargetDescription, directlyAddressed, textLength, text });
 		// Ring buffer: trim from front
 		if (buf.length > BUFFER_SIZE) {
 			buf.splice(0, buf.length - BUFFER_SIZE);
@@ -106,6 +110,11 @@ export class ChannelPulse {
 			}
 		}
 		return deduped.slice(-maxCount);
+	}
+
+	/** True when a pulse entry should be offered to ambient engagement. */
+	isAmbientCandidate(entry: PulseEntry): boolean {
+		return !this.isSelfParticipant(entry.participantId) && !entry.directlyAddressed;
 	}
 
 	/** Messages in the last 15-minute window. */
