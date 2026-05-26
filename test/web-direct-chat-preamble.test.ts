@@ -26,7 +26,7 @@ const webPreamble = buildSessionPreamble(
 );
 
 assert(webPreamble.includes("Attending: web"), "web preamble still identifies the attending channel");
-assert(!webPreamble.includes("send_message_to_channel for ALL communication"), "web direct chat does not instruct the agent to use send_message_to_channel");
+assert(!webPreamble.includes("send_message with an explicit target for ALL communication"), "web direct chat does not instruct the agent to use send_message");
 assert(!webPreamble.includes("your text output will NOT be delivered"), "web direct chat does not claim direct text output is undeliverable");
 
 const telegramPreamble = buildSessionPreamble(
@@ -39,7 +39,7 @@ const telegramPreamble = buildSessionPreamble(
 	"messages-only",
 );
 
-assert(telegramPreamble.includes("send_message_to_channel for ALL communication"), "non-web messages-only channels keep the cross-channel delivery reminder");
+assert(telegramPreamble.includes("send_message with an explicit target for ALL communication"), "non-web messages-only channels keep the cross-channel delivery reminder");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

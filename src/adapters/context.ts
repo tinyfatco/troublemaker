@@ -159,11 +159,17 @@ export function createTwoMessageContext(
 	return {
 		message: {
 			text: event.text,
-			rawText: event.text,
+			rawText: event.rawText ?? event.text,
 			user: event.user,
 			userName: config.user?.userName,
 			channel: event.channel,
 			ts: event.ts,
+			eventType: event.type,
+			sourceEventType: event.sourceEventType,
+			directlyAddressed: event.directlyAddressed,
+			threadTs: event.threadTs,
+			replyTarget: event.replyTarget,
+			replyTargetDescription: event.replyTargetDescription,
 			attachments: (event.attachments || []).map((a) => ({ local: a.local })),
 		},
 		channelName,
@@ -203,7 +209,7 @@ export function createTwoMessageContext(
 				if (!text.trim()) return;
 
 				// messages-only suppresses ordinary harness output so agents use
-				// send_message_to_channel, but forced runtime errors still need to
+				// send_message, but forced runtime errors still need to
 				// reach the user instead of failing silently.
 				if (messagesOnly && !options.force) {
 					pendingText = null;

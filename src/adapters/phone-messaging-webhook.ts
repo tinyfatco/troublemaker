@@ -105,6 +105,11 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			ts,
 			user: userId,
 			text,
+			rawText: text,
+			sourceEventType: "phone_message",
+			directlyAddressed: true,
+			replyTarget: record.channelId,
+			replyTargetDescription: `${(record.transport || "phone").toUpperCase()} conversation with ${record.displayName}`,
 		};
 
 		this.logToFile({
@@ -244,11 +249,17 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 		return {
 			message: {
 				text: event.text,
-				rawText: event.text,
+				rawText: event.rawText ?? event.text,
 				user: event.user,
 				userName: event.user,
 				channel: event.channel,
 				ts: event.ts,
+				eventType: event.type,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
+				threadTs: event.threadTs,
+				replyTarget: event.replyTarget,
+				replyTargetDescription: event.replyTargetDescription,
 				attachments: [],
 			},
 			channelName: this.channels.get(event.channel)?.displayName,

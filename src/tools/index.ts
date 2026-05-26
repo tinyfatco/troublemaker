@@ -8,7 +8,7 @@ import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
 
 export { setUploadFunction } from "./attach.js";
-export { createSendMessageToChannelTool } from "./send-message-to-channel.js";
+export { createSendMessageTool } from "./send-message.js";
 
 export function createMomTools(executor: Executor): AgentTool<any>[] {
 	return [

@@ -315,6 +315,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			userName: user?.userName,
 			displayName: user?.displayName,
 			text: event.text,
+			threadTs: event.threadTs,
+			sourceEventType: event.sourceEventType,
+			directlyAddressed: event.directlyAddressed,
+			replyTarget: event.replyTarget,
 			attachments,
 			isBot: false,
 		});

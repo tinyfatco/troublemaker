@@ -29,7 +29,7 @@ let entry = reduceWebChatStreamEntry(assistant(), {
 	type: 'toolcall_delta',
 	contentIndex: 0,
 	partial: {
-		content: [{ type: 'toolCall', id: 'tool-1', name: 'send_message_to_channel', arguments: { channel: '123' } }],
+		content: [{ type: 'toolCall', id: 'tool-1', name: 'send_message', arguments: { target: '123' } }],
 	},
 });
 
@@ -37,7 +37,7 @@ entry = reduceWebChatStreamEntry(entry, {
 	type: 'toolcall_delta',
 	contentIndex: 0,
 	partial: {
-		content: [{ type: 'toolCall', id: 'tool-1', name: 'send_message_to_channel', arguments: { channel: '123', text: 'hello' } }],
+		content: [{ type: 'toolCall', id: 'tool-1', name: 'send_message', arguments: { target: '123', text: 'hello' } }],
 	},
 });
 
@@ -48,8 +48,8 @@ assert(partialCalls[0]?.arguments.text === 'hello', 'toolcall_delta reveals stre
 entry = reduceWebChatStreamEntry(entry, {
 	type: 'toolCall',
 	id: 'tool-1',
-	name: 'send_message_to_channel',
-	arguments: { channel: '123', text: 'hello', label: 'Notify' },
+	name: 'send_message',
+	arguments: { target: '123', text: 'hello', label: 'Notify' },
 });
 
 const startedCalls = entry?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];

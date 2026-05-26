@@ -448,11 +448,17 @@ Keep responses concise and helpful.`;
 		return {
 			message: {
 				text: event.text,
-				rawText: event.text,
+				rawText: event.rawText ?? event.text,
 				user: event.user,
 				userName: "user",
 				channel: event.channel,
 				ts: event.ts,
+				eventType: event.type,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
+				threadTs: event.threadTs,
+				replyTarget: event.replyTarget,
+				replyTargetDescription: event.replyTargetDescription,
 				attachments: [],
 			},
 			channelName: undefined,

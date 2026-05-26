@@ -160,6 +160,11 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			ts: messageId,
 			user: author.id,
 			text: stripDiscordMentions(content),
+			rawText: rawContent,
+			sourceEventType: `discord_${trigger}`,
+			directlyAddressed: trigger !== "ambient",
+			replyTarget: `discord:${channelId}`,
+			replyTargetDescription: isDM ? "Discord DM" : "Discord channel where this message arrived",
 		};
 
 		// Log user message
@@ -281,6 +286,11 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			ts: interaction.id,
 			user: userId,
 			text: stripDiscordMentions(text),
+			rawText: text,
+			sourceEventType: "discord_slash_command",
+			directlyAddressed: true,
+			replyTarget: `discord:${channelId}`,
+			replyTargetDescription: interaction.guild_id ? "Discord channel where this slash command arrived" : "Discord DM",
 		};
 
 		// Attach interaction token to event for context creation

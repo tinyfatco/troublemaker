@@ -46,6 +46,7 @@ export class SlackSocketAdapter extends SlackBase {
 				user?: string;
 				bot_id?: string;
 				ts: string;
+				thread_ts?: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
 
@@ -73,6 +74,12 @@ export class SlackSocketAdapter extends SlackBase {
 				ts: e.ts,
 				user: userId,
 				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+				rawText: e.text || "",
+				sourceEventType: "slack_app_mention",
+				directlyAddressed: true,
+				threadTs: e.thread_ts,
+				replyTarget: `slack:${e.channel}:${e.thread_ts ?? e.ts}`,
+				replyTargetDescription: e.thread_ts ? "Slack thread containing this direct mention" : "Slack thread under this direct mention",
 				files: e.files,
 			};
 
@@ -125,6 +132,7 @@ export class SlackSocketAdapter extends SlackBase {
 				channel_type?: string;
 				subtype?: string;
 				bot_id?: string;
+				thread_ts?: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
 
@@ -168,6 +176,20 @@ export class SlackSocketAdapter extends SlackBase {
 				ts: e.ts,
 				user: userId,
 				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+				rawText: e.text || "",
+				sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
+				directlyAddressed: isDM,
+				threadTs: e.thread_ts,
+				replyTarget: isDM
+					? e.channel
+					: e.thread_ts
+						? `slack:${e.channel}:${e.thread_ts}`
+						: e.channel,
+				replyTargetDescription: isDM
+					? "Slack DM"
+					: e.thread_ts
+						? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
+						: "Slack channel containing this ambient message; use only if a visible reply is appropriate",
 				files: e.files,
 			};
 

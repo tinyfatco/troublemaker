@@ -28,7 +28,7 @@
  *
  * Shape: modeled after HeartbeatAdapter (headless, no outbound). No post/
  * update/delete methods do anything — replies happen via the agent's
- * send_message_to_channel tool routing to whatever real adapter the operator
+ * send_message tool routing to whatever real adapter the operator
  * is watching from.
  */
 
@@ -148,7 +148,7 @@ Treat operator messages with appropriate weight:
 - A \`[operator assigned brief: ...]\` entry means a new \`BRIEF.md\` has been written to your workspace. Read it and begin work.
 - A \`[operator configured ...]\` entry means one of your settings changed. Usually you can just continue.
 
-Replies to the operator happen through whatever channel you were already using with your principal (Telegram, Slack, Discord, email, etc.) via \`send_message_to_channel\`. The operator channel itself has no outbound path.`;
+Replies to the operator happen through whatever channel you were already using with your principal (Telegram, Slack, Discord, email, etc.) via \`send_message\` with an explicit target. The operator channel itself has no outbound path.`;
 
 	private workingDir: string;
 	private handler!: MomHandler;

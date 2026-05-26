@@ -131,6 +131,11 @@ When mentioning users, use @username format.`;
 			ts: String(msg.date),
 			user: userId,
 			text,
+			rawText: text,
+			sourceEventType: msg.chat.type === "private" ? "telegram_private_message" : "telegram_mention",
+			directlyAddressed: true,
+			replyTarget: chatId,
+			replyTargetDescription: msg.chat.type === "private" ? "Telegram private chat" : "Telegram chat where this message arrived",
 			attachments,
 		};
 
