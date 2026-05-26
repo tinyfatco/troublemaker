@@ -11,6 +11,7 @@ export { setUploadFunction } from "./attach.js";
 export { createSelfConfigureTool } from "./self-configure.js";
 export { createSendMessageTool } from "./send-message.js";
 
+export { createReadThreadTool } from "./read-thread.js";
 export function createMomTools(executor: Executor): AgentTool<any>[] {
 	return [
 		createReadTool(executor),
