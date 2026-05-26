@@ -145,7 +145,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				const ts = resolved.threadTs
 					? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
 					: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
-				resolved.adapter.logBotResponse(resolved.channel, text, ts);
+				resolved.adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
 				const threadInfo = resolved.threadTs ? ` thread ${resolved.threadTs}` : "";

@@ -130,7 +130,7 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		// Feed pulse on every message (before any filtering) — pulse needs to see everything
 		if (this.pulse && event.ts && (event.user || event.bot_id)) {
-			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text, event.ts);
+			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text, this.slackPulseMetadata(event.channel, event.ts, event.thread_ts));
 		}
 
 		// Ignore own messages only — bots are just participants
@@ -157,6 +157,8 @@ export class SlackWebhookAdapter extends SlackBase {
 	private async handleAppMention(event: SlackEventInner): Promise<void> {
 		if (event.channel.startsWith("D")) return;
 
+		const threadTs = event.thread_ts ?? event.ts;
+
 		const momEvent: MomEvent = {
 			type: "mention",
 			channel: event.channel,
@@ -166,8 +168,8 @@ export class SlackWebhookAdapter extends SlackBase {
 			rawText: event.text || "",
 			sourceEventType: "slack_app_mention",
 			directlyAddressed: true,
-			threadTs: event.thread_ts,
-			replyTarget: `slack:${event.channel}:${event.thread_ts ?? event.ts}`,
+			threadTs,
+			replyTarget: `slack:${event.channel}:${threadTs}`,
 			replyTargetDescription: event.thread_ts ? "Slack thread containing this direct mention" : "Slack thread under this direct mention",
 			files: event.files,
 		};
@@ -208,6 +210,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		if (!isDM && isBotMention) return;
 
 		const userId = event.user || event.bot_id || "unknown";
+		const threadTs = isDM ? undefined : event.thread_ts ?? event.ts;
 
 		const momEvent: MomEvent = {
 			type: isDM ? "dm" : "mention",
@@ -218,17 +221,15 @@ export class SlackWebhookAdapter extends SlackBase {
 			rawText: event.text || "",
 			sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
 			directlyAddressed: isDM,
-			threadTs: event.thread_ts,
+			threadTs,
 			replyTarget: isDM
 				? event.channel
-				: event.thread_ts
-					? `slack:${event.channel}:${event.thread_ts}`
-					: event.channel,
+				: `slack:${event.channel}:${threadTs}`,
 			replyTargetDescription: isDM
 				? "Slack DM"
 				: event.thread_ts
 					? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
-					: "Slack channel containing this ambient message; use only if a visible reply is appropriate",
+					: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
 			files: event.files,
 		};
 

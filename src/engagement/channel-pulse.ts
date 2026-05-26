@@ -12,9 +12,22 @@ export interface PulseEntry {
 	participantId: string;
 	/** Native platform message ID/timestamp when available. */
 	messageId?: string;
+	/** Native platform thread root/timestamp when available. */
+	threadTs?: string;
+	/** Concrete send_message target that replies to this message's thread. */
+	replyTarget?: string;
+	/** Human-readable explanation of the reply target. */
+	replyTargetDescription?: string;
 	textLength: number;
 	/** Full message text, for ambient context. Never truncated. */
 	text?: string;
+}
+
+export interface PulseRecordMetadata {
+	messageId?: string;
+	threadTs?: string;
+	replyTarget?: string;
+	replyTargetDescription?: string;
 }
 
 const BUFFER_SIZE = 50;
@@ -37,13 +50,14 @@ export class ChannelPulse {
 	}
 
 	/** Record a message in a channel. Call on every incoming event, before any filtering. */
-	record(channelId: string, participantId: string, textLength: number, text?: string, messageId?: string): void {
+	record(channelId: string, participantId: string, textLength: number, text?: string, metadata: PulseRecordMetadata = {}): void {
 		let buf = this.buffers.get(channelId);
 		if (!buf) {
 			buf = [];
 			this.buffers.set(channelId, buf);
 		}
 
+		const { messageId, threadTs, replyTarget, replyTargetDescription } = metadata;
 		if (messageId) {
 			const existingIndex = buf.findIndex((entry) => entry.messageId === messageId);
 			if (existingIndex >= 0) {
@@ -53,12 +67,15 @@ export class ChannelPulse {
 					ts: Date.now(),
 					textLength: existing.textLength || textLength,
 					text: existing.text ?? text,
+					threadTs: existing.threadTs ?? threadTs,
+					replyTarget: existing.replyTarget ?? replyTarget,
+					replyTargetDescription: existing.replyTargetDescription ?? replyTargetDescription,
 				};
 				return;
 			}
 		}
 
-		buf.push({ ts: Date.now(), participantId, messageId, textLength, text });
+		buf.push({ ts: Date.now(), participantId, messageId, threadTs, replyTarget, replyTargetDescription, textLength, text });
 		// Ring buffer: trim from front
 		if (buf.length > BUFFER_SIZE) {
 			buf.splice(0, buf.length - BUFFER_SIZE);

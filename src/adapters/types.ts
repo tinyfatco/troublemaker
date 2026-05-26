@@ -170,7 +170,7 @@ export interface PlatformAdapter {
 
 	/** Log an entry to the unified workspace log.jsonl */
 	logToFile(entry: object): void;
-	logBotResponse(channel: string, text: string, ts: string): void;
+	logBotResponse(channel: string, text: string, ts: string, metadata?: { threadTs?: string }): void;
 
 	// -- Metadata --
 

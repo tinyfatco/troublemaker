@@ -52,7 +52,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, e.ts);
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts));
 			}
 
 			if (e.channel.startsWith("D")) {
@@ -67,6 +67,7 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			const userId = e.user || e.bot_id || "unknown";
+			const threadTs = e.thread_ts ?? e.ts;
 
 			const momEvent: MomEvent = {
 				type: "mention",
@@ -77,8 +78,8 @@ export class SlackSocketAdapter extends SlackBase {
 				rawText: e.text || "",
 				sourceEventType: "slack_app_mention",
 				directlyAddressed: true,
-				threadTs: e.thread_ts,
-				replyTarget: `slack:${e.channel}:${e.thread_ts ?? e.ts}`,
+				threadTs,
+				replyTarget: `slack:${e.channel}:${threadTs}`,
 				replyTargetDescription: e.thread_ts ? "Slack thread containing this direct mention" : "Slack thread under this direct mention",
 				files: e.files,
 			};
@@ -138,7 +139,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering — pulse needs to see everything
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, e.ts);
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts));
 			}
 
 			// Ignore own messages only — bots are just participants
@@ -164,6 +165,7 @@ export class SlackSocketAdapter extends SlackBase {
 			const userId = e.user || e.bot_id || "unknown";
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
+			const threadTs = isDM ? undefined : e.thread_ts ?? e.ts;
 
 			if (!isDM && isBotMention) {
 				ack();
@@ -179,17 +181,15 @@ export class SlackSocketAdapter extends SlackBase {
 				rawText: e.text || "",
 				sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
 				directlyAddressed: isDM,
-				threadTs: e.thread_ts,
+				threadTs,
 				replyTarget: isDM
 					? e.channel
-					: e.thread_ts
-						? `slack:${e.channel}:${e.thread_ts}`
-						: e.channel,
+					: `slack:${e.channel}:${threadTs}`,
 				replyTargetDescription: isDM
 					? "Slack DM"
 					: e.thread_ts
 						? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
-						: "Slack channel containing this ambient message; use only if a visible reply is appropriate",
+						: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
 				files: e.files,
 			};
 
