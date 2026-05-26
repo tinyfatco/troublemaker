@@ -64,7 +64,74 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	"kimi-turbo": "accounts/fireworks/routers/kimi-k2p6-turbo",
 };
 
-const CURATED_OPENAI_PROVIDERS = ["openai-codex", "openai"];
+const CURATED_MODEL_OPTIONS: Array<{ provider: string; id: string; name: string; api: string }> = [
+	{
+		provider: "openai-codex",
+		id: "gpt-5.5",
+		name: "GPT-5.5",
+		api: "openai-codex-responses",
+	},
+	{
+		provider: "openai-codex",
+		id: "codex-5.3",
+		name: "Codex 5.3",
+		api: "openai-codex-responses",
+	},
+	{
+		provider: "openai",
+		id: "gpt-5.5",
+		name: "GPT-5.5",
+		api: "openai-responses",
+	},
+	{
+		provider: "fireworks",
+		id: "accounts/fireworks/models/minimax-m2p7",
+		name: "MiniMax-M2.7",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "fireworks",
+		id: "accounts/fireworks/models/deepseek-v4-pro",
+		name: "DeepSeek V4 Pro",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "fireworks",
+		id: "accounts/fireworks/models/kimi-k2p6",
+		name: "Kimi K2.6",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "fireworks",
+		id: "accounts/fireworks/models/glm-5p1",
+		name: "GLM-5.1",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "fireworks",
+		id: "accounts/fireworks/models/qwen3p6-plus",
+		name: "Qwen3.6 Plus",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "anthropic",
+		id: "claude-opus-4-6",
+		name: "Claude Opus 4.6",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "anthropic",
+		id: "claude-sonnet-4-6",
+		name: "Claude Sonnet 4.6",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "anthropic",
+		id: "claude-haiku-4-5-20251001",
+		name: "Claude Haiku 4.5",
+		api: "anthropic-messages",
+	},
+];
 
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
@@ -237,32 +304,28 @@ export function listModels(
 	modelRegistry?: ModelRegistry,
 ): Array<{ provider: string; id: string; name: string; api: string }> {
 	const registry = modelRegistry || createWorkspaceModelRegistry(workingDir);
-	const allModels = registry.getAll();
 	const current = getCurrentModelSelection(workingDir);
-	const curatedKeys = new Set<string>([
-		...Object.values(FIREWORKS_ALIAS_TO_MODEL_ID).map((id) => modelKey("fireworks", id)),
-		...Array.from(ANTHROPIC_LISTED_MODELS).map((id) => modelKey("anthropic", id)),
-		...CURATED_OPENAI_PROVIDERS.flatMap((provider) =>
-			Array.from(new Set(Object.values(OPENAI_ALIAS_TO_MODEL_ID))).map((id) => modelKey(provider, id)),
-		),
-		modelKey(current.provider, current.id),
-	]);
-
 	const byKey = new Map<string, { provider: string; id: string; name: string; api: string }>();
-	const addModel = (model: Model<Api>): void => {
-		if (model.provider === "anthropic" && !ANTHROPIC_LISTED_MODELS.has(model.id)) return;
-		byKey.set(modelKey(model.provider, model.id), {
-			provider: model.provider,
-			id: model.id,
-			name: model.name,
-			api: model.api,
-		});
+	const addOption = (option: { provider: string; id: string; name: string; api: string }): void => {
+		if (option.provider === "anthropic" && !ANTHROPIC_LISTED_MODELS.has(option.id)) return;
+		byKey.set(modelKey(option.provider, option.id), option);
 	};
+	const addModel = (model: Model<Api>): void => addOption({
+		provider: model.provider,
+		id: model.id,
+		name: model.name,
+		api: model.api,
+	});
 
-	for (const model of registry.getAvailable()) addModel(model);
-	for (const model of allModels) {
-		if (curatedKeys.has(modelKey(model.provider, model.id))) addModel(model);
+	try {
+		for (const model of registry.getAvailable()) addModel(model);
+	} catch (err) {
+		log.logWarning(
+			"Model registry available-list failed",
+			err instanceof Error ? err.message : String(err),
+		);
 	}
+	for (const option of CURATED_MODEL_OPTIONS) addOption(option);
 
 	const currentKey = modelKey(current.provider, current.id);
 	if (!byKey.has(currentKey)) {

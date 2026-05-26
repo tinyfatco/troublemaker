@@ -30,6 +30,8 @@ assert(settingsMenu.includes('Settings unavailable.'), 'settings menu does not e
 assert(settingsMenu.includes('getModelSuggestions'), 'settings menu autocompletes model names');
 assert(settingsMenu.includes('role="combobox"'), 'model input exposes combobox semantics');
 assert(consoleApi.includes('models?: AgentModelOption[]'), 'settings snapshot includes available models');
+assert(settingsMenu.includes('applyLocalSetting'), 'settings writes resolve from the successful write without waiting on a full refresh');
+assert(!settingsMenu.includes('await refresh()'), 'settings writes do not block controls on a post-save describe request');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
