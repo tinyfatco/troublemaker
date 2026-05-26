@@ -1981,10 +1981,10 @@ html, body, #root {
 
 .tool-detail-chip {
   display: inline-flex;
-  align-items: baseline;
-  gap: 0.18rem;
-  max-width: 11rem;
-  padding: 0.08rem 0.32rem;
+  align-items: center;
+  gap: 0.28rem;
+  max-width: 100%;
+  padding: 0.12rem 0.48rem;
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 80%, var(--text-muted) 20%);
   border: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
@@ -1992,6 +1992,7 @@ html, body, #root {
   font-family: var(--font-mono);
   font-size: 0.61rem;
   line-height: 1.25;
+  white-space: nowrap;
 }
 
 .tool-detail-chip.accent {
@@ -2011,8 +2012,7 @@ html, body, #root {
 }
 
 .tool-detail-chip-value {
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
   white-space: nowrap;
 }
 
