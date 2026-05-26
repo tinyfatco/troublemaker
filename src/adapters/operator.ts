@@ -509,6 +509,18 @@ Replies to the operator happen through whatever channel you were already using w
 		}
 	}
 
+	private writeConfiguredAwareness(
+		originalTarget: string,
+		value: unknown,
+		previousValue: unknown,
+	): boolean {
+		if (settingsValueEquals(previousValue, value)) return false;
+		this.writeAwareness(
+			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
+		);
+		return true;
+	}
+
 	private configureSimpleSetting(
 		originalTarget: string,
 		target: string,
@@ -525,12 +537,11 @@ Replies to the operator happen through whatever channel you were already using w
 			return sendError(res, 500, "settings_write_failed");
 		}
 
-		this.writeAwareness(
-			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
-		);
+		const changed = this.writeConfiguredAwareness(originalTarget, value, previousValue);
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "container",
 			previous_value: previousValue ?? null,
@@ -575,12 +586,11 @@ Replies to the operator happen through whatever channel you were already using w
 		}
 
 		const newValue = `${match.provider}/${match.id}`;
-		this.writeAwareness(
-			`[operator configured ${originalTarget} = ${JSON.stringify(newValue)}] (previously ${JSON.stringify(previousValue)})`,
-		);
+		const changed = this.writeConfiguredAwareness(originalTarget, newValue, previousValue);
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "container",
 			previous_value: previousValue,
@@ -621,12 +631,11 @@ Replies to the operator happen through whatever channel you were already using w
 			return sendError(res, 500, "settings_write_failed");
 		}
 
-		this.writeAwareness(
-			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
-		);
+		const changed = this.writeConfiguredAwareness(originalTarget, value, previousValue);
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "container",
 			previous_value: previousValue,
@@ -677,12 +686,11 @@ Replies to the operator happen through whatever channel you were already using w
 			return sendError(res, 500, "settings_write_failed");
 		}
 
-		this.writeAwareness(
-			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
-		);
+		const changed = this.writeConfiguredAwareness(originalTarget, value, previousValue);
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "container",
 			previous_value: previousValue,
@@ -811,17 +819,15 @@ Replies to the operator happen through whatever channel you were already using w
 			);
 		}
 
-		this.writeAwareness(
-			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(
-				this.pickPrevious(previous, target),
-			)})`,
-		);
+		const previousValue = this.pickPrevious(previous, target);
+		const changed = this.writeConfiguredAwareness(originalTarget, value, previousValue);
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "container",
-			previous_value: this.pickPrevious(previous, target),
+			previous_value: previousValue,
 			new_value: value,
 			applied_at: nowIso(),
 			schedule: scheduleResult,
@@ -904,14 +910,18 @@ Replies to the operator happen through whatever channel you were already using w
 		}
 
 		const killSwitch = value.trim().length === 0;
-		this.writeAwareness(
-			killSwitch
-				? `[operator configured ${originalTarget}] HEARTBEAT.md cleared — heartbeat kill switch ON.`
-				: `[operator configured ${originalTarget}] HEARTBEAT.md rewritten (${value.length} chars).`,
-		);
+		const changed = !settingsValueEquals(previousValue, value);
+		if (changed) {
+			this.writeAwareness(
+				killSwitch
+					? `[operator configured ${originalTarget}] HEARTBEAT.md cleared — heartbeat kill switch ON.`
+					: `[operator configured ${originalTarget}] HEARTBEAT.md rewritten (${value.length} chars).`,
+			);
+		}
 
 		sendJson(res, 200, {
 			edited: true,
+			changed,
 			target: originalTarget,
 			tier: "file",
 			path: "HEARTBEAT.md",
@@ -1137,5 +1147,14 @@ Replies to the operator happen through whatever channel you were already using w
 			deleteMessage: async () => {},
 			restartWorking: async () => {},
 		};
+	}
+}
+
+function settingsValueEquals(left: unknown, right: unknown): boolean {
+	if (left === right) return true;
+	try {
+		return JSON.stringify(left) === JSON.stringify(right);
+	} catch {
+		return false;
 	}
 }

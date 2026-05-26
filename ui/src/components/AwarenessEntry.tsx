@@ -8,6 +8,7 @@ import {
   TOOL_AUTO_COLLAPSE_DELAY_MS,
 } from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
+import { parseOperatorControlEvent, type OperatorControlEvent } from '../operatorControlEvents';
 import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
@@ -50,6 +51,41 @@ function EventEntry({ channel, label, description, fullDescription }: {
       )}
     </div>
   );
+}
+
+function OperatorControlEntry({ event, timestamp }: { event: OperatorControlEvent; timestamp?: string }) {
+  const label = getOperatorEventLabel(event);
+
+  return (
+    <div className="awareness-entry operator-control-entry">
+      <div className="event-header">
+        {timestamp && <span className="entry-timestamp">{formatTime(timestamp)}</span>}
+        <span className="operator-control-mark" aria-hidden="true" />
+        <span className="event-name">{label}</span>
+        {event.kind === 'configured' && <span className="operator-control-target">{event.target}</span>}
+        {event.kind === 'assigned' && <span className="operator-control-target">{event.title}</span>}
+      </div>
+      {event.kind === 'configured' && (
+        <div className="operator-control-detail">
+          {event.value && <span className="operator-control-value">{event.value}</span>}
+          {event.previousValue && <span className="operator-control-previous">was {event.previousValue}</span>}
+          {!event.value && event.note && <span>{event.note}</span>}
+        </div>
+      )}
+      {event.kind === 'message' && event.text && (
+        <div className="operator-control-detail">{event.text}</div>
+      )}
+      {event.kind === 'assigned' && event.note && (
+        <div className="operator-control-detail">{event.note}</div>
+      )}
+    </div>
+  );
+}
+
+function getOperatorEventLabel(event: OperatorControlEvent): string {
+  if (event.kind === 'configured') return 'settings updated';
+  if (event.kind === 'assigned') return 'brief assigned';
+  return 'operator message';
 }
 
 function ToolCallGroup({ children }: { children: ReactNode }) {
@@ -495,6 +531,15 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
   // User messages
   if (entry.role === 'user') {
     const text = entry.strippedText || extractText(entry.content);
+    const operatorEvent = parseOperatorControlEvent({
+      channel: entry.channel,
+      userName: entry.userName,
+      text,
+    });
+    if (operatorEvent) {
+      if (operatorEvent.kind === 'configured' && operatorEvent.isNoop) return null;
+      return <OperatorControlEntry event={operatorEvent} timestamp={entry.timestamp} />;
+    }
 
     // Attention triggers (heartbeat, scheduled) — compact indicator
     // Formats: [ATTENTION:name:type:cron] [source] label OR legacy [EVENT:...]
