@@ -15,12 +15,18 @@ function assert(condition: boolean, msg: string) {
 
 const awarenessPane = readFileSync('ui/src/components/AwarenessPane.tsx', 'utf-8');
 const chatPane = readFileSync('ui/src/components/ChatPane.tsx', 'utf-8');
+const consoleApi = readFileSync('ui/src/console-api.ts', 'utf-8');
+const settingsMenu = readFileSync('ui/src/components/SettingsMenu.tsx', 'utf-8');
 
 for (const [name, source] of [['AwarenessPane', awarenessPane], ['ChatPane', chatPane]] as const) {
   assert(source.includes('SettingsMenu'), `${name} renders the settings menu`);
   assert(source.includes('onSlashCommand={handleSlashCommand}'), `${name} wires slash command handling into InputBar`);
   assert(source.includes('onInvalidSlashCommand='), `${name} wires invalid slash feedback`);
 }
+
+assert(consoleApi.includes('OPERATOR_FETCH_TIMEOUT_MS = 75000'), 'settings calls allow full container boot retry window');
+assert(consoleApi.includes("credentials: 'same-origin'"), 'console API requests include same-origin credentials');
+assert(settingsMenu.includes('Settings unavailable.'), 'settings menu does not expose inert controls after load failure');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

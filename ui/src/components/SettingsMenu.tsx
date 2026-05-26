@@ -83,6 +83,8 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
 
       {loading ? (
         <div className="settings-menu-status">Loading settings...</div>
+      ) : !snapshot ? (
+        <div className="settings-menu-status">Settings unavailable.</div>
       ) : (
         <div className="settings-menu-body">
           <form

@@ -70,6 +70,7 @@ export interface AgentSettingsSnapshot {
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
+const OPERATOR_FETCH_TIMEOUT_MS = 75000;
 
 function currentAgentId(): string {
   const match = window.location.pathname.match(/\/agents\/([0-9a-f-]{36})(?:\/|$)/i);
@@ -114,7 +115,12 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetch(input, { credentials: 'same-origin', ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw err;
   } finally {
     window.clearTimeout(timeout);
   }
@@ -131,7 +137,7 @@ export async function fetchAgentSettings(): Promise<AgentSettingsSnapshot> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: '{}',
-  }, 20000);
+  }, OPERATOR_FETCH_TIMEOUT_MS);
   if (!resp.ok) throw await readError(resp, `Settings failed: ${resp.status}`);
   return resp.json();
 }
@@ -141,7 +147,7 @@ export async function configureAgentSetting(target: string, value: unknown): Pro
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ target, value }),
-  }, 20000);
+  }, OPERATOR_FETCH_TIMEOUT_MS);
   if (!resp.ok) throw await readError(resp, `Configure failed: ${resp.status}`);
 }
 
