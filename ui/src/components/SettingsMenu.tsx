@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { configureAgentSetting, fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
+import { getModelSuggestions } from '../modelAutocomplete';
 
 interface SettingsMenuProps {
   open: boolean;
@@ -12,6 +13,8 @@ const SPONTANEITY_LEVELS = [1, 2, 3, 4, 5];
 export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
   const [snapshot, setSnapshot] = useState<AgentSettingsSnapshot | null>(null);
   const [modelInput, setModelInput] = useState('');
+  const [modelFocused, setModelFocused] = useState(false);
+  const [activeModelSuggestion, setActiveModelSuggestion] = useState(0);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +41,15 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
       cancelled = true;
     };
   }, [open]);
+
+  const modelSuggestions = useMemo(
+    () => getModelSuggestions(snapshot?.models ?? [], modelInput, snapshot ? formatCurrentModel(snapshot) : null),
+    [modelInput, snapshot],
+  );
+
+  useEffect(() => {
+    setActiveModelSuggestion(0);
+  }, [modelInput, modelSuggestions.length]);
 
   if (!open) return null;
 
@@ -66,6 +78,12 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
     : THINKING_LEVELS;
   const spontaneity = snapshot?.spontaneity;
   const currentSpontaneityLevel = Number(spontaneity?.level ?? 3);
+  const showModelSuggestions = modelFocused && modelSuggestions.length > 0 && !saving;
+
+  const chooseModelSuggestion = (value: string) => {
+    setModelInput(value);
+    setModelFocused(false);
+  };
 
   return (
     <div className="settings-menu" role="dialog" aria-label="Settings">
@@ -95,17 +113,60 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
             }}
           >
             <label htmlFor="agent-model-input">Model</label>
-            <div className="settings-inline-control">
-              <input
-                id="agent-model-input"
-                value={modelInput}
-                onChange={(event) => setModelInput(event.target.value)}
-                disabled={!!saving}
-                spellCheck={false}
-              />
-              <button type="submit" disabled={!modelInput.trim() || !!saving}>
-                {saving === 'model' ? 'Saving' : 'Apply'}
-              </button>
+            <div className="settings-autocomplete">
+              <div className="settings-inline-control">
+                <input
+                  id="agent-model-input"
+                  value={modelInput}
+                  onChange={(event) => setModelInput(event.target.value)}
+                  onFocus={() => setModelFocused(true)}
+                  onBlur={() => window.setTimeout(() => setModelFocused(false), 120)}
+                  onKeyDown={(event) => {
+                    if (!showModelSuggestions) return;
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      setActiveModelSuggestion((index) => Math.min(index + 1, modelSuggestions.length - 1));
+                    } else if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      setActiveModelSuggestion((index) => Math.max(index - 1, 0));
+                    } else if (event.key === 'Enter' && modelSuggestions[activeModelSuggestion]) {
+                      event.preventDefault();
+                      chooseModelSuggestion(modelSuggestions[activeModelSuggestion].value);
+                    } else if (event.key === 'Escape') {
+                      setModelFocused(false);
+                    }
+                  }}
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-expanded={showModelSuggestions}
+                  aria-controls="agent-model-suggestions"
+                  disabled={!!saving}
+                  spellCheck={false}
+                />
+                <button type="submit" disabled={!modelInput.trim() || !!saving}>
+                  {saving === 'model' ? 'Saving' : 'Apply'}
+                </button>
+              </div>
+              {showModelSuggestions && (
+                <div id="agent-model-suggestions" className="settings-model-suggestions" role="listbox">
+                  {modelSuggestions.map((model, index) => (
+                    <button
+                      key={model.value}
+                      type="button"
+                      className={index === activeModelSuggestion ? 'active' : ''}
+                      role="option"
+                      aria-selected={index === activeModelSuggestion}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        chooseModelSuggestion(model.value);
+                      }}
+                    >
+                      <span className="settings-model-value">{model.value}</span>
+                      <span className="settings-model-meta">{model.name} - {model.api}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </form>
 

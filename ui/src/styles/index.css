@@ -2271,6 +2271,14 @@ html, body, #root {
   font-weight: 600;
 }
 
+.settings-row.model-row {
+  align-items: start;
+}
+
+.settings-autocomplete {
+  min-width: 0;
+}
+
 .settings-inline-control {
   display: flex;
   min-width: 0;
@@ -2312,6 +2320,55 @@ html, body, #root {
 .settings-segmented button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.settings-model-suggestions {
+  margin-top: 0.35rem;
+  max-height: 174px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+}
+
+.settings-model-suggestions button {
+  display: grid;
+  width: 100%;
+  gap: 0.12rem;
+  padding: 0.42rem 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-model-suggestions button:last-child {
+  border-bottom: 0;
+}
+
+.settings-model-suggestions button:hover,
+.settings-model-suggestions button.active {
+  background: var(--accent-muted);
+}
+
+.settings-model-value,
+.settings-model-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-model-value {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.settings-model-meta {
+  color: var(--text-muted);
+  font-size: 0.66rem;
 }
 
 .settings-segmented {

@@ -23,8 +23,9 @@
  * short prompt telling the agent the operator channel has new content.
  *
  * Steering: if a run is active when an operator message arrives, we steer
- * into the current run instead of queueing. Assign/configure still trigger
- * a fresh heartbeat-style run (they're not conversational).
+ * into the current run instead of queueing. Assign triggers a fresh
+ * heartbeat-style run. Configure writes are control-plane changes and only
+ * become awareness/context for the next natural turn.
  *
  * Shape: modeled after HeartbeatAdapter (headless, no outbound). No post/
  * update/delete methods do anything — replies happen via the agent's
@@ -49,7 +50,7 @@ import type {
 	PlatformAdapter,
 	UserInfo,
 } from "./types.js";
-import { findModel } from "../model-config.js";
+import { findModel, listModels } from "../model-config.js";
 
 export const OPERATOR_CHANNEL_ID = "operator";
 const OPERATOR_CHANNEL_LABEL = "operator:control";
@@ -527,9 +528,6 @@ Replies to the operator happen through whatever channel you were already using w
 		this.writeAwareness(
 			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
 		);
-		this.triggerRun(
-			`The operator just changed your \`${originalTarget}\` setting. The new value will take effect on your next wake. You may acknowledge briefly or carry on.`,
-		);
 
 		sendJson(res, 200, {
 			edited: true,
@@ -580,9 +578,6 @@ Replies to the operator happen through whatever channel you were already using w
 		this.writeAwareness(
 			`[operator configured ${originalTarget} = ${JSON.stringify(newValue)}] (previously ${JSON.stringify(previousValue)})`,
 		);
-		this.triggerRun(
-			`The operator just changed your \`${originalTarget}\` to \`${newValue}\`. This takes effect on your next wake.`,
-		);
 
 		sendJson(res, 200, {
 			edited: true,
@@ -628,9 +623,6 @@ Replies to the operator happen through whatever channel you were already using w
 
 		this.writeAwareness(
 			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
-		);
-		this.triggerRun(
-			`The operator just changed your \`${originalTarget}\` to \`${value}\`. This takes effect on your next wake.`,
 		);
 
 		sendJson(res, 200, {
@@ -687,9 +679,6 @@ Replies to the operator happen through whatever channel you were already using w
 
 		this.writeAwareness(
 			`[operator configured ${originalTarget} = ${JSON.stringify(value)}] (previously ${JSON.stringify(previousValue)})`,
-		);
-		this.triggerRun(
-			`The operator just changed your verbosity (\`${originalTarget}\`). Acknowledge briefly or carry on.`,
 		);
 
 		sendJson(res, 200, {
@@ -827,9 +816,6 @@ Replies to the operator happen through whatever channel you were already using w
 				this.pickPrevious(previous, target),
 			)})`,
 		);
-		this.triggerRun(
-			`The operator just changed your \`${originalTarget}\` setting. Heartbeat schedule was resynced; next fire will reflect the new cadence.`,
-		);
 
 		sendJson(res, 200, {
 			edited: true,
@@ -923,11 +909,6 @@ Replies to the operator happen through whatever channel you were already using w
 				? `[operator configured ${originalTarget}] HEARTBEAT.md cleared — heartbeat kill switch ON.`
 				: `[operator configured ${originalTarget}] HEARTBEAT.md rewritten (${value.length} chars).`,
 		);
-		this.triggerRun(
-			killSwitch
-				? `The operator just cleared your HEARTBEAT.md — heartbeat runs will be skipped until it's restored.`
-				: `The operator just rewrote your HEARTBEAT.md checklist. The new content will be injected on your next heartbeat fire.`,
-		);
 
 		sendJson(res, 200, {
 			edited: true,
@@ -981,11 +962,22 @@ Replies to the operator happen through whatever channel you were already using w
 			? raw.defaultThinkingLevel ?? null
 			: (rawSettings as Record<string, unknown>).thinking_level ?? raw.defaultThinkingLevel ?? null;
 
+		let models: Array<{ provider: string; id: string; name: string; api: string }> = [];
+		try {
+			models = listModels(this.workingDir);
+		} catch (err) {
+			log.logWarning(
+				"[operator] model list failed",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+
 		sendJson(res, 200, {
 			spontaneity,
 			verbose: raw.verbose ?? null,
 			model: raw.defaultModel ?? null,
 			provider: raw.defaultProvider ?? null,
+			models,
 			thinking_level: thinkingLevel,
 			thinking_level_accepted: [...THINKING_LEVEL_VALUES],
 			heartbeat: {

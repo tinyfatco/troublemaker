@@ -46,6 +46,13 @@ export interface AgentScheduleManifest {
   events: AgentScheduleManifestEvent[];
 }
 
+export interface AgentModelOption {
+  provider: string;
+  id: string;
+  name: string;
+  api: string;
+}
+
 export interface AgentSettingsSnapshot {
   spontaneity?: {
     enabled?: boolean;
@@ -58,6 +65,7 @@ export interface AgentSettingsSnapshot {
   verbose?: unknown;
   model?: string | null;
   provider?: string | null;
+  models?: AgentModelOption[];
   thinking_level?: string | null;
   thinking_level_accepted?: string[];
   heartbeat?: {

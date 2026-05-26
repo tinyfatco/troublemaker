@@ -27,6 +27,9 @@ for (const [name, source] of [['AwarenessPane', awarenessPane], ['ChatPane', cha
 assert(consoleApi.includes('OPERATOR_FETCH_TIMEOUT_MS = 75000'), 'settings calls allow full container boot retry window');
 assert(consoleApi.includes("credentials: 'same-origin'"), 'console API requests include same-origin credentials');
 assert(settingsMenu.includes('Settings unavailable.'), 'settings menu does not expose inert controls after load failure');
+assert(settingsMenu.includes('getModelSuggestions'), 'settings menu autocompletes model names');
+assert(settingsMenu.includes('role="combobox"'), 'model input exposes combobox semantics');
+assert(consoleApi.includes('models?: AgentModelOption[]'), 'settings snapshot includes available models');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
