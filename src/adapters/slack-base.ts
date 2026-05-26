@@ -6,7 +6,7 @@ import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pu
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
-import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, ThreadTranscriptMessage, UserInfo } from "./types.js";
+import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
 // ============================================================================
@@ -232,6 +232,78 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 					sourceEventType: "slack_conversations_replies",
 				};
 			});
+	}
+
+	async listThreads(limit = 20): Promise<SlackThreadTargetInfo[]> {
+		const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
+		const byTarget = new Map<string, SlackThreadTargetInfo & { participantSet: Set<string> }>();
+		const channels = Array.from(this.channels.values()).filter((channel) => !channel.id.startsWith("D"));
+
+		for (const channel of channels) {
+			try {
+				const result = await this.webClient.conversations.history({
+					channel: channel.id,
+					limit: Math.max(10, Math.min(50, boundedLimit * 2)),
+				});
+				for (const message of (result.messages || []) as SlackHistoryMessage[]) {
+					const ts = typeof message.ts === "string" ? message.ts : undefined;
+					if (!ts) continue;
+					const threadTs = typeof message.thread_ts === "string" && message.thread_ts ? message.thread_ts : ts;
+					if (!/^\d+\.\d+$/.test(threadTs)) continue;
+
+					const sendTarget = `slack:${channel.id}:${threadTs}`;
+					const participantSet = new Set<string>();
+					const author = displayNameForSlackMessage(message, this.users, this.botUserId);
+					if (author) participantSet.add(author);
+					for (const participantId of message.reply_users || []) {
+						const participant = this.users.get(participantId);
+						participantSet.add(participant?.displayName || participant?.userName || participantId);
+					}
+
+					const existing = byTarget.get(sendTarget);
+					const rootPreview = slackPreview(message.text);
+					const lastSeen = slackTimestampToIso(message.latest_reply || ts);
+					const messageCount = Math.max(1, Number(message.reply_count || 0) + 1);
+
+					if (!existing) {
+						byTarget.set(sendTarget, {
+							channelId: channel.id,
+							channelName: channel.name,
+							threadTs,
+							sendTarget,
+							rootPreview,
+							lastPreview: rootPreview,
+							participants: [],
+							participantSet,
+							messageCount,
+							lastSeen,
+							source: "slack-api",
+						});
+						continue;
+					}
+
+					for (const participant of participantSet) existing.participantSet.add(participant);
+					if (rootPreview && ts === threadTs) existing.rootPreview = rootPreview;
+					existing.messageCount = Math.max(existing.messageCount, messageCount);
+					if (!existing.lastSeen || lastSeen > existing.lastSeen) {
+						existing.lastSeen = lastSeen;
+						existing.lastPreview = rootPreview || existing.lastPreview;
+					}
+				}
+			} catch (err) {
+				log.logWarning(`Slack listThreads failed for ${channel.id}`, err instanceof Error ? err.message : String(err));
+			}
+		}
+
+		return Array.from(byTarget.values())
+			.sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""))
+			.slice(0, boundedLimit)
+			.map(({ participantSet, ...thread }) => ({
+				...thread,
+				participants: Array.from(participantSet).slice(0, 4),
+				rootPreview: thread.rootPreview || "(no text captured)",
+				lastPreview: thread.lastPreview || thread.rootPreview || "(no text captured)",
+			}));
 	}
 
 	protected slackPulseMetadata(channel: string, ts: string, threadTs?: string, directlyAddressed = false): PulseRecordMetadata {
@@ -580,4 +652,41 @@ function slackTimestampToIso(ts: string): string {
 	const epochMs = Number(seconds) * 1000 + Math.floor(Number(`0.${fractional}`) * 1000);
 	if (!Number.isFinite(epochMs)) return "";
 	return new Date(epochMs).toISOString();
+}
+
+interface SlackHistoryMessage {
+	ts?: string;
+	thread_ts?: string;
+	user?: string;
+	bot_id?: string;
+	username?: string;
+	subtype?: string;
+	text?: string;
+	reply_count?: number;
+	latest_reply?: string;
+	reply_users?: string[];
+}
+
+function displayNameForSlackMessage(
+	message: SlackHistoryMessage,
+	users: Map<string, SlackUser>,
+	botUserId: string | null,
+): string {
+	const userId = typeof message.user === "string"
+		? message.user
+		: typeof message.bot_id === "string"
+			? message.bot_id
+			: typeof message.username === "string"
+				? message.username
+				: "unknown";
+	const user = users.get(userId);
+	const isBot = Boolean(message.bot_id || message.subtype === "bot_message" || userId === botUserId);
+	return user?.displayName || user?.userName || (isBot ? "Zip" : userId);
+}
+
+function slackPreview(text: unknown, maxLength = 120): string {
+	if (typeof text !== "string") return "";
+	const normalized = text.replace(/\s+/g, " ").trim().replace(/\|/g, "\\|");
+	if (normalized.length <= maxLength) return normalized;
+	return `${normalized.slice(0, maxLength - 1)}…`;
 }

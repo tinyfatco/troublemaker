@@ -15,6 +15,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import type { PlatformAdapter, SlackThreadTargetInfo } from "../adapters/types.js";
 
 export interface ChannelListing {
 	adapter: string;
@@ -34,6 +35,7 @@ export interface SlackThreadListing {
 	participants: string[];
 	messageCount: number;
 	lastSeen: string;
+	source?: "slack-api" | "log";
 }
 
 export interface LogEntry {
@@ -158,6 +160,7 @@ export function collectSlackThreadsFromLog(workingDir: string, limit = 20): Slac
 				participantSet: new Set([participant]),
 				messageCount: 1,
 				lastSeen: entry.date || "",
+				source: "log",
 			});
 			continue;
 		}
@@ -182,6 +185,50 @@ export function collectSlackThreadsFromLog(workingDir: string, limit = 20): Slac
 		}));
 }
 
+export async function collectSlackThreads(
+	workingDir: string,
+	adapters: PlatformAdapter[] = [],
+	limit = 20,
+): Promise<SlackThreadListing[]> {
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
+	const byTarget = new Map<string, SlackThreadListing>();
+
+	const slack = adapters.find((adapter) => adapter.name === "slack" && typeof adapter.listThreads === "function");
+	if (slack?.listThreads) {
+		try {
+			for (const thread of await slack.listThreads(boundedLimit)) {
+				byTarget.set(thread.sendTarget, normalizeSlackThreadListing(thread, "slack-api"));
+			}
+		} catch {
+			// Keep log fallback below. Individual Slack channel failures are logged by the adapter.
+		}
+	}
+
+	for (const thread of collectSlackThreadsFromLog(workingDir, boundedLimit)) {
+		if (!byTarget.has(thread.sendTarget)) byTarget.set(thread.sendTarget, normalizeSlackThreadListing(thread, "log"));
+	}
+
+	return Array.from(byTarget.values())
+		.sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""))
+		.slice(0, boundedLimit);
+}
+
+function normalizeSlackThreadListing(thread: SlackThreadTargetInfo | SlackThreadListing, source: "slack-api" | "log"): SlackThreadListing {
+	return {
+		adapter: "slack",
+		channelId: thread.channelId,
+		channelName: preview(thread.channelName, 40) || thread.channelId,
+		threadTs: thread.threadTs,
+		sendTarget: thread.sendTarget,
+		rootPreview: preview(thread.rootPreview) || "(no text captured)",
+		lastPreview: preview(thread.lastPreview || thread.rootPreview) || "(no text captured)",
+		participants: (thread.participants || []).map((participant) => preview(participant, 40)).filter(Boolean).slice(0, 4),
+		messageCount: Math.max(1, Number(thread.messageCount) || 1),
+		lastSeen: thread.lastSeen || "",
+		source: thread.source || source,
+	};
+}
+
 /** Format channel and thread listings as markdown tables for human/agent consumption. */
 export function formatChannelTable(channels: ChannelListing[], slackThreads: SlackThreadListing[] = []): string {
 	const sections: string[] = [];
@@ -200,16 +247,16 @@ export function formatChannelTable(channels: ChannelListing[], slackThreads: Sla
 	if (slackThreads.length > 0) {
 		sections.push([
 			"Recent Slack thread targets:",
-			"| Channel | Send Target | Root / Subject | Latest Message | Participants | Last Seen |",
-			"|---------|-------------|----------------|----------------|--------------|-----------|",
-			...slackThreads.map((t) => `| #${t.channelName} | \`${t.sendTarget}\` | ${t.rootPreview} | ${t.lastPreview} | ${t.participants.join(", ") || "-"} (${t.messageCount}) | ${t.lastSeen || "-"} |`),
+			"| Channel | Send Target | Root / Subject | Latest Message | Participants | Last Seen | Source |",
+			"|---------|-------------|----------------|----------------|--------------|-----------|--------|",
+			...slackThreads.map((t) => `| #${t.channelName} | \`${t.sendTarget}\` | ${t.rootPreview} | ${t.lastPreview} | ${t.participants.join(", ") || "-"} (${t.messageCount}) | ${t.lastSeen || "-"} | ${t.source === "slack-api" ? "Slack API" : "local log"} |`),
 		].join("\n"));
 	}
 
 	return sections.join("\n\n");
 }
 
-export function createListChannelsTool(workingDir: string): AgentTool<any> {
+export function createListChannelsTool(workingDir: string, adapters: PlatformAdapter[] = []): AgentTool<any> {
 	const schema = Type.Object({});
 
 	return {
@@ -217,13 +264,14 @@ export function createListChannelsTool(workingDir: string): AgentTool<any> {
 		label: "list_channels",
 		description:
 			"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. " +
-			"Reads from log.jsonl, so it covers all adapters (Telegram, Slack, Email, " +
+			"Uses Slack API for recent Slack thread targets when available and log.jsonl as durable fallback. " +
+			"Reads channels from log.jsonl, so it covers all adapters (Telegram, Slack, Email, " +
 			"Discord, SMS/iMessage, etc.) and survives container restarts. Use this to discover valid " +
 			"send_message targets, including slack:<channel>:<thread_ts> when choosing among Slack threads.",
 		parameters: schema,
 		execute: async () => {
 			const channels = collectChannelsFromLog(workingDir);
-			const slackThreads = collectSlackThreadsFromLog(workingDir);
+			const slackThreads = await collectSlackThreads(workingDir, adapters);
 			return {
 				content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads) }],
 				details: undefined,

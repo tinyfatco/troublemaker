@@ -614,7 +614,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageTool(adapters),
-			createListChannelsTool(workingDir),
+			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
 			createYieldNoActionTool(),

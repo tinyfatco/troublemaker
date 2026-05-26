@@ -56,6 +56,19 @@ export interface ThreadTranscriptMessage {
 	sourceEventType?: string;
 }
 
+export interface SlackThreadTargetInfo {
+	channelId: string;
+	channelName: string;
+	threadTs: string;
+	sendTarget: string;
+	rootPreview: string;
+	lastPreview: string;
+	participants: string[];
+	messageCount: number;
+	lastSeen: string;
+	source?: "slack-api" | "log";
+}
+
 export type SlashCommandResult = boolean | {
 	handled: boolean;
 	/** Resolves when an interactive command has finished sending follow-up output. */
@@ -179,6 +192,7 @@ export interface PlatformAdapter {
 	deleteMessage(channel: string, ts: string): Promise<void>;
 	postInThread(channel: string, threadTs: string, text: string): Promise<string>;
 	readThread?(channel: string, threadTs: string, limit?: number): Promise<ThreadTranscriptMessage[]>;
+	listThreads?(limit?: number): Promise<SlackThreadTargetInfo[]>;
 	uploadFile(channel: string, filePath: string, title?: string): Promise<void>;
 
 	// -- Logging --

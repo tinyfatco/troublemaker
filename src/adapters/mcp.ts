@@ -18,7 +18,7 @@ import { z } from "zod";
 import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
-import { collectChannelsFromLog, collectSlackThreadsFromLog, formatChannelTable } from "../tools/list-channels.js";
+import { collectChannelsFromLog, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
 import { collectSlackThreadMessages, formatSlackThreadTranscript } from "../tools/read-thread.js";
 import type {
@@ -414,15 +414,15 @@ export class McpAdapter implements PlatformAdapter {
 			"list_channels",
 			{
 				description:
-					"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. Reads from " +
-					"log.jsonl so it covers Telegram, Slack, Email, Discord, etc. and survives " +
-					"container restarts. Returns markdown tables of channels and concrete Slack thread " +
+					"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. Uses Slack API " +
+					"for live Slack thread discovery when available, with log.jsonl as a durable fallback for all adapters. " +
+					"Returns markdown tables of channels and concrete Slack thread " +
 					"send targets. Use slack:<channel>:<thread_ts> targets returned here with send_message when choosing among threads.",
 				inputSchema: {},
 			},
 			async () => {
 				const channels = collectChannelsFromLog(this.workingDir);
-				const slackThreads = collectSlackThreadsFromLog(this.workingDir);
+				const slackThreads = await collectSlackThreads(this.workingDir, this.peerAdapters);
 				log.logInfo(`[mcp] list_channels: ${channels.length} channels, ${slackThreads.length} slack threads`);
 				this.logToFile({
 					date: new Date().toISOString(),
