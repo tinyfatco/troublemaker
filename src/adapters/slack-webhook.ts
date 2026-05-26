@@ -130,7 +130,7 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		// Feed pulse on every message (before any filtering) — pulse needs to see everything
 		if (this.pulse && event.ts && (event.user || event.bot_id)) {
-			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text);
+			this.pulse.record(event.channel, event.user || event.bot_id!, (event.text || "").length, event.text, event.ts);
 		}
 
 		// Ignore own messages only — bots are just participants

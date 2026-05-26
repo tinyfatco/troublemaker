@@ -52,7 +52,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text);
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, e.ts);
 			}
 
 			if (e.channel.startsWith("D")) {
@@ -138,7 +138,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering — pulse needs to see everything
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text);
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, e.ts);
 			}
 
 			// Ignore own messages only — bots are just participants

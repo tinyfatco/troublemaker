@@ -10,6 +10,8 @@
 export interface PulseEntry {
 	ts: number; // Date.now() millis
 	participantId: string;
+	/** Native platform message ID/timestamp when available. */
+	messageId?: string;
 	textLength: number;
 	/** Full message text, for ambient context. Never truncated. */
 	text?: string;
@@ -35,13 +37,28 @@ export class ChannelPulse {
 	}
 
 	/** Record a message in a channel. Call on every incoming event, before any filtering. */
-	record(channelId: string, participantId: string, textLength: number, text?: string): void {
+	record(channelId: string, participantId: string, textLength: number, text?: string, messageId?: string): void {
 		let buf = this.buffers.get(channelId);
 		if (!buf) {
 			buf = [];
 			this.buffers.set(channelId, buf);
 		}
-		buf.push({ ts: Date.now(), participantId, textLength, text });
+
+		if (messageId) {
+			const existingIndex = buf.findIndex((entry) => entry.messageId === messageId);
+			if (existingIndex >= 0) {
+				const existing = buf[existingIndex];
+				buf[existingIndex] = {
+					...existing,
+					ts: Date.now(),
+					textLength: existing.textLength || textLength,
+					text: existing.text ?? text,
+				};
+				return;
+			}
+		}
+
+		buf.push({ ts: Date.now(), participantId, messageId, textLength, text });
 		// Ring buffer: trim from front
 		if (buf.length > BUFFER_SIZE) {
 			buf.splice(0, buf.length - BUFFER_SIZE);
@@ -58,7 +75,9 @@ export class ChannelPulse {
 		const seen = new Set<string>();
 		const deduped: PulseEntry[] = [];
 		for (const entry of recent) {
-			const key = `${entry.participantId}:${entry.text}`;
+			const key = entry.messageId
+				? `id:${entry.messageId}`
+				: `${entry.participantId}:text:${entry.text}`;
 			if (!seen.has(key)) {
 				seen.add(key);
 				deduped.push(entry);
