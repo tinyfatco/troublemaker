@@ -9,6 +9,7 @@ import {
 } from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { parseOperatorControlEvent, type OperatorControlEvent } from '../operatorControlEvents';
+import { getAmbientDisplayLines } from '../ambientDisplay';
 import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
@@ -582,14 +583,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       );
     }
 
-    // Ambient engagement — show as a compact trigger with conversation snippet
+    // Ambient engagement — show only the unseen conversation line(s), not the model-only prompt wrapper.
     if (entry.isAmbient) {
-      const ambientText = text.replace(/^\[AMBIENT\]\s*/, '');
-      // Extract just the conversation lines (between "Recent messages:" and "Channel pulse:")
-      const convoMatch = ambientText.match(/Recent messages:\s*\n\n([\s\S]*?)\n\nChannel pulse:/);
-      const convoLines = convoMatch ? convoMatch[1].trim() : '';
-      const pulseMatch = ambientText.match(/Channel pulse:\s*(.*?)\.?\s*$/m);
-      const pulseInfo = pulseMatch ? pulseMatch[1] : '';
+      const convoLines = getAmbientDisplayLines(text);
 
       return (
         <div className="awareness-entry ambient-entry">
@@ -597,11 +593,10 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
             {entry.channel && <ChannelBadge channel={entry.channel} />}
             <span className="event-icon">{'\u25C8'}</span>
             <span className="event-name">ambient</span>
-            {pulseInfo && <span className="ambient-pulse">{pulseInfo}</span>}
           </div>
-          {convoLines && (
+          {convoLines.length > 0 && (
             <div className="ambient-conversation">
-              {convoLines.split('\n').map((line, i) => (
+              {convoLines.map((line, i) => (
                 <div key={i} className="ambient-line">{line}</div>
               ))}
             </div>
