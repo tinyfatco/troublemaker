@@ -53,18 +53,12 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
 
   if (!open) return null;
 
-  const refresh = async () => {
-    const data = await fetchAgentSettings();
-    setSnapshot(data);
-    setModelInput(formatCurrentModel(data));
-  };
-
   const apply = async (target: string, value: unknown) => {
     setSaving(target);
     setError(null);
     try {
       await configureAgentSetting(target, value);
-      await refresh();
+      setSnapshot((current) => applyLocalSetting(current, target, value));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save setting');
     } finally {
@@ -222,4 +216,39 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
 function formatCurrentModel(snapshot: AgentSettingsSnapshot): string {
   if (snapshot.provider && snapshot.model) return `${snapshot.provider}/${snapshot.model}`;
   return snapshot.model || 'default model';
+}
+
+function applyLocalSetting(
+  snapshot: AgentSettingsSnapshot | null,
+  target: string,
+  value: unknown,
+): AgentSettingsSnapshot | null {
+  if (!snapshot) return snapshot;
+  if (target === 'thinking_level') {
+    return { ...snapshot, thinking_level: typeof value === 'string' ? value : snapshot.thinking_level };
+  }
+  if (target === 'model' && typeof value === 'string') {
+    const slash = value.indexOf('/');
+    if (slash > 0) {
+      return {
+        ...snapshot,
+        provider: value.slice(0, slash),
+        model: value.slice(slash + 1),
+      };
+    }
+    return { ...snapshot, model: value };
+  }
+  if (target === 'spontaneity.enabled' && typeof value === 'boolean') {
+    return {
+      ...snapshot,
+      spontaneity: { ...snapshot.spontaneity, enabled: value },
+    };
+  }
+  if (target === 'spontaneity.level' && typeof value === 'number') {
+    return {
+      ...snapshot,
+      spontaneity: { ...snapshot.spontaneity, level: value },
+    };
+  }
+  return snapshot;
 }
