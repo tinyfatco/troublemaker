@@ -152,7 +152,7 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		// Track channel
 		this.channels.set(channelId, { id: channelId, name: payload.channelName || channelId });
 
-		this.pulse?.record(channelId, author.id, rawContent.length, rawContent, { messageId });
+		this.pulse?.record(channelId, author.id, rawContent.length, rawContent, { messageId, directlyAddressed: trigger !== "ambient" });
 
 		const momEvent: MomEvent = {
 			type: isDM ? "dm" : "mention",
