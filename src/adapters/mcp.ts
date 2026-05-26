@@ -18,7 +18,7 @@ import { z } from "zod";
 import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
-import { collectChannelsFromLog, formatChannelTable } from "../tools/list-channels.js";
+import { collectChannelsFromLog, collectSlackThreadsFromLog, formatChannelTable } from "../tools/list-channels.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
 import type {
 	ChannelInfo,
@@ -413,25 +413,26 @@ export class McpAdapter implements PlatformAdapter {
 			"list_channels",
 			{
 				description:
-					"List every channel the agent has ever sent or received a message on. Reads from " +
+					"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. Reads from " +
 					"log.jsonl so it covers Telegram, Slack, Email, Discord, etc. and survives " +
-					"container restarts. Returns a markdown table of adapter, channel ID, name, " +
-					"and last-seen timestamp. Use the channel IDs returned here as input to " +
-					"send_message.",
+					"container restarts. Returns markdown tables of channels and concrete Slack thread " +
+					"send targets. Use slack:<channel>:<thread_ts> targets returned here with send_message when choosing among threads.",
 				inputSchema: {},
 			},
 			async () => {
 				const channels = collectChannelsFromLog(this.workingDir);
-				log.logInfo(`[mcp] list_channels: ${channels.length} channels`);
+				const slackThreads = collectSlackThreadsFromLog(this.workingDir);
+				log.logInfo(`[mcp] list_channels: ${channels.length} channels, ${slackThreads.length} slack threads`);
 				this.logToFile({
 					date: new Date().toISOString(),
 					channel: "mcp",
 					type: "tool_call",
 					tool: "list_channels",
 					count: channels.length,
+					thread_count: slackThreads.length,
 					success: true,
 				});
-				return { content: [{ type: "text" as const, text: formatChannelTable(channels) }] };
+				return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads) }] };
 			},
 		);
 	}
