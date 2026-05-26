@@ -1,13 +1,16 @@
 /**
- * read_thread — inspect recent logged messages for a Slack thread target.
+ * read_thread — inspect messages for a Slack thread target.
  *
  * `list_channels` tells the agent which Slack thread targets exist. This tool
- * gives the agent enough local transcript context to choose among similar
- * threads without guessing or collapsing distinct roots together.
+ * gives the agent enough transcript context to choose among similar threads
+ * without guessing or collapsing distinct roots together. It prefers the live
+ * Slack API transcript and falls back to the local log when API access is not
+ * available.
  */
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import type { PlatformAdapter, ThreadTranscriptMessage } from "../adapters/types.js";
 import { displayNameForEntry, readLogEntries, type LogEntry } from "./list-channels.js";
 
 const SLACK_THREAD_TARGET_RE = /^slack:([CDG][A-Z0-9]+):(\d+\.\d+)$/i;
@@ -32,6 +35,13 @@ export interface SlackThreadMessage {
 	sourceEventType?: string;
 }
 
+export interface SlackThreadReadResult {
+	target: SlackThreadTargetParts;
+	messages: SlackThreadMessage[];
+	source: "slack-api" | "log";
+	warning?: string;
+}
+
 export function parseSlackThreadTarget(target: string): SlackThreadTargetParts | null {
 	const match = target.trim().match(SLACK_THREAD_TARGET_RE);
 	if (!match) return null;
@@ -47,7 +57,7 @@ function channelNameForEntry(entry: LogEntry): string {
 	return channel.startsWith("slack:#") ? channel.slice("slack:#".length) : entry.channelId || "unknown";
 }
 
-function normalizeText(text: unknown, maxLength = 500): string {
+function normalizeText(text: unknown, maxLength = 1000): string {
 	if (typeof text !== "string") return "";
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (normalized.length <= maxLength) return normalized;
@@ -62,7 +72,7 @@ export function collectSlackThreadMessagesFromLog(
 	workingDir: string,
 	target: string,
 	limit = 40,
-): { target: SlackThreadTargetParts; messages: SlackThreadMessage[] } | null {
+): SlackThreadReadResult | null {
 	const parsed = parseSlackThreadTarget(target);
 	if (!parsed) return null;
 
@@ -90,18 +100,71 @@ export function collectSlackThreadMessagesFromLog(
 			sourceEventType: entry.sourceEventType,
 		}));
 
-	return { target: parsed, messages };
+	return { target: parsed, messages, source: "log" };
+}
+
+export async function collectSlackThreadMessages(
+	workingDir: string,
+	target: string,
+	adapters: PlatformAdapter[] = [],
+	limit = 40,
+): Promise<SlackThreadReadResult | null> {
+	const parsed = parseSlackThreadTarget(target);
+	if (!parsed) return null;
+
+	const slack = adapters.find((adapter) => adapter.name === "slack" && typeof adapter.readThread === "function");
+	if (slack?.readThread) {
+		try {
+			const rawMessages = await slack.readThread(parsed.channelId, parsed.threadTs, limit);
+			return {
+				target: parsed,
+				messages: rawMessages.map(normalizeThreadTranscriptMessage),
+				source: "slack-api",
+			};
+		} catch (err) {
+			const fallback = collectSlackThreadMessagesFromLog(workingDir, target, limit);
+			if (fallback) {
+				return {
+					...fallback,
+					warning: `Slack API transcript read failed; using local log fallback: ${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
+			throw err;
+		}
+	}
+
+	return collectSlackThreadMessagesFromLog(workingDir, target, limit);
+}
+
+function normalizeThreadTranscriptMessage(message: ThreadTranscriptMessage): SlackThreadMessage {
+	return {
+		date: message.date || "",
+		ts: message.ts,
+		threadTs: message.threadTs,
+		channelId: message.channelId,
+		channelName: message.channelName || message.channelId,
+		sender: message.sender || "unknown",
+		text: normalizeText(message.text),
+		isRoot: message.isRoot,
+		isBot: Boolean(message.isBot),
+		directlyAddressed: message.directlyAddressed,
+		sourceEventType: message.sourceEventType,
+	};
 }
 
 export function formatSlackThreadTranscript(
-	result: { target: SlackThreadTargetParts; messages: SlackThreadMessage[] },
+	result: SlackThreadReadResult,
 ): string {
-	const { target, messages } = result;
+	const { target, messages, source, warning } = result;
 	if (messages.length === 0) {
 		return [
 			`Slack thread ${target.inputTarget}`,
+			`Source: ${source === "slack-api" ? "Slack API" : "local log"}`,
+			...(warning ? [`Warning: ${warning}`] : []),
 			"",
-			"No logged messages were found for this thread target. Use list_channels to discover recent Slack thread targets, or wait for Slack activity to be logged.",
+			source === "slack-api"
+				? "No Slack messages were found for this thread target. Confirm the target exists and the app has access to that channel."
+				: "No logged messages were found for this thread target. Use list_channels to discover recent Slack thread targets, or wait for Slack activity to be logged.",
 		].join("\n");
 	}
 
@@ -110,10 +173,12 @@ export function formatSlackThreadTranscript(
 	const lines = [
 		`Slack thread ${target.inputTarget}`,
 		`Channel: ${channelName}`,
+		`Source: ${source === "slack-api" ? "Slack API" : "local log"}`,
 		`Messages shown: ${messages.length}`,
 		"",
 		"Transcript:",
 	];
+	if (warning) lines.splice(3, 0, `Warning: ${warning}`);
 
 	for (const message of messages) {
 		const marker = message.isRoot ? "root" : "reply";
@@ -129,7 +194,7 @@ export function formatSlackThreadTranscript(
 	return lines.join("\n");
 }
 
-export function createReadThreadTool(workingDir: string): AgentTool<any> {
+export function createReadThreadTool(workingDir: string, adapters: PlatformAdapter[] = []): AgentTool<any> {
 	const schema = Type.Object({
 		target: Type.String({ description: "Slack thread target from list_channels or delivery context, e.g. slack:C0AN1GL51K7:1779777014.658729" }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
@@ -139,7 +204,7 @@ export function createReadThreadTool(workingDir: string): AgentTool<any> {
 		name: "read_thread",
 		label: "read_thread",
 		description:
-			"Read the recent logged transcript for a Slack thread target such as slack:<channel>:<thread_ts>. " +
+			"Read the Slack API transcript for a Slack thread target such as slack:<channel>:<thread_ts>, with log fallback. " +
 			"Use this after list_channels when several Slack threads are active and you need the nuance/context before choosing a send_message target.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
@@ -147,7 +212,7 @@ export function createReadThreadTool(workingDir: string): AgentTool<any> {
 			if (typeof target !== "string" || !target.trim()) {
 				throw new Error("read_thread requires a Slack thread target like slack:C0AN1GL51K7:1779777014.658729. Use list_channels to discover targets.");
 			}
-			const result = collectSlackThreadMessagesFromLog(workingDir, target, limit);
+			const result = await collectSlackThreadMessages(workingDir, target, adapters, limit);
 			if (!result) {
 				throw new Error(`Invalid Slack thread target "${target}". Expected slack:<channel>:<thread_ts>, for example slack:C0AN1GL51K7:1779777014.658729.`);
 			}

@@ -615,7 +615,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 		const extraTools = [
 			createSendMessageTool(adapters),
 			createListChannelsTool(workingDir),
-			createReadThreadTool(workingDir),
+			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),

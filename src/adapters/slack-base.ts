@@ -6,7 +6,7 @@ import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pu
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
-import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
+import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, ThreadTranscriptMessage, UserInfo } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
 // ============================================================================
@@ -179,6 +179,59 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
 		const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text: markdownToSlackMrkdwn(text) });
 		return result.ts as string;
+	}
+
+	async readThread(channel: string, threadTs: string, limit = 40): Promise<ThreadTranscriptMessage[]> {
+		const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
+		const rawMessages: Array<{ ts?: string; user?: string; bot_id?: string; username?: string; subtype?: string; text?: string }> = [];
+		let cursor: string | undefined;
+		do {
+			const result = await this.webClient.conversations.replies({
+				channel,
+				ts: threadTs,
+				limit: 100,
+				cursor,
+				inclusive: true,
+			});
+			rawMessages.push(...((result.messages || []) as Array<{ ts?: string; user?: string; bot_id?: string; username?: string; subtype?: string; text?: string }>));
+			cursor = result.response_metadata?.next_cursor || undefined;
+		} while (cursor && rawMessages.length < 500);
+
+		const channelName = this.getChannel(channel)?.name || channel;
+		const ordered = rawMessages
+			.filter((message) => typeof message.ts === "string")
+			.sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+		const root = ordered.find((message) => message.ts === threadTs);
+		let visible = ordered.slice(-boundedLimit);
+		if (root && !visible.some((message) => message.ts === root.ts)) {
+			visible = boundedLimit === 1 ? [root] : [root, ...visible.slice(-(boundedLimit - 1))];
+		}
+
+		return visible
+			.map((message) => {
+				const ts = message.ts as string;
+				const userId = typeof message.user === "string"
+					? message.user
+					: typeof message.bot_id === "string"
+						? message.bot_id
+						: typeof message.username === "string"
+							? message.username
+							: "unknown";
+				const user = this.getUser(userId);
+				const isBot = Boolean(message.bot_id || message.subtype === "bot_message" || userId === this.botUserId);
+				return {
+					date: slackTimestampToIso(ts),
+					ts,
+					threadTs,
+					channelId: channel,
+					channelName,
+					sender: user?.displayName || user?.userName || (isBot ? "Zip" : userId),
+					text: typeof message.text === "string" ? message.text : "",
+					isRoot: ts === threadTs,
+					isBot,
+					sourceEventType: "slack_conversations_replies",
+				};
+			});
 	}
 
 	protected slackPulseMetadata(channel: string, ts: string, threadTs?: string, directlyAddressed = false): PulseRecordMetadata {
@@ -520,4 +573,11 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			cursor = result.response_metadata?.next_cursor;
 		} while (cursor);
 	}
+}
+
+function slackTimestampToIso(ts: string): string {
+	const [seconds, fractional = ""] = ts.split(".");
+	const epochMs = Number(seconds) * 1000 + Math.floor(Number(`0.${fractional}`) * 1000);
+	if (!Number.isFinite(epochMs)) return "";
+	return new Date(epochMs).toISOString();
 }

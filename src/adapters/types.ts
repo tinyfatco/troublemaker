@@ -42,6 +42,20 @@ export interface SendFinalResponseOptions {
 	force?: boolean;
 }
 
+export interface ThreadTranscriptMessage {
+	date?: string;
+	ts: string;
+	threadTs: string;
+	channelId: string;
+	channelName?: string;
+	sender: string;
+	text: string;
+	isRoot: boolean;
+	isBot?: boolean;
+	directlyAddressed?: boolean;
+	sourceEventType?: string;
+}
+
 export type SlashCommandResult = boolean | {
 	handled: boolean;
 	/** Resolves when an interactive command has finished sending follow-up output. */
@@ -164,6 +178,7 @@ export interface PlatformAdapter {
 	updateMessage(channel: string, ts: string, text: string): Promise<void>;
 	deleteMessage(channel: string, ts: string): Promise<void>;
 	postInThread(channel: string, threadTs: string, text: string): Promise<string>;
+	readThread?(channel: string, threadTs: string, limit?: number): Promise<ThreadTranscriptMessage[]>;
 	uploadFile(channel: string, filePath: string, title?: string): Promise<void>;
 
 	// -- Logging --
