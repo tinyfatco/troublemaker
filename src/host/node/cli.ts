@@ -37,7 +37,7 @@ import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
 import { createHostBashRoute } from "../../modes/host/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
-import { createSendMessageToChannelTool } from "../../tools/send-message-to-channel.js";
+import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
 
 // ============================================================================
@@ -467,7 +467,7 @@ adapters.push(operatorAdapter);
 
 const AWARENESS_DIR = "awareness";
 
-// Inject the full adapter list into the MCP adapter so its send_message_to_channel
+// Inject the full adapter list into the MCP adapter so its send_message
 // and list_channels tools can route through peer adapters. Done after all adapters
 // are constructed to close the circular dependency.
 {
@@ -589,7 +589,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
-			createSendMessageToChannelTool(adapters),
+			createSendMessageTool(adapters),
 			createListChannelsTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
@@ -1481,7 +1481,7 @@ To change these, edit \`settings.json\` directly.
 
 - Keep this file short — it's included in every heartbeat prompt.
 - If you clear this file (leave it empty), heartbeats will be skipped entirely.
-- Use \`send_message_to_channel\` to reach out on email/Telegram/Slack/Discord if something needs attention.
+- Use \`send_message\` with an explicit target to reach out on email/Telegram/Slack/Discord if something needs attention.
 - Use \`yield_no_action\` if nothing needs doing — the quiet is recorded.
 - You can update this file yourself to evolve your own periodic behavior.
 `, "utf-8");

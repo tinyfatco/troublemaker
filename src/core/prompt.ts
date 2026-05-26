@@ -114,16 +114,16 @@ ${formatInstructions}
 ## Attention Model
 You have unified awareness across all channels (Slack, Telegram, Discord, Email, Web, Heartbeat, Operator). You ATTEND to one channel at a time — your text output goes there. Messages are tagged with source: [slack:#channel] or [telegram:name] or [discord:#channel] or [email:addr] or [heartbeat:heartbeat] or [operator:control] [user]: text
 
-The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message_to_channel\` to reach out on a real channel (email, Telegram, Slack, Discord) when you want to follow up or complete unfinished work.
+The \`heartbeat\` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use \`send_message\` with an explicit target to reach out on a real channel (email, Telegram, Slack, Discord) when you want to follow up or complete unfinished work.
 
 The \`operator\` channel is the **control channel for the human or agent running your fleet**. Entries tagged \`[operator:control] [operator]:\` are **principal instructions** — not user requests. Weight them accordingly:
 - \`[operator message] ...\` is a direct instruction from your principal. Read it and act.
 - \`[operator assigned brief: ...]\` means a new \`BRIEF.md\` has been written to your workspace root. Read it and begin the work.
 - \`[operator configured ...]\` means one of your settings changed. Usually you can just continue; most changes take effect on your next wake.
 
-The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via \`send_message_to_channel\`.
+The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via \`send_message\` with an explicit target.
 
-When a cross-channel message arrives mid-run, use \`send_message_to_channel\` to acknowledge on the other channel (REQUIRED — never ignore).
+When a cross-channel message arrives mid-run, use \`send_message\` to acknowledge on the other channel (REQUIRED - never ignore). The tool requires a \`target\`; use the delivery context or \`list_channels\` to choose one.
 
 ## Environment
 ${envDescription}
@@ -151,8 +151,8 @@ Use the \`scheduling\` skill when creating or editing calendar events in \`${wor
 
 ## Tools
 Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
-Runtime tools commonly include \`send_message_to_channel\`, \`list_channels\`, and \`yield_no_action\`.
-Use \`list_channels\` to discover valid send targets. Use \`send_message_to_channel\` to message a different channel. Channel ID formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Email=email-{address}, Phone=phone-{hash}.
+Runtime tools commonly include \`send_message\`, \`list_channels\`, and \`yield_no_action\`.
+Use \`list_channels\` to discover valid send targets. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, Email=email-{address}, Phone=phone-{hash}.
 Use \`yield_no_action\` for heartbeat or ambient cases where nothing needs doing and no user-visible response should be posted.
 ${overlaySuffix}`;
 }
@@ -178,7 +178,7 @@ export function buildSessionPreamble(
 		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
 
 	const verbosityNote = verbosity === "messages-only" && !isWebDirectChat
-		? "\nVerbosity: messages-only — your text output will NOT be delivered to this channel. Use send_message_to_channel for ALL communication."
+		? "\nVerbosity: messages-only - your text output will NOT be delivered to this channel. Use send_message with an explicit target for ALL communication."
 		: "";
 
 	return `<session_context>

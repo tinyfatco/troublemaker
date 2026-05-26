@@ -88,7 +88,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
-	/** Active reply contexts used by send_message_to_channel to preserve email threading */
+	/** Active reply contexts used by send_message to preserve email threading */
 	private activeReplyContexts = new Map<string, ActiveEmailReplyContext>();
 
 	constructor(config: EmailWebhookAdapterConfig) {
@@ -169,6 +169,11 @@ Keep responses concise and professional. The user will receive one email with yo
 			ts,
 			user: payload.from,
 			text: this.buildMessageText(payload, savedPaths),
+			rawText: payload.body,
+			sourceEventType: "email_received",
+			directlyAddressed: true,
+			replyTarget: `email-${payload.from}`,
+			replyTargetDescription: `Email reply thread for ${payload.from}`,
 		};
 
 		// Store payload for createContext to read (threading metadata)
@@ -543,7 +548,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	logBotResponse(channel: string, text: string, ts: string): void {
 		// Normalize channelId to match processEmail's format (FAT-370):
 		//   processEmail: `email-${from.toLowerCase().replace(/[^a-z0-9]/g, "_")}`
-		// Without normalization, bot replies routed via send_message_to_channel
+		// Without normalization, bot replies routed via send_message
 		// arrive here as channel="email-alex@gmail.com" while inbound uses
 		// channelId="email-alex_gmail_com" — and buildConversationReplyBody's
 		// channelId filter never matches across turns.
@@ -630,11 +635,17 @@ Keep responses concise and professional. The user will receive one email with yo
 		return {
 			message: {
 				text: event.text,
-				rawText: event.text,
+				rawText: event.rawText ?? event.text,
 				user: event.user,
 				userName: event.user.split("@")[0],
 				channel: event.channel,
 				ts: event.ts,
+				eventType: event.type,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
+				threadTs: event.threadTs,
+				replyTarget: event.replyTarget,
+				replyTargetDescription: event.replyTargetDescription,
 				attachments: [],
 			},
 			channelName: undefined,

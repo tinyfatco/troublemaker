@@ -163,6 +163,12 @@ export class SlackWebhookAdapter extends SlackBase {
 			ts: event.ts,
 			user: event.user || event.bot_id || "unknown",
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+			rawText: event.text || "",
+			sourceEventType: "slack_app_mention",
+			directlyAddressed: true,
+			threadTs: event.thread_ts,
+			replyTarget: `slack:${event.channel}:${event.thread_ts ?? event.ts}`,
+			replyTargetDescription: event.thread_ts ? "Slack thread containing this direct mention" : "Slack thread under this direct mention",
 			files: event.files,
 		};
 
@@ -209,6 +215,20 @@ export class SlackWebhookAdapter extends SlackBase {
 			ts: event.ts,
 			user: userId,
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+			rawText: event.text || "",
+			sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
+			directlyAddressed: isDM,
+			threadTs: event.thread_ts,
+			replyTarget: isDM
+				? event.channel
+				: event.thread_ts
+					? `slack:${event.channel}:${event.thread_ts}`
+					: event.channel,
+			replyTargetDescription: isDM
+				? "Slack DM"
+				: event.thread_ts
+					? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
+					: "Slack channel containing this ambient message; use only if a visible reply is appropriate",
 			files: event.files,
 		};
 
@@ -263,6 +283,7 @@ interface SlackEventInner {
 	bot_id?: string;
 	text?: string;
 	ts: string;
+	thread_ts?: string;
 	subtype?: string;
 	files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 }

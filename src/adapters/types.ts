@@ -15,6 +15,12 @@ export interface MomEvent {
 	ts: string;
 	user: string;
 	text: string;
+	rawText?: string;
+	sourceEventType?: string;
+	directlyAddressed?: boolean;
+	threadTs?: string;
+	replyTarget?: string;
+	replyTargetDescription?: string;
 	files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
 	/** Processed attachments with local paths (populated after logging) */
 	attachments?: Attachment[];
@@ -62,6 +68,12 @@ export interface MomContext {
 		userName?: string;
 		channel: string;
 		ts: string;
+		eventType?: MomEvent["type"];
+		sourceEventType?: string;
+		directlyAddressed?: boolean;
+		threadTs?: string;
+		replyTarget?: string;
+		replyTargetDescription?: string;
 		attachments: Array<{ local: string }>;
 	};
 	channelName?: string;
