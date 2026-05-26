@@ -1576,13 +1576,19 @@ html, body, #root {
   opacity: 0.6;
 }
 
-.awareness-entry.assistant-entry .markdown-content p { margin-bottom: 0.4rem; }
-.awareness-entry.assistant-entry .markdown-content p:last-child { margin-bottom: 0; }
-.awareness-entry.assistant-entry .markdown-content hr { margin-bottom: 0.6rem; margin-top: 0.4rem; }
+.awareness-entry.assistant-entry .markdown-content p,
+.awareness-thinking .markdown-content p { margin-bottom: 0.4rem; }
+.awareness-entry.assistant-entry .markdown-content p:last-child,
+.awareness-thinking .markdown-content p:last-child { margin-bottom: 0; }
+.awareness-entry.assistant-entry .markdown-content hr,
+.awareness-thinking .markdown-content hr { margin-bottom: 0.6rem; margin-top: 0.4rem; }
 .awareness-entry.assistant-entry ul,
-.awareness-entry.assistant-entry ol { margin: 0.4rem 0; padding-left: 1.5rem; }
+.awareness-entry.assistant-entry ol,
+.awareness-thinking ul,
+.awareness-thinking ol { margin: 0.4rem 0; padding-left: 1.5rem; }
 
-.awareness-entry.assistant-entry code {
+.awareness-entry.assistant-entry code,
+.awareness-thinking code {
   background: var(--bg-secondary);
   padding: 0.1rem 0.3rem;
   border-radius: 3px;
@@ -1590,7 +1596,8 @@ html, body, #root {
   font-size: 0.8em;
 }
 
-.awareness-entry.assistant-entry pre {
+.awareness-entry.assistant-entry pre,
+.awareness-thinking pre {
   background: var(--bg-secondary);
   padding: 0.75rem;
   border-radius: 4px;
@@ -1599,7 +1606,8 @@ html, body, #root {
   border: 1px solid var(--border);
 }
 
-.awareness-entry.assistant-entry pre code {
+.awareness-entry.assistant-entry pre code,
+.awareness-thinking pre code {
   background: none;
   padding: 0;
   font-size: 0.8rem;
@@ -1608,7 +1616,10 @@ html, body, #root {
 
 .awareness-entry.assistant-entry h1,
 .awareness-entry.assistant-entry h2,
-.awareness-entry.assistant-entry h3 {
+.awareness-entry.assistant-entry h3,
+.awareness-thinking h1,
+.awareness-thinking h2,
+.awareness-thinking h3 {
   font-weight: 600;
   margin-top: 0.2rem;
   margin-bottom: 0.2rem;
@@ -1617,8 +1628,12 @@ html, body, #root {
 .awareness-entry.assistant-entry h1 { font-size: 1.1rem; }
 .awareness-entry.assistant-entry h2 { font-size: 1rem; }
 .awareness-entry.assistant-entry h3 { font-size: 0.9rem; }
+.awareness-thinking h1 { font-size: 1.1rem; }
+.awareness-thinking h2 { font-size: 1rem; }
+.awareness-thinking h3 { font-size: 0.9rem; }
 
-.awareness-entry.assistant-entry table {
+.awareness-entry.assistant-entry table,
+.awareness-thinking table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.78rem;
@@ -1626,13 +1641,16 @@ html, body, #root {
 }
 
 .awareness-entry.assistant-entry th,
-.awareness-entry.assistant-entry td {
+.awareness-entry.assistant-entry td,
+.awareness-thinking th,
+.awareness-thinking td {
   padding: 0.25rem 0.5rem;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
 
-.awareness-entry.assistant-entry th {
+.awareness-entry.assistant-entry th,
+.awareness-thinking th {
   font-weight: 600;
   font-size: 0.7rem;
   text-transform: uppercase;
@@ -1640,7 +1658,8 @@ html, body, #root {
   color: var(--text-muted);
 }
 
-.awareness-entry.assistant-entry tr:last-child td {
+.awareness-entry.assistant-entry tr:last-child td,
+.awareness-thinking tr:last-child td {
   border-bottom: none;
 }
 
@@ -1652,6 +1671,8 @@ html, body, #root {
   gap: 0.35rem;
   width: 100%;
   border: 0;
+  background: transparent;
+  padding: 0;
   font-size: 0.75rem;
   font-family: var(--font-sans);
   color: var(--text-muted);
@@ -1675,7 +1696,26 @@ html, body, #root {
   flex: 1;
   min-width: 0;
   line-height: 1.4;
-  white-space: pre-wrap;
+}
+
+.thinking-markdown {
+  color: inherit;
+  font-style: inherit;
+  line-height: 1.45;
+}
+
+.thinking-markdown strong {
+  color: color-mix(in srgb, var(--text) 72%, var(--entry-thinking) 28%);
+  font-weight: 650;
+}
+
+.thinking-markdown a {
+  color: color-mix(in srgb, var(--accent) 82%, var(--entry-thinking) 18%);
+  text-decoration: none;
+}
+
+.thinking-markdown a:hover {
+  text-decoration: underline;
 }
 
 .thinking-toggle {

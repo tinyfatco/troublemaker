@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { debugStream, summarizeToolCall } from '../streamDebug';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import {
@@ -731,18 +731,32 @@ function ThinkingBlock({ text }: { text: string }) {
   const preview = getThinkingPreview(text);
   const canExpand = preview.isTruncated;
   const displayText = expanded || !canExpand ? text.trimEnd() : preview.text;
+  const toggle = () => {
+    if (canExpand) setExpanded((current) => !current);
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!canExpand) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      toggle();
+    }
+  };
 
   return (
-    <button
-      type="button"
+    <div
       className={`awareness-entry awareness-thinking ${canExpand ? 'toggleable' : ''}`}
-      onClick={() => canExpand && setExpanded(!expanded)}
+      onClick={canExpand ? toggle : undefined}
+      onKeyDown={canExpand ? handleKeyDown : undefined}
+      role={canExpand ? 'button' : undefined}
+      tabIndex={canExpand ? 0 : undefined}
       aria-expanded={canExpand ? expanded : undefined}
     >
-      <span className="thinking-icon">{'\uD83D\uDCAD'}</span>
-      <span className="thinking-text">{displayText}</span>
+      <span className="thinking-icon" aria-hidden="true">{'\uD83D\uDCAD'}</span>
+      <div className="thinking-text">
+        <Markdown content={displayText} className="thinking-markdown" />
+      </div>
       {canExpand && <span className="thinking-toggle">{expanded ? 'less' : 'more'}</span>}
-    </button>
+    </div>
   );
 }
 
