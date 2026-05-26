@@ -20,6 +20,7 @@ import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
 import { collectChannelsFromLog, collectSlackThreadsFromLog, formatChannelTable } from "../tools/list-channels.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
+import { collectSlackThreadMessagesFromLog, formatSlackThreadTranscript } from "../tools/read-thread.js";
 import type {
 	ChannelInfo,
 	MomContext,
@@ -435,6 +436,37 @@ export class McpAdapter implements PlatformAdapter {
 				return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads) }] };
 			},
 		);
+
+			// ── read_thread ─────────────────────────────────────────────────
+			server.registerTool(
+				"read_thread",
+				{
+					description:
+						"Read the recent logged transcript for a Slack thread target returned by list_channels, " +
+						"such as slack:<channel>:<thread_ts>. Use this to distinguish similar Slack threads before send_message.",
+					inputSchema: {
+						target: z.string().describe("Slack thread target, e.g. slack:C0AN1GL51K7:1779777014.658729"),
+						limit: z.number().optional().describe("Maximum messages to return, default 40, max 100"),
+					},
+				},
+				async ({ target, limit }) => {
+					const result = collectSlackThreadMessagesFromLog(this.workingDir, target, limit);
+					if (!result) {
+						return { content: [{ type: "text" as const, text: `Invalid Slack thread target "${target}". Expected slack:<channel>:<thread_ts>.` }], isError: true };
+					}
+					log.logInfo(`[mcp] read_thread: ${target} (${result.messages.length} messages)`);
+					this.logToFile({
+						date: new Date().toISOString(),
+						channel: "mcp",
+						type: "tool_call",
+						tool: "read_thread",
+						target,
+						count: result.messages.length,
+						success: true,
+					});
+					return { content: [{ type: "text" as const, text: formatSlackThreadTranscript(result) }] };
+				},
+			);
 	}
 
 	// ==========================================================================

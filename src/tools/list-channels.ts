@@ -36,7 +36,7 @@ export interface SlackThreadListing {
 	lastSeen: string;
 }
 
-interface LogEntry {
+export interface LogEntry {
 	channel?: string;
 	channelId?: string;
 	date?: string;
@@ -47,6 +47,8 @@ interface LogEntry {
 	userName?: string;
 	displayName?: string;
 	isBot?: boolean;
+	directlyAddressed?: boolean;
+	sourceEventType?: string;
 }
 
 function sendTargetForChannel(channel: ChannelListing): string {
@@ -56,7 +58,7 @@ function sendTargetForChannel(channel: ChannelListing): string {
 	return channel.id;
 }
 
-function readLogEntries(workingDir: string): LogEntry[] {
+export function readLogEntries(workingDir: string): LogEntry[] {
 	const logPath = join(workingDir, "log.jsonl");
 	if (!existsSync(logPath)) return [];
 
@@ -86,7 +88,7 @@ function preview(text: unknown, maxLength = 96): string {
 	return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
-function displayNameForEntry(entry: LogEntry): string {
+export function displayNameForEntry(entry: LogEntry): string {
 	if (entry.isBot) return "Zip";
 	return entry.displayName || entry.userName || entry.user || "unknown";
 }
