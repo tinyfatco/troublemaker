@@ -355,7 +355,7 @@ export class McpAdapter implements PlatformAdapter {
 					const ts = resolved.threadTs
 						? await adapter.postInThread(resolved.channel, resolved.threadTs, text)
 						: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
-					adapter.logBotResponse(resolved.channel, text, ts);
+					adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 					// Append to awareness so the agent sees it on its next run.
 					// Does not enqueue a MomEvent — no runner wake.

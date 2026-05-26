@@ -2,7 +2,7 @@ import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
-import type { ChannelPulse } from "../engagement/channel-pulse.js";
+import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
@@ -181,6 +181,19 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return result.ts as string;
 	}
 
+	protected slackPulseMetadata(channel: string, ts: string, threadTs?: string): PulseRecordMetadata {
+		if (channel.startsWith("D")) return { messageId: ts };
+		const rootThreadTs = threadTs ?? ts;
+		return {
+			messageId: ts,
+			threadTs: rootThreadTs,
+			replyTarget: `slack:${channel}:${rootThreadTs}`,
+			replyTargetDescription: threadTs
+				? "Slack thread containing this message"
+				: "Slack thread rooted under this message",
+		};
+	}
+
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
 		const fileName = title || basename(filePath);
 		const fileContent = readFileSync(filePath);
@@ -196,11 +209,13 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
 	}
 
-	logBotResponse(channel: string, text: string, ts: string): void {
+	logBotResponse(channel: string, text: string, ts: string, metadata: { threadTs?: string } = {}): void {
 		const ch = this.channels.get(channel);
+		const threadTs = metadata.threadTs ?? ts;
 		this.logToFile({
 			date: new Date().toISOString(),
 			ts,
+			threadTs,
 			channel: ch ? `slack:#${ch.name}` : `slack:${channel}`,
 			channelId: channel,
 			user: "bot",
@@ -210,7 +225,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		});
 		// Record own message in pulse so timeSinceMyLast is accurate
 		if (this.pulse && this.botUserId) {
-			this.pulse.record(channel, this.botUserId, text.length, text, ts);
+			this.pulse.record(channel, this.botUserId, text.length, text, this.slackPulseMetadata(channel, ts, metadata.threadTs));
 		}
 	}
 

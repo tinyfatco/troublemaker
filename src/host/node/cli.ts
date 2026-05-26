@@ -270,6 +270,11 @@ const pulse = new ChannelPulse("pending");
 const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
 const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ambientLastFired = new Map<string, number>();
+const ambientIncludedKeys = new Map<string, Set<string>>();
+
+function pulseEntryAmbientKey(entry: { messageId?: string; participantId: string; ts: number; text?: string }): string {
+	return entry.messageId ? `id:${entry.messageId}` : `entry:${entry.participantId}:${entry.ts}:${entry.text ?? ""}`;
+}
 
 /** Schedule (or re-schedule) an ambient evaluation for a channel. */
 function handleAmbientMessage(channelId: string, _event: MomEvent): void {
@@ -314,7 +319,16 @@ function fireAmbientEvaluation(channelId: string): void {
 	}
 
 	const recentMessages = pulse.recentMessages(channelId);
-	if (recentMessages.length === 0) return;
+	let includedKeys = ambientIncludedKeys.get(channelId);
+	if (!includedKeys) {
+		includedKeys = new Set();
+		ambientIncludedKeys.set(channelId, includedKeys);
+	}
+	const unseenMessages = recentMessages.filter((entry) => !includedKeys.has(pulseEntryAmbientKey(entry)));
+	if (unseenMessages.length === 0) {
+		log.logInfo(`[ambient:${channelId}] No unseen messages since last ambient context, skipping`);
+		return;
+	}
 
 	const refreshedSummary = pulse.summary(channelId);
 
@@ -325,11 +339,12 @@ function fireAmbientEvaluation(channelId: string): void {
 		return;
 	}
 
-	// Format recent messages — resolve platform user IDs to display names
-	const messageLines = recentMessages.map((m) => {
+	// Format unseen messages — resolve platform user IDs to display names.
+	const messageLines = unseenMessages.map((m) => {
 		const user = ambientAdapter.getUser(m.participantId);
 		const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
-		return `${who}: ${m.text}`;
+		const target = m.replyTarget ? ` [Reply target: ${m.replyTarget}${m.messageId ? `; message_ts: ${m.messageId}` : ""}${m.threadTs ? `; thread_ts: ${m.threadTs}` : ""}]` : "";
+		return `${who}${target}: ${m.text}`;
 	}).join("\n");
 
 	const channelLabel = getChannelLabel(channelId, adapters);
@@ -339,11 +354,16 @@ function fireAmbientEvaluation(channelId: string): void {
 		channel: channelId,
 		ts: String(Date.now() / 1000),
 		user: "system",
-		text: `[AMBIENT] A conversation is happening in ${channelLabel}. Recent messages:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. You were not directly addressed. If you have something genuinely useful, interesting, or fun to add, respond naturally as a participant. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
+		text: `[AMBIENT] A conversation is happening in ${channelLabel}. New unseen messages since your last ambient wake:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. You were not directly addressed. If you choose to respond to a specific Slack thread, use that message's exact Reply target with send_message. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
 	};
 
 	if (!ambientAdapter.enqueueEvent(ambientEvent)) {
 		log.logInfo(`[ambient:${channelId}] Adapter ${ambientAdapter.name} rejected ambient event`);
+		return;
+	}
+
+	for (const entry of unseenMessages) {
+		includedKeys.add(pulseEntryAmbientKey(entry));
 	}
 }
 
