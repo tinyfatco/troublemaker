@@ -1,6 +1,7 @@
 import type { PlatformAdapter } from "../src/adapters/types.js";
 import {
 	createSendMessageToChannelTool,
+	isObsoleteSilentControlMessage,
 	normalizeDiscordChannel,
 	resolveAdapter,
 	resolveChannelTarget,
@@ -78,6 +79,9 @@ async function run() {
 
 	assertEqual(resolveAdapter(telegramId, adapters)?.name, "telegram", "shorter numeric ID still resolves to Telegram");
 	assertEqual(resolveChannelTarget(`discord:${snowflake}`, [telegram.adapter]), undefined, "discord target fails closed without Discord adapter");
+	assert(isObsoleteSilentControlMessage("[SILENT]"), "detects exact obsolete silent marker");
+	assert(isObsoleteSilentControlMessage("  [silent]\n"), "detects whitespace/case variants of obsolete silent marker");
+	assert(!isObsoleteSilentControlMessage("[SILENT] please log this"), "does not suppress normal text that merely mentions silent marker");
 
 	const tool = createSendMessageToChannelTool(adapters);
 	const result = await (tool.execute as any)("call-1", {
@@ -90,6 +94,15 @@ async function run() {
 	assertEqual(discord.sent[0]?.channel, snowflake, "tool passes raw snowflake to Discord postMessage");
 	assertEqual(telegram.sent.length, 0, "tool does not fall through to Telegram for Discord snowflake");
 	assert((result.content?.[0]?.text || "").includes(`discord channel ${snowflake}`), "tool result names normalized Discord channel");
+
+	const silentResult = await (tool.execute as any)("call-2", {
+		label: "legacy silent",
+		channel: telegramId,
+		text: "[SILENT]",
+	});
+
+	assertEqual(telegram.sent.length, 0, "tool suppresses obsolete silent marker before Telegram send");
+	assert((silentResult.content?.[0]?.text || "").includes("Suppressed obsolete [SILENT]"), "tool result explains silent suppression");
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 	process.exit(failed > 0 ? 1 : 0);

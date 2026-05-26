@@ -30,6 +30,10 @@ export interface ResolvedChannelTarget {
 	inputChannel: string;
 }
 
+export function isObsoleteSilentControlMessage(text: string): boolean {
+	return text.trim().toUpperCase() === "[SILENT]";
+}
+
 /** Return the raw Discord channel ID if this target names a Discord channel. */
 export function normalizeDiscordChannel(channel: string): string | undefined {
 	const prefixed = channel.match(DISCORD_TARGET_RE);
@@ -114,6 +118,14 @@ export function createSendMessageToChannelTool(adapters: PlatformAdapter[]): Age
 			};
 			if (signal?.aborted) {
 				throw new Error("Operation aborted");
+			}
+
+			if (isObsoleteSilentControlMessage(text)) {
+				log.logWarning(`[send_message_to_channel] Suppressed obsolete [SILENT] message to ${channel}`);
+				return {
+					content: [{ type: "text" as const, text: "Suppressed obsolete [SILENT] control marker; no user-visible message was sent. Use yield_no_action when no outbound message is needed." }],
+					details: undefined,
+				};
 			}
 
 			const target = resolveChannelTarget(channel, adapters);
