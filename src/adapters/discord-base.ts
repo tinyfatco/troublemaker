@@ -282,7 +282,7 @@ When mentioning users, use <@userId> format.`;
 			isBot: true,
 		});
 		const selfId = this.botUserId || this.applicationId;
-		this.pulse?.record(channel, selfId, text.length, text);
+		this.pulse?.record(channel, selfId, text.length, text, ts);
 	}
 
 	// ==========================================================================
