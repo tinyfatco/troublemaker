@@ -64,6 +64,8 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	"kimi-turbo": "accounts/fireworks/routers/kimi-k2p6-turbo",
 };
 
+const CURATED_OPENAI_PROVIDERS = ["openai-codex", "openai"];
+
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
@@ -235,20 +237,69 @@ export function listModels(
 	modelRegistry?: ModelRegistry,
 ): Array<{ provider: string; id: string; name: string; api: string }> {
 	const registry = modelRegistry || createWorkspaceModelRegistry(workingDir);
-	return registry.getAvailable()
-		.filter((model) => {
-			// For Anthropic, only show the models people actually want
-			if (model.provider === "anthropic") {
-				return ANTHROPIC_LISTED_MODELS.has(model.id);
-			}
-			return true;
-		})
-		.map((model) => ({
+	const allModels = registry.getAll();
+	const current = getCurrentModelSelection(workingDir);
+	const curatedKeys = new Set<string>([
+		...Object.values(FIREWORKS_ALIAS_TO_MODEL_ID).map((id) => modelKey("fireworks", id)),
+		...Array.from(ANTHROPIC_LISTED_MODELS).map((id) => modelKey("anthropic", id)),
+		...CURATED_OPENAI_PROVIDERS.flatMap((provider) =>
+			Array.from(new Set(Object.values(OPENAI_ALIAS_TO_MODEL_ID))).map((id) => modelKey(provider, id)),
+		),
+		modelKey(current.provider, current.id),
+	]);
+
+	const byKey = new Map<string, { provider: string; id: string; name: string; api: string }>();
+	const addModel = (model: Model<Api>): void => {
+		if (model.provider === "anthropic" && !ANTHROPIC_LISTED_MODELS.has(model.id)) return;
+		byKey.set(modelKey(model.provider, model.id), {
 			provider: model.provider,
 			id: model.id,
 			name: model.name,
 			api: model.api,
-		}));
+		});
+	};
+
+	for (const model of registry.getAvailable()) addModel(model);
+	for (const model of allModels) {
+		if (curatedKeys.has(modelKey(model.provider, model.id))) addModel(model);
+	}
+
+	const currentKey = modelKey(current.provider, current.id);
+	if (!byKey.has(currentKey)) {
+		byKey.set(currentKey, {
+			provider: current.provider,
+			id: current.id,
+			name: current.id,
+			api: current.provider,
+		});
+	}
+
+	return Array.from(byKey.values()).sort(compareModelOptions(currentKey));
+}
+
+function modelKey(provider: string, id: string): string {
+	return `${provider.toLowerCase().trim()}/${id.toLowerCase().trim()}`;
+}
+
+function compareModelOptions(currentKey: string) {
+	const providerRank: Record<string, number> = {
+		"openai-codex": 0,
+		fireworks: 1,
+		anthropic: 2,
+		openai: 3,
+	};
+	return (
+		a: { provider: string; id: string; name: string },
+		b: { provider: string; id: string; name: string },
+	): number => {
+		const aKey = modelKey(a.provider, a.id);
+		const bKey = modelKey(b.provider, b.id);
+		if (aKey === currentKey) return -1;
+		if (bKey === currentKey) return 1;
+		const rankDelta = (providerRank[a.provider] ?? 10) - (providerRank[b.provider] ?? 10);
+		if (rankDelta !== 0) return rankDelta;
+		return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+	};
 }
 
 function readSettings(workingDir: string): { defaultProvider?: string; defaultModel?: string } {
