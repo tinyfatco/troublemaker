@@ -40,6 +40,7 @@ assert(recent[0]?.replyTarget === "slack:C0AN1GL51K7:1779776757.953539", "reply 
 assert(summary.temperature === 1, "deduped self echo does not inflate ambient temperature");
 assert(summary.recentParticipants === 1, "deduped self echo does not inflate participant accounting");
 assert(summary.timeSinceMyLastMs < 1000, "deduped self echo still updates self timing");
+assert(pulse.isSelfParticipant("U0A06NNJV34"), "resolved self IDs are detectable by ambient filtering");
 
 pulse.record("C0AN1GL51K7", "U0A06NNJV34", "another reply".length, "another reply", {
 	messageId: "1779777014.658729",
@@ -47,6 +48,16 @@ pulse.record("C0AN1GL51K7", "U0A06NNJV34", "another reply".length, "another repl
 	replyTarget: "slack:C0AN1GL51K7:1779777014.658729",
 });
 assert(pulse.recentMessages("C0AN1GL51K7").length === 2, "distinct message ids remain separate messages");
+assert(pulse.recentMessages("C0AN1GL51K7").filter((entry) => !pulse.isSelfParticipant(entry.participantId)).length === 0, "self messages do not become inbound ambient candidates");
+
+pulse.record("C0AN1GL51K7", "U09V58YC33R", "please reply here".length, "please reply here", {
+	messageId: "1779777020.000100",
+	threadTs: "1779777014.658729",
+	replyTarget: "slack:C0AN1GL51K7:1779777014.658729",
+});
+const inboundAmbient = pulse.recentMessages("C0AN1GL51K7").filter((entry) => !pulse.isSelfParticipant(entry.participantId));
+assert(inboundAmbient.length === 1, "only inbound messages remain ambient candidates");
+assert(inboundAmbient[0]?.replyTarget === "slack:C0AN1GL51K7:1779777014.658729", "inbound ambient candidate keeps the Slack thread reply target");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
