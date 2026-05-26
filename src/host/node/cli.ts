@@ -324,7 +324,10 @@ function fireAmbientEvaluation(channelId: string): void {
 		includedKeys = new Set();
 		ambientIncludedKeys.set(channelId, includedKeys);
 	}
-	const unseenMessages = recentMessages.filter((entry) => !includedKeys.has(pulseEntryAmbientKey(entry)));
+	const unseenMessages = recentMessages.filter((entry) =>
+		!pulse.isSelfParticipant(entry.participantId)
+		&& !includedKeys.has(pulseEntryAmbientKey(entry)),
+	);
 	if (unseenMessages.length === 0) {
 		log.logInfo(`[ambient:${channelId}] No unseen messages since last ambient context, skipping`);
 		return;

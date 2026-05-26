@@ -49,6 +49,11 @@ export class ChannelPulse {
 		this.selfIds.add(id);
 	}
 
+	/** True when the participant is one of this agent's known platform IDs. */
+	isSelfParticipant(participantId: string): boolean {
+		return this.selfIds.has(participantId);
+	}
+
 	/** Record a message in a channel. Call on every incoming event, before any filtering. */
 	record(channelId: string, participantId: string, textLength: number, text?: string, metadata: PulseRecordMetadata = {}): void {
 		let buf = this.buffers.get(channelId);
