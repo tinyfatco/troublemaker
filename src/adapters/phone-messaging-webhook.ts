@@ -246,6 +246,7 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		let finalText = "";
+		let forceFinalResponse = false;
 		return {
 			message: {
 				text: event.text,
@@ -265,11 +266,13 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			channelName: this.channels.get(event.channel)?.displayName,
 			channels: this.getAllChannels(),
 			users: this.getAllUsers(),
-			respond: async (text: string, shouldLog = true) => {
-				if (shouldLog) finalText = finalText ? `${finalText}\n${text}` : text;
+			respond: async () => {
+				// Phone messaging is a send_message-only surface; suppress harness text.
 			},
-			sendFinalResponse: async (text: string) => {
-				finalText = text;
+			sendFinalResponse: async (text: string, options = {}) => {
+				const force = (options as { force?: boolean }).force === true;
+				forceFinalResponse = force;
+				finalText = force ? text : "";
 			},
 			respondInThread: async () => {
 				// Suppress tool chatter in SMS/iMessage.
@@ -281,7 +284,7 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 				throw new Error(`Phone messaging cannot upload local file ${title || filePath} yet; use a public URL.`);
 			},
 			setWorking: async (working: boolean) => {
-				if (!working && finalText.trim()) {
+				if (!working && forceFinalResponse && finalText.trim()) {
 					const ts = await this.postMessage(event.channel, finalText.trim());
 					this.logBotResponse(event.channel, finalText.trim(), ts);
 				}

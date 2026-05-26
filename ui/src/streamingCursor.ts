@@ -1,7 +1,8 @@
 import type { AwarenessEntry, ContentBlock } from './types';
+import { stripModelContextBlocks } from './contextBlocks';
 
 export function stripSessionContext(text: string): string {
-  return text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '');
+  return stripModelContextBlocks(text);
 }
 
 export function shouldRenderStreamingPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming'>): boolean {

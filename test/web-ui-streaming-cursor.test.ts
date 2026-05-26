@@ -45,6 +45,14 @@ assert(
 );
 
 assert(
+	shouldRenderStreamingPlaceholder({
+		isStreaming: true,
+		content: [{ type: 'text', text: '<delivery_context>\nMessage type: dm\n</delivery_context>' }],
+	}),
+	'delivery-context-only text still shows the waiting placeholder',
+);
+
+assert(
 	!shouldRenderStreamingPlaceholder({ isStreaming: false, content: [] }),
 	'settled empty assistant entry does not show the waiting placeholder',
 );

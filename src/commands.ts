@@ -11,7 +11,6 @@ import { join } from "path";
 import { randomUUID } from "crypto";
 import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
-import { MomSettingsManager } from "./context.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
@@ -114,9 +113,6 @@ export async function handleSlashCommand(
 		case "/model":
 			await handleModelCommand(parts.slice(1), channelId, workingDir, platform);
 			return true;
-		case "/verbose":
-			await handleVerboseCommand(parts.slice(1), channelId, workingDir, platform);
-			return true;
 		case "/context":
 			await handleContextCommand(channelId, platform, runner);
 			return true;
@@ -216,76 +212,6 @@ async function handleModelCommand(
 	await platform.postMessage(
 		channelId,
 		`Switched to *${match.provider}/${match.id}*\n_(takes effect on next message)_`,
-	);
-}
-
-async function handleVerboseCommand(
-	args: string[],
-	channelId: string,
-	workingDir: string,
-	platform: PlatformAdapter,
-): Promise<void> {
-	const mgr = new MomSettingsManager(workingDir);
-	const platformName = platform.name;
-	const arg0 = args[0]?.toLowerCase();
-	const arg1 = args[1]?.toLowerCase();
-
-	// /verbose global on|off|messages-only — set the global default
-	if (arg0 === "global") {
-		if (arg1 === "on" || arg1 === "true") {
-			mgr.setVerboseDefault(true);
-		} else if (arg1 === "off" || arg1 === "false") {
-			mgr.setVerboseDefault(false);
-		} else if (arg1 === "messages-only") {
-			mgr.setVerboseDefault("messages-only");
-		} else {
-			await platform.postMessage(channelId, `Usage: \`/verbose global on|off|messages-only\``);
-			return;
-		}
-		const label = String(mgr.getVerboseDefault());
-		log.logInfo(`Verbose global default ${label} via /verbose command`);
-		await platform.postMessage(channelId, `Global verbose default *${label}*`);
-		return;
-	}
-
-	// /verbose clear — remove channel override
-	if (arg0 === "clear") {
-		mgr.setChannelVerbose(channelId, platformName, null);
-		const effective = mgr.getVerbose(channelId, platformName);
-		log.logInfo(`Verbose override cleared for ${platformName}/${channelId}`);
-		await platform.postMessage(
-			channelId,
-			`Verbose override cleared for this channel\n_(using global default: ${effective ? "on" : "off"})_`,
-		);
-		return;
-	}
-
-	// /verbose on|off|messages-only — set channel override
-	// /verbose (no args) — cycle: on → off → messages-only → on
-	let value: boolean | "messages-only";
-	if (!arg0) {
-		const current = mgr.getVerbose(channelId, platformName);
-		value = current === true ? false : current === false ? "messages-only" : true;
-	} else if (arg0 === "on" || arg0 === "true") {
-		value = true;
-	} else if (arg0 === "off" || arg0 === "false") {
-		value = false;
-	} else if (arg0 === "messages-only") {
-		value = "messages-only";
-	} else {
-		await platform.postMessage(
-			channelId,
-			`Usage: \`/verbose\` (cycle), \`/verbose on|off|messages-only\`, \`/verbose global on|off|messages-only\`, \`/verbose clear\``,
-		);
-		return;
-	}
-
-	mgr.setChannelVerbose(channelId, platformName, value);
-	const globalDefault = mgr.getVerboseDefault();
-	log.logInfo(`Verbose ${value} for ${platformName}/${channelId}`);
-	await platform.postMessage(
-		channelId,
-		`Verbose *${value}* for this channel\n_(global default: ${globalDefault})_`,
 	);
 }
 

@@ -39,7 +39,8 @@ const telegramPreamble = buildSessionPreamble(
 	"messages-only",
 );
 
-assert(telegramPreamble.includes("send_message with an explicit target for ALL communication"), "non-web messages-only channels keep the cross-channel delivery reminder");
+assert(telegramPreamble.includes("Channel delivery policy"), "non-web messages-only channels show the channel delivery policy");
+assert(telegramPreamble.includes("Use send_message with an explicit target"), "non-web messages-only channels keep the send_message reminder");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

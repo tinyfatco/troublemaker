@@ -1,3 +1,5 @@
+import { stripModelContextBlocks } from './contextBlocks';
+
 /**
  * Shared types for the awareness stream UI.
  *
@@ -116,8 +118,8 @@ export function parseContextLine(line: string): AwarenessEntry | null {
       if (msg.role === 'user' && Array.isArray(entry.content)) {
         const textBlock = entry.content.find((c: ContentBlock) => c.type === 'text') as TextContent | undefined;
         if (textBlock) {
-          // Strip <session_context> before parsing — it precedes the [timestamp] prefix
-          const cleaned = textBlock.text.replace(/\s*<session_context>[\s\S]*?<\/session_context>\s*/g, '').trim();
+          // Strip model-only context before parsing — it precedes the [timestamp] prefix
+          const cleaned = stripModelContextBlocks(textBlock.text).trim();
           const parsed = parseUserPrefix(cleaned);
           if (parsed) {
             entry.channel = parsed.channel;

@@ -1,5 +1,5 @@
 import { getOptimisticVisibility, mergeOptimisticEntries } from '../ui/src/optimisticEntries.ts';
-import type { AwarenessEntry } from '../ui/src/types.ts';
+import { parseContextLine, type AwarenessEntry } from '../ui/src/types.ts';
 
 let passed = 0;
 let failed = 0;
@@ -205,6 +205,40 @@ const visibleDuringRapidRepeat = getOptimisticVisibility(
 
 assert(visibleDuringRapidRepeat.showUserEntry, 'recent identical previous user does not hide a new rapid-repeat user');
 assert(visibleDuringRapidRepeat.showStreamingEntry, 'recent identical previous assistant does not hide a new rapid-repeat response');
+
+const durableWebUserWithDeliveryContext = parseContextLine(JSON.stringify({
+	type: 'message',
+	id: 'u-delivery-context',
+	timestamp: '2026-05-26T04:32:53.000Z',
+	message: {
+		role: 'user',
+		content: [{
+			type: 'text',
+			text: '<session_context>\nCurrent channel: web\n</session_context>\n\n<delivery_context>\nMessage type: dm\n</delivery_context>\n\n[2026-05-26 04:32:52+00:00] [web] [user]: Where specifically are you seeing that?',
+		}],
+	},
+}));
+
+assert(
+	durableWebUserWithDeliveryContext?.strippedText === 'Where specifically are you seeing that?',
+	'web UI strips model context blocks before parsing durable user text',
+);
+
+const optimisticWebUser = user(
+	'live-u-web',
+	'2026-05-26T04:32:52.000Z',
+	'Where specifically are you seeing that?',
+);
+const mergedWithDeliveryContext = mergeOptimisticEntries(
+	durableWebUserWithDeliveryContext ? [durableWebUserWithDeliveryContext] : [],
+	optimisticWebUser,
+	null,
+);
+
+assert(
+	!mergedWithDeliveryContext.some((entry) => entry.id === optimisticWebUser.id),
+	'delivery_context durable user entry hides matching optimistic web user entry',
+);
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

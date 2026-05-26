@@ -153,6 +153,7 @@ Use the \`scheduling\` skill when creating or editing calendar events in \`${wor
 Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
 Runtime tools commonly include \`send_message\`, \`list_channels\`, and \`yield_no_action\`.
 Use \`list_channels\` to discover valid send targets. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, Email=email-{address}, Phone=phone-{hash}.
+On Slack, Telegram, Discord, Email, and SMS/iMessage, ordinary assistant text, thinking, tool labels, and working messages are harness output and are not delivered. Use \`send_message\` for every user-visible reply on those channels. For direct inbound that will take non-trivial work, send a brief acknowledgement to the suggested delivery target before continuing.
 Use \`yield_no_action\` for heartbeat or ambient cases where nothing needs doing and no user-visible response should be posted.
 ${overlaySuffix}`;
 }
@@ -177,12 +178,12 @@ export function buildSessionPreamble(
 		.filter((value): value is string => typeof value === "string")
 		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
 
-	const verbosityNote = verbosity === "messages-only" && !isWebDirectChat
-		? "\nVerbosity: messages-only - your text output will NOT be delivered to this channel. Use send_message with an explicit target for ALL communication."
+	const channelPolicyNote = verbosity === "messages-only" && !isWebDirectChat
+		? "\nChannel delivery policy: ordinary assistant text and working output will NOT be delivered here. Use send_message with an explicit target for ALL user-visible communication."
 		: "";
 
 	return `<session_context>
-Attending: ${attending}${verbosityNote}
+Attending: ${attending}${channelPolicyNote}
 Channels:
 ${channelMappings}
 Users:

@@ -690,6 +690,14 @@ function createRunner(
 	};
 
 	const formatDeliveryContext = (ctx: MomContext): string => {
+		const hasActionableDeliveryContext = Boolean(
+			ctx.message.sourceEventType ||
+			ctx.message.replyTarget ||
+			ctx.message.threadTs ||
+			typeof ctx.message.directlyAddressed === "boolean",
+		);
+		if (!hasActionableDeliveryContext) return "";
+
 		const lines: string[] = [];
 		if (ctx.message.sourceEventType) lines.push(`Source event: ${ctx.message.sourceEventType}`);
 		if (ctx.message.eventType) lines.push(`Message type: ${ctx.message.eventType}`);

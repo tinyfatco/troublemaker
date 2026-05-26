@@ -92,6 +92,26 @@ const DEFAULT_SPONTANEITY: MomSpontaneitySettings = {
 	quietHours: { start: "23:00", end: "07:00" },
 };
 
+const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "telegram", "discord", "email", "phone"]);
+
+export function inferPlatformFromChannelId(channelId: string): string | undefined {
+	if (/^[CDG]/.test(channelId)) return "slack";
+	if (/^\d{17,20}$/.test(channelId)) return "discord";
+	if (/^-?\d+$/.test(channelId)) return "telegram";
+	if (channelId.startsWith("email-")) return "email";
+	if (channelId.startsWith("phone-")) return "phone";
+	if (channelId.startsWith("web-") || channelId === "web") return "web";
+	if (channelId.startsWith("voice-") || channelId === "voice") return "voice";
+	if (channelId === "heartbeat") return "heartbeat";
+	if (channelId === "operator" || channelId === "operator-control") return "operator";
+	return undefined;
+}
+
+export function isSendMessageOnlyPlatform(channelId: string, platform?: string): boolean {
+	const resolved = platform || inferPlatformFromChannelId(channelId);
+	return resolved ? SEND_MESSAGE_ONLY_PLATFORMS.has(resolved) : false;
+}
+
 /**
  * Settings manager for mom.
  * Stores settings in the workspace root directory.
@@ -309,6 +329,10 @@ export class MomSettingsManager {
 	}
 
 	getVerbose(channelId: string, platform?: string): VerbosityLevel {
+		if (isSendMessageOnlyPlatform(channelId, platform)) {
+			return "messages-only";
+		}
+
 		const v = this.settings.verbose;
 		// Legacy bare boolean or "messages-only"
 		if (typeof v === "boolean" || v === "messages-only") return v;
@@ -358,8 +382,8 @@ export class MomSettingsManager {
 	getVerboseDefault(): VerbosityLevel {
 		const v = this.settings.verbose;
 		if (typeof v === "boolean" || v === "messages-only") return v;
-		if (!v) return true;
-		return v.default ?? true;
+		if (!v) return "messages-only";
+		return v.default ?? "messages-only";
 	}
 
 	getChannelVerboseOverride(channelId: string, platform: string): VerbosityLevel | null {
