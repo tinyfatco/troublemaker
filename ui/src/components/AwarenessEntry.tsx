@@ -97,9 +97,10 @@ function ToolCallGroup({ children }: { children: ReactNode }) {
   );
 }
 
-function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }: {
+function ToolCallBlock({ block, isRunning, collapseAutoDetails, output, result, onExpandingContent }: {
   block: ToolCallContent;
   isRunning?: boolean;
+  collapseAutoDetails?: boolean;
   output?: ToolOutputContent;
   result?: ToolResultContent;
   onExpandingContent?: () => void;
@@ -159,14 +160,14 @@ function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }:
       return;
     }
 
-    if (shouldAutoCollapseToolDetails(autoExpandedRef.current, isRunning)) {
+    if (shouldAutoCollapseToolDetails(autoExpandedRef.current, isRunning, collapseAutoDetails)) {
       autoCollapseTimerRef.current = setTimeout(() => {
         autoExpandedRef.current = false;
         setAutoDetailsOpen(false);
         autoCollapseTimerRef.current = null;
       }, TOOL_AUTO_COLLAPSE_DELAY_MS);
     }
-  }, [autoDetailsOpen, hasDetails, isRunning, onExpandingContent]);
+  }, [autoDetailsOpen, collapseAutoDetails, hasDetails, isRunning, onExpandingContent]);
 
   useEffect(() => {
     debugStream('render:tool-call', {
@@ -659,16 +660,20 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       pendingToolCalls = [];
       renderedBlocks.push(
         <ToolCallGroup key={key}>
-          {calls.map((toolCall, index) => (
-            <ToolCallBlock
-              key={toolCall.id || `${toolCall.name}-${key}-${index}`}
-              block={toolCall}
-              isRunning={isToolRunning(toolCall)}
-              output={getToolOutput(toolCall)}
-              result={getToolResult(toolCall)}
-              onExpandingContent={onExpandingContent}
-            />
-          ))}
+          {calls.map((toolCall, index) => {
+            const hasLaterRunningTool = calls.slice(index + 1).some((candidate) => isToolRunning(candidate));
+            return (
+              <ToolCallBlock
+                key={toolCall.id || `${toolCall.name}-${key}-${index}`}
+                block={toolCall}
+                isRunning={isToolRunning(toolCall)}
+                collapseAutoDetails={hasLaterRunningTool}
+                output={getToolOutput(toolCall)}
+                result={getToolResult(toolCall)}
+                onExpandingContent={onExpandingContent}
+              />
+            );
+          })}
         </ToolCallGroup>,
       );
     };
