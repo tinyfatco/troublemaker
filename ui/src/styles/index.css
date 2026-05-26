@@ -1481,6 +1481,54 @@ html, body, #root {
   color: var(--text-muted);
 }
 
+/* Operator control events — settings, briefs, and principal notes */
+.awareness-entry.operator-control-entry {
+  --entry-color: var(--entry-system);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  background: color-mix(in srgb, #a16207 10%, var(--surface) 90%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #a16207 18%, transparent);
+  color: var(--text-muted);
+}
+
+.operator-control-mark {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 2px;
+  background: #a16207;
+  opacity: 0.8;
+  flex-shrink: 0;
+}
+
+.operator-control-target,
+.operator-control-value,
+.operator-control-previous {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+}
+
+.operator-control-target {
+  color: var(--text-muted);
+}
+
+.operator-control-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.operator-control-value {
+  color: var(--text);
+}
+
+.operator-control-previous {
+  opacity: 0.72;
+}
+
 /* Silent responses — minimal dot + label */
 .awareness-entry.silent-entry {
   --entry-color: var(--entry-thinking);

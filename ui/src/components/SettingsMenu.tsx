@@ -54,6 +54,7 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
   if (!open) return null;
 
   const apply = async (target: string, value: unknown) => {
+    if (isCurrentSetting(snapshot, target, value)) return;
     setSaving(target);
     setError(null);
     try {
@@ -211,6 +212,19 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
       {error && <div className="settings-menu-error">{error}</div>}
     </div>
   );
+}
+
+function isCurrentSetting(
+  snapshot: AgentSettingsSnapshot | null,
+  target: string,
+  value: unknown,
+): boolean {
+  if (!snapshot) return false;
+  if (target === 'thinking_level') return String(snapshot.thinking_level ?? 'off') === String(value);
+  if (target === 'model' && typeof value === 'string') return formatCurrentModel(snapshot) === value;
+  if (target === 'spontaneity.enabled') return snapshot.spontaneity?.enabled === value;
+  if (target === 'spontaneity.level') return Number(snapshot.spontaneity?.level ?? 3) === value;
+  return false;
 }
 
 function formatCurrentModel(snapshot: AgentSettingsSnapshot): string {
