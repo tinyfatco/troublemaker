@@ -37,6 +37,7 @@ import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
 import { createHostBashRoute } from "../../modes/host/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
+import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
 
@@ -591,6 +592,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 		const extraTools = [
 			createSendMessageTool(adapters),
 			createListChannelsTool(workingDir),
+			createSelfConfigureTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
 		];

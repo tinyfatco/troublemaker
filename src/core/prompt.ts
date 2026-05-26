@@ -151,9 +151,10 @@ Use the \`scheduling\` skill when creating or editing calendar events in \`${wor
 
 ## Tools
 Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
-Runtime tools commonly include \`send_message\`, \`list_channels\`, and \`yield_no_action\`.
+Runtime tools commonly include \`send_message\`, \`list_channels\`, \`self_configure\`, and \`yield_no_action\`.
 Use \`list_channels\` to discover valid send targets. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, Email=email-{address}, Phone=phone-{hash}.
 On Slack, Telegram, Discord, Email, and SMS/iMessage, ordinary assistant text, thinking, tool labels, and working messages are harness output and are not delivered. Use \`send_message\` for every user-visible reply on those channels. For direct inbound that will take non-trivial work, send a brief acknowledgement to the suggested delivery target before continuing.
+Use \`self_configure\` when the user explicitly asks you to change your own model, thinking level, heartbeat/spontaneity, or heartbeat checklist settings.
 Use \`yield_no_action\` for heartbeat or ambient cases where nothing needs doing and no user-visible response should be posted.
 ${overlaySuffix}`;
 }

@@ -1,0 +1,273 @@
+/**
+ * self_configure — let the agent change its own durable settings.
+ *
+ * This is intentionally narrower than arbitrary file editing. It exposes the
+ * semantic settings users naturally ask an agent to change: model, thinking,
+ * heartbeat/spontaneity cadence, and the heartbeat checklist prompt.
+ */
+
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "typebox";
+import { existsSync, readFileSync, writeFileSync } from "fs";
+import { join } from "path";
+import { MomSettingsManager, type MomSpontaneitySettings } from "../context.js";
+import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
+import { findModel } from "../model-config.js";
+import * as log from "../log.js";
+
+const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+
+const SELF_CONFIGURE_SETTINGS = new Set([
+	"model",
+	"thinking_level",
+	"spontaneity.enabled",
+	"spontaneity.level",
+	"spontaneity.intervalMinutes",
+	"spontaneity.spontaneity",
+	"spontaneity.quietHours.start",
+	"spontaneity.quietHours.end",
+	"spontaneity.timezone",
+	"heartbeat.checklist",
+]);
+
+interface SelfConfigureResult {
+	changed: true;
+	setting: string;
+	previousValue: unknown;
+	newValue: unknown;
+	note: string;
+	schedule?: HeartbeatScheduleResult;
+	path?: string;
+}
+
+function loadSettingsRaw(workingDir: string): Record<string, unknown> {
+	const settingsPath = join(workingDir, "settings.json");
+	if (!existsSync(settingsPath)) return {};
+	try {
+		return JSON.parse(readFileSync(settingsPath, "utf-8")) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
+function saveSettingsRaw(workingDir: string, settings: Record<string, unknown>): void {
+	const settingsPath = join(workingDir, "settings.json");
+	writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, "utf-8");
+}
+
+function parseBoolean(value: unknown, setting: string): boolean {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		if (normalized === "true" || normalized === "on" || normalized === "yes") return true;
+		if (normalized === "false" || normalized === "off" || normalized === "no") return false;
+	}
+	throw new Error(`${setting} must be true or false.`);
+}
+
+function parseNumber(value: unknown, setting: string): number {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value === "string" && value.trim()) {
+		const parsed = Number(value);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	throw new Error(`${setting} must be a number.`);
+}
+
+function parseString(value: unknown, setting: string): string {
+	if (typeof value === "string") return value;
+	throw new Error(`${setting} must be a string.`);
+}
+
+function configureModel(workingDir: string, value: unknown): SelfConfigureResult {
+	const query = parseString(value, "model").trim();
+	if (!query) throw new Error("model must be a non-empty string.");
+	const match = findModel(query, workingDir);
+	if (!match) throw new Error(`Model not found: ${query}. Use /model list to see available models.`);
+
+	const settings = loadSettingsRaw(workingDir);
+	const previousValue = settings.defaultProvider && settings.defaultModel
+		? `${String(settings.defaultProvider)}/${String(settings.defaultModel)}`
+		: settings.model ?? null;
+
+	settings.defaultProvider = match.provider;
+	settings.defaultModel = match.id;
+	delete settings.model;
+	saveSettingsRaw(workingDir, settings);
+
+	return {
+		changed: true,
+		setting: "model",
+		previousValue,
+		newValue: `${match.provider}/${match.id}`,
+		note: "Model takes effect on the next model resolution.",
+	};
+}
+
+function configureThinkingLevel(workingDir: string, value: unknown): SelfConfigureResult {
+	const level = parseString(value, "thinking_level").trim().toLowerCase();
+	if (!(THINKING_LEVEL_VALUES as readonly string[]).includes(level)) {
+		throw new Error(`thinking_level must be one of: ${THINKING_LEVEL_VALUES.join(", ")}`);
+	}
+
+	const settings = loadSettingsRaw(workingDir);
+	const previousValue = settings.thinking_level ?? settings.defaultThinkingLevel ?? "off";
+	settings.thinking_level = level;
+	settings.defaultThinkingLevel = level;
+	saveSettingsRaw(workingDir, settings);
+
+	return {
+		changed: true,
+		setting: "thinking_level",
+		previousValue,
+		newValue: level,
+		note: "Thinking level takes effect on the next model turn.",
+	};
+}
+
+function configureSpontaneity(workingDir: string, setting: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previous = manager.getSpontaneitySettings();
+	const patch: Partial<MomSpontaneitySettings> = {};
+	let previousValue: unknown;
+	let newValue: unknown = value;
+
+	if (setting === "spontaneity.enabled") {
+		previousValue = previous.enabled;
+		patch.enabled = parseBoolean(value, setting);
+		newValue = patch.enabled;
+	} else if (setting === "spontaneity.level") {
+		const level = parseNumber(value, setting);
+		if (!Number.isInteger(level) || level < 1 || level > 5) {
+			throw new Error("spontaneity.level must be an integer from 1 to 5.");
+		}
+		previousValue = previous.level;
+		patch.level = level as 1 | 2 | 3 | 4 | 5;
+		newValue = level;
+	} else if (setting === "spontaneity.intervalMinutes") {
+		const minutes = parseNumber(value, setting);
+		if (minutes <= 0) throw new Error("spontaneity.intervalMinutes must be positive.");
+		previousValue = previous.intervalMinutes;
+		patch.intervalMinutes = minutes;
+		newValue = minutes;
+	} else if (setting === "spontaneity.spontaneity") {
+		const spontaneity = parseNumber(value, setting);
+		if (spontaneity < 0 || spontaneity > 1) {
+			throw new Error("spontaneity.spontaneity must be between 0 and 1.");
+		}
+		previousValue = previous.spontaneity;
+		patch.spontaneity = spontaneity;
+		newValue = spontaneity;
+	} else if (setting === "spontaneity.quietHours.start") {
+		const start = parseString(value, setting);
+		previousValue = previous.quietHours.start;
+		patch.quietHours = { ...previous.quietHours, start };
+		newValue = start;
+	} else if (setting === "spontaneity.quietHours.end") {
+		const end = parseString(value, setting);
+		previousValue = previous.quietHours.end;
+		patch.quietHours = { ...previous.quietHours, end };
+		newValue = end;
+	} else if (setting === "spontaneity.timezone") {
+		const timezone = parseString(value, setting);
+		previousValue = previous.timezone ?? null;
+		patch.timezone = timezone;
+		newValue = timezone;
+	} else {
+		throw new Error(`Unsupported spontaneity setting: ${setting}`);
+	}
+
+	const merged = manager.setSpontaneity(patch);
+	const schedule = syncHeartbeatFromSpontaneity(workingDir, merged);
+
+	return {
+		changed: true,
+		setting,
+		previousValue,
+		newValue,
+		schedule,
+		note: "Heartbeat schedule was resynced.",
+	};
+}
+
+function configureHeartbeatChecklist(workingDir: string, value: unknown): SelfConfigureResult {
+	const checklist = parseString(value, "heartbeat.checklist");
+	const path = join(workingDir, "HEARTBEAT.md");
+	const previousValue = existsSync(path) ? readFileSync(path, "utf-8") : null;
+	writeFileSync(path, checklist, "utf-8");
+	return {
+		changed: true,
+		setting: "heartbeat.checklist",
+		previousValue,
+		newValue: checklist,
+		path: "HEARTBEAT.md",
+		note: checklist.trim() ? "Heartbeat checklist updated." : "Heartbeat checklist cleared; heartbeat runs will be skipped.",
+	};
+}
+
+export function applySelfConfiguration(
+	workingDir: string,
+	setting: string,
+	value: unknown,
+): SelfConfigureResult {
+	if (!SELF_CONFIGURE_SETTINGS.has(setting)) {
+		throw new Error(`Unknown self_configure setting: ${setting}. Supported settings: ${Array.from(SELF_CONFIGURE_SETTINGS).join(", ")}`);
+	}
+	if (setting === "model") return configureModel(workingDir, value);
+	if (setting === "thinking_level") return configureThinkingLevel(workingDir, value);
+	if (setting.startsWith("spontaneity.")) return configureSpontaneity(workingDir, setting, value);
+	if (setting === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
+	throw new Error(`Unsupported self_configure setting: ${setting}`);
+}
+
+function formatResult(result: SelfConfigureResult): string {
+	const lines = [
+		`Configured ${result.setting}.`,
+		`Previous: ${JSON.stringify(result.previousValue)}`,
+		`New: ${JSON.stringify(result.newValue)}`,
+		result.note,
+	];
+	if (result.schedule) {
+		lines.push(`Schedule: ${result.schedule.enabled ? result.schedule.schedule : "disabled"}`);
+	}
+	return lines.join("\n");
+}
+
+export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
+	const schema = Type.Object({
+		label: Type.String({ description: "Brief description of the setting change" }),
+		setting: Type.String({
+			description:
+				"Setting to change. Supported: model, thinking_level, spontaneity.enabled, spontaneity.level, " +
+				"spontaneity.intervalMinutes, spontaneity.spontaneity, spontaneity.quietHours.start, " +
+				"spontaneity.quietHours.end, spontaneity.timezone, heartbeat.checklist.",
+		}),
+		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
+	});
+
+	return {
+		name: "self_configure",
+		label: "self_configure",
+		description:
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, heartbeat/spontaneity, or heartbeat checklist settings. " +
+			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
+			"After using it, briefly tell the user what changed if the current channel expects a reply.",
+		parameters: schema,
+		execute: async (_toolCallId: string, params: unknown) => {
+			const { setting, value } = params as { label?: string; setting?: string; value?: unknown };
+			if (!setting || typeof setting !== "string") {
+				throw new Error("self_configure requires a setting.");
+			}
+			if (value === undefined) {
+				throw new Error("self_configure requires a value.");
+			}
+
+			const result = applySelfConfiguration(workingDir, setting, value);
+			log.logInfo(`[self_configure] ${setting} -> ${JSON.stringify(result.newValue)}`);
+			return {
+				content: [{ type: "text" as const, text: formatResult(result) }],
+				details: undefined,
+			};
+		},
+	};
+}
