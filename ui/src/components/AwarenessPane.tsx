@@ -11,8 +11,10 @@ import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
+import { isSettingsCommand } from '../slashCommands';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
+import { SettingsMenu } from './SettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
@@ -41,8 +43,10 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
 
   const voice = useVoiceChat();
   const isVoiceActive = voice.state !== 'idle' && voice.state !== 'error';
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
-  const error = chatError || streamError || voice.error;
+  const error = localError || chatError || streamError || voice.error;
 
   const visibleEntries = useMemo(
     () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
@@ -223,6 +227,28 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
     }
   }, [isNearBottom]);
 
+  const handleSend = useCallback((text: string) => {
+    setLocalError(null);
+    sendMessage(text);
+  }, [sendMessage]);
+
+  const handleSlashCommand = useCallback((text: string) => {
+    if (isSettingsCommand(text)) {
+      setLocalError(null);
+      setSettingsOpen(true);
+      return true;
+    }
+    return false;
+  }, []);
+
+  const clearVisibleError = useCallback(() => {
+    if (localError) {
+      setLocalError(null);
+      return;
+    }
+    clearError();
+  }, [clearError, localError]);
+
   return (
     <div className="awareness-pane" style={paneStyle}>
       <div
@@ -273,7 +299,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
       )}
 
       {error && (
-        <div className="error-banner" onClick={clearError}>
+        <div className="error-banner" onClick={clearVisibleError}>
           <span className="error-text">{error}</span>
           <span className="error-dismiss">&times;</span>
         </div>
@@ -290,12 +316,16 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
         </div>
       )}
 
+      <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
       <InputBar
-        onSend={sendMessage}
+        onSend={handleSend}
         onStop={abortStream}
         disabled={isVoiceActive}
         isStreaming={isStreaming}
         onHeightChange={handleComposerHeightChange}
+        onSlashCommand={handleSlashCommand}
+        onInvalidSlashCommand={(command) => setLocalError(`Unknown command: ${command}`)}
         extraButtons={
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}
