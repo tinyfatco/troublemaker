@@ -27,6 +27,7 @@ import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
 import { MomSettingsManager } from "../../context.js";
 import { downloadChannel } from "../../download.js";
+import { markAmbientMessagesIncluded, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
@@ -273,10 +274,6 @@ const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ambientLastFired = new Map<string, number>();
 const ambientIncludedKeys = new Map<string, Set<string>>();
 
-function pulseEntryAmbientKey(entry: { messageId?: string; participantId: string; ts: number; text?: string }): string {
-	return entry.messageId ? `id:${entry.messageId}` : `entry:${entry.participantId}:${entry.ts}:${entry.text ?? ""}`;
-}
-
 /** Schedule (or re-schedule) an ambient evaluation for a channel. */
 function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	// Don't ambient-engage in DMs — those are handled directly
@@ -319,15 +316,12 @@ function fireAmbientEvaluation(channelId: string): void {
 		return;
 	}
 
-	const recentMessages = pulse.recentMessages(channelId);
 	let includedKeys = ambientIncludedKeys.get(channelId);
 	if (!includedKeys) {
 		includedKeys = new Set();
 		ambientIncludedKeys.set(channelId, includedKeys);
 	}
-	const unseenMessages = recentMessages.filter((entry) =>
-		pulse.isAmbientCandidate(entry) && !includedKeys.has(pulseEntryAmbientKey(entry)),
-	);
+	const unseenMessages = selectUnseenAmbientMessages(pulse, channelId, includedKeys);
 	if (unseenMessages.length === 0) {
 		log.logInfo(`[ambient:${channelId}] No unseen messages since last ambient context, skipping`);
 		return;
@@ -365,9 +359,7 @@ function fireAmbientEvaluation(channelId: string): void {
 		return;
 	}
 
-	for (const entry of unseenMessages) {
-		includedKeys.add(pulseEntryAmbientKey(entry));
-	}
+	markAmbientMessagesIncluded(unseenMessages, includedKeys);
 }
 
 function createAdapter(name: string): AdapterWithHandler {
