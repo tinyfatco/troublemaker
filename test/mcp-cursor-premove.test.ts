@@ -7,7 +7,7 @@ interface RecordedCall {
 	arguments: Record<string, unknown>;
 }
 
-function makeClient(options: { moveFails?: boolean } = {}): { client: Client; calls: RecordedCall[] } {
+function makeClient(options: { moveFails?: boolean; results?: Record<string, string> } = {}): { client: Client; calls: RecordedCall[] } {
 	const calls: RecordedCall[] = [];
 	const client = {
 		async callTool(input: { name: string; arguments?: Record<string, unknown> }) {
@@ -15,7 +15,7 @@ function makeClient(options: { moveFails?: boolean } = {}): { client: Client; ca
 			if (input.name === "move" && options.moveFails) {
 				throw new Error("move failed");
 			}
-			return { content: [{ type: "text", text: `${input.name} ok` }] };
+			return { content: [{ type: "text", text: options.results?.[input.name] || `${input.name} ok` }] };
 		},
 	} as unknown as Client;
 	return { client, calls };
@@ -62,6 +62,68 @@ function tool(name: string, client: Client) {
 		duration: 450,
 	});
 	assert.deepEqual(calls[1].arguments, { coords: "100,200" });
+}
+
+{
+	const { client, calls } = makeClient({
+		results: {
+			see: `UI State Captured
+Snapshot ID: snap-spotify
+Application: Spotify
+Window: Spotify Premium
+Screenshot: /tmp/spotify.png
+Elements found: 245
+
+UI Elements:
+  elem_0 - "Spotify Premium" - at (560, 38) size 800x1205 - [not actionable]`,
+		},
+	});
+
+	await tool("see", client).execute("tool-see", {
+		label: "See Spotify",
+		app_target: "Spotify",
+		annotate: true,
+	});
+	await tool("click", client).execute("tool-click", {
+		label: "Click cropped screenshot coordinate",
+		coords: "478,135",
+	});
+
+	assert.deepEqual(calls.map((call) => call.name), ["see", "move", "click"]);
+	assert.deepEqual(calls[1].arguments, {
+		to: "1038,173",
+		smooth: true,
+		profile: "human",
+		duration: 450,
+	});
+	assert.deepEqual(calls[2].arguments, { coords: "1038,173" });
+}
+
+{
+	const { client, calls } = makeClient({
+		results: {
+			see: `UI State Captured
+Snapshot ID: snap-spotify
+Application: Spotify
+UI Elements:
+  elem_0 - "Spotify Premium" - at (560, 38) size 800x1205 - [not actionable]`,
+		},
+	});
+
+	await tool("see", client).execute("tool-see", { label: "See Spotify" });
+	await tool("click", client).execute("tool-click", {
+		label: "Click absolute coordinate",
+		coords: "650,135",
+	});
+
+	assert.deepEqual(calls.map((call) => call.name), ["see", "move", "click"]);
+	assert.deepEqual(calls[1].arguments, {
+		to: "650,135",
+		smooth: true,
+		profile: "human",
+		duration: 450,
+	});
+	assert.deepEqual(calls[2].arguments, { coords: "650,135" });
 }
 
 {

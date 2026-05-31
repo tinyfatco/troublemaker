@@ -1,8 +1,8 @@
 /**
  * Sanitize message arrays before sending to the Anthropic API.
  *
- * Fixes corrupted conversation context where tool_result messages
- * exist without a matching tool_use in the preceding assistant message.
+ * Fixes corrupted conversation context where tool result messages
+ * exist without a matching tool call in the preceding assistant message.
  * This can happen when a session is interrupted mid-tool-call.
  */
 
@@ -11,6 +11,7 @@ import * as log from "./log.js";
 interface ContentBlock {
 	type: string;
 	id?: string;
+	toolCallId?: string;
 	tool_use_id?: string;
 	[key: string]: unknown;
 }
@@ -26,7 +27,7 @@ interface Message {
  *
  * Rules enforced:
  * - Every toolResult message must have a preceding assistant message
- *   containing a tool_use block with a matching ID
+ *   containing a tool call block with a matching ID
  * - Orphaned toolResult messages are stripped with a warning
  *
  * @returns Sanitized copy of the messages array
@@ -38,7 +39,7 @@ export function sanitizeMessages(messages: Message[]): Message[] {
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
 
-		// Check toolResult messages for matching tool_use
+		// Check toolResult messages for matching tool calls
 		if (msg.role === "toolResult" || (msg.role === "user" && hasToolResults(msg))) {
 			const toolResultIds = getToolResultIds(msg);
 
@@ -47,7 +48,7 @@ export function sanitizeMessages(messages: Message[]): Message[] {
 				const prevAssistant = findPrecedingAssistant(result);
 				const toolUseIds = prevAssistant ? getToolUseIds(prevAssistant) : new Set<string>();
 
-				// Check if all tool_result IDs have matching tool_use
+				// Check if all tool result IDs have matching tool calls
 				const allMatched = toolResultIds.every((id) => toolUseIds.has(id));
 
 				if (!allMatched) {
@@ -73,7 +74,7 @@ export function sanitizeMessages(messages: Message[]): Message[] {
 
 function hasToolResults(msg: Message): boolean {
 	if (!Array.isArray(msg.content)) return false;
-	return msg.content.some((block) => block.type === "tool_result");
+	return msg.content.some((block) => block.type === "tool_result" || block.type === "toolResult");
 }
 
 function getToolResultIds(msg: Message): string[] {
@@ -86,8 +87,12 @@ function getToolResultIds(msg: Message): string[] {
 	// Handle user messages with tool_result content blocks (Anthropic format)
 	if (!Array.isArray(msg.content)) return [];
 	return msg.content
-		.filter((block) => block.type === "tool_result" && block.tool_use_id)
-		.map((block) => block.tool_use_id as string);
+		.map((block) => {
+			if (block.type === "tool_result" && block.tool_use_id) return block.tool_use_id as string;
+			if (block.type === "toolResult" && block.toolCallId) return block.toolCallId as string;
+			return undefined;
+		})
+		.filter((id): id is string => Boolean(id));
 }
 
 function findPrecedingAssistant(messages: Message[]): Message | null {
@@ -101,7 +106,7 @@ function getToolUseIds(msg: Message): Set<string> {
 	const ids = new Set<string>();
 	if (!Array.isArray(msg.content)) return ids;
 	for (const block of msg.content) {
-		if (block.type === "tool_use" && block.id) {
+		if ((block.type === "tool_use" || block.type === "toolCall") && block.id) {
 			ids.add(block.id);
 		}
 	}
