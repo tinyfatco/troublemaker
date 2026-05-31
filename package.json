@@ -64,6 +64,7 @@
 		"test:verbose-command-removed": "npx tsx test/verbose-command-removed.test.ts",
 		"test:web-login-command": "npx tsx test/web-login-command.test.ts",
 		"test:web-chat-stream-reducer": "npx tsx test/web-chat-stream-reducer.test.ts",
+		"test:mcp-cursor-premove": "npx tsx test/mcp-cursor-premove.test.ts",
 		"test:web-chat-steering-request-gate": "npx tsx test/web-chat-steering-request-gate.test.ts",
 		"test:web-slash-command": "npx tsx test/web-slash-command.test.ts",
 		"test:web-ui-slash-commands": "npx tsx test/web-ui-slash-commands.test.ts",

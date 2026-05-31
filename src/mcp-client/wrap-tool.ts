@@ -15,6 +15,80 @@ interface McpToolDef {
 	};
 }
 
+function getStringArg(args: Record<string, unknown>, key: string): string | undefined {
+	const value = args[key];
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function withOptionalSnapshot(args: Record<string, unknown>, moveArgs: Record<string, unknown>): Record<string, unknown> {
+	const snapshot = getStringArg(args, "snapshot");
+	return snapshot ? { ...moveArgs, snapshot } : moveArgs;
+}
+
+function buildPeekabooPreMoveArgs(toolName: string, args: Record<string, unknown>): Record<string, unknown> | null {
+	if (toolName === "click") {
+		const elementId = getStringArg(args, "on");
+		if (elementId) {
+			return withOptionalSnapshot(args, {
+				id: elementId,
+				smooth: true,
+				profile: "human",
+				duration: 450,
+			});
+		}
+
+		const coords = getStringArg(args, "coords");
+		if (coords) {
+			return {
+				to: coords,
+				smooth: true,
+				profile: "human",
+				duration: 450,
+			};
+		}
+
+		return null;
+	}
+
+	if (toolName === "type" || toolName === "scroll") {
+		const elementId = getStringArg(args, "on");
+		if (!elementId) return null;
+		return withOptionalSnapshot(args, {
+			id: elementId,
+			smooth: true,
+			profile: "human",
+			duration: 350,
+		});
+	}
+
+	return null;
+}
+
+async function maybePreMovePeekabooCursor(
+	alias: string,
+	toolName: string,
+	toolArgs: Record<string, unknown>,
+	client: Client,
+	namespacedName: string,
+): Promise<void> {
+	if (alias !== "peekaboo") return;
+
+	const moveArgs = buildPeekabooPreMoveArgs(toolName, toolArgs);
+	if (!moveArgs) return;
+
+	try {
+		log.logInfo(`[mcp-client] ${namespacedName}: pre-moving cursor ${JSON.stringify(moveArgs).substring(0, 200)}`);
+		const result = await client.callTool({ name: "move", arguments: moveArgs });
+		if ("isError" in result && result.isError === true) {
+			log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move returned error`);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 120));
+	} catch (err) {
+		const errMsg = err instanceof Error ? err.message : String(err);
+		log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move failed`, errMsg);
+	}
+}
+
 function jsonSchemaToTypebox(schema: McpToolDef["inputSchema"]): TSchema {
 	const properties: Record<string, TSchema> = {};
 	const required = new Set(schema.required || []);
@@ -78,6 +152,7 @@ export function wrapMcpTool(
 			log.logInfo(`[mcp-client] ${namespacedName}: ${JSON.stringify(toolArgs).substring(0, 200)}`);
 
 			try {
+				await maybePreMovePeekabooCursor(alias, tool.name, toolArgs, client, namespacedName);
 				const result = await client.callTool({ name: tool.name, arguments: toolArgs });
 
 				const textParts: string[] = [];
