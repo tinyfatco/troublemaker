@@ -459,7 +459,6 @@ export function WorkspaceLayout() {
               <span className="embed-brand-mark">TF</span>
               <span className="embed-brand-copy">
                 <span className="embed-brand-title">{config.agent_name}</span>
-                <span className="embed-brand-subtitle">Relationship agent</span>
               </span>
             </div>
           ) : (
