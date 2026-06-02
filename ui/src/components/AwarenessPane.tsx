@@ -339,6 +339,8 @@ export function AwarenessPane({
         onSlashCommand={handleSlashCommand}
         onInvalidSlashCommand={(command) => setLocalError(allowCommands ? `Unknown command: ${command}` : 'Commands are not available in this embedded chat.')}
         slashCommandsEnabled={allowCommands}
+        streamingPlaceholder={allowCommands ? undefined : 'Ask a follow-up...'}
+        streamingSendLabel={allowCommands ? undefined : 'Send follow-up'}
         extraButtons={allowVoice ? (
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}

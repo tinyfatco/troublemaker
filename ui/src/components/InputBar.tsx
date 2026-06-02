@@ -12,6 +12,10 @@ interface InputBarProps {
   onSlashCommand?: (text: string) => boolean;
   onInvalidSlashCommand?: (command: string) => void;
   slashCommandsEnabled?: boolean;
+  placeholder?: string;
+  streamingPlaceholder?: string;
+  sendLabel?: string;
+  streamingSendLabel?: string;
 }
 
 export function InputBar({
@@ -24,6 +28,10 @@ export function InputBar({
   onSlashCommand,
   onInvalidSlashCommand,
   slashCommandsEnabled = true,
+  placeholder = 'Type a message...',
+  streamingPlaceholder = 'Type to steer...',
+  sendLabel = 'Send',
+  streamingSendLabel = 'Send steering message',
 }: InputBarProps) {
   const [value, setValue] = useState('');
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
@@ -153,7 +161,7 @@ export function InputBar({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? 'Type to steer...' : 'Type a message...'}
+          placeholder={isStreaming ? streamingPlaceholder : placeholder}
           disabled={disabled}
           rows={1}
         />
@@ -162,7 +170,7 @@ export function InputBar({
           className="send-button"
           onClick={handleSubmit}
           disabled={disabled || !value.trim()}
-          aria-label={isStreaming ? 'Send steering message' : 'Send'}
+          aria-label={isStreaming ? streamingSendLabel : sendLabel}
         >
           <svg viewBox="0 0 24 24" fill="none">
             <path d="M5 12h14M12 5l7 7-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
