@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchDisplayProjectManifestFiles } from '../console-api';
 import { parseDisplayProjectFile } from '../components/DisplayPane/displayProjectAdapter';
 
-export function useDisplayProjects() {
+export function useDisplayProjects(enabled = true) {
   return useQuery({
     queryKey: ['display-projects'],
     queryFn: async () => {
@@ -15,5 +15,6 @@ export function useDisplayProjects() {
       };
     },
     refetchInterval: 10000,
+    enabled,
   });
 }

@@ -46,7 +46,7 @@ function isReservedPreviewPort(port: number): boolean {
 }
 
 function isValidPreviewPort(port: number | null): port is number {
-  return Number.isInteger(port) && port >= 1024 && port <= 65535 && !isReservedPreviewPort(port);
+  return port !== null && Number.isInteger(port) && port >= 1024 && port <= 65535 && !isReservedPreviewPort(port);
 }
 
 function normalizeId(value: string | null, fallback: string): string {
@@ -113,8 +113,10 @@ export function parseDisplayProjectFile(file: DisplayProjectManifestFile): Parse
       ? 'html'
       : 'preview';
 
+  let preview: DisplayProjectPreviewConfig | undefined;
   if (kind === 'preview') {
-    if (!isValidPreviewPort(previewPort)) {
+    const port = previewPort;
+    if (!isValidPreviewPort(port)) {
       return {
         path: file.path,
         name: file.name,
@@ -122,6 +124,10 @@ export function parseDisplayProjectFile(file: DisplayProjectManifestFile): Parse
         error: 'Preview projects need a port from 1024-65535, excluding 3000, 3002, 6080, 8765, 9222, and 5900-5999',
       };
     }
+    preview = {
+      port,
+      path: normalizePath(stringValue(previewConfig.path ?? previewConfig.entry ?? previewConfig.url)),
+    };
   }
 
   const project: DisplayProject = {
@@ -132,12 +138,7 @@ export function parseDisplayProjectFile(file: DisplayProjectManifestFile): Parse
     kind,
     projectPath: file.projectPath,
     manifestPath: file.path,
-    preview: kind === 'preview' && previewPort
-      ? {
-        port: previewPort,
-        path: normalizePath(stringValue(previewConfig.path ?? previewConfig.entry ?? previewConfig.url)),
-      }
-      : undefined,
+    preview,
     entry: kind === 'html' ? normalizeEntry(stringValue(data.entry)) : undefined,
     raw: data,
   };

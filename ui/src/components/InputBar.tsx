@@ -11,6 +11,7 @@ interface InputBarProps {
   extraButtons?: ReactNode;
   onSlashCommand?: (text: string) => boolean;
   onInvalidSlashCommand?: (command: string) => void;
+  slashCommandsEnabled?: boolean;
 }
 
 export function InputBar({
@@ -22,13 +23,14 @@ export function InputBar({
   extraButtons,
   onSlashCommand,
   onInvalidSlashCommand,
+  slashCommandsEnabled = true,
 }: InputBarProps) {
   const [value, setValue] = useState('');
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const slashMatches = value.trimStart().startsWith('/') ? matchSlashCommands(value) : [];
-  const showSlashMenu = value.trimStart().startsWith('/') && slashMatches.length > 0;
+  const slashMatches = slashCommandsEnabled && value.trimStart().startsWith('/') ? matchSlashCommands(value) : [];
+  const showSlashMenu = slashCommandsEnabled && value.trimStart().startsWith('/') && slashMatches.length > 0;
 
   const reportHeight = useCallback(() => {
     const height = containerRef.current?.getBoundingClientRect().height;
@@ -67,6 +69,10 @@ export function InputBar({
     const trimmed = value.trim();
     if (trimmed && !disabled) {
       const slashCommand = parseSlashCommand(trimmed);
+      if (slashCommand && !slashCommandsEnabled) {
+        onInvalidSlashCommand?.(slashCommand);
+        return;
+      }
       if (slashCommand) {
         if (!isKnownSlashCommand(trimmed)) {
           onInvalidSlashCommand?.(slashCommand);

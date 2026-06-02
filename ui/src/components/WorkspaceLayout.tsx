@@ -23,6 +23,7 @@ import { DisplayPane, type DisplayProject } from './DisplayPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
+import { isEmbedMode } from '../console-api';
 
 type BuiltInCanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
 type CanvasMode = BuiltInCanvasMode | `project:${string}`;
@@ -75,9 +76,10 @@ function projectIdFromCanvasMode(mode: CanvasMode | null): string | null {
 }
 
 export function WorkspaceLayout() {
+  const embedMode = isEmbedMode();
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
-  const displayProjectsQuery = useDisplayProjects();
+  const displayProjectsQuery = useDisplayProjects(!embedMode);
   const displayProjects = displayProjectsQuery.data?.projects ?? [];
   const [canvasModeOverride, setCanvasModeOverride] = usePersistentState<CanvasMode | null>(
     'troublemaker.ui.canvasMode',
@@ -85,8 +87,11 @@ export function WorkspaceLayout() {
     { parse: parseCanvasModePreference },
   );
   const capabilities = config.capabilities || {};
-  const terminalAvailable = capabilities.terminal !== false;
-  const desktopAvailable = capabilities.desktop === true;
+  const filesAvailable = !embedMode && capabilities.files !== false;
+  const terminalAvailable = !embedMode && capabilities.terminal !== false;
+  const desktopAvailable = !embedMode && capabilities.desktop === true;
+  const calendarAvailable = !embedMode && capabilities.calendar !== false;
+  const displayAvailable = !embedMode && capabilities.display !== false;
   const interactiveMode =
     config.display_mode === 'desktop' && desktopAvailable
       ? 'desktop'
@@ -98,8 +103,8 @@ export function WorkspaceLayout() {
   const canvasModes = [
     { mode: 'terminal' as const, available: terminalAvailable, title: 'Terminal canvas' },
     { mode: 'desktop' as const, available: desktopAvailable, title: 'Desktop canvas' },
-    { mode: 'calendar' as const, available: true, title: 'Calendar canvas' },
-    { mode: 'preview' as const, available: true, title: 'Display projects' },
+    { mode: 'calendar' as const, available: calendarAvailable, title: 'Calendar canvas' },
+    { mode: 'preview' as const, available: displayAvailable, title: 'Display projects' },
   ];
   const isCanvasModeAvailable = (mode: CanvasMode | null): mode is CanvasMode => {
     if (!mode) return false;
@@ -115,7 +120,7 @@ export function WorkspaceLayout() {
   const selectedDisplayProject = selectedDisplayProjectId
     ? displayProjects.find((project) => project.id === selectedDisplayProjectId) ?? null
     : null;
-  const hasCanvas = canvasModes.some((item) => item.available) || displayProjects.length > 0;
+  const hasCanvas = !embedMode && (canvasModes.some((item) => item.available) || displayProjects.length > 0);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState(
     'troublemaker.ui.sidebarCollapsed',
@@ -167,6 +172,7 @@ export function WorkspaceLayout() {
       queryClient.invalidateQueries({ queryKey: ['files'] });
     },
   });
+  const uploadEnabled = filesAvailable;
 
   const handleFileSelect = (path: string) => {
     setSelectedPath(path);
@@ -180,6 +186,7 @@ export function WorkspaceLayout() {
   };
 
   const toggleSidebar = () => {
+    if (!filesAvailable) return;
     const isMobile = window.matchMedia('(max-width: 768px)').matches;
     if (isMobile) {
       setMobileDrawerOpen(!mobileDrawerOpen);
@@ -417,7 +424,12 @@ export function WorkspaceLayout() {
 
   const chatRegion = !awarenessCollapsed ? (
     <div className="awareness-sidebar" style={chatStyle}>
-      <AwarenessPane stream={awarenessStream} />
+      <AwarenessPane
+        stream={awarenessStream}
+        allowCommands={!embedMode}
+        allowSettings={!embedMode}
+        allowVoice={!embedMode && capabilities.voice !== false}
+      />
     </div>
   ) : null;
 
@@ -431,26 +443,37 @@ export function WorkspaceLayout() {
     : null;
 
   return (
-    <div className="workspace-root">
+    <div className={`workspace-root ${embedMode ? 'embed-mode' : ''}`}>
       <header className="workspace-header">
         <div className="header-left">
-          <button className="header-btn" onClick={toggleSidebar} title="Toggle files">
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-              <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          </button>
-          {/* agent name removed */}
-          <CanvasControls />
+          {filesAvailable && (
+            <button className="header-btn" onClick={toggleSidebar} title="Toggle files">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          )}
+          {embedMode ? (
+            <div className="embed-brand" aria-label={config.agent_name}>
+              <span className="embed-brand-mark">TF</span>
+              <span className="embed-brand-copy">
+                <span className="embed-brand-title">{config.agent_name}</span>
+                <span className="embed-brand-subtitle">Relationship agent</span>
+              </span>
+            </div>
+          ) : (
+            <CanvasControls />
+          )}
         </div>
         <div className="header-right">
           <HeaderStatus stream={awarenessStream} />
         </div>
       </header>
 
-      {upload.FileInput}
-      <div className="workspace-body" ref={containerRef} {...upload.dragProps}>
+      {uploadEnabled && upload.FileInput}
+      <div className="workspace-body" ref={containerRef} {...(uploadEnabled ? upload.dragProps : {})}>
         {/* Left: File Explorer */}
-        {!sidebarCollapsed && (
+        {filesAvailable && !sidebarCollapsed && (
           <>
             <div className="sidebar-panel" style={{ width: sidebarWidth }}>
               <SidebarControls />
@@ -483,7 +506,7 @@ export function WorkspaceLayout() {
       </div>
 
       {/* Upload drag overlay */}
-      {upload.isDragging && (
+      {uploadEnabled && upload.isDragging && (
         <div className="upload-overlay">
           <div className="upload-overlay-content">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -495,15 +518,15 @@ export function WorkspaceLayout() {
       )}
 
       {/* Upload progress/error toast */}
-      {upload.uploading && (
+      {uploadEnabled && upload.uploading && (
         <div className="upload-toast">Uploading...</div>
       )}
-      {upload.error && (
+      {uploadEnabled && upload.error && (
         <div className="upload-toast upload-toast-error">{upload.error}</div>
       )}
 
       {/* Mobile drawer overlay */}
-      {mobileDrawerOpen && (
+      {filesAvailable && mobileDrawerOpen && (
         <>
           <div className="mobile-overlay" onClick={() => setMobileDrawerOpen(false)} />
           <div className="mobile-drawer">

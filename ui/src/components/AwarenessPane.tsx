@@ -18,9 +18,17 @@ import { SettingsMenu } from './SettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
+  allowCommands?: boolean;
+  allowSettings?: boolean;
+  allowVoice?: boolean;
 }
 
-export function AwarenessPane({ stream }: AwarenessPaneProps) {
+export function AwarenessPane({
+  stream,
+  allowCommands = true,
+  allowSettings = true,
+  allowVoice = true,
+}: AwarenessPaneProps) {
   const {
     entries,
     isLoading,
@@ -42,7 +50,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
   } = useWebChat();
 
   const voice = useVoiceChat();
-  const isVoiceActive = voice.state !== 'idle' && voice.state !== 'error';
+  const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -229,17 +237,21 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
 
   const handleSend = useCallback((text: string) => {
     setLocalError(null);
+    if (!allowCommands && text.trimStart().startsWith('/')) {
+      setLocalError('Commands are not available in this embedded chat.');
+      return;
+    }
     sendMessage(text);
-  }, [sendMessage]);
+  }, [allowCommands, sendMessage]);
 
   const handleSlashCommand = useCallback((text: string) => {
-    if (isSettingsCommand(text)) {
+    if (allowSettings && isSettingsCommand(text)) {
       setLocalError(null);
       setSettingsOpen(true);
       return true;
     }
     return false;
-  }, []);
+  }, [allowSettings]);
 
   const clearVisibleError = useCallback(() => {
     if (localError) {
@@ -305,7 +317,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
         </div>
       )}
 
-      {isVoiceActive && (
+      {allowVoice && isVoiceActive && (
         <div className="voice-status">
           <span className="voice-status-text">
             {voice.state === 'connecting' && 'Connecting...'}
@@ -316,7 +328,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
         </div>
       )}
 
-      <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      {allowSettings && <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
 
       <InputBar
         onSend={handleSend}
@@ -325,8 +337,9 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
         isStreaming={isStreaming}
         onHeightChange={handleComposerHeightChange}
         onSlashCommand={handleSlashCommand}
-        onInvalidSlashCommand={(command) => setLocalError(`Unknown command: ${command}`)}
-        extraButtons={
+        onInvalidSlashCommand={(command) => setLocalError(allowCommands ? `Unknown command: ${command}` : 'Commands are not available in this embedded chat.')}
+        slashCommandsEnabled={allowCommands}
+        extraButtons={allowVoice ? (
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}
             onClick={isVoiceActive ? voice.stop : voice.start}
@@ -344,7 +357,7 @@ export function AwarenessPane({ stream }: AwarenessPaneProps) {
               </svg>
             )}
           </button>
-        }
+        ) : null}
       />
     </div>
   );
