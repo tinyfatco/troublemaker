@@ -25,20 +25,22 @@ function formatTime(ts: string): string {
 interface AwarenessEntryProps {
   entry: AwarenessEntryType;
   onExpandingContent?: () => void;
+  showChannels?: boolean;
 }
 
-function EventEntry({ channel, label, description, fullDescription }: {
+function EventEntry({ channel, label, description, fullDescription, showChannels = true }: {
   channel?: string;
   label: string;
   description: string;
   fullDescription?: string;
+  showChannels?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
   return (
     <div className="awareness-entry event-entry">
       <div className="event-header">
-        {channel && <ChannelBadge channel={channel} />}
+        {showChannels && channel && <ChannelBadge channel={channel} />}
         <span className="event-icon">{'\u25C6'}</span>
         <span className="event-name">{label}</span>
       </div>
@@ -505,7 +507,7 @@ function ToolResultBlock({ content, isError, onExpandingContent }: {
   );
 }
 
-export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ entry, onExpandingContent }: AwarenessEntryProps) {
+export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ entry, onExpandingContent, showChannels = true }: AwarenessEntryProps) {
   if (entry.type === 'session') return null;
   if (!entry.content || !Array.isArray(entry.content)) return null;
 
@@ -560,6 +562,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           label={label}
           description={shortDesc}
           fullDescription={eventDesc.length > 60 ? eventDesc : undefined}
+          showChannels={showChannels}
         />
       );
     }
@@ -590,7 +593,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       return (
         <div className="awareness-entry ambient-entry">
           <div className="event-header">
-            {entry.channel && <ChannelBadge channel={entry.channel} />}
+            {showChannels && entry.channel && <ChannelBadge channel={entry.channel} />}
             <span className="event-icon">{'\u25C8'}</span>
             <span className="event-name">ambient</span>
           </div>
@@ -609,7 +612,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       <div className={`awareness-entry user-entry ${entry.channel === 'web' ? 'web-user-entry' : ''}`}>
         <div className="awareness-meta">
           {entry.timestamp && <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>}
-          {entry.channel && <ChannelBadge channel={entry.channel} />}
+          {showChannels && entry.channel && <ChannelBadge channel={entry.channel} />}
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
         <div className="awareness-user-text">{text}</div>

@@ -429,6 +429,7 @@ export function WorkspaceLayout() {
         allowCommands={!embedMode}
         allowSettings={!embedMode}
         allowVoice={!embedMode && capabilities.voice !== false}
+        showChannels={!embedMode}
       />
     </div>
   ) : null;

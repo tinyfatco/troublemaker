@@ -21,6 +21,7 @@ interface AwarenessPaneProps {
   allowCommands?: boolean;
   allowSettings?: boolean;
   allowVoice?: boolean;
+  showChannels?: boolean;
 }
 
 export function AwarenessPane({
@@ -28,6 +29,7 @@ export function AwarenessPane({
   allowCommands = true,
   allowSettings = true,
   allowVoice = true,
+  showChannels = true,
 }: AwarenessPaneProps) {
   const {
     entries,
@@ -297,6 +299,7 @@ export function AwarenessPane({
                 key={entry.id}
                 entry={entry}
                 onExpandingContent={handleExpandingContent}
+                showChannels={showChannels}
               />
             ))}
           </div>
