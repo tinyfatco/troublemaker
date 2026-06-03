@@ -459,6 +459,13 @@ final class AppModel: ObservableObject {
 		}
 	}
 
+	func interruptVoiceOutput() {
+		guard isVoiceActive else { return }
+		voiceSession.interrupt()
+		voicePartialTranscript = ""
+		recordActivity(.status, title: "Voice interrupted", detail: selectedVoiceProvider.title, symbol: "stop.circle")
+	}
+
 	func send(_ text: String, channelId: String = "mac") {
 		guard canUseJarvisChat else {
 			authError = !canUseBoundRuntime

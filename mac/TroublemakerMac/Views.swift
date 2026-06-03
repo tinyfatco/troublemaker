@@ -996,6 +996,20 @@ struct VoiceStatusBand: View {
 
 			Spacer(minLength: 0)
 
+			if model.voiceState == .speaking {
+				Button {
+					model.interruptVoiceOutput()
+				} label: {
+					Image(systemName: "stop.circle.fill")
+						.font(.system(size: compact ? 15 : 17, weight: .semibold))
+						.foregroundStyle(Color.red.opacity(0.86))
+						.frame(width: compact ? 24 : 28, height: compact ? 24 : 28)
+						.contentShape(Circle())
+				}
+				.buttonStyle(.plain)
+				.help("Interrupt voice response")
+			}
+
 			if !compact {
 				VoiceProviderPill(provider: model.selectedVoiceProvider, state: model.voiceState)
 			}

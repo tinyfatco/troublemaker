@@ -94,6 +94,7 @@ protocol VoiceSessionProvider: AnyObject {
 	var callbacks: VoiceProviderCallbacks? { get set }
 	func connect() throws
 	func sendAudio(_ pcm16: Data)
+	func interrupt()
 	func stop()
 }
 
@@ -171,6 +172,15 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			realtimeBargeInGuardActive = false
 		}
 		setState(.idle, "Voice stopped.")
+	}
+
+	func interrupt() {
+		guard let provider else { return }
+		provider.interrupt()
+		if provider.kind != .openAIRealtime {
+			interruptPlaybackForBargeIn()
+			setState(.listening, "Interrupted; listening...")
+		}
 	}
 
 	func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
@@ -527,6 +537,10 @@ private final class LocalTroublemakerVoiceProvider: VoiceSessionProvider {
 		}
 	}
 
+	func interrupt() {
+		task?.send(.string("{\"type\":\"stop\"}")) { _ in }
+	}
+
 	func stop() {
 		task?.send(.string("{\"type\":\"stop\"}")) { _ in }
 		task?.cancel(with: .normalClosure, reason: nil)
@@ -617,6 +631,11 @@ private final class DeepgramSTTVoiceProvider: VoiceSessionProvider {
 		task?.send(.data(pcm16)) { [weak self] error in
 			if let error { self?.callbacks?.error("Deepgram send failed: \(error.localizedDescription)") }
 		}
+	}
+
+	func interrupt() {
+		finalSegments.removeAll()
+		callbacks?.state(.listening, "Listening with Deepgram...")
 	}
 
 	func stop() {
@@ -725,6 +744,17 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 			"audio": pcm16.base64EncodedString(),
 		]
 		sendJSON(event)
+	}
+
+	func interrupt() {
+		sendJSON(["type": "input_audio_buffer.clear"])
+		if responseActive {
+			responseCreatePendingAfterCancel = false
+			cancelActiveResponseForBargeIn()
+		} else {
+			callbacks?.interruptAudio()
+			callbacks?.state(.listening, "Listening with Realtime 2...")
+		}
 	}
 
 	func stop() {
