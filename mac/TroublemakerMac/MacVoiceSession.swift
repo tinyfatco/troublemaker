@@ -26,6 +26,34 @@ enum VoiceProviderKind: String, CaseIterable, Identifiable {
 	}
 }
 
+enum RealtimeVoice: String, CaseIterable, Identifiable {
+	case marin
+	case cedar
+	case alloy
+	case ash
+	case ballad
+	case coral
+	case echo
+	case sage
+	case shimmer
+	case verse
+
+	var id: String { rawValue }
+
+	var title: String {
+		rawValue.capitalized
+	}
+
+	var detail: String {
+		switch self {
+		case .marin, .cedar:
+			return "Recommended"
+		default:
+			return "Built-in"
+		}
+	}
+}
+
 enum VoiceRuntimeState: Equatable {
 	case idle
 	case connecting
@@ -92,7 +120,13 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	private var realtimeBargeInArmedAt: Date?
 	private var realtimeBargeInGuardActive = false
 
-	func start(kind: VoiceProviderKind, localVoicePort: Int = 8766, runtimePort: Int = 3017, agentName: String) async {
+	func start(
+		kind: VoiceProviderKind,
+		localVoicePort: Int = 8766,
+		runtimePort: Int = 3017,
+		agentName: String,
+		realtimeVoice: RealtimeVoice = .marin
+	) async {
 		stop()
 		setState(.connecting, "Connecting \(kind.title)...")
 
@@ -102,7 +136,13 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		}
 
 		do {
-			let provider = try makeProvider(kind: kind, localVoicePort: localVoicePort, runtimePort: runtimePort, agentName: agentName)
+			let provider = try makeProvider(
+				kind: kind,
+				localVoicePort: localVoicePort,
+				runtimePort: runtimePort,
+				agentName: agentName,
+				realtimeVoice: realtimeVoice
+			)
 			provider.callbacks = callbacks()
 			self.provider = provider
 			try provider.connect()
@@ -152,13 +192,19 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		)
 	}
 
-	private func makeProvider(kind: VoiceProviderKind, localVoicePort: Int, runtimePort: Int, agentName: String) throws -> VoiceSessionProvider {
+	private func makeProvider(
+		kind: VoiceProviderKind,
+		localVoicePort: Int,
+		runtimePort: Int,
+		agentName: String,
+		realtimeVoice: RealtimeVoice
+	) throws -> VoiceSessionProvider {
 		switch kind {
 		case .localTroublemaker:
 			return LocalTroublemakerVoiceProvider(port: localVoicePort)
 		case .openAIRealtime:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["OPENAI_API_KEY", "MOM_OPENAI_API_KEY"])
-			return OpenAIRealtimeVoiceProvider(apiKey: apiKey, agentName: agentName, runtimePort: runtimePort)
+			return OpenAIRealtimeVoiceProvider(apiKey: apiKey, agentName: agentName, runtimePort: runtimePort, voice: realtimeVoice)
 		case .deepgram:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["DEEPGRAM_API_KEY", "MOM_DEEPGRAM_API_KEY"])
 			return DeepgramSTTVoiceProvider(apiKey: apiKey)
@@ -640,18 +686,26 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 	private let apiKey: String
 	private let agentName: String
 	private let runtimePort: Int
+	private let voice: RealtimeVoice
 	private let session: URLSession
 	private var task: URLSessionWebSocketTask?
 	private var didSendSessionUpdate = false
 	private var handledFunctionCallIDs = Set<String>()
 	private var responseActive = false
 	private var responseCancelSent = false
-	private var ignoredEarlySpeech = false
+	private var responseCreatePendingAfterCancel = false
+	private var bargeInCandidateItemIDs = Set<String>()
+	private var ignoredInputItemIDs = Set<String>()
+	private var respondedInputItemIDs = Set<String>()
+	private var currentAssistantTranscript = ""
+	private var recentAssistantTranscript = ""
+	private var lastAssistantResponseEndedAt: Date?
 
-	init(apiKey: String, agentName: String, runtimePort: Int) {
+	init(apiKey: String, agentName: String, runtimePort: Int, voice: RealtimeVoice) {
 		self.apiKey = apiKey
 		self.agentName = agentName
 		self.runtimePort = runtimePort
+		self.voice = voice
 		session = URLSession(configuration: .default)
 	}
 
@@ -680,7 +734,13 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		handledFunctionCallIDs.removeAll()
 		responseActive = false
 		responseCancelSent = false
-		ignoredEarlySpeech = false
+		responseCreatePendingAfterCancel = false
+		bargeInCandidateItemIDs.removeAll()
+		ignoredInputItemIDs.removeAll()
+		respondedInputItemIDs.removeAll()
+		currentAssistantTranscript = ""
+		recentAssistantTranscript = ""
+		lastAssistantResponseEndedAt = nil
 	}
 
 	private func sendSessionUpdate() {
@@ -706,12 +766,20 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 				"audio": [
 					"input": [
 						"format": ["type": "audio/pcm", "rate": 24000],
-						"turn_detection": ["type": "server_vad", "create_response": true],
+						"noise_reduction": ["type": "far_field"],
+						"turn_detection": [
+							"type": "server_vad",
+							"create_response": false,
+							"interrupt_response": false,
+							"prefix_padding_ms": 250,
+							"silence_duration_ms": 450,
+							"threshold": 0.6,
+						],
 						"transcription": ["model": "gpt-realtime-whisper"],
 					],
 					"output": [
 						"format": ["type": "audio/pcm", "rate": 24000],
-						"voice": "alloy",
+						"voice": voice.rawValue,
 						"speed": 1.0,
 					],
 				],
@@ -746,31 +814,44 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		case "response.created":
 			responseActive = true
 			responseCancelSent = false
+			currentAssistantTranscript = ""
 		case "input_audio_buffer.speech_started":
-			if responseActive, callbacks?.bargeInAllowed() == false {
-				ignoredEarlySpeech = true
-				sendJSON(["type": "input_audio_buffer.clear"])
-				return
+			let itemID = event.string("item_id")
+			if responseActive {
+				if let itemID {
+					bargeInCandidateItemIDs.insert(itemID)
+				}
+				if callbacks?.bargeInAllowed() == true {
+					callbacks?.state(.transcribing, "Barge-in detected...")
+				}
+			} else {
+				callbacks?.state(.transcribing, "Speech detected...")
 			}
-			cancelActiveResponseForBargeIn()
-			callbacks?.state(.transcribing, "Speech detected...")
 		case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
-			if ignoredEarlySpeech {
-				ignoredEarlySpeech = false
-				sendJSON(["type": "input_audio_buffer.clear"])
-				return
+			if !responseActive {
+				callbacks?.state(.thinking, "Realtime 2 is thinking...")
 			}
-			callbacks?.state(.thinking, "Realtime 2 is thinking...")
 		case "conversation.item.input_audio_transcription.delta":
-			callbacks?.partialTranscript(event.string("delta") ?? "")
+			let itemID = event.string("item_id")
+			if !shouldHoldTranscriptForBargeIn(itemID: itemID) {
+				callbacks?.partialTranscript(event.string("delta") ?? "")
+			}
 		case "conversation.item.input_audio_transcription.completed":
-			callbacks?.finalTranscript(event.string("transcript") ?? "")
+			handleInputTranscriptionCompleted(event)
+		case "conversation.item.input_audio_transcription.failed":
+			handleInputTranscriptionFailed(event)
 		case "response.output_text.delta", "response.audio_transcript.delta", "response.output_audio_transcript.delta":
 			responseActive = true
-			callbacks?.assistantTextDelta(event.string("delta") ?? "")
+			let delta = event.string("delta") ?? ""
+			currentAssistantTranscript += delta
+			callbacks?.assistantTextDelta(delta)
 			callbacks?.state(.speaking, "Realtime 2 is speaking...")
 		case "response.output_text.done", "response.output_audio_transcript.done":
-			callbacks?.assistantTextFinal(event.string("text") ?? event.string("transcript") ?? "")
+			let final = event.string("text") ?? event.string("transcript") ?? ""
+			if !final.isEmpty {
+				currentAssistantTranscript = final
+			}
+			callbacks?.assistantTextFinal(final)
 		case "response.output_audio.delta", "response.audio.delta":
 			responseActive = true
 			if let delta = event.string("delta"), let data = Data(base64Encoded: delta) {
@@ -789,8 +870,13 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 			}
 			responseActive = false
 			responseCancelSent = false
-			ignoredEarlySpeech = false
-			callbacks?.state(.listening, "Listening with Realtime 2...")
+			rememberAssistantTranscript()
+			if responseCreatePendingAfterCancel {
+				responseCreatePendingAfterCancel = false
+				sendResponseCreate()
+			} else {
+				callbacks?.state(.listening, "Listening with Realtime 2...")
+			}
 		case "error":
 			if let error = event.dictionary("error") {
 				callbacks?.error((error["message"] as? String) ?? "Realtime error")
@@ -807,6 +893,95 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		responseCancelSent = true
 		callbacks?.interruptAudio()
 		sendJSON(["type": "response.cancel"])
+	}
+
+	private func sendResponseCreate() {
+		callbacks?.state(.thinking, "Realtime 2 is thinking...")
+		sendJSON(["type": "response.create"])
+	}
+
+	private func handleInputTranscriptionCompleted(_ event: [String: Any]) {
+		let transcript = (event.string("transcript") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+		let itemID = event.string("item_id")
+		if let itemID, respondedInputItemIDs.contains(itemID) {
+			return
+		}
+		guard !transcript.isEmpty else {
+			discardInputItem(itemID)
+			return
+		}
+
+		if shouldSuppressAsAssistantEcho(transcript, itemID: itemID) {
+			discardInputItem(itemID)
+			callbacks?.state(responseActive ? .speaking : .listening, responseActive ? "Realtime 2 is speaking..." : "Listening with Realtime 2...")
+			return
+		}
+
+		callbacks?.finalTranscript(transcript)
+		if let itemID {
+			respondedInputItemIDs.insert(itemID)
+			bargeInCandidateItemIDs.remove(itemID)
+		}
+
+		if responseActive {
+			responseCreatePendingAfterCancel = true
+			cancelActiveResponseForBargeIn()
+		} else {
+			sendResponseCreate()
+		}
+	}
+
+	private func handleInputTranscriptionFailed(_ event: [String: Any]) {
+		let itemID = event.string("item_id")
+		if shouldHoldTranscriptForBargeIn(itemID: itemID) {
+			discardInputItem(itemID)
+			return
+		}
+		if let itemID, respondedInputItemIDs.contains(itemID) {
+			return
+		}
+		sendResponseCreate()
+	}
+
+	private func shouldHoldTranscriptForBargeIn(itemID: String?) -> Bool {
+		guard let itemID else { return responseActive }
+		return responseActive || bargeInCandidateItemIDs.contains(itemID)
+	}
+
+	private func shouldSuppressAsAssistantEcho(_ transcript: String, itemID: String?) -> Bool {
+		let candidateDuringAssistant = shouldHoldTranscriptForBargeIn(itemID: itemID) || didRecentlyFinishAssistantResponse()
+		guard candidateDuringAssistant else { return false }
+		if callbacks?.bargeInAllowed() == false {
+			return true
+		}
+		let assistantText = [currentAssistantTranscript, recentAssistantTranscript]
+			.joined(separator: " ")
+			.trimmingCharacters(in: .whitespacesAndNewlines)
+		return Self.transcriptLooksLikeEcho(transcript, assistantText: assistantText)
+	}
+
+	private func didRecentlyFinishAssistantResponse() -> Bool {
+		guard let lastAssistantResponseEndedAt else { return false }
+		return Date().timeIntervalSince(lastAssistantResponseEndedAt) < 2.5
+	}
+
+	private func discardInputItem(_ itemID: String?) {
+		guard let itemID, !ignoredInputItemIDs.contains(itemID) else { return }
+		ignoredInputItemIDs.insert(itemID)
+		bargeInCandidateItemIDs.remove(itemID)
+		sendJSON([
+			"type": "conversation.item.delete",
+			"item_id": itemID,
+		])
+	}
+
+	private func rememberAssistantTranscript() {
+		let cleaned = currentAssistantTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+		if !cleaned.isEmpty {
+			recentAssistantTranscript = cleaned
+			lastAssistantResponseEndedAt = Date()
+		}
+		currentAssistantTranscript = ""
 	}
 
 	private func handleFunctionCall(_ item: [String: Any]) {
@@ -829,7 +1004,7 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 					"output": output,
 				],
 			])
-			self.sendJSON(["type": "response.create"])
+			self.sendResponseCreate()
 			self.callbacks?.state(.thinking, "Thinking with \(name)...")
 		}
 	}
@@ -1045,6 +1220,40 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 
 	private static func runtimeToolName(_ name: String) -> String {
 		name == "list_threads" ? "list_channels" : name
+	}
+
+	private static func transcriptLooksLikeEcho(_ transcript: String, assistantText: String) -> Bool {
+		let transcriptNormalized = normalizedText(transcript)
+		let assistantNormalized = normalizedText(assistantText)
+		guard transcriptNormalized.count >= 4, assistantNormalized.count >= 4 else { return false }
+		if transcriptNormalized.count >= 12,
+		   assistantNormalized.contains(transcriptNormalized) {
+			return true
+		}
+		let transcriptWords = normalizedWords(transcriptNormalized)
+		let assistantWords = Set(normalizedWords(assistantNormalized))
+		guard !transcriptWords.isEmpty, !assistantWords.isEmpty else { return false }
+		let overlap = transcriptWords.filter { assistantWords.contains($0) }.count
+		let ratio = Double(overlap) / Double(transcriptWords.count)
+		if transcriptWords.count <= 2 {
+			return ratio >= 1.0 && assistantNormalized.contains(transcriptNormalized)
+		}
+		return ratio >= 0.62
+	}
+
+	private static func normalizedText(_ text: String) -> String {
+		let scalars = text.lowercased().unicodeScalars.map { scalar -> Character in
+			CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
+		}
+		return String(scalars)
+			.split(separator: " ")
+			.joined(separator: " ")
+	}
+
+	private static func normalizedWords(_ text: String) -> [String] {
+		text.split(separator: " ")
+			.map(String.init)
+			.filter { $0.count > 1 }
 	}
 }
 

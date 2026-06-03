@@ -553,6 +553,10 @@ struct MainChatView: View {
 		HStack(alignment: .bottom, spacing: 12) {
 			VoiceProviderMenuButton()
 				.environmentObject(model)
+			if model.selectedVoiceProvider == .openAIRealtime {
+				RealtimeVoiceMenuButton()
+					.environmentObject(model)
+			}
 			VoiceControlButton()
 				.environmentObject(model)
 
@@ -876,6 +880,46 @@ struct VoiceProviderMenuButton: View {
 		}
 		.menuStyle(.borderlessButton)
 		.help("Voice provider")
+		.disabled(model.isVoiceActive)
+	}
+}
+
+struct RealtimeVoiceMenuButton: View {
+	@EnvironmentObject private var model: AppModel
+	var compact = false
+
+	var body: some View {
+		Menu {
+			ForEach(RealtimeVoice.allCases) { voice in
+				Button {
+					model.selectRealtimeVoice(voice)
+				} label: {
+					Label(voice.title, systemImage: model.selectedRealtimeVoice == voice ? "checkmark.circle.fill" : "speaker.wave.2")
+				}
+			}
+		} label: {
+			if compact {
+				Image(systemName: "speaker.wave.2")
+					.frame(width: 28, height: 28)
+					.contentShape(Rectangle())
+			} else {
+				HStack(spacing: 7) {
+					Image(systemName: "speaker.wave.2")
+					Text(model.selectedRealtimeVoice.title)
+						.lineLimit(1)
+				}
+				.font(.system(size: 12, weight: .semibold))
+				.padding(.horizontal, 10)
+				.frame(height: 34)
+				.background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+				.overlay(
+					RoundedRectangle(cornerRadius: 8)
+						.strokeBorder(Color.primary.opacity(0.09))
+				)
+			}
+		}
+		.menuStyle(.borderlessButton)
+		.help("Realtime voice")
 		.disabled(model.isVoiceActive)
 	}
 }
@@ -1442,6 +1486,10 @@ struct FloatingChatView: View {
 			HStack(spacing: 8) {
 				VoiceProviderMenuButton(compact: true)
 					.environmentObject(model)
+				if model.selectedVoiceProvider == .openAIRealtime {
+					RealtimeVoiceMenuButton(compact: true)
+						.environmentObject(model)
+				}
 				TextField(floatingPlaceholder, text: $model.draft)
 					.textFieldStyle(.roundedBorder)
 					.disabled(!model.canUseJarvisChat || model.isSending || model.isVoiceActive)

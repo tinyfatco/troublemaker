@@ -103,6 +103,7 @@ final class AppModel: ObservableObject {
 	@Published var lastTranscript = ""
 	@Published var isSending = false
 	@Published var selectedVoiceProvider: VoiceProviderKind = .localTroublemaker
+	@Published var selectedRealtimeVoice: RealtimeVoice = .marin
 	@Published var voiceState: VoiceRuntimeState = .idle
 	@Published var voiceStatus = "Voice idle"
 	@Published var voicePartialTranscript = ""
@@ -117,6 +118,7 @@ final class AppModel: ObservableObject {
 	private let clientIDStore: ClientIDStore
 	private let bindingStore = AgentBindingStore()
 	private let voiceSession = MacVoiceSession()
+	private static let realtimeVoiceDefaultsKey = "TroublemakerRealtimeVoice"
 
 	private var supervisor: RuntimeSupervisor
 	private var client: LocalAgentClient
@@ -138,6 +140,10 @@ final class AppModel: ObservableObject {
 		self.oauth = oauth
 		tokenStore = TokenStore(issuer: oauth.issuer)
 		clientIDStore = ClientIDStore(issuer: oauth.issuer)
+		if let savedVoice = UserDefaults.standard.string(forKey: Self.realtimeVoiceDefaultsKey),
+		   let voice = RealtimeVoice(rawValue: savedVoice) {
+			selectedRealtimeVoice = voice
+		}
 		selectedCloudBinding = savedBinding
 		profile = resolvedProfile
 		supervisor = RuntimeSupervisor(projectRoot: resolvedRoot, profile: resolvedProfile)
@@ -405,6 +411,17 @@ final class AppModel: ObservableObject {
 		recordActivity(.status, title: "Voice provider", detail: "\(provider.title) - \(provider.detail)", symbol: "waveform")
 	}
 
+	func selectRealtimeVoice(_ voice: RealtimeVoice) {
+		guard voice != selectedRealtimeVoice else { return }
+		guard !isVoiceActive else {
+			recordActivity(.status, title: "Voice locked", detail: "Stop Realtime 2 before changing voice.", symbol: "speaker.wave.2")
+			return
+		}
+		selectedRealtimeVoice = voice
+		UserDefaults.standard.set(voice.rawValue, forKey: Self.realtimeVoiceDefaultsKey)
+		recordActivity(.status, title: "Realtime voice", detail: "\(voice.title) - \(voice.detail)", symbol: "speaker.wave.2")
+	}
+
 	func toggleVoice() {
 		if isVoiceActive {
 			stopVoice()
@@ -424,7 +441,12 @@ final class AppModel: ObservableObject {
 		recordActivity(.status, title: "Voice starting", detail: selectedVoiceProvider.title, symbol: "mic")
 		Task { [weak self] in
 			guard let self else { return }
-			await self.voiceSession.start(kind: self.selectedVoiceProvider, runtimePort: self.backend.port, agentName: self.selectedAgentName)
+			await self.voiceSession.start(
+				kind: self.selectedVoiceProvider,
+				runtimePort: self.backend.port,
+				agentName: self.selectedAgentName,
+				realtimeVoice: self.selectedRealtimeVoice
+			)
 		}
 	}
 
