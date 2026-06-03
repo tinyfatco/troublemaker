@@ -118,8 +118,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	private var pendingAudio = Data()
 	private var pendingAudioFormat: VoiceAudioPayload?
 	private var micSuppressed = false
-	private var realtimeBargeInArmedAt: Date?
-	private var realtimeBargeInGuardActive = false
+	private var realtimeMicGate = RealtimeMicSuppressionGate()
 
 	func start(
 		kind: VoiceProviderKind,
@@ -168,8 +167,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			pendingAudio.removeAll()
 			pendingAudioFormat = nil
 			micSuppressed = false
-			realtimeBargeInArmedAt = nil
-			realtimeBargeInGuardActive = false
+			realtimeMicGate.reset()
 		}
 		setState(.idle, "Voice stopped.")
 	}
@@ -284,9 +282,9 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		do {
 			try ensurePlaybackEngine(sampleRate: sampleRate)
 			let suppressMic = provider?.kind != .openAIRealtime
-			let shouldArmRealtime = provider?.kind == .openAIRealtime && lock.withLock { !realtimeBargeInGuardActive }
+			let shouldArmRealtime = provider?.kind == .openAIRealtime && lock.withLock { !realtimeMicGate.guardActive }
 			if shouldArmRealtime {
-				armRealtimeBargeIn(after: 1.15)
+				suppressRealtimeMicDuringPlayback()
 			}
 			lock.withLock {
 				if suppressMic {
@@ -342,37 +340,21 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			pendingAudio.removeAll()
 			pendingAudioFormat = nil
 			micSuppressed = false
-			realtimeBargeInArmedAt = nil
-			realtimeBargeInGuardActive = false
+			realtimeMicGate.reset()
 		}
 		setState(.transcribing, "Interrupted; listening...")
 	}
 
-	private func armRealtimeBargeIn(after delay: TimeInterval) {
-		let armedAt = Date().addingTimeInterval(delay)
+	private func suppressRealtimeMicDuringPlayback() {
 		lock.withLock {
-			realtimeBargeInGuardActive = true
-			realtimeBargeInArmedAt = armedAt
-			micSuppressed = true
-		}
-		DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-			guard let self else { return }
-			self.lock.withLock {
-				if let current = self.realtimeBargeInArmedAt {
-					if current <= Date() {
-						self.micSuppressed = false
-					}
-				} else {
-					self.micSuppressed = false
-				}
-			}
+			realtimeMicGate.arm(armedAt: .distantFuture)
+			micSuppressed = realtimeMicGate.micSuppressed
 		}
 	}
 
 	private func isRealtimeBargeInAllowed() -> Bool {
 		lock.withLock {
-			guard let armedAt = realtimeBargeInArmedAt else { return true }
-			return Date() >= armedAt
+			realtimeMicGate.isBargeInAllowed(now: Date())
 		}
 	}
 
@@ -430,7 +412,10 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		let shouldReleaseRealtimeMic = newState == .listening && provider?.kind == .openAIRealtime
 		lock.withLock { state = newState }
 		if shouldReleaseRealtimeMic {
-			lock.withLock { micSuppressed = false }
+			lock.withLock {
+				realtimeMicGate.releaseForListening()
+				micSuppressed = realtimeMicGate.micSuppressed
+			}
 		}
 		if newState == .listening {
 			flushAudioIfNeeded()
@@ -438,10 +423,10 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		if newState == .listening || newState == .idle || newState == .error {
 			lock.withLock {
 				if newState == .idle || newState == .error {
-					micSuppressed = false
+					realtimeMicGate.reset()
+					micSuppressed = realtimeMicGate.micSuppressed
 				}
-				realtimeBargeInArmedAt = nil
-				realtimeBargeInGuardActive = false
+				realtimeMicGate.releaseForListening()
 			}
 		}
 		DispatchQueue.main.async { [weak self] in
