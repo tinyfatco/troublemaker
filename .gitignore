@@ -7,3 +7,5 @@ logs/
 *.tgz
 *.pem
 build/
+MEMORY.md
+memory/
