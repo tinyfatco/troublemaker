@@ -803,7 +803,7 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 							"interrupt_response": false,
 							"prefix_padding_ms": 250,
 							"silence_duration_ms": 450,
-							"threshold": 0.6,
+							"threshold": NSDecimalNumber(string: "0.6"),
 						],
 						"transcription": ["model": "gpt-realtime-whisper"],
 					],
