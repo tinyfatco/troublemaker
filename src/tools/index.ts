@@ -5,19 +5,22 @@ import { attachTool } from "./attach.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
+import { createSpeakTool } from "./speak.js";
 import { createWriteTool } from "./write.js";
 
 export { setUploadFunction } from "./attach.js";
 export { createSelfConfigureTool } from "./self-configure.js";
 export { createSendMessageTool } from "./send-message.js";
+export { createSpeakTool } from "./speak.js";
 
 export { createReadThreadTool } from "./read-thread.js";
-export function createMomTools(executor: Executor): AgentTool<any>[] {
+export function createMomTools(executor: Executor, workspaceDir = process.cwd()): AgentTool<any>[] {
 	return [
 		createReadTool(executor),
 		createBashTool(executor),
 		createEditTool(executor),
 		createWriteTool(executor),
+		createSpeakTool(workspaceDir),
 		attachTool,
 	];
 }

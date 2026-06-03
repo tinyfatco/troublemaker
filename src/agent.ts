@@ -309,15 +309,16 @@ function createRunner(
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(join(awarenessDir, ".."));
 
+	const workspaceDir = join(awarenessDir, "..");
+
 	// Create tools (core + extras like send_message)
-	const tools = [...createMomTools(executor), ...extraTools];
+	const tools = [...createMomTools(executor, workspaceDir), ...extraTools];
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
 	const systemPrompt = "Initializing...";
 
 	// Create session manager and settings manager
 	const contextFile = join(awarenessDir, "context.jsonl");
-	const workspaceDir = join(awarenessDir, "..");
 	const workspaceStore = new FilesystemWorkspaceStore(workspaceDir);
 	const settingsManager = new MomSettingsManager(workspaceDir);
 

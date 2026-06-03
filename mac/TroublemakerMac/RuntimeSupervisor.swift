@@ -38,7 +38,7 @@ final class RuntimeSupervisor {
 		process?.isRunning == true
 	}
 
-	func start(build: Bool = false) throws {
+	func start(build: Bool = false, environmentOverrides: [String: String] = [:]) throws {
 		if process?.isRunning == true {
 			onLog?("Backend already running from this app.")
 			return
@@ -51,6 +51,9 @@ final class RuntimeSupervisor {
 		process.currentDirectoryURL = projectRoot
 		var env = LauncherEnvironment.merged(projectRoot: projectRoot)
 		for (key, value) in profile.environment {
+			env[key] = value
+		}
+		for (key, value) in environmentOverrides {
 			env[key] = value
 		}
 		process.environment = env
@@ -113,9 +116,9 @@ final class RuntimeSupervisor {
 		return reclaimed
 	}
 
-	func restart(build: Bool = false) throws {
+	func restart(build: Bool = false, environmentOverrides: [String: String] = [:]) throws {
 		stop()
-		try start(build: build)
+		try start(build: build, environmentOverrides: environmentOverrides)
 	}
 
 	private func openAppLog() -> FileHandle {

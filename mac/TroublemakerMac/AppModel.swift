@@ -45,19 +45,35 @@ enum AuthPhase: Equatable {
 	}
 }
 
-struct ChatMessage: Identifiable, Equatable {
-	enum Role: String {
+struct ChatMessage: Identifiable, Equatable, Codable {
+	enum Role: String, Codable {
 		case user
 		case assistant
 		case system
 	}
 
-	let id = UUID()
+	var id = UUID()
 	var role: Role
 	var text: String
 	var details: [String] = []
 	var isStreaming = false
 	var createdAt = Date()
+
+	init(
+		id: UUID = UUID(),
+		role: Role,
+		text: String,
+		details: [String] = [],
+		isStreaming: Bool = false,
+		createdAt: Date = Date()
+	) {
+		self.id = id
+		self.role = role
+		self.text = text
+		self.details = details
+		self.isStreaming = isStreaming
+		self.createdAt = createdAt
+	}
 }
 
 struct AssistantActivityItem: Identifiable, Equatable {
@@ -151,11 +167,10 @@ final class AppModel: ObservableObject {
 
 		applyProfileToPublished(resolvedProfile)
 		backend.port = resolvedProfile.port
+		loadLocalMessagesForCurrentProfile()
 		if let savedBinding {
-			messages = []
 			recordActivity(.status, title: "Agent selected", detail: savedBinding.name, symbol: "person.badge.key")
 		} else {
-			messages = []
 			recordActivity(.status, title: "Awaiting sign-in", detail: "No cloud agent is bound to this Mac.", symbol: "lock")
 		}
 		wireVoiceCallbacks()
@@ -166,7 +181,7 @@ final class AppModel: ObservableObject {
 	}
 
 	var canUseJarvisChat: Bool {
-		canUseBoundRuntime && cloudAwarenessLoaded && localAwarenessHydrated
+		canUseBoundRuntime
 	}
 
 	var canUseVoice: Bool {
@@ -344,8 +359,8 @@ final class AppModel: ObservableObject {
 		selectedCloudBinding = binding
 		authError = nil
 		applyRuntimeProfile(.cloudBound(binding))
-		messages = []
 		persistedEventKeys = []
+		loadLocalMessagesForCurrentProfile()
 		activity = []
 		cloudAwareness = []
 		cloudAwarenessStatus = "Loading cloud awareness..."
@@ -375,7 +390,7 @@ final class AppModel: ObservableObject {
 		backend.message = "Restarting local backend..."
 		phase = .starting
 		do {
-			try supervisor.restart(build: build)
+			try supervisor.restart(build: build, environmentOverrides: runtimeEnvironmentOverrides())
 			beginBackendMonitoring()
 		} catch {
 			backend.state = .crashed
@@ -432,9 +447,7 @@ final class AppModel: ObservableObject {
 
 	func startVoice() {
 		guard canUseVoice else {
-			authError = selectedVoiceProvider == .openAIRealtime
-				? "Sign in and choose an agent before starting Realtime 2."
-				: "Load cloud awareness and hydrate the local runtime before starting voice."
+			authError = "Sign in and choose an agent before starting voice."
 			recordActivity(.error, title: "Voice blocked", detail: authError ?? "Voice is not ready.", symbol: "mic.slash")
 			return
 		}
@@ -468,16 +481,12 @@ final class AppModel: ObservableObject {
 
 	func send(_ text: String, channelId: String = "mac") {
 		guard canUseJarvisChat else {
-			authError = !canUseBoundRuntime
-				? "Sign in and choose an agent before sending a command."
-				: (!cloudAwarenessLoaded
-					? "Load the selected agent's cloud awareness before sending a command."
-					: "Hydrate the local runtime from cloud awareness before sending a command.")
+			authError = "Sign in and choose an agent before sending a command."
 			recordActivity(
 				.error,
 				title: "Command blocked",
-				detail: authError ?? "Cloud awareness is not ready.",
-				symbol: canUseBoundRuntime ? "arrow.down.doc" : "lock"
+				detail: authError ?? "No local agent is selected.",
+				symbol: "lock"
 			)
 			return
 		}
@@ -488,11 +497,14 @@ final class AppModel: ObservableObject {
 
 		lastTranscript = text
 		recordActivity(.input, title: "You", detail: text, symbol: "mic")
-		recordActivity(.status, title: "Cloud awareness attached", detail: "\(cloudAwareness.count) recent entries from Crawdad v2", symbol: "cloud")
+		if cloudAwarenessLoaded && localAwarenessHydrated {
+			recordActivity(.status, title: "Cloud context available", detail: "\(cloudAwareness.count) recent entries from Crawdad v2", symbol: "cloud")
+		}
 		let user = ChatMessage(role: .user, text: text)
 		let assistant = ChatMessage(role: .assistant, text: "", isStreaming: true)
 		messages.append(user)
 		messages.append(assistant)
+		persistLocalMessages()
 		isSending = true
 		phase = .thinking
 
@@ -698,7 +710,10 @@ final class AppModel: ObservableObject {
 		backend.message = "Starting local backend..."
 		phase = .starting
 		do {
-			try supervisor.start(build: CommandLine.arguments.contains("--build"))
+			try supervisor.start(
+				build: CommandLine.arguments.contains("--build"),
+				environmentOverrides: runtimeEnvironmentOverrides()
+			)
 		} catch {
 			backend.state = .crashed
 			backend.message = "Failed to start backend: \(error)"
@@ -922,6 +937,7 @@ final class AppModel: ObservableObject {
 			_ = ensureVoiceAssistantMessage(after: user.id)
 		}
 		trimMessages()
+		persistLocalMessages()
 	}
 
 	private func appendVoiceAssistantDelta(_ delta: String) {
@@ -1019,6 +1035,15 @@ final class AppModel: ObservableObject {
 		backend.message = newProfile.isCloudBound ? "\(newProfile.agentName) selected." : "Choose an agent."
 	}
 
+	private func runtimeEnvironmentOverrides() -> [String: String] {
+		guard profile.cloudAgentID != nil,
+			  let token = tokenStore.load()?.accessToken,
+			  !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+			return [:]
+		}
+		return ["TROUBLEMAKER_CLOUD_ACCESS_TOKEN": token]
+	}
+
 	private func applyProfileToPublished(_ profile: TenantRuntimeProfile) {
 		selectedAgentID = profile.localAgentID
 		selectedAgentName = profile.agentName
@@ -1073,6 +1098,25 @@ final class AppModel: ObservableObject {
 		}
 	}
 
+	private var localMessagesURL: URL {
+		profile.workspaceURL
+			.appendingPathComponent("native-chat", isDirectory: true)
+			.appendingPathComponent("messages.json")
+	}
+
+	private func loadLocalMessagesForCurrentProfile() {
+		messages = Self.loadLocalMessages(from: localMessagesURL)
+		trimMessages()
+	}
+
+	private func persistLocalMessages() {
+		let durableMessages = messages
+			.filter { !$0.isStreaming }
+			.filter { !$0.details.contains("Persisted via Crawdad v2") }
+			.suffix(160)
+		Self.persistLocalMessages(Array(durableMessages), to: localMessagesURL)
+	}
+
 	private func sortMessagesChronologically() {
 		messages = messages.enumerated().sorted { left, right in
 			if left.element.createdAt == right.element.createdAt {
@@ -1092,6 +1136,7 @@ final class AppModel: ObservableObject {
 			isSending = false
 		}
 		if phase != .error { phase = .idle }
+		persistLocalMessages()
 	}
 
 	private func recordActivity(_ kind: AssistantActivityItem.Kind, title: String, detail: String, symbol: String) {
@@ -1139,6 +1184,44 @@ User request:
 		}
 		return nil
 	}
+
+	private static func loadLocalMessages(from url: URL) -> [ChatMessage] {
+		guard let data = try? Data(contentsOf: url) else { return [] }
+		do {
+			return try localMessageDecoder.decode([ChatMessage].self, from: data)
+				.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !$0.details.isEmpty }
+				.map { message in
+					var restored = message
+					restored.isStreaming = false
+					return restored
+				}
+		} catch {
+			return []
+		}
+	}
+
+	private static func persistLocalMessages(_ messages: [ChatMessage], to url: URL) {
+		do {
+			try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+			let data = try localMessageEncoder.encode(messages)
+			try data.write(to: url, options: [.atomic])
+		} catch {
+			// Message persistence should never interrupt a live local run.
+		}
+	}
+
+	private static let localMessageEncoder: JSONEncoder = {
+		let encoder = JSONEncoder()
+		encoder.dateEncodingStrategy = .iso8601
+		encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+		return encoder
+	}()
+
+	private static let localMessageDecoder: JSONDecoder = {
+		let decoder = JSONDecoder()
+		decoder.dateDecodingStrategy = .iso8601
+		return decoder
+	}()
 }
 
 private extension ISO8601DateFormatter {

@@ -2,6 +2,7 @@ import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
 import { join } from "path";
+import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import {
@@ -31,6 +32,11 @@ interface WebChatPayload {
 	channelId?: string;
 	channel_id?: string;
 	source?: string;
+	origin?: string;
+	role?: string;
+	speaker?: string;
+	isBot?: boolean;
+	assistant?: boolean;
 }
 
 interface NormalizedWebChatPayload {
@@ -193,6 +199,20 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
+			const assistantOrigin = this.isAssistantOriginPayload(payload);
+			const suppression = assistantOrigin
+				? { suppress: true, reason: "assistant_origin_metadata" }
+				: shouldSuppressAssistantSpeechEcho(normalized.message);
+			if (suppression.suppress) {
+				log.logInfo(
+					`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} ` +
+					`(${suppression.reason}${"similarity" in suppression && typeof suppression.similarity === "number" ? `, similarity=${suppression.similarity.toFixed(2)}` : ""})`,
+				);
+				res.writeHead(202, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppression.reason }));
+				return;
+			}
+
 			res.writeHead(202, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
 
@@ -253,6 +273,16 @@ Keep responses concise and helpful.`;
 			if (typeof value === "string") return value;
 		}
 		return "";
+	}
+
+	private isAssistantOriginPayload(payload: WebChatPayload): boolean {
+		if (payload.isBot === true || payload.assistant === true) return true;
+		const origin = this.firstString(payload.origin, payload.role, payload.speaker)
+			.trim()
+			.toLowerCase();
+		if (["assistant", "bot", "noodle", "troublemaker"].includes(origin)) return true;
+		const source = this.firstString(payload.source).trim().toLowerCase();
+		return ["assistant", "bot"].includes(source);
 	}
 
 	// ==========================================================================

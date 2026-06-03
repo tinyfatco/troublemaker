@@ -51,6 +51,31 @@ export interface MomVerboseSettings {
 	[platform: string]: VerbosityLevel | Record<string, VerbosityLevel> | undefined;
 }
 
+export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "noop" | "disabled";
+
+export interface MomSpeakSettings {
+	enabled?: boolean;
+	backend?: MomSpeakBackend;
+	voice?: string;
+	rate?: number;
+	maxChars?: number;
+	command?: string;
+	url?: string;
+	headers?: Record<string, string>;
+	token?: string;
+	tokenEnv?: string;
+	tokenHeader?: string;
+	tokenPrefix?: string;
+	elevenlabs?: {
+		apiKey?: string;
+		apiKeyEnv?: string;
+		voiceId?: string;
+		modelId?: string;
+		outputFormat?: string;
+		playerCommand?: string;
+	};
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
@@ -60,6 +85,7 @@ export interface MomSettings {
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
 	shellPath?: string;
+	speak?: MomSpeakSettings;
 }
 
 const DEFAULT_COMPACTION: MomCompactionSettings = {

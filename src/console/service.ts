@@ -1,4 +1,5 @@
 import { join } from "path";
+import { readLocalTenantProfile, type LocalTenantProfile } from "../local/tenant-profile.js";
 import type { WorkspaceStore } from "../storage/workspace.js";
 import type {
 	ConsoleAgentsResponse,
@@ -22,36 +23,49 @@ interface WorkspaceConfig {
 }
 
 export class ConsoleService {
-	constructor(private readonly workspace: WorkspaceStore) {}
+	constructor(
+		private readonly workspace: WorkspaceStore,
+		private readonly env: Record<string, string | undefined> = process.env,
+	) {}
 
 	getSession(): ConsoleSession {
+		const profile = this.readProfile();
 		return {
-			mode: "standalone",
-			agent_id: "current",
+			mode: profile.mode,
+			agent_id: profile.localAgentId,
+			local_agent_id: profile.localAgentId,
+			cloud_agent_id: profile.cloudAgentId,
+			tenant_id: profile.tenantId,
+			cloud_base_url: profile.cloudBaseUrl,
+			profile: profile.profileName || null,
 			capabilities: {
 				awareness: true,
 				files: true,
 				messages: true,
 				terminal: true,
-				desktop: false,
+				desktop: profile.displayMode === "desktop",
 				voice: false,
-				fleet: false,
+				fleet: profile.profileActive,
 			},
 		};
 	}
 
 	getAgents(): ConsoleAgentsResponse {
-		const config = this.readWorkspaceConfig();
+		const profile = this.readProfile();
 		return {
 			scope: "active",
 			count: 1,
 			agents: [{
-				id: "current",
-				name: config?.agent_name ?? "agent",
+				id: profile.localAgentId,
+				local_agent_id: profile.localAgentId,
+				cloud_agent_id: profile.cloudAgentId,
+				tenant_id: profile.tenantId,
+				cloud_base_url: profile.cloudBaseUrl,
+				name: profile.agentName,
 				enabled: true,
 				archived_at: null,
 				runtime: "troublemaker",
-				provider: "standalone",
+				provider: profile.mode,
 				state: "active",
 				last_activity_at: null,
 				current_task: null,
@@ -64,19 +78,26 @@ export class ConsoleService {
 		if (!config) {
 			throw new ConsoleError(503, "Workspace not ready");
 		}
+		const profile = this.readProfile(config);
 
 		return {
-			agent_id: "current",
-			mode: "standalone",
+			agent_id: profile.localAgentId,
+			local_agent_id: profile.localAgentId,
+			cloud_agent_id: profile.cloudAgentId,
+			tenant_id: profile.tenantId,
+			cloud_base_url: profile.cloudBaseUrl,
+			profile: profile.profileName || null,
+			mode: profile.mode,
 			runtime: "troublemaker",
 			workspace_ready: true,
-			...config,
+			display_mode: profile.displayMode,
+			agent_name: profile.agentName,
 			capabilities: {
 				awareness: true,
 				files: true,
 				messages: true,
 				terminal: true,
-				desktop: config.display_mode === "desktop",
+				desktop: profile.displayMode === "desktop",
 				voice: false,
 			},
 		};
@@ -130,6 +151,10 @@ export class ConsoleService {
 		const relPath = join(targetDir || "attachments", safeName);
 		this.workspace.writeBytes(relPath, data);
 		return relPath;
+	}
+
+	private readProfile(_config?: WorkspaceConfig): LocalTenantProfile {
+		return readLocalTenantProfile(this.workspace, this.env);
 	}
 
 	private readWorkspaceConfig(): WorkspaceConfig | null {

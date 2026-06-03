@@ -17,6 +17,12 @@ import { appendFileSync } from "fs";
 import { join } from "path";
 import WebSocket, { WebSocketServer } from "ws";
 import * as log from "../log.js";
+import {
+	beginAssistantSpeech,
+	estimateSpeechActiveMs,
+	finishAssistantSpeech,
+	shouldSuppressAssistantSpeechEcho,
+} from "../audio-feedback-guard.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 import { createSttSession, type SttConfig, type SttSession } from "./voice-stt.js";
@@ -39,6 +45,8 @@ interface CallSession {
 	sttSession: SttSession | null;
 	/** Whether TTS is currently playing */
 	ttsPlaying: boolean;
+	assistantSpeechId?: string | null;
+	assistantSpeechFallback?: ReturnType<typeof setTimeout>;
 	startedAt: number;
 }
 
@@ -209,13 +217,17 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 						break;
 
 					case "mark":
-						if (session) session.ttsPlaying = false;
+						if (session) {
+							session.ttsPlaying = false;
+							this.finishAssistantSpeechForSession(session);
+						}
 						break;
 
 					case "stop":
 						log.logInfo(`[voice] Stream stopped: ${session?.streamSid}`);
 						if (session) {
 							session.sttSession?.close();
+							this.finishAssistantSpeechForSession(session);
 							this.calls.delete(session.callSid);
 						}
 						break;
@@ -229,6 +241,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			log.logInfo("[voice] Stream WebSocket closed");
 			if (session) {
 				session.sttSession?.close();
+				this.finishAssistantSpeechForSession(session);
 				this.calls.delete(session.callSid);
 			}
 		});
@@ -255,6 +268,14 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 
 	private handleUtterance(session: CallSession, text: string): void {
 		if (!text.trim()) return;
+		const suppression = shouldSuppressAssistantSpeechEcho(text);
+		if (suppression.suppress) {
+			log.logInfo(
+				`[voice] Suppressed assistant speech echo from ${session.from}: "${text}" ` +
+				`(${suppression.reason}, similarity=${suppression.similarity?.toFixed(2) ?? "n/a"})`,
+			);
+			return;
+		}
 		log.logInfo(`[voice] Utterance from ${session.from}: "${text}"`);
 
 		const event: MomEvent = {
@@ -282,7 +303,9 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private async speakToCall(session: CallSession, text: string): Promise<void> {
 		if (session.ws.readyState !== WebSocket.OPEN || !session.streamSid) return;
 
+		this.finishAssistantSpeechForSession(session);
 		session.ttsPlaying = true;
+		session.assistantSpeechId = beginAssistantSpeech(text);
 		const sid = session.streamSid;
 		let chunkCount = 0;
 
@@ -303,12 +326,28 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 					streamSid: sid,
 					mark: { name: `tts-${Date.now()}` },
 				}));
+				session.assistantSpeechFallback = setTimeout(() => {
+					this.finishAssistantSpeechForSession(session);
+				}, estimateSpeechActiveMs(text) + 3000);
+				session.assistantSpeechFallback.unref?.();
 			}
 
 			log.logInfo(`[voice] TTS sent ${chunkCount} chunks`);
 		} catch (err) {
 			log.logWarning(`[voice] TTS error: ${err instanceof Error ? err.message : String(err)}`);
 			session.ttsPlaying = false;
+			this.finishAssistantSpeechForSession(session);
+		}
+	}
+
+	private finishAssistantSpeechForSession(session: CallSession): void {
+		if (session.assistantSpeechFallback) {
+			clearTimeout(session.assistantSpeechFallback);
+			session.assistantSpeechFallback = undefined;
+		}
+		if (session.assistantSpeechId) {
+			finishAssistantSpeech(session.assistantSpeechId);
+			session.assistantSpeechId = null;
 		}
 	}
 

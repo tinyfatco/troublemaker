@@ -16,6 +16,14 @@
 
 import WebSocket from "ws";
 import * as log from "../log.js";
+import {
+	beginAssistantSpeech,
+	estimateSpeechActiveMs,
+	finishAssistantSpeech,
+	getAssistantSpeechGuardState,
+	shouldSuppressAssistantSpeechEcho,
+} from "../audio-feedback-guard.js";
+import { AssistantAudioGate, pcm16RmsLevel } from "../audio-capture-gate.js";
 import { createSttSession, type SttConfig, type SttSession } from "./voice-stt.js";
 import { textToSpeechStreaming, type TtsConfig } from "./voice-tts.js";
 import type { MomEvent, MomHandler, PlatformAdapter, MomContext, ChannelInfo, UserInfo } from "./types.js";
@@ -56,6 +64,8 @@ export function handleWebVoiceSession(
 	};
 
 	let sttSession: SttSession | null = null;
+	const upstreamSttGate = new AssistantAudioGate();
+	let lastUpstreamGateLogAt = 0;
 
 	const sendControl = (msg: Record<string, unknown>) => {
 		if (ws.readyState === WebSocket.OPEN) {
@@ -69,6 +79,15 @@ export function handleWebVoiceSession(
 		// On committed utterance
 		(text: string) => {
 			if (!text.trim()) return;
+			const suppression = shouldSuppressAssistantSpeechEcho(text);
+			if (suppression.suppress) {
+				log.logInfo(
+					`[web-voice] Suppressed assistant speech echo: "${text}" ` +
+					`(${suppression.reason}, similarity=${suppression.similarity?.toFixed(2) ?? "n/a"})`,
+				);
+				sendControl({ type: "transcript_ignored", reason: suppression.reason });
+				return;
+			}
 			log.logInfo(`[web-voice] Utterance: "${text}"`);
 			sendControl({ type: "transcript", text });
 			sendControl({ type: "thinking" });
@@ -111,8 +130,24 @@ export function handleWebVoiceSession(
 		if (isBinary) {
 			// Binary = PCM audio from browser mic
 			if (sttSession?.connected) {
-				// Convert to base64 for ElevenLabs
 				const buf = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
+				const guardState = getAssistantSpeechGuardState();
+				const gateDecision = upstreamSttGate.decide({
+					phase: guardState.phase,
+					audioLevel: pcm16RmsLevel(buf),
+				});
+				if (!gateDecision.sendToStt) {
+					if (Date.now() - lastUpstreamGateLogAt > 1000) {
+						lastUpstreamGateLogAt = Date.now();
+						log.logInfo(
+							`[web-voice] Holding mic audio during assistant ${gateDecision.phase} ` +
+							`before STT upload (level=${gateDecision.audioLevel.toFixed(3)})`,
+						);
+					}
+					return;
+				}
+
+				// Convert to base64 for ElevenLabs
 				sttSession.sendAudio(buf.toString("base64"));
 			}
 		} else {
@@ -202,7 +237,9 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private async speakToClient(text: string): Promise<void> {
 		if (!this.activeWs || this.activeWs.readyState !== WebSocket.OPEN || !this.activeTtsConfig) return;
 
+		this.sendControl({ type: "assistant_text", text });
 		this.sendControl({ type: "speaking" });
+		const speechId = beginAssistantSpeech(text);
 
 		try {
 			await textToSpeechStreaming(text, this.activeTtsConfig, (base64Audio: string) => {
@@ -213,9 +250,11 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			});
 
 			// Signal end of audio
+			finishAssistantSpeech(speechId, { activeHoldMs: Math.min(1500, estimateSpeechActiveMs(text)) });
 			this.sendControl({ type: "listening" });
 		} catch (err) {
 			log.logWarning(`[web-voice] TTS error: ${err instanceof Error ? err.message : String(err)}`);
+			finishAssistantSpeech(speechId);
 			this.sendControl({ type: "listening" });
 		}
 	}

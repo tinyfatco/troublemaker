@@ -611,13 +611,10 @@ struct MainChatView: View {
 		if !model.canUseBoundRuntime {
 			return "Choose an agent first"
 		}
-		if !model.cloudAwarenessLoaded {
-			return "Load cloud awareness first"
-		}
 		if model.isVoiceActive {
 			return model.voicePartialTranscript.isEmpty ? model.voiceStatus : model.voicePartialTranscript
 		}
-		return model.localAwarenessHydrated ? "Ask the selected agent..." : "Hydrating local runtime..."
+		return model.localAwarenessHydrated ? "Ask with local context..." : "Ask the selected agent..."
 	}
 
 	private var primaryAgents: [CloudAgent] {
@@ -799,7 +796,7 @@ struct CloudAwarenessIntroView: View {
 			}
 
 			if model.cloudAwareness.isEmpty {
-				Text(model.canUseBoundRuntime ? "Chat stays disabled until cloud awareness loads." : "Sign in and choose an agent.")
+				Text(model.canUseBoundRuntime ? "Start the local runtime to chat from this Mac. Cloud awareness can add context when available." : "Sign in and choose an agent.")
 					.font(.callout)
 					.foregroundStyle(.secondary)
 			} else {
@@ -1282,22 +1279,24 @@ struct ChatBubble: View {
 					}
 				}
 
-				if message.text.isEmpty && message.isStreaming {
+				if messageText.isEmpty && message.isStreaming {
 					HStack(spacing: 8) {
 						VoiceLevelBars(state: .thinking, compact: false)
-						Text("Waiting for Zip...")
+						Text("Waiting for the local agent...")
 							.foregroundStyle(.secondary)
 					}
 					.font(.callout)
 					.frame(maxWidth: .infinity, alignment: .leading)
+				} else if let primaryDetail {
+					MessageInlineDetailSummary(detail: primaryDetail)
 				} else {
 					Text(message.text)
 						.textSelection(.enabled)
 						.frame(maxWidth: .infinity, alignment: .leading)
 				}
 
-				if !message.details.isEmpty {
-					MessageDetailsDisclosure(details: message.details)
+				if !disclosureDetails.isEmpty {
+					MessageDetailsDisclosure(details: disclosureDetails)
 						.padding(.top, 2)
 				}
 			}
@@ -1312,12 +1311,42 @@ struct ChatBubble: View {
 		}
 	}
 
+	private var messageText: String {
+		message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+	}
+
+	private var primaryDetail: MessageDetailItem? {
+		guard !messageText.isEmpty else { return nil }
+		let detail = MessageDetailItem(rawValue: message.text)
+		return detail.prefersInlineSummary ? detail : nil
+	}
+
+	private var disclosureDetails: [String] {
+		var values = message.details
+		if let primaryDetail,
+		   !values.contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines) == primaryDetail.rawValue.trimmingCharacters(in: .whitespacesAndNewlines) }) {
+			values.append(primaryDetail.rawValue)
+		}
+		return values
+	}
+
 	private var title: String {
 		switch message.role {
 		case .user: return "You"
-		case .assistant: return "Troublemaker"
+		case .assistant: return assistantTitle
 		case .system: return "System"
 		}
+	}
+
+	private var assistantTitle: String {
+		let details = message.details.joined(separator: " ").lowercased()
+		if details.contains("realtime") {
+			return "Troublemaker Realtime"
+		}
+		if details.contains("deepgram") {
+			return "Troublemaker via Deepgram"
+		}
+		return "Troublemaker"
 	}
 
 	private var icon: String {
@@ -1337,6 +1366,39 @@ struct ChatBubble: View {
 	}
 }
 
+struct MessageInlineDetailSummary: View {
+	let detail: MessageDetailItem
+
+	var body: some View {
+		HStack(alignment: .top, spacing: 8) {
+			Image(systemName: detail.systemImage)
+				.font(.caption.weight(.semibold))
+				.foregroundStyle(detail.tint)
+				.frame(width: 16, height: 16)
+			VStack(alignment: .leading, spacing: 2) {
+				Text(detail.title)
+					.font(.callout.weight(.semibold))
+					.foregroundStyle(.primary)
+				if !detail.preview.isEmpty {
+					Text(detail.preview)
+						.font(.caption)
+						.foregroundStyle(.secondary)
+						.lineLimit(2)
+				}
+			}
+			Spacer(minLength: 0)
+		}
+		.padding(.horizontal, 9)
+		.padding(.vertical, 8)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(detail.tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+		.overlay(
+			RoundedRectangle(cornerRadius: 7)
+				.strokeBorder(detail.tint.opacity(0.16))
+		)
+	}
+}
+
 struct MessageDetailsDisclosure: View {
 	let details: [String]
 	@State private var isExpanded = false
@@ -1351,7 +1413,11 @@ struct MessageDetailsDisclosure: View {
 	}
 
 	private var preview: String {
-		visibleDetails.last?.preview ?? ""
+		visibleDetails.last?.collapsedPreview ?? ""
+	}
+
+	private var previewDetail: MessageDetailItem? {
+		visibleDetails.last
 	}
 
 	var body: some View {
@@ -1367,6 +1433,12 @@ struct MessageDetailsDisclosure: View {
 						.rotationEffect(.degrees(isExpanded ? 90 : 0))
 						.foregroundStyle(.secondary)
 						.frame(width: 10)
+					if let previewDetail {
+						Image(systemName: previewDetail.systemImage)
+							.font(.caption2.weight(.semibold))
+							.foregroundStyle(previewDetail.tint)
+							.frame(width: 13)
+					}
 					Text(title)
 						.font(.caption.weight(.semibold))
 						.foregroundStyle(.secondary)
@@ -1389,6 +1461,12 @@ struct MessageDetailsDisclosure: View {
 					ForEach(Array(visibleDetails.enumerated()), id: \.offset) { index, detail in
 						MessageDetailBlock(index: details.count - visibleDetails.count + index + 1, detail: detail)
 					}
+					if details.count > visibleDetails.count {
+						Text("Showing latest \(visibleDetails.count) of \(details.count) details")
+							.font(.caption2)
+							.foregroundStyle(.tertiary)
+							.frame(maxWidth: .infinity, alignment: .leading)
+					}
 				}
 				.transition(.opacity.combined(with: .move(edge: .top)))
 			}
@@ -1401,54 +1479,226 @@ struct MessageDetailBlock: View {
 	let detail: MessageDetailItem
 
 	var body: some View {
-		VStack(alignment: .leading, spacing: 5) {
-			HStack(spacing: 6) {
-				Text("#\(index)")
-					.font(.caption2.weight(.semibold))
-					.foregroundStyle(.secondary)
-				if detail.isJSON {
-					Text("JSON")
+		HStack(alignment: .top, spacing: 8) {
+			Image(systemName: detail.systemImage)
+				.font(.caption.weight(.semibold))
+				.foregroundStyle(detail.tint)
+				.frame(width: 16)
+
+			VStack(alignment: .leading, spacing: 5) {
+				HStack(spacing: 6) {
+					Text(detail.title)
+						.font(.caption.weight(.semibold))
+						.foregroundStyle(.primary)
+					Text("#\(index)")
 						.font(.caption2.weight(.semibold))
 						.foregroundStyle(.tertiary)
+					if detail.isJSON {
+						Text("JSON")
+							.font(.caption2.weight(.semibold))
+							.foregroundStyle(detail.tint)
+					}
+					Spacer(minLength: 0)
 				}
-				Spacer(minLength: 0)
+				if !detail.preview.isEmpty && detail.preview != detail.displayValue {
+					Text(detail.preview)
+						.font(.caption2)
+						.foregroundStyle(.secondary)
+						.lineLimit(2)
+				}
+				detailValue
 			}
-			Text(detail.displayValue)
-				.font(.system(size: 11, design: detail.isJSON ? .monospaced : .default))
-				.foregroundStyle(.secondary)
-				.textSelection(.enabled)
-				.fixedSize(horizontal: false, vertical: true)
-				.frame(maxWidth: .infinity, alignment: .leading)
 		}
 		.padding(.horizontal, 8)
 		.padding(.vertical, 7)
 		.frame(maxWidth: .infinity, alignment: .leading)
-		.background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+		.background(detail.tint.opacity(detail.isStructured ? 0.07 : 0.035), in: RoundedRectangle(cornerRadius: 7))
+		.overlay(
+			RoundedRectangle(cornerRadius: 7)
+				.strokeBorder(detail.tint.opacity(detail.isStructured ? 0.14 : 0.06))
+		)
+	}
+
+	@ViewBuilder
+	private var detailValue: some View {
+		if !detail.displayValue.isEmpty {
+			Text(detail.displayValue)
+				.font(.system(size: 11, design: detail.isJSON ? .monospaced : .default))
+				.foregroundStyle(.secondary)
+				.textSelection(.enabled)
+				.lineLimit(detail.isJSON ? 18 : nil)
+				.fixedSize(horizontal: false, vertical: true)
+				.padding(.horizontal, detail.isJSON ? 7 : 0)
+				.padding(.vertical, detail.isJSON ? 6 : 0)
+				.frame(maxWidth: .infinity, alignment: .leading)
+				.background(detail.isJSON ? Color.primary.opacity(0.04) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+		}
 	}
 }
 
 struct MessageDetailItem {
+	enum Kind {
+		case detail
+		case status
+		case voice
+		case persisted
+		case tool
+		case toolResult
+		case error
+		case thinking
+		case event
+		case json
+	}
+
 	let rawValue: String
 	let displayValue: String
 	let preview: String
 	let isJSON: Bool
+	let kind: Kind
 
 	init(rawValue: String) {
 		let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-		if let formatted = Self.prettyPrintedJSON(from: trimmed) {
-			self.rawValue = rawValue
-			displayValue = formatted
-			preview = Self.compactPreview(from: formatted)
+		let prefix = Self.prefix(from: trimmed)
+		let detectedKind = Self.kind(for: trimmed, prefix: prefix)
+		let body = Self.body(from: trimmed, detectedKind: detectedKind)
+		let valueForDisplay = body.isEmpty ? trimmed : body
+
+		self.rawValue = rawValue
+		if let json = Self.parsedJSON(from: valueForDisplay) {
+			displayValue = json.display
+			preview = json.summary
 			isJSON = true
+			kind = detectedKind ?? .json
 		} else {
-			self.rawValue = rawValue
-			displayValue = trimmed
-			preview = Self.compactPreview(from: trimmed)
+			displayValue = valueForDisplay
+			preview = Self.compactPreview(from: valueForDisplay)
 			isJSON = false
+			kind = detectedKind ?? .detail
 		}
 	}
 
-	private static func prettyPrintedJSON(from value: String) -> String? {
+	var title: String {
+		switch kind {
+		case .detail: return "Detail"
+		case .status: return "Status"
+		case .voice: return "Voice"
+		case .persisted: return "Persisted"
+		case .tool: return "Tool"
+		case .toolResult: return "Tool result"
+		case .error: return "Error"
+		case .thinking: return "Thinking"
+		case .event: return "Event"
+		case .json: return "JSON"
+		}
+	}
+
+	var systemImage: String {
+		switch kind {
+		case .detail: return "line.3.horizontal"
+		case .status: return "info.circle"
+		case .voice: return "waveform"
+		case .persisted: return "clock.arrow.circlepath"
+		case .tool: return "hammer"
+		case .toolResult: return "checkmark.circle"
+		case .error: return "exclamationmark.triangle"
+		case .thinking: return "brain"
+		case .event: return "bolt.horizontal"
+		case .json: return "curlybraces"
+		}
+	}
+
+	var tint: Color {
+		switch kind {
+		case .detail, .status, .persisted: return .secondary
+		case .voice: return .teal
+		case .tool: return .purple
+		case .toolResult: return .green
+		case .error: return .red
+		case .thinking: return .blue
+		case .event: return .orange
+		case .json: return .indigo
+		}
+	}
+
+	var collapsedPreview: String {
+		guard !preview.isEmpty else { return title }
+		if kind == .detail {
+			return preview
+		}
+		return "\(title): \(preview)"
+	}
+
+	var isStructured: Bool {
+		switch kind {
+		case .detail, .status, .voice, .persisted:
+			return isJSON
+		case .tool, .toolResult, .error, .thinking, .event, .json:
+			return true
+		}
+	}
+
+	var prefersInlineSummary: Bool {
+		switch kind {
+		case .tool, .toolResult, .error, .thinking, .event, .json:
+			return true
+		case .detail, .status, .voice, .persisted:
+			return isJSON
+		}
+	}
+
+	private static func prefix(from value: String) -> String? {
+		if let colon = value.firstIndex(of: ":") {
+			return String(value[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+		}
+		if let separator = value.range(of: "·") {
+			return String(value[..<separator.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+		}
+		return nil
+	}
+
+	private static func body(from value: String, detectedKind: Kind?) -> String {
+		guard detectedKind != nil else { return value }
+		if let colon = value.firstIndex(of: ":") {
+			return String(value[value.index(after: colon)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+		}
+		if let separator = value.range(of: "·") {
+			return String(value[separator.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+		}
+		return value
+	}
+
+	private static func kind(for value: String, prefix: String?) -> Kind? {
+		let label = (prefix ?? value)
+			.trimmingCharacters(in: .whitespacesAndNewlines)
+			.lowercased()
+		if label.hasPrefix("tool result") {
+			return .toolResult
+		}
+		if label.hasPrefix("tool error") {
+			return .error
+		}
+		if label.hasPrefix("tool") {
+			return .tool
+		}
+		if label.hasPrefix("error") {
+			return .error
+		}
+		if label.hasPrefix("thinking") {
+			return .thinking
+		}
+		if label.hasPrefix("event") {
+			return .event
+		}
+		if label.contains("persisted via crawdad") {
+			return .persisted
+		}
+		if label.contains("realtime") || label.contains("deepgram") || label.contains("troublemaker") {
+			return .voice
+		}
+		return nil
+	}
+
+	private static func parsedJSON(from value: String) -> (display: String, summary: String)? {
 		guard value.first == "{" || value.first == "[" else { return nil }
 		guard let data = value.data(using: .utf8),
 			  let object = try? JSONSerialization.jsonObject(with: data),
@@ -1457,15 +1707,34 @@ struct MessageDetailItem {
 			  let text = String(data: formatted, encoding: .utf8) else {
 			return nil
 		}
-		return text
+		return (text, Self.jsonSummary(from: object))
+	}
+
+	private static func jsonSummary(from object: Any) -> String {
+		if let dictionary = object as? [String: Any] {
+			let keys = dictionary.keys.sorted()
+			let visibleKeys = keys.prefix(4).joined(separator: ", ")
+			if keys.count > 4 {
+				return "Object keys: \(visibleKeys), ..."
+			}
+			return visibleKeys.isEmpty ? "Object" : "Object keys: \(visibleKeys)"
+		}
+		if let array = object as? [Any] {
+			let itemLabel = array.count == 1 ? "item" : "items"
+			return "Array with \(array.count) \(itemLabel)"
+		}
+		return "JSON"
 	}
 
 	private static func compactPreview(from value: String) -> String {
-		value
+		let compact = value
 			.replacingOccurrences(of: "\n", with: " ")
 			.replacingOccurrences(of: "\t", with: " ")
 			.split(separator: " ")
 			.joined(separator: " ")
+		guard compact.count > 120 else { return compact }
+		let end = compact.index(compact.startIndex, offsetBy: 120)
+		return "\(String(compact[..<end]).trimmingCharacters(in: .whitespacesAndNewlines))..."
 	}
 }
 
@@ -1531,7 +1800,7 @@ struct FloatingChatView: View {
 		if model.isVoiceActive {
 			return model.voicePartialTranscript.isEmpty ? model.voiceStatus : model.voicePartialTranscript
 		}
-		return model.cloudAwarenessLoaded ? "Say it or type it..." : "Load cloud awareness first"
+		return "Say it or type it..."
 	}
 }
 

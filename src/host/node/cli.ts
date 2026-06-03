@@ -14,6 +14,7 @@ import { VoiceAdapter } from "../../adapters/voice.js";
 import { WebAdapter } from "../../adapters/web.js";
 import { McpAdapter } from "../../adapters/mcp.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
+import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "../../adapters/web-voice.js";
 import { handleTerminalUpgrade } from "../../terminal.js";
 import {
@@ -36,14 +37,18 @@ import * as log from "../../log.js";
 import { createExecutor, parseSandboxArg, type Executor, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
+import { getAssistantSpeechGuardState } from "../../audio-feedback-guard.js";
 import { createHostBashRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
 import { createMomTools } from "../../tools/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
-import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createRealtimeContextTools } from "../../tools/realtime-context.js";
+import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
+import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
+import { readLocalTenantProfile } from "../../local/tenant-profile.js";
+import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -253,6 +258,10 @@ const { workingDir, sandbox } = {
 log.logInfo(`[perf] args parsed: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 await validateSandbox(sandbox);
 log.logInfo(`[perf] sandbox validated: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+const localTenantProfile = readLocalTenantProfile(new FilesystemWorkspaceStore(workingDir));
+const localEventbox = createLocalEventboxClientFromEnv({ profile: localTenantProfile });
+localEventbox?.start();
 
 // ============================================================================
 // Create platform adapters
@@ -937,6 +946,14 @@ gateway.registerGet("/status", async (_req, res) => {
 	res.end(JSON.stringify({ running, idle: running.length === 0, activeRun: describeActiveRun() }));
 });
 
+// Local voice bridges can poll this before uploading mic audio to cloud STT.
+// It is intentionally GET-only and contains only short previews of recent
+// assistant speech; final transcript filtering remains the server-side fallback.
+gateway.registerGet("/audio/assistant-state", async (_req, res) => {
+	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+	res.end(JSON.stringify({ ok: true, ...getAssistantSpeechGuardState() }));
+});
+
 // Schedule endpoint — returns next wake time for attention queue prompts.
 // Used by the orchestrator to set alarms for sleeping containers.
 gateway.registerGet("/schedule", async (_req, res) => {
@@ -958,6 +975,22 @@ gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 // Host tool bridge — lets the Worker edge runtime wake this container only when
 // host-local execution is required. Crawdad calls this via sandbox.fetch.
 const hostToolExecutor = withExecutorCwd(createExecutor(sandbox), workingDir);
+function realtimeHostTools() {
+	const byName = new Map(
+		[
+			...createMomTools(hostToolExecutor, workingDir),
+			createSendMessageTool(adapters),
+			createListChannelsTool(workingDir, adapters),
+			createReadThreadTool(workingDir, adapters),
+			...createRealtimeContextTools(workingDir),
+			...mcpBridge.tools(),
+		]
+			.filter((tool) => tool.name !== "speak")
+			.map((tool) => [tool.name, tool] as const),
+	);
+	return Array.from(byName.values());
+}
+
 gateway.register("/host/tools/bash", createHostBashRoute({
 	executor: hostToolExecutor,
 	authToken: process.env.FAT_TOOLS_TOKEN,
@@ -966,23 +999,15 @@ gateway.markReady("/host/tools/bash");
 
 gateway.register("/host/tools/execute", createHostToolExecuteRoute({
 	authToken: process.env.FAT_TOOLS_TOKEN,
-	tools: () => {
-		const byName = new Map(
-			[
-				...createMomTools(hostToolExecutor, workingDir),
-				createSendMessageTool(adapters),
-				createListChannelsTool(workingDir, adapters),
-				createReadThreadTool(workingDir, adapters),
-				...createRealtimeContextTools(workingDir),
-				...mcpBridge.tools(),
-			]
-				.filter((tool) => tool.name !== "speak")
-				.map((tool) => [tool.name, tool] as const),
-		);
-		return Array.from(byName.values());
-	},
+	tools: realtimeHostTools,
 }));
 gateway.markReady("/host/tools/execute");
+
+gateway.registerUpgrade("/voice/realtime", handleRealtimeVoiceUpgrade({
+	workingDir,
+	tools: realtimeHostTools,
+	eventbox: localEventbox ?? undefined,
+}));
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
 // authenticates the operator upstream; the container trusts the worker.
@@ -1119,16 +1144,23 @@ setInterval(() => {
 
 // Seed workspace files on first boot
 {
-	const { existsSync: seedExists, writeFileSync: seedWrite, mkdirSync: seedMkdir } = await import("fs");
+	const { existsSync: seedExists, writeFileSync: seedWrite, mkdirSync: seedMkdir, rmSync: seedRemove } = await import("fs");
+	const isCloudBoundRuntime = !!localTenantProfile.cloudAgentId;
+	const bootstrapPath = join(workingDir, "BOOTSTRAP.md");
 
 	// Detect fresh workspace: no MEMORY.md and no IDENTITY.md means brand new agent
 	const isFreshWorkspace = !seedExists(join(workingDir, "MEMORY.md")) && !seedExists(join(workingDir, "IDENTITY.md"));
 
-	if (isFreshWorkspace) {
+	if (isCloudBoundRuntime && seedExists(bootstrapPath)) {
+		seedRemove(bootstrapPath, { force: true });
+		log.logInfo(`[local-desktop] Removed BOOTSTRAP.md for cloud-bound runtime ${localTenantProfile.cloudAgentId}`);
+	}
+
+	if (isFreshWorkspace && !isCloudBoundRuntime) {
 		log.logInfo("Fresh workspace detected — seeding onboarding files");
 
 		// BOOTSTRAP.md — self-destructing first-run ritual
-		seedWrite(join(workingDir, "BOOTSTRAP.md"), `# BOOTSTRAP.md - Hello, World
+		seedWrite(bootstrapPath, `# BOOTSTRAP.md - Hello, World
 
 _You just woke up. Time to figure out who you are._
 

@@ -218,8 +218,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		case .localTroublemaker:
 			return LocalTroublemakerVoiceProvider(port: localVoicePort)
 		case .openAIRealtime:
-			let apiKey = try VoiceSecretStore.firstValue(accounts: ["OPENAI_API_KEY", "MOM_OPENAI_API_KEY"])
-			return OpenAIRealtimeVoiceProvider(apiKey: apiKey, agentName: agentName, runtimePort: runtimePort, voice: realtimeVoice)
+			return OpenAIRealtimeVoiceProvider(runtimePort: runtimePort, voice: realtimeVoice)
 		case .deepgram:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["DEEPGRAM_API_KEY", "MOM_DEEPGRAM_API_KEY"])
 			return DeepgramSTTVoiceProvider(apiKey: apiKey)
@@ -809,100 +808,47 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 	let targetSampleRate: Double = 24_000
 	var callbacks: VoiceProviderCallbacks?
 
-	private let apiKey: String
-	private let agentName: String
 	private let runtimePort: Int
 	private let voice: RealtimeVoice
 	private let session: URLSession
 	private var task: URLSessionWebSocketTask?
-	private var didSendSessionUpdate = false
-	private var handledFunctionCallIDs = Set<String>()
-	private var responseActive = false
-	private var responseCancelSent = false
-	private var responseCreatePendingAfterCancel = false
-	private var bargeInCandidateItemIDs = Set<String>()
-	private var ignoredInputItemIDs = Set<String>()
-	private var respondedInputItemIDs = Set<String>()
-	private var currentAssistantTranscript = ""
-	private var recentAssistantTranscript = ""
-	private var lastAssistantResponseEndedAt: Date?
+	private var isStopping = false
 
-	init(apiKey: String, agentName: String, runtimePort: Int, voice: RealtimeVoice) {
-		self.apiKey = apiKey
-		self.agentName = agentName
+	init(runtimePort: Int, voice: RealtimeVoice) {
 		self.runtimePort = runtimePort
 		self.voice = voice
 		session = URLSession(configuration: .default)
 	}
 
 	func connect() throws {
-		var request = URLRequest(url: URL(string: "wss://api.openai.com/v1/realtime?model=gpt-realtime-2")!)
-		request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-		let task = session.webSocketTask(with: request)
+		let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:\(runtimePort)/voice/realtime")!)
 		self.task = task
+		isStopping = false
 		task.resume()
-		callbacks?.state(.connecting, "Connecting Realtime 2...")
+		sendJSON([
+			"type": "start",
+			"voice": voice.rawValue,
+		])
+		callbacks?.state(.connecting, "Connecting Realtime 2 through Troublemaker...")
 		receive()
 	}
 
 	func sendAudio(_ pcm16: Data) {
-		let event: [String: Any] = [
-			"type": "input_audio_buffer.append",
-			"audio": pcm16.base64EncodedString(),
-		]
-		sendJSON(event)
-	}
-
-	func interrupt() {
-		sendJSON(["type": "input_audio_buffer.clear"])
-		if responseActive {
-			responseCreatePendingAfterCancel = false
-			cancelActiveResponseForBargeIn()
-		} else {
-			callbacks?.interruptAudio()
-			callbacks?.state(.listening, "Listening with Realtime 2...")
+		task?.send(.data(pcm16)) { [weak self] error in
+			guard let self, let error, !self.isStopping else { return }
+			self.callbacks?.error("Realtime local send failed: \(error.localizedDescription)")
 		}
 	}
 
-	func stop() {
-		task?.cancel(with: .normalClosure, reason: nil)
-		task = nil
-		didSendSessionUpdate = false
-		handledFunctionCallIDs.removeAll()
-		responseActive = false
-		responseCancelSent = false
-		responseCreatePendingAfterCancel = false
-		bargeInCandidateItemIDs.removeAll()
-		ignoredInputItemIDs.removeAll()
-		respondedInputItemIDs.removeAll()
-		currentAssistantTranscript = ""
-		recentAssistantTranscript = ""
-		lastAssistantResponseEndedAt = nil
+	func interrupt() {
+		sendJSON(["type": "interrupt"])
 	}
 
-	private func sendSessionUpdate() {
-		let instructions = """
-		You are \(agentName), the Troublemaker realtime voice agent running on this Mac. The user is speaking directly to you.
-		Answer the user's request; do not repeat, read back, or transcribe their words unless they explicitly ask you to.
-		You have tools for reading/editing/writing files, running bash commands, inspecting channels and Slack threads, and sending user-visible messages through Troublemaker.
-		Use get_context_briefing for cheap Zip orientation and search_context for specific past-chat lookup. Do not load full awareness/context files unless the user explicitly needs raw records.
-		Use other tools when files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.
-		Keep spoken responses concise and natural. When a tool result is long, summarize the useful outcome.
-		"""
-		sendJSON([
-			"type": "session.update",
-			"session": [
-				"type": "realtime",
-				"model": "gpt-realtime-2",
-				"output_modalities": ["audio"],
-				"instructions": instructions,
-				"reasoning": ["effort": "low"],
-				"tools": Self.realtimeTools(),
-				"tool_choice": "auto",
-				"parallel_tool_calls": false,
-				"audio": OpenAIRealtimeSessionConfig.audioConfig(voiceName: voice.rawValue),
-			],
-		])
+	func stop() {
+		isStopping = true
+		sendJSON(["type": "stop"])
+		task?.cancel(with: .normalClosure, reason: nil)
+		task = nil
 	}
 
 	private func receive() {
@@ -913,88 +859,55 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 				self.handle(message)
 				self.receive()
 			case .failure(let error):
-				self.callbacks?.error("Realtime closed: \(error.localizedDescription)")
+				if !self.isStopping {
+					self.callbacks?.error("Realtime closed: \(error.localizedDescription)")
+				}
 			}
 		}
 	}
 
 	private func handle(_ message: URLSessionWebSocketTask.Message) {
-		guard case .string(let text) = message, let event = VoiceJSON.object(text) else { return }
+		switch message {
+		case .data(let data):
+			callbacks?.audio(.pcm16(data, sampleRate: 24000))
+			return
+		case .string(let text):
+			guard let event = VoiceJSON.object(text) else { return }
+			handleControlEvent(event)
+		@unknown default:
+			return
+		}
+	}
+
+	private func handleControlEvent(_ event: [String: Any]) {
 		switch event.string("type") {
-		case "session.created":
-			if !didSendSessionUpdate {
-				didSendSessionUpdate = true
-				sendSessionUpdate()
-				callbacks?.state(.connecting, "Configuring Realtime 2...")
+		case "connecting":
+			callbacks?.state(.connecting, event.string("message") ?? "Connecting Realtime 2...")
+		case "listening":
+			callbacks?.state(.listening, event.string("message") ?? "Listening with Realtime 2...")
+		case "transcribing", "barge_in":
+			callbacks?.state(.transcribing, event.string("message") ?? "Speech detected...")
+		case "thinking":
+			callbacks?.state(.thinking, event.string("message") ?? "Realtime 2 is thinking...")
+		case "speaking":
+			callbacks?.state(.speaking, event.string("message") ?? "Realtime 2 is speaking...")
+		case "partial":
+			callbacks?.partialTranscript(event.string("text") ?? "")
+		case "transcript":
+			callbacks?.finalTranscript(event.string("text") ?? "")
+		case "assistant_text_delta":
+			let delta = event.string("text") ?? ""
+			if !delta.isEmpty {
+				callbacks?.assistantTextDelta(delta)
+				callbacks?.state(.speaking, "Realtime 2 is speaking...")
 			}
-		case "session.updated":
-			callbacks?.state(.listening, "Realtime 2 ready.")
-		case "response.created":
-			responseActive = true
-			responseCancelSent = false
-			currentAssistantTranscript = ""
-		case "input_audio_buffer.speech_started":
-			let itemID = event.string("item_id")
-			if responseActive {
-				if let itemID {
-					bargeInCandidateItemIDs.insert(itemID)
-				}
-				if callbacks?.bargeInAllowed() == true {
-					callbacks?.state(.transcribing, "Barge-in detected...")
-				}
-			} else {
-				callbacks?.state(.transcribing, "Speech detected...")
-			}
-		case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
-			if !responseActive {
-				callbacks?.state(.thinking, "Realtime 2 is thinking...")
-			}
-		case "conversation.item.input_audio_transcription.delta":
-			let itemID = event.string("item_id")
-			if !shouldHoldTranscriptForBargeIn(itemID: itemID) {
-				callbacks?.partialTranscript(event.string("delta") ?? "")
-			}
-		case "conversation.item.input_audio_transcription.completed":
-			handleInputTranscriptionCompleted(event)
-		case "conversation.item.input_audio_transcription.failed":
-			handleInputTranscriptionFailed(event)
-		case "response.output_text.delta", "response.audio_transcript.delta", "response.output_audio_transcript.delta":
-			responseActive = true
-			let delta = event.string("delta") ?? ""
-			currentAssistantTranscript += delta
-			callbacks?.assistantTextDelta(delta)
-			callbacks?.state(.speaking, "Realtime 2 is speaking...")
-		case "response.output_text.done", "response.output_audio_transcript.done":
-			let final = event.string("text") ?? event.string("transcript") ?? ""
+		case "assistant_text":
+			let final = event.string("text") ?? ""
 			if !final.isEmpty {
-				currentAssistantTranscript = final
+				callbacks?.assistantTextFinal(final)
 			}
-			callbacks?.assistantTextFinal(final)
-		case "response.output_audio.delta", "response.audio.delta":
-			responseActive = true
-			if let delta = event.string("delta"), let data = Data(base64Encoded: delta) {
-				callbacks?.audio(.pcm16(data, sampleRate: 24000))
-			}
-		case "response.output_item.done":
-			if let item = event.dictionary("item"), item.string("type") == "function_call" {
-				handleFunctionCall(item)
-			}
-		case "response.output_audio.done", "response.audio.done", "response.done":
-			if let response = event.dictionary("response"),
-			   let output = response["output"] as? [[String: Any]] {
-				for item in output where item.string("type") == "function_call" {
-					handleFunctionCall(item)
-				}
-			}
-			responseActive = false
-			responseCancelSent = false
-			rememberAssistantTranscript()
-			if responseCreatePendingAfterCancel {
-				responseCreatePendingAfterCancel = false
-				sendResponseCreate()
-			} else {
-				callbacks?.state(.listening, "Listening with Realtime 2...")
-			}
+		case "interrupt_audio":
+			callbacks?.interruptAudio()
 		case "error":
 			if let error = event.dictionary("error") {
 				callbacks?.error((error["message"] as? String) ?? "Realtime error")
@@ -1006,372 +919,14 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		}
 	}
 
-	private func cancelActiveResponseForBargeIn() {
-		guard responseActive, !responseCancelSent else { return }
-		responseCancelSent = true
-		callbacks?.interruptAudio()
-		sendJSON(["type": "response.cancel"])
-	}
-
-	private func sendResponseCreate() {
-		callbacks?.state(.thinking, "Realtime 2 is thinking...")
-		sendJSON(["type": "response.create"])
-	}
-
-	private func handleInputTranscriptionCompleted(_ event: [String: Any]) {
-		let transcript = (event.string("transcript") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-		let itemID = event.string("item_id")
-		if let itemID, respondedInputItemIDs.contains(itemID) {
-			return
-		}
-		guard !transcript.isEmpty else {
-			discardInputItem(itemID)
-			return
-		}
-
-		if shouldSuppressAsAssistantEcho(transcript, itemID: itemID) {
-			discardInputItem(itemID)
-			callbacks?.state(responseActive ? .speaking : .listening, responseActive ? "Realtime 2 is speaking..." : "Listening with Realtime 2...")
-			return
-		}
-
-		callbacks?.finalTranscript(transcript)
-		if let itemID {
-			respondedInputItemIDs.insert(itemID)
-			bargeInCandidateItemIDs.remove(itemID)
-		}
-
-		if responseActive {
-			responseCreatePendingAfterCancel = true
-			cancelActiveResponseForBargeIn()
-		} else {
-			sendResponseCreate()
-		}
-	}
-
-	private func handleInputTranscriptionFailed(_ event: [String: Any]) {
-		let itemID = event.string("item_id")
-		if shouldHoldTranscriptForBargeIn(itemID: itemID) {
-			discardInputItem(itemID)
-			return
-		}
-		if let itemID, respondedInputItemIDs.contains(itemID) {
-			return
-		}
-		sendResponseCreate()
-	}
-
-	private func shouldHoldTranscriptForBargeIn(itemID: String?) -> Bool {
-		guard let itemID else { return responseActive }
-		return responseActive || bargeInCandidateItemIDs.contains(itemID)
-	}
-
-	private func shouldSuppressAsAssistantEcho(_ transcript: String, itemID: String?) -> Bool {
-		let candidateDuringAssistant = shouldHoldTranscriptForBargeIn(itemID: itemID) || didRecentlyFinishAssistantResponse()
-		guard candidateDuringAssistant else { return false }
-		if callbacks?.bargeInAllowed() == false {
-			return true
-		}
-		let assistantText = [currentAssistantTranscript, recentAssistantTranscript]
-			.joined(separator: " ")
-			.trimmingCharacters(in: .whitespacesAndNewlines)
-		return Self.transcriptLooksLikeEcho(transcript, assistantText: assistantText)
-	}
-
-	private func didRecentlyFinishAssistantResponse() -> Bool {
-		guard let lastAssistantResponseEndedAt else { return false }
-		return Date().timeIntervalSince(lastAssistantResponseEndedAt) < 2.5
-	}
-
-	private func discardInputItem(_ itemID: String?) {
-		guard let itemID, !ignoredInputItemIDs.contains(itemID) else { return }
-		ignoredInputItemIDs.insert(itemID)
-		bargeInCandidateItemIDs.remove(itemID)
-		sendJSON([
-			"type": "conversation.item.delete",
-			"item_id": itemID,
-		])
-	}
-
-	private func rememberAssistantTranscript() {
-		let cleaned = currentAssistantTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-		if !cleaned.isEmpty {
-			recentAssistantTranscript = cleaned
-			lastAssistantResponseEndedAt = Date()
-		}
-		currentAssistantTranscript = ""
-	}
-
-	private func handleFunctionCall(_ item: [String: Any]) {
-		guard let callID = item.string("call_id"),
-			  let name = item.string("name"),
-			  !handledFunctionCallIDs.contains(callID) else {
-			return
-		}
-		handledFunctionCallIDs.insert(callID)
-		callbacks?.state(.thinking, "Using \(name)...")
-
-		let arguments = Self.parseArguments(item.string("arguments"))
-		executeTool(name: name, arguments: arguments) { [weak self] output in
-			guard let self else { return }
-			self.sendJSON([
-				"type": "conversation.item.create",
-				"item": [
-					"type": "function_call_output",
-					"call_id": callID,
-					"output": output,
-				],
-			])
-			self.sendResponseCreate()
-			self.callbacks?.state(.thinking, "Thinking with \(name)...")
-		}
-	}
-
-	private func executeTool(name: String, arguments: [String: Any], completion: @escaping (String) -> Void) {
-		guard let url = URL(string: "http://127.0.0.1:\(runtimePort)/host/tools/execute") else {
-			completion(Self.toolOutput(error: "Invalid local runtime URL."))
-			return
-		}
-		var request = URLRequest(url: url)
-		request.httpMethod = "POST"
-		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-		request.httpBody = try? JSONSerialization.data(withJSONObject: [
-			"tool": Self.runtimeToolName(name),
-			"args": arguments,
-		])
-
-		session.dataTask(with: request) { data, response, error in
-			if let error {
-				completion(Self.toolOutput(error: error.localizedDescription))
-				return
-			}
-			guard let http = response as? HTTPURLResponse,
-				  let data,
-				  (200..<300).contains(http.statusCode) else {
-				let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown local tool error."
-				completion(Self.toolOutput(error: text))
-				return
-			}
-			completion(Self.toolOutput(data: data))
-		}.resume()
-	}
-
 	private func sendJSON(_ object: [String: Any]) {
 		guard JSONSerialization.isValidJSONObject(object),
 			  let data = try? JSONSerialization.data(withJSONObject: object),
 			  let text = String(data: data, encoding: .utf8) else { return }
 		task?.send(.string(text)) { [weak self] error in
-			if let error { self?.callbacks?.error("Realtime send failed: \(error.localizedDescription)") }
+			guard let self, let error, !self.isStopping else { return }
+			self.callbacks?.error("Realtime send failed: \(error.localizedDescription)")
 		}
-	}
-
-	private static func parseArguments(_ raw: String?) -> [String: Any] {
-		guard let raw,
-			  let data = raw.data(using: .utf8),
-			  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-			return [:]
-		}
-		return object
-	}
-
-	private static func toolOutput(data: Data) -> String {
-		guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-			return String(data: data, encoding: .utf8) ?? ""
-		}
-		if let ok = object["ok"] as? Bool, !ok {
-			return toolOutput(error: (object["error"] as? String) ?? "Tool failed.")
-		}
-		if let result = object["result"] as? [String: Any] {
-			var parts: [String] = []
-			if let content = result["content"] as? [[String: Any]] {
-				for item in content {
-					if let text = item["text"] as? String, !text.isEmpty {
-						parts.append(text)
-					} else if !item.isEmpty,
-							  let data = try? JSONSerialization.data(withJSONObject: item, options: [.sortedKeys]),
-							  let text = String(data: data, encoding: .utf8) {
-						parts.append(text)
-					}
-				}
-			}
-			if let details = result["details"],
-			   !(details is NSNull),
-			   JSONSerialization.isValidJSONObject(details),
-			   let data = try? JSONSerialization.data(withJSONObject: details, options: [.sortedKeys]),
-			   let text = String(data: data, encoding: .utf8) {
-				parts.append("Details: \(text)")
-			}
-			if !parts.isEmpty {
-				return parts.joined(separator: "\n")
-			}
-		}
-		return String(data: data, encoding: .utf8) ?? "Tool completed."
-	}
-
-	private static func toolOutput(error: String) -> String {
-		"Tool error: \(error)"
-	}
-
-	private static func realtimeTools() -> [[String: Any]] {
-		[
-			functionTool(
-				name: "read",
-				description: "Read a text or image file from the Troublemaker workspace. Useful context paths include awareness/context.jsonl, log.jsonl, and settings.json.",
-				properties: [
-					"label": stringSchema("Brief description of what you are reading and why."),
-					"path": stringSchema("Path to the file to read, relative or absolute."),
-					"offset": numberSchema("Optional 1-indexed line number to start reading from."),
-					"limit": numberSchema("Optional maximum number of lines to read."),
-				],
-				required: ["label", "path"]
-			),
-			functionTool(
-				name: "bash",
-				description: "Run a bash command in the Troublemaker workspace. Use for searching, tests, diagnostics, git inspection, or shell operations.",
-				properties: [
-					"label": stringSchema("Brief description of what this command does."),
-					"command": stringSchema("Bash command to execute."),
-					"timeout": numberSchema("Optional timeout in seconds."),
-				],
-				required: ["label", "command"]
-			),
-			functionTool(
-				name: "edit",
-				description: "Edit a file by replacing exact text. Use for precise changes after reading the file.",
-				properties: [
-					"label": stringSchema("Brief description of the edit."),
-					"path": stringSchema("Path to the file to edit."),
-					"oldText": stringSchema("Exact text to replace. Must match exactly."),
-					"newText": stringSchema("Replacement text."),
-				],
-				required: ["label", "path", "oldText", "newText"]
-			),
-			functionTool(
-				name: "write",
-				description: "Write content to a file, creating parent directories and overwriting any existing file.",
-				properties: [
-					"label": stringSchema("Brief description of what you are writing."),
-					"path": stringSchema("Path to write."),
-					"content": stringSchema("Full file content."),
-				],
-				required: ["label", "path", "content"]
-			),
-			functionTool(
-				name: "list_channels",
-				description: "List channels the agent has interacted with and recent Slack thread send targets.",
-				properties: [:],
-				required: []
-			),
-			functionTool(
-				name: "list_threads",
-				description: "List recent Slack thread targets. Use this before read_thread or send_message when choosing among active Slack threads.",
-				properties: [:],
-				required: []
-			),
-			functionTool(
-				name: "get_context_briefing",
-				description: "Return a compact briefing of Zip's identity, memory files, and recent persisted activity. Use this before answering context-dependent questions about Zip or prior work.",
-				properties: [
-					"recentLimit": numberSchema("Optional maximum recent context entries to include. Default 10, max 24."),
-					"maxChars": numberSchema("Optional maximum briefing characters. Default 4000, max 8000."),
-				],
-				required: []
-			),
-			functionTool(
-				name: "search_context",
-				description: "Search Zip's persisted awareness, adapter log, and memory files for a specific string. Use this for questions about prior chats, names, decisions, projects, or exact terms.",
-				properties: [
-					"query": stringSchema("Case-insensitive text to search for in Zip's persisted context and chat logs."),
-					"source": stringSchema("Optional source: all, awareness, log, or memory. Defaults to all."),
-					"limit": numberSchema("Optional maximum matching entries to return. Default 12, max 30."),
-				],
-				required: ["query"]
-			),
-			functionTool(
-				name: "read_thread",
-				description: "Read a Slack thread transcript using a target from list_channels, such as slack:<channel>:<thread_ts>.",
-				properties: [
-					"target": stringSchema("Slack thread target from list_channels."),
-					"limit": numberSchema("Optional maximum number of messages."),
-				],
-				required: ["target"]
-			),
-			functionTool(
-				name: "send_message",
-				description: "Send a user-visible message through Troublemaker to Slack, Discord, Telegram, Email, or SMS/iMessage. Use list_channels first if you need a valid target.",
-				properties: [
-					"label": stringSchema("Brief description of what you are sending."),
-					"target": stringSchema("Required destination, e.g. slack:<channel>:<thread_ts>, email-user@example.com, phone-..., Discord snowflake, or Telegram chat ID."),
-					"text": stringSchema("Message text to send."),
-					"attachments": [
-						"type": "array",
-						"items": ["type": "string"],
-						"description": "Optional absolute file paths to attach for email.",
-					],
-					"subject": stringSchema("Optional email subject."),
-				],
-				required: ["label", "target", "text"]
-			),
-		]
-	}
-
-	private static func functionTool(name: String, description: String, properties: [String: Any], required: [String]) -> [String: Any] {
-		[
-			"type": "function",
-			"name": name,
-			"description": description,
-			"parameters": [
-				"type": "object",
-				"properties": properties,
-				"required": required,
-			],
-		]
-	}
-
-	private static func stringSchema(_ description: String) -> [String: Any] {
-		["type": "string", "description": description]
-	}
-
-	private static func numberSchema(_ description: String) -> [String: Any] {
-		["type": "number", "description": description]
-	}
-
-	private static func runtimeToolName(_ name: String) -> String {
-		name == "list_threads" ? "list_channels" : name
-	}
-
-	private static func transcriptLooksLikeEcho(_ transcript: String, assistantText: String) -> Bool {
-		let transcriptNormalized = normalizedText(transcript)
-		let assistantNormalized = normalizedText(assistantText)
-		guard transcriptNormalized.count >= 4, assistantNormalized.count >= 4 else { return false }
-		if transcriptNormalized.count >= 12,
-		   assistantNormalized.contains(transcriptNormalized) {
-			return true
-		}
-		let transcriptWords = normalizedWords(transcriptNormalized)
-		let assistantWords = Set(normalizedWords(assistantNormalized))
-		guard !transcriptWords.isEmpty, !assistantWords.isEmpty else { return false }
-		let overlap = transcriptWords.filter { assistantWords.contains($0) }.count
-		let ratio = Double(overlap) / Double(transcriptWords.count)
-		if transcriptWords.count <= 2 {
-			return ratio >= 1.0 && assistantNormalized.contains(transcriptNormalized)
-		}
-		return ratio >= 0.62
-	}
-
-	private static func normalizedText(_ text: String) -> String {
-		let scalars = text.lowercased().unicodeScalars.map { scalar -> Character in
-			CharacterSet.alphanumerics.contains(scalar) ? Character(scalar) : " "
-		}
-		return String(scalars)
-			.split(separator: " ")
-			.joined(separator: " ")
-	}
-
-	private static func normalizedWords(_ text: String) -> [String] {
-		text.split(separator: " ")
-			.map(String.init)
-			.filter { $0.count > 1 }
 	}
 }
 
