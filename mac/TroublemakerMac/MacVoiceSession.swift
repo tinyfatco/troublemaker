@@ -541,7 +541,7 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 			"session": [
 				"type": "realtime",
 				"model": "gpt-realtime-2",
-				"output_modalities": ["audio", "text"],
+				"output_modalities": ["audio"],
 				"instructions": instructions,
 				"reasoning": ["effort": "low"],
 				"audio": [

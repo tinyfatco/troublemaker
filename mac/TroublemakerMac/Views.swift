@@ -540,7 +540,8 @@ struct MainChatView: View {
 
 			Divider()
 			if model.isVoiceActive || !model.voicePartialTranscript.isEmpty || model.voiceState == .error {
-				voiceStatusStrip
+				VoiceStatusBand()
+					.environmentObject(model)
 				Divider()
 			}
 			composer
@@ -549,15 +550,17 @@ struct MainChatView: View {
 
 	private var composer: some View {
 		HStack(alignment: .bottom, spacing: 12) {
-			voiceProviderMenu
-			voiceToggleButton
+			VoiceProviderMenuButton()
+				.environmentObject(model)
+			VoiceControlButton()
+				.environmentObject(model)
 
 			TextField(composerPlaceholder, text: $model.draft, axis: .vertical)
 				.textFieldStyle(.plain)
 				.lineLimit(1...4)
 				.padding(12)
 				.background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
-				.disabled(!model.canUseJarvisChat || model.isSending)
+				.disabled(!model.canUseJarvisChat || model.isSending || model.isVoiceActive)
 				.onSubmit { model.sendDraft() }
 
 			Button {
@@ -567,66 +570,9 @@ struct MainChatView: View {
 					.frame(width: 28, height: 28)
 			}
 			.buttonStyle(.borderedProminent)
-			.disabled(!model.canUseJarvisChat || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending)
+			.disabled(!model.canUseJarvisChat || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending || model.isVoiceActive)
 		}
 		.padding(18)
-	}
-
-	private var voiceStatusStrip: some View {
-		HStack(spacing: 10) {
-			Image(systemName: voiceIcon)
-				.foregroundStyle(voiceColor)
-				.frame(width: 18)
-			VStack(alignment: .leading, spacing: 2) {
-				Text(model.voiceStatus)
-					.font(.caption.weight(.semibold))
-					.lineLimit(1)
-				if !model.voicePartialTranscript.isEmpty {
-					Text(model.voicePartialTranscript)
-						.font(.caption)
-						.foregroundStyle(.secondary)
-						.lineLimit(2)
-				}
-			}
-			Spacer()
-			Text(model.selectedVoiceProvider.title)
-				.font(.caption2)
-				.foregroundStyle(.secondary)
-		}
-		.padding(.horizontal, 18)
-		.padding(.vertical, 9)
-		.background(Color(nsColor: .controlBackgroundColor).opacity(0.55))
-	}
-
-	private var voiceProviderMenu: some View {
-		Menu {
-			ForEach(VoiceProviderKind.allCases) { provider in
-				Button {
-					model.selectVoiceProvider(provider)
-				} label: {
-					Label(provider.title, systemImage: model.selectedVoiceProvider == provider ? "checkmark.circle.fill" : "waveform")
-				}
-			}
-		} label: {
-			Image(systemName: "waveform")
-				.frame(width: 28, height: 28)
-		}
-		.menuStyle(.borderlessButton)
-		.help("Voice provider")
-		.disabled(model.isVoiceActive)
-	}
-
-	private var voiceToggleButton: some View {
-		Button {
-			model.toggleVoice()
-		} label: {
-			Image(systemName: model.isVoiceActive ? "stop.circle.fill" : "mic.circle.fill")
-				.frame(width: 28, height: 28)
-		}
-		.buttonStyle(.bordered)
-		.tint(model.isVoiceActive ? voiceColor : nil)
-		.help(model.isVoiceActive ? "Stop voice" : "Start voice")
-		.disabled(!model.canUseVoice && !model.isVoiceActive)
 	}
 
 	private var statusDot: some View {
@@ -662,6 +608,9 @@ struct MainChatView: View {
 		}
 		if !model.cloudAwarenessLoaded {
 			return "Load cloud awareness first"
+		}
+		if model.isVoiceActive {
+			return model.voicePartialTranscript.isEmpty ? model.voiceStatus : model.voicePartialTranscript
 		}
 		return model.localAwarenessHydrated ? "Ask the selected agent..." : "Hydrating local runtime..."
 	}
@@ -890,6 +839,321 @@ struct CloudAwarenessWideRow: View {
 	}
 }
 
+struct VoiceProviderMenuButton: View {
+	@EnvironmentObject private var model: AppModel
+	var compact = false
+
+	var body: some View {
+		Menu {
+			ForEach(VoiceProviderKind.allCases) { provider in
+				Button {
+					model.selectVoiceProvider(provider)
+				} label: {
+					Label(provider.title, systemImage: model.selectedVoiceProvider == provider ? "checkmark.circle.fill" : "waveform")
+				}
+			}
+		} label: {
+			if compact {
+				Image(systemName: "waveform")
+					.frame(width: 28, height: 28)
+					.contentShape(Rectangle())
+			} else {
+				HStack(spacing: 7) {
+					Image(systemName: "waveform")
+					Text(model.selectedVoiceProvider.title)
+						.lineLimit(1)
+				}
+				.font(.system(size: 12, weight: .semibold))
+				.padding(.horizontal, 10)
+				.frame(height: 34)
+				.background(Color(nsColor: .controlBackgroundColor).opacity(0.72), in: RoundedRectangle(cornerRadius: 8))
+				.overlay(
+					RoundedRectangle(cornerRadius: 8)
+						.strokeBorder(Color.primary.opacity(0.09))
+				)
+			}
+		}
+		.menuStyle(.borderlessButton)
+		.help("Voice provider")
+		.disabled(model.isVoiceActive)
+	}
+}
+
+struct VoiceControlButton: View {
+	@EnvironmentObject private var model: AppModel
+	@State private var pulse = false
+	var compact = false
+
+	var body: some View {
+		Button {
+			model.toggleVoice()
+		} label: {
+			ZStack {
+				Circle()
+					.fill(buttonFill)
+				Circle()
+					.strokeBorder(buttonStroke, lineWidth: model.isVoiceActive ? 1.4 : 1)
+				Image(systemName: model.isVoiceActive ? "stop.fill" : "mic.fill")
+					.font(.system(size: compact ? 12 : 15, weight: .semibold))
+					.foregroundStyle(model.isVoiceActive ? voiceStateColor(model.voiceState) : Color.primary.opacity(0.72))
+			}
+			.frame(width: dimension, height: dimension)
+			.contentShape(Circle())
+		}
+		.buttonStyle(.plain)
+		.scaleEffect(model.isVoiceActive && pulse ? 1.08 : 1)
+		.shadow(color: model.isVoiceActive ? voiceStateColor(model.voiceState).opacity(pulse ? 0.44 : 0.16) : .clear, radius: pulse ? 10 : 3)
+		.animation(model.isVoiceActive ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .default, value: pulse)
+		.help(model.isVoiceActive ? "Stop voice" : "Start voice")
+		.disabled(!model.canUseVoice && !model.isVoiceActive)
+		.onAppear {
+			restartPulse(model.isVoiceActive)
+		}
+		.onChange(of: model.isVoiceActive) { _, active in
+			restartPulse(active)
+		}
+	}
+
+	private var dimension: CGFloat {
+		compact ? 28 : 34
+	}
+
+	private var buttonFill: Color {
+		if model.isVoiceActive {
+			return voiceStateColor(model.voiceState).opacity(0.16)
+		}
+		return Color(nsColor: .controlBackgroundColor).opacity(0.82)
+	}
+
+	private var buttonStroke: Color {
+		if model.isVoiceActive {
+			return voiceStateColor(model.voiceState).opacity(0.62)
+		}
+		return Color.primary.opacity(0.11)
+	}
+
+	private func restartPulse(_ active: Bool) {
+		pulse = false
+		guard active else { return }
+		DispatchQueue.main.async {
+			pulse = true
+		}
+	}
+}
+
+struct VoiceStatusBand: View {
+	@EnvironmentObject private var model: AppModel
+	var compact = false
+
+	var body: some View {
+		HStack(spacing: compact ? 8 : 12) {
+			VoiceActivityMark(state: model.voiceState, compact: compact)
+
+			VStack(alignment: .leading, spacing: compact ? 1 : 3) {
+				HStack(spacing: 7) {
+					Text(primaryText)
+						.font(compact ? .caption.weight(.semibold) : .callout.weight(.semibold))
+						.lineLimit(1)
+					if model.isVoiceActive {
+						VoiceLevelBars(state: model.voiceState, compact: true)
+					}
+				}
+				if !secondaryText.isEmpty {
+					Text(secondaryText)
+						.font(compact ? .caption2 : .caption)
+						.foregroundStyle(.secondary)
+						.lineLimit(compact ? 1 : 2)
+				}
+			}
+
+			Spacer(minLength: 0)
+
+			if !compact {
+				VoiceProviderPill(provider: model.selectedVoiceProvider, state: model.voiceState)
+			}
+
+			if showsProgress {
+				ProgressView()
+					.controlSize(.small)
+			}
+		}
+		.padding(.horizontal, compact ? 9 : 18)
+		.padding(.vertical, compact ? 7 : 10)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(background, in: RoundedRectangle(cornerRadius: compact ? 8 : 0))
+	}
+
+	private var primaryText: String {
+		if model.voiceState == .idle && !model.voicePartialTranscript.isEmpty {
+			return model.voicePartialTranscript
+		}
+		return model.voiceStatus
+	}
+
+	private var secondaryText: String {
+		if !model.voicePartialTranscript.isEmpty {
+			return model.voicePartialTranscript
+		}
+		if model.voiceState == .thinking, !model.lastTranscript.isEmpty {
+			return model.lastTranscript
+		}
+		if model.voiceState == .speaking, !model.lastTranscript.isEmpty {
+			return "Replying to \(model.lastTranscript)"
+		}
+		if model.voiceState == .error {
+			return model.selectedVoiceProvider.title
+		}
+		return model.selectedVoiceProvider.detail
+	}
+
+	private var showsProgress: Bool {
+		switch model.voiceState {
+		case .connecting, .thinking, .transcribing:
+			return true
+		case .idle, .listening, .speaking, .error:
+			return false
+		}
+	}
+
+	private var background: Color {
+		if model.voiceState == .error {
+			return Color.red.opacity(0.09)
+		}
+		if model.isVoiceActive {
+			return voiceStateColor(model.voiceState).opacity(compact ? 0.10 : 0.08)
+		}
+		return Color(nsColor: .controlBackgroundColor).opacity(0.55)
+	}
+}
+
+struct VoiceProviderPill: View {
+	let provider: VoiceProviderKind
+	let state: VoiceRuntimeState
+
+	var body: some View {
+		HStack(spacing: 6) {
+			Image(systemName: "waveform")
+			Text(provider.title)
+				.lineLimit(1)
+		}
+		.font(.caption2.weight(.semibold))
+		.foregroundStyle(voiceStateColor(state))
+		.padding(.horizontal, 9)
+		.padding(.vertical, 5)
+		.background(voiceStateColor(state).opacity(0.10), in: Capsule())
+		.overlay(
+			Capsule()
+				.strokeBorder(voiceStateColor(state).opacity(0.18))
+		)
+	}
+}
+
+struct VoiceActivityMark: View {
+	let state: VoiceRuntimeState
+	var compact = false
+
+	var body: some View {
+		ZStack {
+			Circle()
+				.fill(voiceStateColor(state).opacity(0.13))
+			Image(systemName: voiceStateIcon(state))
+				.font(.system(size: compact ? 12 : 15, weight: .semibold))
+				.foregroundStyle(voiceStateColor(state))
+		}
+		.frame(width: compact ? 26 : 34, height: compact ? 26 : 34)
+	}
+}
+
+struct VoiceLevelBars: View {
+	let state: VoiceRuntimeState
+	var compact = false
+	@State private var animate = false
+
+	var body: some View {
+		HStack(alignment: .center, spacing: compact ? 2 : 3) {
+			ForEach(0..<4, id: \.self) { index in
+				Capsule()
+					.fill(voiceStateColor(state).opacity(state.isActive ? 0.9 : 0.45))
+					.frame(width: compact ? 2 : 3, height: height(for: index))
+					.scaleEffect(y: state.isActive && animate ? activeScale(for: index) : 0.55, anchor: .center)
+					.animation(state.isActive ? .easeInOut(duration: 0.55 + Double(index) * 0.08).repeatForever(autoreverses: true) : .default, value: animate)
+			}
+		}
+		.frame(width: compact ? 18 : 26, height: compact ? 14 : 18)
+		.onAppear {
+			restart(state.isActive)
+		}
+		.onChange(of: state) { _, newState in
+			restart(newState.isActive)
+		}
+	}
+
+	private func height(for index: Int) -> CGFloat {
+		let heights: [CGFloat] = compact ? [8, 12, 10, 6] : [10, 17, 13, 8]
+		return heights[index]
+	}
+
+	private func activeScale(for index: Int) -> CGFloat {
+		let scales: [CGFloat] = [1.0, 0.58, 0.86, 0.66]
+		return scales[index]
+	}
+
+	private func restart(_ active: Bool) {
+		animate = false
+		guard active else { return }
+		DispatchQueue.main.async {
+			animate = true
+		}
+	}
+}
+
+struct StreamingBadge: View {
+	var body: some View {
+		HStack(spacing: 5) {
+			VoiceLevelBars(state: .speaking, compact: true)
+			Text("Streaming")
+				.font(.caption2.weight(.semibold))
+				.lineLimit(1)
+		}
+		.foregroundStyle(Color.accentColor)
+		.padding(.horizontal, 7)
+		.padding(.vertical, 3)
+		.background(Color.accentColor.opacity(0.10), in: Capsule())
+		.overlay(
+			Capsule()
+				.strokeBorder(Color.accentColor.opacity(0.16))
+		)
+	}
+}
+
+private func voiceStateColor(_ state: VoiceRuntimeState) -> Color {
+	switch state {
+	case .idle:
+		return .secondary
+	case .connecting, .thinking:
+		return .orange
+	case .listening, .transcribing:
+		return .green
+	case .speaking:
+		return .teal
+	case .error:
+		return .red
+	}
+}
+
+private func voiceStateIcon(_ state: VoiceRuntimeState) -> String {
+	switch state {
+	case .speaking:
+		return "speaker.wave.2.fill"
+	case .thinking:
+		return "brain"
+	case .error:
+		return "mic.slash.fill"
+	case .idle, .connecting, .listening, .transcribing:
+		return "mic.fill"
+	}
+}
+
 struct ToolbarAgentStatusView: View {
 	@EnvironmentObject private var model: AppModel
 
@@ -987,15 +1251,23 @@ struct ChatBubble: View {
 						.font(.caption.weight(.semibold))
 						.foregroundStyle(.secondary)
 					if message.isStreaming {
-						ProgressView()
-							.controlSize(.small)
-							.scaleEffect(0.62)
+						StreamingBadge()
 					}
 				}
 
-				Text(message.text)
-					.textSelection(.enabled)
+				if message.text.isEmpty && message.isStreaming {
+					HStack(spacing: 8) {
+						VoiceLevelBars(state: .thinking, compact: false)
+						Text("Waiting for Zip...")
+							.foregroundStyle(.secondary)
+					}
+					.font(.callout)
 					.frame(maxWidth: .infinity, alignment: .leading)
+				} else {
+					Text(message.text)
+						.textSelection(.enabled)
+						.frame(maxWidth: .infinity, alignment: .leading)
+				}
 
 				if !message.details.isEmpty {
 					VStack(alignment: .leading, spacing: 5) {
@@ -1068,26 +1340,27 @@ struct FloatingChatView: View {
 				.foregroundStyle(.secondary)
 				.lineLimit(2)
 
+			if model.isVoiceActive || !model.voicePartialTranscript.isEmpty || model.voiceState == .error {
+				VoiceStatusBand(compact: true)
+					.environmentObject(model)
+			}
+
 			HStack(spacing: 8) {
+				VoiceProviderMenuButton(compact: true)
+					.environmentObject(model)
 				TextField(floatingPlaceholder, text: $model.draft)
 					.textFieldStyle(.roundedBorder)
-					.disabled(!model.canUseJarvisChat || model.isSending)
+					.disabled(!model.canUseJarvisChat || model.isSending || model.isVoiceActive)
 					.onSubmit { model.sendDraft() }
-				Button {
-					model.toggleVoice()
-				} label: {
-					Image(systemName: model.isVoiceActive ? "stop.circle.fill" : "mic.circle.fill")
-				}
-				.buttonStyle(.bordered)
-				.help(model.isVoiceActive ? "Stop voice" : "Start voice")
-				.disabled(!model.canUseVoice && !model.isVoiceActive)
+				VoiceControlButton(compact: true)
+					.environmentObject(model)
 				Button {
 					model.sendDraft()
 				} label: {
 					Image(systemName: "paperplane.fill")
 				}
 				.buttonStyle(.borderedProminent)
-				.disabled(!model.canUseJarvisChat || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending)
+				.disabled(!model.canUseJarvisChat || model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isSending || model.isVoiceActive)
 			}
 		}
 		.padding(.horizontal, 12)
@@ -1098,6 +1371,9 @@ struct FloatingChatView: View {
 	private var floatingPlaceholder: String {
 		if !model.canUseBoundRuntime {
 			return "Choose an agent first"
+		}
+		if model.isVoiceActive {
+			return model.voicePartialTranscript.isEmpty ? model.voiceStatus : model.voicePartialTranscript
 		}
 		return model.cloudAwarenessLoaded ? "Say it or type it..." : "Load cloud awareness first"
 	}
@@ -1110,8 +1386,8 @@ struct LiquidGlassOverlayView: View {
 		HStack(spacing: 14) {
 			Image(systemName: model.latestActivitySymbol)
 				.font(.system(size: 28, weight: .semibold))
-				.foregroundStyle(model.phase.color)
-				.shadow(color: model.phase.color.opacity(0.5), radius: 8)
+				.foregroundStyle(overlayColor)
+				.shadow(color: overlayColor.opacity(0.5), radius: 8)
 
 			VStack(alignment: .leading, spacing: 4) {
 				HStack(spacing: 8) {
@@ -1119,8 +1395,11 @@ struct LiquidGlassOverlayView: View {
 						.font(.system(size: 17, weight: .semibold))
 						.lineLimit(1)
 					Capsule()
-						.fill(model.phase.color)
+						.fill(overlayColor)
 						.frame(width: 8, height: 8)
+					if model.isVoiceActive {
+						VoiceLevelBars(state: model.voiceState, compact: true)
+					}
 				}
 				Text(overlayLine)
 					.font(.caption)
@@ -1145,5 +1424,9 @@ struct LiquidGlassOverlayView: View {
 			return model.lastTranscript
 		}
 		return model.latestActivityDetail
+	}
+
+	private var overlayColor: Color {
+		model.isVoiceActive ? voiceStateColor(model.voiceState) : model.phase.color
 	}
 }
