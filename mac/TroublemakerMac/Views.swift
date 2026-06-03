@@ -882,7 +882,6 @@ struct VoiceProviderMenuButton: View {
 
 struct VoiceControlButton: View {
 	@EnvironmentObject private var model: AppModel
-	@State private var pulse = false
 	var compact = false
 
 	var body: some View {
@@ -902,17 +901,8 @@ struct VoiceControlButton: View {
 			.contentShape(Circle())
 		}
 		.buttonStyle(.plain)
-		.scaleEffect(model.isVoiceActive && pulse ? 1.08 : 1)
-		.shadow(color: model.isVoiceActive ? voiceStateColor(model.voiceState).opacity(pulse ? 0.44 : 0.16) : .clear, radius: pulse ? 10 : 3)
-		.animation(model.isVoiceActive ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .default, value: pulse)
 		.help(model.isVoiceActive ? "Stop voice" : "Start voice")
 		.disabled(!model.canUseVoice && !model.isVoiceActive)
-		.onAppear {
-			restartPulse(model.isVoiceActive)
-		}
-		.onChange(of: model.isVoiceActive) { _, active in
-			restartPulse(active)
-		}
 	}
 
 	private var dimension: CGFloat {
@@ -933,13 +923,6 @@ struct VoiceControlButton: View {
 		return Color.primary.opacity(0.11)
 	}
 
-	private func restartPulse(_ active: Bool) {
-		pulse = false
-		guard active else { return }
-		DispatchQueue.main.async {
-			pulse = true
-		}
-	}
 }
 
 struct VoiceStatusBand: View {
@@ -1068,7 +1051,6 @@ struct VoiceActivityMark: View {
 struct VoiceLevelBars: View {
 	let state: VoiceRuntimeState
 	var compact = false
-	@State private var animate = false
 
 	var body: some View {
 		HStack(alignment: .center, spacing: compact ? 2 : 3) {
@@ -1076,17 +1058,10 @@ struct VoiceLevelBars: View {
 				Capsule()
 					.fill(voiceStateColor(state).opacity(state.isActive ? 0.9 : 0.45))
 					.frame(width: compact ? 2 : 3, height: height(for: index))
-					.scaleEffect(y: state.isActive && animate ? activeScale(for: index) : 0.55, anchor: .center)
-					.animation(state.isActive ? .easeInOut(duration: 0.55 + Double(index) * 0.08).repeatForever(autoreverses: true) : .default, value: animate)
+					.scaleEffect(y: state.isActive ? activeScale(for: index) : 0.55, anchor: .center)
 			}
 		}
 		.frame(width: compact ? 18 : 26, height: compact ? 14 : 18)
-		.onAppear {
-			restart(state.isActive)
-		}
-		.onChange(of: state) { _, newState in
-			restart(newState.isActive)
-		}
 	}
 
 	private func height(for index: Int) -> CGFloat {
@@ -1099,13 +1074,6 @@ struct VoiceLevelBars: View {
 		return scales[index]
 	}
 
-	private func restart(_ active: Bool) {
-		animate = false
-		guard active else { return }
-		DispatchQueue.main.async {
-			animate = true
-		}
-	}
 }
 
 struct StreamingBadge: View {

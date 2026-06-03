@@ -55,6 +55,8 @@ struct VoiceProviderCallbacks {
 	var assistantTextDelta: (String) -> Void
 	var assistantTextFinal: (String) -> Void
 	var audio: (VoiceAudioPayload) -> Void
+	var interruptAudio: () -> Void
+	var bargeInAllowed: () -> Bool
 	var error: (String) -> Void
 }
 
@@ -75,13 +77,20 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	var onAssistantTextFinal: ((String) -> Void)?
 
 	private let audioEngine = AVAudioEngine()
+	private let playbackEngine = AVAudioEngine()
+	private let playbackNode = AVAudioPlayerNode()
 	private let lock = NSLock()
 	private var provider: VoiceSessionProvider?
 	private var state: VoiceRuntimeState = .idle
 	private var player: AVAudioPlayer?
+	private var playbackNodeAttached = false
+	private var playbackFormat: AVAudioFormat?
+	private var scheduledPCMBufferCount = 0
 	private var pendingAudio = Data()
 	private var pendingAudioFormat: VoiceAudioPayload?
 	private var micSuppressed = false
+	private var realtimeBargeInArmedAt: Date?
+	private var realtimeBargeInGuardActive = false
 
 	func start(kind: VoiceProviderKind, localVoicePort: Int = 8766, runtimePort: Int = 3017, agentName: String) async {
 		stop()
@@ -111,10 +120,15 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		stopCapture()
 		player?.stop()
 		player = nil
+		playbackNode.stop()
+		playbackEngine.stop()
 		lock.withLock {
+			scheduledPCMBufferCount = 0
 			pendingAudio.removeAll()
 			pendingAudioFormat = nil
 			micSuppressed = false
+			realtimeBargeInArmedAt = nil
+			realtimeBargeInGuardActive = false
 		}
 		setState(.idle, "Voice stopped.")
 	}
@@ -132,6 +146,8 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			assistantTextDelta: { [weak self] text in self?.emitAssistantDelta(text) },
 			assistantTextFinal: { [weak self] text in self?.emitAssistantFinal(text) },
 			audio: { [weak self] payload in self?.handleAudio(payload) },
+			interruptAudio: { [weak self] in self?.interruptPlaybackForBargeIn() },
+			bargeInAllowed: { [weak self] in self?.isRealtimeBargeInAllowed() ?? true },
 			error: { [weak self] message in self?.setState(.error, message) }
 		)
 	}
@@ -188,18 +204,15 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	}
 
 	private func handleAudio(_ payload: VoiceAudioPayload) {
+		if case let .pcm16(data, sampleRate) = payload {
+			playPCM16(data, sampleRate: sampleRate)
+			return
+		}
+
 		lock.withLock {
 			micSuppressed = true
-			switch payload {
-			case .encoded(let data):
+			if case .encoded(let data) = payload {
 				if case .encoded? = pendingAudioFormat {
-					pendingAudio.append(data)
-				} else {
-					pendingAudio = data
-					pendingAudioFormat = payload
-				}
-			case .pcm16(let data, let sampleRate):
-				if case .pcm16(_, sampleRate)? = pendingAudioFormat {
 					pendingAudio.append(data)
 				} else {
 					pendingAudio = data
@@ -208,6 +221,100 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			}
 		}
 		setState(.speaking, "Speaking...")
+	}
+
+	private func playPCM16(_ data: Data, sampleRate: Int) {
+		guard let buffer = Self.pcmFloatBuffer(pcm16: data, sampleRate: sampleRate) else { return }
+		do {
+			try ensurePlaybackEngine(sampleRate: sampleRate)
+			let suppressMic = provider?.kind != .openAIRealtime
+			let shouldArmRealtime = provider?.kind == .openAIRealtime && lock.withLock { !realtimeBargeInGuardActive }
+			if shouldArmRealtime {
+				armRealtimeBargeIn(after: 1.15)
+			}
+			lock.withLock {
+				if suppressMic {
+					micSuppressed = true
+				}
+				scheduledPCMBufferCount += 1
+			}
+			playbackNode.scheduleBuffer(buffer) { [weak self] in
+				self?.completeScheduledPCMBuffer(releaseMic: suppressMic)
+			}
+			if !playbackNode.isPlaying {
+				playbackNode.play()
+			}
+			setState(.speaking, "Speaking...")
+		} catch {
+			lock.withLock { micSuppressed = false }
+			setState(.error, "Audio playback failed: \(error.localizedDescription)")
+		}
+	}
+
+	private func ensurePlaybackEngine(sampleRate: Int) throws {
+		let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1)!
+		if !playbackNodeAttached {
+			playbackEngine.attach(playbackNode)
+			playbackNodeAttached = true
+		}
+		if playbackFormat?.sampleRate != format.sampleRate || playbackFormat?.channelCount != format.channelCount {
+			playbackNode.stop()
+			playbackEngine.disconnectNodeOutput(playbackNode)
+			playbackEngine.connect(playbackNode, to: playbackEngine.mainMixerNode, format: format)
+			playbackFormat = format
+		}
+		if !playbackEngine.isRunning {
+			try playbackEngine.start()
+		}
+	}
+
+	private func completeScheduledPCMBuffer(releaseMic: Bool) {
+		lock.withLock {
+			scheduledPCMBufferCount = max(0, scheduledPCMBufferCount - 1)
+			if releaseMic && scheduledPCMBufferCount == 0 {
+				micSuppressed = false
+			}
+		}
+	}
+
+	private func interruptPlaybackForBargeIn() {
+		player?.stop()
+		player = nil
+		playbackNode.stop()
+		lock.withLock {
+			scheduledPCMBufferCount = 0
+			pendingAudio.removeAll()
+			pendingAudioFormat = nil
+			micSuppressed = false
+			realtimeBargeInArmedAt = nil
+			realtimeBargeInGuardActive = false
+		}
+		setState(.transcribing, "Interrupted; listening...")
+	}
+
+	private func armRealtimeBargeIn(after delay: TimeInterval) {
+		let armedAt = Date().addingTimeInterval(delay)
+		lock.withLock {
+			realtimeBargeInGuardActive = true
+			realtimeBargeInArmedAt = armedAt
+			micSuppressed = true
+		}
+		DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+			guard let self else { return }
+			self.lock.withLock {
+				if let current = self.realtimeBargeInArmedAt,
+				   current <= Date() {
+					self.micSuppressed = false
+				}
+			}
+		}
+	}
+
+	private func isRealtimeBargeInAllowed() -> Bool {
+		lock.withLock {
+			guard let armedAt = realtimeBargeInArmedAt else { return true }
+			return Date() >= armedAt
+		}
 	}
 
 	private func flushAudioIfNeeded() {
@@ -265,6 +372,12 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		if newState == .listening {
 			flushAudioIfNeeded()
 		}
+		if newState == .listening || newState == .idle || newState == .error {
+			lock.withLock {
+				realtimeBargeInArmedAt = nil
+				realtimeBargeInGuardActive = false
+			}
+		}
 		DispatchQueue.main.async { [weak self] in
 			self?.onStateChange?(newState, message)
 		}
@@ -311,6 +424,31 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		data.appendLE(subchunk2Size)
 		data.append(pcm16)
 		return data
+	}
+
+	private static func pcmFloatBuffer(pcm16: Data, sampleRate: Int) -> AVAudioPCMBuffer? {
+		let frameCount = pcm16.count / MemoryLayout<Int16>.size
+		guard frameCount > 0,
+			  let format = AVAudioFormat(standardFormatWithSampleRate: Double(sampleRate), channels: 1),
+			  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)),
+			  let channel = buffer.floatChannelData?[0] else {
+			return nil
+		}
+		buffer.frameLength = AVAudioFrameCount(frameCount)
+		pcm16.withUnsafeBytes { rawBuffer in
+			let bytes = rawBuffer.bindMemory(to: UInt8.self)
+			for frame in 0..<frameCount {
+				let offset = frame * 2
+				let raw = UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+				let sample = Int16(bitPattern: raw)
+				if sample < 0 {
+					channel[frame] = Float(sample) / 32768.0
+				} else {
+					channel[frame] = Float(sample) / 32767.0
+				}
+			}
+		}
+		return buffer
 	}
 }
 
@@ -506,6 +644,9 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 	private var task: URLSessionWebSocketTask?
 	private var didSendSessionUpdate = false
 	private var handledFunctionCallIDs = Set<String>()
+	private var responseActive = false
+	private var responseCancelSent = false
+	private var ignoredEarlySpeech = false
 
 	init(apiKey: String, agentName: String, runtimePort: Int) {
 		self.apiKey = apiKey
@@ -537,6 +678,9 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		task = nil
 		didSendSessionUpdate = false
 		handledFunctionCallIDs.removeAll()
+		responseActive = false
+		responseCancelSent = false
+		ignoredEarlySpeech = false
 	}
 
 	private func sendSessionUpdate() {
@@ -544,7 +688,8 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		You are \(agentName), the Troublemaker realtime voice agent running on this Mac. The user is speaking directly to you.
 		Answer the user's request; do not repeat, read back, or transcribe their words unless they explicitly ask you to.
 		You have tools for reading/editing/writing files, running bash commands, inspecting channels and Slack threads, and sending user-visible messages through Troublemaker.
-		Use tools when context, files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.
+		Use get_context_briefing for cheap Zip orientation and search_context for specific past-chat lookup. Do not load full awareness/context files unless the user explicitly needs raw records.
+		Use other tools when files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.
 		Keep spoken responses concise and natural. When a tool result is long, summarize the useful outcome.
 		"""
 		sendJSON([
@@ -598,20 +743,36 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 			}
 		case "session.updated":
 			callbacks?.state(.listening, "Realtime 2 ready.")
+		case "response.created":
+			responseActive = true
+			responseCancelSent = false
 		case "input_audio_buffer.speech_started":
+			if responseActive, callbacks?.bargeInAllowed() == false {
+				ignoredEarlySpeech = true
+				sendJSON(["type": "input_audio_buffer.clear"])
+				return
+			}
+			cancelActiveResponseForBargeIn()
 			callbacks?.state(.transcribing, "Speech detected...")
 		case "input_audio_buffer.speech_stopped", "input_audio_buffer.committed":
+			if ignoredEarlySpeech {
+				ignoredEarlySpeech = false
+				sendJSON(["type": "input_audio_buffer.clear"])
+				return
+			}
 			callbacks?.state(.thinking, "Realtime 2 is thinking...")
 		case "conversation.item.input_audio_transcription.delta":
 			callbacks?.partialTranscript(event.string("delta") ?? "")
 		case "conversation.item.input_audio_transcription.completed":
 			callbacks?.finalTranscript(event.string("transcript") ?? "")
 		case "response.output_text.delta", "response.audio_transcript.delta", "response.output_audio_transcript.delta":
+			responseActive = true
 			callbacks?.assistantTextDelta(event.string("delta") ?? "")
 			callbacks?.state(.speaking, "Realtime 2 is speaking...")
 		case "response.output_text.done", "response.output_audio_transcript.done":
 			callbacks?.assistantTextFinal(event.string("text") ?? event.string("transcript") ?? "")
 		case "response.output_audio.delta", "response.audio.delta":
+			responseActive = true
 			if let delta = event.string("delta"), let data = Data(base64Encoded: delta) {
 				callbacks?.audio(.pcm16(data, sampleRate: 24000))
 			}
@@ -626,6 +787,9 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 					handleFunctionCall(item)
 				}
 			}
+			responseActive = false
+			responseCancelSent = false
+			ignoredEarlySpeech = false
 			callbacks?.state(.listening, "Listening with Realtime 2...")
 		case "error":
 			if let error = event.dictionary("error") {
@@ -636,6 +800,13 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		default:
 			break
 		}
+	}
+
+	private func cancelActiveResponseForBargeIn() {
+		guard responseActive, !responseCancelSent else { return }
+		responseCancelSent = true
+		callbacks?.interruptAudio()
+		sendJSON(["type": "response.cancel"])
 	}
 
 	private func handleFunctionCall(_ item: [String: Any]) {
@@ -803,6 +974,25 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 				description: "List recent Slack thread targets. Use this before read_thread or send_message when choosing among active Slack threads.",
 				properties: [:],
 				required: []
+			),
+			functionTool(
+				name: "get_context_briefing",
+				description: "Return a compact briefing of Zip's identity, memory files, and recent persisted activity. Use this before answering context-dependent questions about Zip or prior work.",
+				properties: [
+					"recentLimit": numberSchema("Optional maximum recent context entries to include. Default 10, max 24."),
+					"maxChars": numberSchema("Optional maximum briefing characters. Default 4000, max 8000."),
+				],
+				required: []
+			),
+			functionTool(
+				name: "search_context",
+				description: "Search Zip's persisted awareness, adapter log, and memory files for a specific string. Use this for questions about prior chats, names, decisions, projects, or exact terms.",
+				properties: [
+					"query": stringSchema("Case-insensitive text to search for in Zip's persisted context and chat logs."),
+					"source": stringSchema("Optional source: all, awareness, log, or memory. Defaults to all."),
+					"limit": numberSchema("Optional maximum matching entries to return. Default 12, max 30."),
+				],
+				required: ["query"]
 			),
 			functionTool(
 				name: "read_thread",

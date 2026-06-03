@@ -887,10 +887,12 @@ final class AppModel: ObservableObject {
 			return
 		}
 
-		messages.append(ChatMessage(role: .user, text: cleaned, details: [selectedVoiceProvider.title]))
-		if messages.count > 160 {
-			messages.removeFirst(messages.count - 160)
+		let user = ChatMessage(role: .user, text: cleaned, details: [selectedVoiceProvider.title])
+		messages.append(user)
+		if selectedVoiceProvider == .openAIRealtime {
+			_ = ensureVoiceAssistantMessage(after: user.id)
 		}
+		trimMessages()
 	}
 
 	private func appendVoiceAssistantDelta(_ delta: String) {
@@ -911,19 +913,25 @@ final class AppModel: ObservableObject {
 		voiceAssistantMessageID = nil
 	}
 
-	private func ensureVoiceAssistantMessage() -> UUID {
+	private func ensureVoiceAssistantMessage(after predecessorID: UUID? = nil) -> UUID {
 		if let voiceAssistantMessageID,
 		   messages.contains(where: { $0.id == voiceAssistantMessageID }) {
 			return voiceAssistantMessageID
 		}
 		let assistant = ChatMessage(role: .assistant, text: "", details: [selectedVoiceProvider.title], isStreaming: true)
-		messages.append(assistant)
+		if let predecessorID,
+		   let index = messages.firstIndex(where: { $0.id == predecessorID }) {
+			messages.insert(assistant, at: min(messages.count, index + 1))
+		} else {
+			messages.append(assistant)
+		}
 		voiceAssistantMessageID = assistant.id
+		trimMessages()
 		return assistant.id
 	}
 
 	private func mergePersistedEvents(_ entries: [CloudAwarenessEntry]) {
-		let projected = entries.suffix(80).compactMap { entry -> ChatMessage? in
+		let projected = entries.compactMap { entry -> ChatMessage? in
 			let key = "\(entry.id)-\(entry.raw.hashValue)"
 			guard !persistedEventKeys.contains(key) else { return nil }
 			persistedEventKeys.insert(key)
@@ -931,9 +939,8 @@ final class AppModel: ObservableObject {
 		}
 		guard !projected.isEmpty else { return }
 		messages.append(contentsOf: projected)
-		if messages.count > 160 {
-			messages.removeFirst(messages.count - 160)
-		}
+		sortMessagesChronologically()
+		trimMessages()
 	}
 
 	private func persistedMessage(from entry: CloudAwarenessEntry) -> ChatMessage {
@@ -956,12 +963,17 @@ final class AppModel: ObservableObject {
 			details.append(entry.title)
 		}
 
-		return ChatMessage(
+		var message = ChatMessage(
 			role: role,
 			text: entry.detail,
 			details: details,
 			isStreaming: false
 		)
+		if let timestamp = entry.timestamp,
+		   let date = Self.parseCloudTimestamp(timestamp) {
+			message.createdAt = date
+		}
+		return message
 	}
 
 	private func applyRuntimeProfile(_ newProfile: TenantRuntimeProfile, stopExisting: Bool = true) {
@@ -1020,6 +1032,27 @@ final class AppModel: ObservableObject {
 		}
 	}
 
+	private func trimMessages(limit: Int = 160) {
+		guard messages.count > limit else { return }
+		let removable = messages.count - limit
+		let protectedID = voiceAssistantMessageID
+		var removed = 0
+		while removed < removable,
+			  let index = messages.firstIndex(where: { $0.id != protectedID }) {
+			messages.remove(at: index)
+			removed += 1
+		}
+	}
+
+	private func sortMessagesChronologically() {
+		messages = messages.enumerated().sorted { left, right in
+			if left.element.createdAt == right.element.createdAt {
+				return left.offset < right.offset
+			}
+			return left.element.createdAt < right.element.createdAt
+		}.map(\.element)
+	}
+
 	private func finishAssistantMessage(_ id: UUID, clearSending: Bool = true) {
 		guard let index = messages.firstIndex(where: { $0.id == id }) else { return }
 		if messages[index].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1064,6 +1097,33 @@ User request:
 	private static func tokenSummary(_ token: String) -> String {
 		String(token.prefix(16)) + "..."
 	}
+
+	private static func parseCloudTimestamp(_ raw: String) -> Date? {
+		let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+		if let date = ISO8601DateFormatter.troublemakerCloudFractional.date(from: trimmed)
+			?? ISO8601DateFormatter.troublemakerCloud.date(from: trimmed) {
+			return date
+		}
+		if let numeric = Double(trimmed) {
+			let seconds = numeric > 10_000_000_000 ? numeric / 1000.0 : numeric
+			return Date(timeIntervalSince1970: seconds)
+		}
+		return nil
+	}
+}
+
+private extension ISO8601DateFormatter {
+	static let troublemakerCloudFractional: ISO8601DateFormatter = {
+		let formatter = ISO8601DateFormatter()
+		formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+		return formatter
+	}()
+
+	static let troublemakerCloud: ISO8601DateFormatter = {
+		let formatter = ISO8601DateFormatter()
+		formatter.formatOptions = [.withInternetDateTime]
+		return formatter
+	}()
 }
 
 private struct PendingOAuthAttempt {

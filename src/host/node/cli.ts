@@ -40,6 +40,7 @@ import { createHostBashRoute, createHostToolExecuteRoute } from "../../modes/hos
 import { createMomTools } from "../../tools/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
 import { createSelfConfigureTool } from "../../tools/self-configure.js";
+import { createRealtimeContextTools } from "../../tools/realtime-context.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
@@ -972,6 +973,7 @@ gateway.register("/host/tools/execute", createHostToolExecuteRoute({
 				createSendMessageTool(adapters),
 				createListChannelsTool(workingDir, adapters),
 				createReadThreadTool(workingDir, adapters),
+				...createRealtimeContextTools(workingDir),
 				...mcpBridge.tools(),
 			]
 				.filter((tool) => tool.name !== "speak")
