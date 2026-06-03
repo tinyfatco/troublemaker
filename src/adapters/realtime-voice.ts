@@ -6,6 +6,7 @@ import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import WebSocket, { WebSocketServer } from "ws";
 import * as log from "../log.js";
 import type { LocalEventboxClient, LocalEventboxEvent } from "../local/eventbox-client.js";
+import { buildContextBriefing } from "../tools/realtime-context.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2";
 const REALTIME_MODEL = "gpt-realtime-2";
@@ -32,16 +33,25 @@ interface RealtimeClientControl {
 	voice?: string;
 }
 
-export function createRealtimeVoiceInstructions(): string {
-	return [
+export function createRealtimeVoiceInstructions(contextBriefing?: string): string {
+	const sections = [
 		"You are Zip, Alex's Troublemaker realtime voice agent running on this Mac. The user is speaking directly to you.",
 		"Answer the user's request; do not repeat, read back, or transcribe their words unless they explicitly ask you to.",
 		"You have tools for reading/editing/writing files, running bash commands, inspecting channels and Slack threads, sending user-visible messages, and querying compact Zip context.",
 		"Use get_context_briefing for cheap Zip orientation and search_context for specific past-chat lookup. Do not load full awareness/context files unless the user explicitly needs raw records.",
 		"Cloud inbound awareness may arrive while this realtime session is active. It is context only, already routed through the normal cloud delivery path; mention it aloud only if useful, and do not send a channel reply unless Alex explicitly asks you to.",
 		"Use tools when files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.",
-		"Keep spoken responses concise and natural. When a tool result is long, summarize the useful outcome.",
-	].join("\n");
+		"Keep spoken responses concise and natural. Do not force a mascot voice, catchphrase, or exaggerated troublemaker persona. When a tool result is long, summarize the useful outcome.",
+	];
+	const briefing = contextBriefing?.trim();
+	if (briefing) {
+		sections.push([
+			"## Current Zip Context Briefing",
+			briefing,
+			"Use this briefing as the starting context for the realtime session. It may include recent persisted activity from before this WebSocket connected.",
+		].join("\n"));
+	}
+	return sections.join("\n\n");
 }
 
 export function createRealtimeAudioConfig(voice = DEFAULT_VOICE): Record<string, unknown> {
@@ -79,7 +89,7 @@ export function createRealtimeFunctionTools(tools: AgentTool<any>[]): Record<str
 }
 
 export function createRealtimeSessionUpdate(
-	options: { voice?: string; tools: AgentTool<any>[] },
+	options: { voice?: string; tools: AgentTool<any>[]; contextBriefing?: string },
 ): Record<string, unknown> {
 	return {
 		type: "session.update",
@@ -87,7 +97,7 @@ export function createRealtimeSessionUpdate(
 			type: "realtime",
 			model: REALTIME_MODEL,
 			output_modalities: ["audio"],
-			instructions: createRealtimeVoiceInstructions(),
+			instructions: createRealtimeVoiceInstructions(options.contextBriefing),
 			reasoning: { effort: "low" },
 			tools: createRealtimeFunctionTools(options.tools),
 			tool_choice: "auto",
@@ -249,6 +259,7 @@ class RealtimeVoiceSession {
 				this.sendOpenAI(createRealtimeSessionUpdate({
 					voice: this.voice,
 					tools: this.config.tools(),
+					contextBriefing: this.contextBriefing(),
 				}));
 				this.sendClient({ type: "connecting", message: "Configuring Realtime 2..." });
 				break;
@@ -421,6 +432,20 @@ class RealtimeVoiceSession {
 		this.pendingEventboxResponse = false;
 		this.sendClient({ type: "thinking", message: "Realtime 2 is thinking..." });
 		this.sendOpenAI({ type: "response.create" });
+	}
+
+	private contextBriefing(): string {
+		try {
+			const briefing = buildContextBriefing(this.config.workingDir, {
+				recentLimit: 18,
+				maxChars: 7000,
+			});
+			log.logInfo(`[realtime-voice] loaded context briefing (${briefing.length} chars)`);
+			return briefing;
+		} catch (err) {
+			log.logWarning("[realtime-voice] context briefing unavailable", err instanceof Error ? err.message : String(err));
+			return "";
+		}
 	}
 
 	private handleEventboxEvent(event: LocalEventboxEvent): void {

@@ -1,37 +1,35 @@
 /**
- * useVoiceChat — browser mic capture + WebSocket voice chat.
+ * useVoiceChat — browser mic capture + Troublemaker Realtime 2 bridge.
  *
- * Captures mic audio as PCM 16kHz, streams to /voice/stream over WebSocket.
- * Receives mp3 audio back and plays through speakers.
- * Receives JSON control messages for state updates.
+ * Captures mic audio as PCM 16-bit 24kHz, streams it to /voice/realtime,
+ * receives PCM 24kHz assistant audio back, and renders transcript/control
+ * events from the same bridge used by the Mac app.
  */
 
 import { useState, useRef, useCallback } from 'react';
 import { apiUrl } from '../api';
 
-export type VoiceState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
+const REALTIME_SAMPLE_RATE = 24000;
+const DEFAULT_REALTIME_VOICE = 'marin';
+
+export type VoiceState = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
 export interface UseVoiceChatReturn {
   state: VoiceState;
-  /** Current partial transcript (interim STT result) */
   partial: string;
-  /** Last committed transcript */
   transcript: string;
-  /** Start voice session */
+  assistantText: string;
+  cloudEvent: string;
   start: () => Promise<void>;
-  /** Stop voice session */
   stop: () => void;
-  /** Error message if state is 'error' */
   error: string | null;
 }
 
-// AudioWorklet processor code — captures PCM 16kHz and posts to main thread
 const WORKLET_CODE = `
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
     const input = inputs[0];
     if (input && input[0] && input[0].length > 0) {
-      // input[0] is Float32Array of samples
       this.port.postMessage(input[0].slice());
     }
     return true;
@@ -40,17 +38,37 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-capture', PcmCaptureProcessor);
 `;
 
-function getVoiceWsUrl(): string {
-  const loc = window.location;
-  const proto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
-  const base = loc.pathname.endsWith('/') ? loc.pathname.slice(0, -1) : loc.pathname;
-  return `${proto}//${loc.host}${base}/voice/stream`;
+function getRealtimeWsUrl(): string {
+  const url = new URL(apiUrl('/voice/realtime'), window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+function floatToPcm16(float32: Float32Array): ArrayBuffer {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return int16.buffer;
+}
+
+function pcm16ToFloat32(data: ArrayBuffer): Float32Array {
+  const view = new DataView(data);
+  const samples = Math.floor(view.byteLength / 2);
+  const floats = new Float32Array(samples);
+  for (let i = 0; i < samples; i++) {
+    floats[i] = view.getInt16(i * 2, true) / 32768;
+  }
+  return floats;
 }
 
 export function useVoiceChat(): UseVoiceChatReturn {
   const [state, setState] = useState<VoiceState>('idle');
   const [partial, setPartial] = useState('');
   const [transcript, setTranscript] = useState('');
+  const [assistantText, setAssistantText] = useState('');
+  const [cloudEvent, setCloudEvent] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -58,177 +76,179 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const streamRef = useRef<MediaStream | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const muteNodeRef = useRef<GainNode | null>(null);
+  const playbackSourcesRef = useRef<AudioBufferSourceNode[]>([]);
+  const playbackCursorRef = useRef(0);
+  const suppressMicRef = useRef(false);
 
-  // Queue for mp3 audio chunks to play sequentially
-  const audioQueueRef = useRef<ArrayBuffer[]>([]);
-  const isPlayingRef = useRef(false);
+  const interruptPlayback = useCallback(() => {
+    for (const source of playbackSourcesRef.current) {
+      try { source.stop(); } catch { /* already stopped */ }
+    }
+    playbackSourcesRef.current = [];
+    playbackCursorRef.current = audioCtxRef.current?.currentTime || 0;
+    suppressMicRef.current = false;
+  }, []);
 
-  const playNextChunk = useCallback(async () => {
-    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+  const playPcm16 = useCallback((data: ArrayBuffer) => {
     const ctx = audioCtxRef.current;
-    if (!ctx || ctx.state === 'closed') return;
+    if (!ctx || ctx.state === 'closed' || data.byteLength < 2) return;
 
-    isPlayingRef.current = true;
+    const samples = pcm16ToFloat32(data);
+    const buffer = ctx.createBuffer(1, samples.length, REALTIME_SAMPLE_RATE);
+    buffer.copyToChannel(samples, 0);
 
-    // Concatenate all queued chunks into one buffer for smoother playback
-    const chunks = audioQueueRef.current.splice(0);
-    const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(new Uint8Array(chunk), offset);
-      offset += chunk.byteLength;
-    }
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.connect(ctx.destination);
 
-    try {
-      const audioBuffer = await ctx.decodeAudioData(combined.buffer.slice(0));
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-      source.onended = () => {
-        isPlayingRef.current = false;
-        // Play next batch if more arrived while we were playing
-        if (audioQueueRef.current.length > 0) {
-          playNextChunk();
-        }
-      };
-      source.start();
-    } catch {
-      // If decoding fails (partial mp3 frame), skip
-      isPlayingRef.current = false;
-      if (audioQueueRef.current.length > 0) {
-        playNextChunk();
-      }
-    }
+    const startAt = Math.max(ctx.currentTime + 0.02, playbackCursorRef.current || 0);
+    playbackCursorRef.current = startAt + buffer.duration;
+    playbackSourcesRef.current.push(source);
+    suppressMicRef.current = true;
+
+    source.onended = () => {
+      playbackSourcesRef.current = playbackSourcesRef.current.filter((item) => item !== source);
+      if (playbackSourcesRef.current.length === 0) suppressMicRef.current = false;
+    };
+    source.start(startAt);
   }, []);
 
   const stop = useCallback(() => {
-    // Close WebSocket
     if (wsRef.current) {
-      try {
-        wsRef.current.send(JSON.stringify({ type: 'stop' }));
-      } catch { /* ignore */ }
+      try { wsRef.current.send(JSON.stringify({ type: 'stop' })); } catch { /* ignore */ }
       wsRef.current.close();
       wsRef.current = null;
     }
 
-    // Stop mic
-    if (workletNodeRef.current) {
-      workletNodeRef.current.disconnect();
-      workletNodeRef.current = null;
-    }
-    if (sourceNodeRef.current) {
-      sourceNodeRef.current.disconnect();
-      sourceNodeRef.current = null;
-    }
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
+    interruptPlayback();
+
+    workletNodeRef.current?.disconnect();
+    workletNodeRef.current = null;
+    sourceNodeRef.current?.disconnect();
+    sourceNodeRef.current = null;
+    muteNodeRef.current?.disconnect();
+    muteNodeRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     if (audioCtxRef.current && audioCtxRef.current.state !== 'closed') {
       audioCtxRef.current.close().catch(() => {});
-      audioCtxRef.current = null;
     }
+    audioCtxRef.current = null;
 
-    audioQueueRef.current = [];
-    isPlayingRef.current = false;
     setState('idle');
     setPartial('');
-  }, []);
+    setCloudEvent('');
+  }, [interruptPlayback]);
 
   const start = useCallback(async () => {
-    if (state !== 'idle') return;
+    if (state !== 'idle' && state !== 'error') return;
 
     setState('connecting');
     setError(null);
     setPartial('');
     setTranscript('');
+    setAssistantText('');
+    setCloudEvent('');
 
     try {
-      // Request mic
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000,
+          sampleRate: REALTIME_SAMPLE_RATE,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
+          autoGainControl: true,
         },
       });
       streamRef.current = stream;
 
-      // Create AudioContext at 16kHz for PCM capture
-      const audioCtx = new AudioContext({ sampleRate: 16000 });
+      const audioCtx = new AudioContext({ sampleRate: REALTIME_SAMPLE_RATE });
       audioCtxRef.current = audioCtx;
+      playbackCursorRef.current = audioCtx.currentTime;
 
-      // Register worklet
       const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
       const workletUrl = URL.createObjectURL(blob);
       await audioCtx.audioWorklet.addModule(workletUrl);
       URL.revokeObjectURL(workletUrl);
 
-      // Connect mic → worklet
       const source = audioCtx.createMediaStreamSource(stream);
       sourceNodeRef.current = source;
       const workletNode = new AudioWorkletNode(audioCtx, 'pcm-capture');
       workletNodeRef.current = workletNode;
+      const muteNode = audioCtx.createGain();
+      muteNode.gain.value = 0;
+      muteNodeRef.current = muteNode;
       source.connect(workletNode);
-      workletNode.connect(audioCtx.destination); // needed to keep the pipeline alive
+      workletNode.connect(muteNode);
+      muteNode.connect(audioCtx.destination);
 
-      // Open WebSocket
-      const wsUrl = getVoiceWsUrl();
-      const ws = new WebSocket(wsUrl);
+      const ws = new WebSocket(getRealtimeWsUrl());
       ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
       ws.onopen = () => {
-        setState('listening');
-
-        // Stream mic audio to server
-        workletNode.port.onmessage = (e: MessageEvent) => {
-          if (ws.readyState !== WebSocket.OPEN) return;
-          const float32 = e.data as Float32Array;
-          // Convert Float32 [-1,1] to Int16 PCM
-          const int16 = new Int16Array(float32.length);
-          for (let i = 0; i < float32.length; i++) {
-            const s = Math.max(-1, Math.min(1, float32[i]));
-            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-          ws.send(int16.buffer);
+        ws.send(JSON.stringify({ type: 'start', voice: DEFAULT_REALTIME_VOICE }));
+        setState('connecting');
+        workletNode.port.onmessage = (event: MessageEvent) => {
+          if (ws.readyState !== WebSocket.OPEN || suppressMicRef.current) return;
+          ws.send(floatToPcm16(event.data as Float32Array));
         };
       };
 
       ws.onmessage = (event) => {
         if (event.data instanceof ArrayBuffer) {
-          // Binary = mp3 audio from TTS
-          audioQueueRef.current.push(event.data);
-          // Wait a bit to accumulate chunks before decoding
-          setTimeout(() => playNextChunk(), 200);
-        } else {
-          // JSON control message
-          try {
-            const msg = JSON.parse(event.data);
-            switch (msg.type) {
-              case 'listening':
-                setState('listening');
-                break;
-              case 'thinking':
-                setState('thinking');
-                break;
-              case 'speaking':
-                setState('speaking');
-                break;
-              case 'partial':
-                setPartial(msg.text || '');
-                break;
-              case 'transcript':
-                setTranscript(msg.text || '');
-                setPartial('');
-                break;
-              case 'error':
-                setError(msg.message || 'Voice error');
-                break;
-            }
-          } catch { /* ignore */ }
+          setState('speaking');
+          playPcm16(event.data);
+          return;
+        }
+
+        try {
+          const msg = JSON.parse(String(event.data)) as Record<string, string>;
+          switch (msg.type) {
+            case 'connecting':
+              setState('connecting');
+              break;
+            case 'listening':
+              setState('listening');
+              break;
+            case 'transcribing':
+            case 'barge_in':
+              setState('transcribing');
+              break;
+            case 'thinking':
+              setState('thinking');
+              break;
+            case 'speaking':
+              setState('speaking');
+              break;
+            case 'partial':
+              setPartial(msg.text || '');
+              break;
+            case 'transcript':
+              setTranscript(msg.text || '');
+              setPartial('');
+              setAssistantText('');
+              break;
+            case 'assistant_text_delta':
+              setAssistantText((prev) => prev + (msg.text || ''));
+              break;
+            case 'assistant_text':
+              setAssistantText(msg.text || '');
+              break;
+            case 'cloud_event':
+              setCloudEvent(msg.message || '');
+              break;
+            case 'interrupt_audio':
+              interruptPlayback();
+              break;
+            case 'error':
+              setError(msg.message || 'Realtime voice error');
+              setState('error');
+              break;
+          }
+        } catch {
+          // Ignore malformed control frames.
         }
       };
 
@@ -237,16 +257,16 @@ export function useVoiceChat(): UseVoiceChatReturn {
       };
 
       ws.onerror = () => {
-        setError('Voice connection failed');
+        setError('Realtime voice connection failed');
+        setState('error');
         stop();
       };
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Mic access denied';
-      setError(msg);
+      setError(err instanceof Error ? err.message : 'Mic access denied');
       setState('error');
       stop();
     }
-  }, [state, stop, playNextChunk]);
+  }, [state, stop, playPcm16, interruptPlayback]);
 
-  return { state, partial, transcript, start, stop, error };
+  return { state, partial, transcript, assistantText, cloudEvent, start, stop, error };
 }

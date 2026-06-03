@@ -53,6 +53,20 @@ export function AwarenessPane({
 
   const voice = useVoiceChat();
   const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
+  const voiceStatusText = useMemo(() => {
+    if (voice.assistantText) return voice.assistantText;
+    if (voice.cloudEvent) return voice.cloudEvent;
+    if (voice.partial) return voice.partial;
+    if (voice.transcript && (voice.state === 'thinking' || voice.state === 'transcribing')) return voice.transcript;
+    switch (voice.state) {
+      case 'connecting': return 'Connecting Realtime 2...';
+      case 'listening': return 'Listening with Realtime 2...';
+      case 'transcribing': return 'Speech detected...';
+      case 'thinking': return 'Realtime 2 is thinking...';
+      case 'speaking': return 'Zip is speaking...';
+      default: return '';
+    }
+  }, [voice.assistantText, voice.cloudEvent, voice.partial, voice.transcript, voice.state]);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -322,12 +336,8 @@ export function AwarenessPane({
 
       {allowVoice && isVoiceActive && (
         <div className="voice-status">
-          <span className="voice-status-text">
-            {voice.state === 'connecting' && 'Connecting...'}
-            {voice.state === 'listening' && (voice.partial || 'Listening...')}
-            {voice.state === 'thinking' && (voice.transcript || 'Thinking...')}
-            {voice.state === 'speaking' && 'Speaking...'}
-          </span>
+          <span className={`voice-status-dot voice-status-dot-${voice.state}`} />
+          <span className="voice-status-text">{voiceStatusText}</span>
         </div>
       )}
 
@@ -348,7 +358,7 @@ export function AwarenessPane({
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}
             onClick={isVoiceActive ? voice.stop : voice.start}
-            title={isVoiceActive ? 'Stop voice' : 'Start voice'}
+            title={isVoiceActive ? 'Stop Realtime 2 voice' : 'Start Realtime 2 voice'}
           >
             {isVoiceActive ? (
               <svg width="18" height="18" viewBox="0 0 18 18" fill="none">

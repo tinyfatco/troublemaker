@@ -2641,19 +2641,38 @@ html, body, #root {
 
 .mic-button.active {
   color: var(--error);
-  animation: mic-pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes mic-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
 
 .voice-status {
-  padding: 0.25rem 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.75rem;
   color: var(--text-muted);
   font-size: 0.75rem;
-  font-style: italic;
+  line-height: 1.35;
+  border-top: 1px solid var(--border);
+}
+
+.voice-status-dot {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 999px;
+  background: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.voice-status-dot-listening { background: var(--success); }
+.voice-status-dot-transcribing,
+.voice-status-dot-thinking { background: var(--accent); }
+.voice-status-dot-speaking { background: var(--warning); }
+.voice-status-dot-error { background: var(--error); }
+
+.voice-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ========================================================================

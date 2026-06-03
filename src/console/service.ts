@@ -44,7 +44,7 @@ export class ConsoleService {
 				messages: true,
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
-				voice: false,
+				voice: true,
 				fleet: profile.profileActive,
 			},
 		};
@@ -98,7 +98,7 @@ export class ConsoleService {
 				messages: true,
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
-				voice: false,
+				voice: true,
 			},
 		};
 	}
