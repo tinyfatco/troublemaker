@@ -424,7 +424,7 @@ final class AppModel: ObservableObject {
 		recordActivity(.status, title: "Voice starting", detail: selectedVoiceProvider.title, symbol: "mic")
 		Task { [weak self] in
 			guard let self else { return }
-			await self.voiceSession.start(kind: self.selectedVoiceProvider, agentName: self.selectedAgentName)
+			await self.voiceSession.start(kind: self.selectedVoiceProvider, runtimePort: self.backend.port, agentName: self.selectedAgentName)
 		}
 	}
 
@@ -882,7 +882,7 @@ final class AppModel: ObservableObject {
 		voicePartialTranscript = ""
 		recordActivity(.input, title: "Voice", detail: cleaned, symbol: "mic.fill")
 
-		if selectedVoiceProvider == .deepgram || selectedVoiceProvider == .openAIRealtime {
+		if selectedVoiceProvider == .deepgram {
 			send(cleaned, channelId: "mac-voice")
 			return
 		}

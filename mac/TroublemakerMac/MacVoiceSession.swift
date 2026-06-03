@@ -83,7 +83,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	private var pendingAudioFormat: VoiceAudioPayload?
 	private var micSuppressed = false
 
-	func start(kind: VoiceProviderKind, localVoicePort: Int = 8766, agentName: String) async {
+	func start(kind: VoiceProviderKind, localVoicePort: Int = 8766, runtimePort: Int = 3017, agentName: String) async {
 		stop()
 		setState(.connecting, "Connecting \(kind.title)...")
 
@@ -93,7 +93,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		}
 
 		do {
-			let provider = try makeProvider(kind: kind, localVoicePort: localVoicePort, agentName: agentName)
+			let provider = try makeProvider(kind: kind, localVoicePort: localVoicePort, runtimePort: runtimePort, agentName: agentName)
 			provider.callbacks = callbacks()
 			self.provider = provider
 			try provider.connect()
@@ -136,13 +136,13 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		)
 	}
 
-	private func makeProvider(kind: VoiceProviderKind, localVoicePort: Int, agentName: String) throws -> VoiceSessionProvider {
+	private func makeProvider(kind: VoiceProviderKind, localVoicePort: Int, runtimePort: Int, agentName: String) throws -> VoiceSessionProvider {
 		switch kind {
 		case .localTroublemaker:
 			return LocalTroublemakerVoiceProvider(port: localVoicePort)
 		case .openAIRealtime:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["OPENAI_API_KEY", "MOM_OPENAI_API_KEY"])
-			return OpenAIRealtimeVoiceProvider(apiKey: apiKey, agentName: agentName)
+			return OpenAIRealtimeVoiceProvider(apiKey: apiKey, agentName: agentName, runtimePort: runtimePort)
 		case .deepgram:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["DEEPGRAM_API_KEY", "MOM_DEEPGRAM_API_KEY"])
 			return DeepgramSTTVoiceProvider(apiKey: apiKey)
@@ -501,12 +501,16 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 
 	private let apiKey: String
 	private let agentName: String
+	private let runtimePort: Int
 	private let session: URLSession
 	private var task: URLSessionWebSocketTask?
+	private var didSendSessionUpdate = false
+	private var handledFunctionCallIDs = Set<String>()
 
-	init(apiKey: String, agentName: String) {
+	init(apiKey: String, agentName: String, runtimePort: Int) {
 		self.apiKey = apiKey
 		self.agentName = agentName
+		self.runtimePort = runtimePort
 		session = URLSession(configuration: .default)
 	}
 
@@ -516,8 +520,7 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		let task = session.webSocketTask(with: request)
 		self.task = task
 		task.resume()
-		sendSessionUpdate()
-		callbacks?.state(.listening, "Listening with Realtime 2...")
+		callbacks?.state(.connecting, "Connecting Realtime 2...")
 		receive()
 	}
 
@@ -532,10 +535,18 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 	func stop() {
 		task?.cancel(with: .normalClosure, reason: nil)
 		task = nil
+		didSendSessionUpdate = false
+		handledFunctionCallIDs.removeAll()
 	}
 
 	private func sendSessionUpdate() {
-		let instructions = "You are the Realtime 2 voice input layer in the Troublemaker Mac app for \(agentName). Capture the user's spoken request exactly and keep any spoken acknowledgement very brief because the local Troublemaker runtime performs the actual work."
+		let instructions = """
+		You are \(agentName), the Troublemaker realtime voice agent running on this Mac. The user is speaking directly to you.
+		Answer the user's request; do not repeat, read back, or transcribe their words unless they explicitly ask you to.
+		You have tools for reading/editing/writing files, running bash commands, inspecting channels and Slack threads, and sending user-visible messages through Troublemaker.
+		Use tools when context, files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.
+		Keep spoken responses concise and natural. When a tool result is long, summarize the useful outcome.
+		"""
 		sendJSON([
 			"type": "session.update",
 			"session": [
@@ -544,6 +555,9 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 				"output_modalities": ["audio"],
 				"instructions": instructions,
 				"reasoning": ["effort": "low"],
+				"tools": Self.realtimeTools(),
+				"tool_choice": "auto",
+				"parallel_tool_calls": false,
 				"audio": [
 					"input": [
 						"format": ["type": "audio/pcm", "rate": 24000],
@@ -576,7 +590,13 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 	private func handle(_ message: URLSessionWebSocketTask.Message) {
 		guard case .string(let text) = message, let event = VoiceJSON.object(text) else { return }
 		switch event.string("type") {
-		case "session.created", "session.updated":
+		case "session.created":
+			if !didSendSessionUpdate {
+				didSendSessionUpdate = true
+				sendSessionUpdate()
+				callbacks?.state(.connecting, "Configuring Realtime 2...")
+			}
+		case "session.updated":
 			callbacks?.state(.listening, "Realtime 2 ready.")
 		case "input_audio_buffer.speech_started":
 			callbacks?.state(.transcribing, "Speech detected...")
@@ -595,7 +615,17 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 			if let delta = event.string("delta"), let data = Data(base64Encoded: delta) {
 				callbacks?.audio(.pcm16(data, sampleRate: 24000))
 			}
+		case "response.output_item.done":
+			if let item = event.dictionary("item"), item.string("type") == "function_call" {
+				handleFunctionCall(item)
+			}
 		case "response.output_audio.done", "response.audio.done", "response.done":
+			if let response = event.dictionary("response"),
+			   let output = response["output"] as? [[String: Any]] {
+				for item in output where item.string("type") == "function_call" {
+					handleFunctionCall(item)
+				}
+			}
 			callbacks?.state(.listening, "Listening with Realtime 2...")
 		case "error":
 			if let error = event.dictionary("error") {
@@ -608,6 +638,60 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		}
 	}
 
+	private func handleFunctionCall(_ item: [String: Any]) {
+		guard let callID = item.string("call_id"),
+			  let name = item.string("name"),
+			  !handledFunctionCallIDs.contains(callID) else {
+			return
+		}
+		handledFunctionCallIDs.insert(callID)
+		callbacks?.state(.thinking, "Using \(name)...")
+
+		let arguments = Self.parseArguments(item.string("arguments"))
+		executeTool(name: name, arguments: arguments) { [weak self] output in
+			guard let self else { return }
+			self.sendJSON([
+				"type": "conversation.item.create",
+				"item": [
+					"type": "function_call_output",
+					"call_id": callID,
+					"output": output,
+				],
+			])
+			self.sendJSON(["type": "response.create"])
+			self.callbacks?.state(.thinking, "Thinking with \(name)...")
+		}
+	}
+
+	private func executeTool(name: String, arguments: [String: Any], completion: @escaping (String) -> Void) {
+		guard let url = URL(string: "http://127.0.0.1:\(runtimePort)/host/tools/execute") else {
+			completion(Self.toolOutput(error: "Invalid local runtime URL."))
+			return
+		}
+		var request = URLRequest(url: url)
+		request.httpMethod = "POST"
+		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+		request.httpBody = try? JSONSerialization.data(withJSONObject: [
+			"tool": Self.runtimeToolName(name),
+			"args": arguments,
+		])
+
+		session.dataTask(with: request) { data, response, error in
+			if let error {
+				completion(Self.toolOutput(error: error.localizedDescription))
+				return
+			}
+			guard let http = response as? HTTPURLResponse,
+				  let data,
+				  (200..<300).contains(http.statusCode) else {
+				let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? "Unknown local tool error."
+				completion(Self.toolOutput(error: text))
+				return
+			}
+			completion(Self.toolOutput(data: data))
+		}.resume()
+	}
+
 	private func sendJSON(_ object: [String: Any]) {
 		guard JSONSerialization.isValidJSONObject(object),
 			  let data = try? JSONSerialization.data(withJSONObject: object),
@@ -615,6 +699,162 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 		task?.send(.string(text)) { [weak self] error in
 			if let error { self?.callbacks?.error("Realtime send failed: \(error.localizedDescription)") }
 		}
+	}
+
+	private static func parseArguments(_ raw: String?) -> [String: Any] {
+		guard let raw,
+			  let data = raw.data(using: .utf8),
+			  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+			return [:]
+		}
+		return object
+	}
+
+	private static func toolOutput(data: Data) -> String {
+		guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+			return String(data: data, encoding: .utf8) ?? ""
+		}
+		if let ok = object["ok"] as? Bool, !ok {
+			return toolOutput(error: (object["error"] as? String) ?? "Tool failed.")
+		}
+		if let result = object["result"] as? [String: Any] {
+			var parts: [String] = []
+			if let content = result["content"] as? [[String: Any]] {
+				for item in content {
+					if let text = item["text"] as? String, !text.isEmpty {
+						parts.append(text)
+					} else if !item.isEmpty,
+							  let data = try? JSONSerialization.data(withJSONObject: item, options: [.sortedKeys]),
+							  let text = String(data: data, encoding: .utf8) {
+						parts.append(text)
+					}
+				}
+			}
+			if let details = result["details"],
+			   !(details is NSNull),
+			   JSONSerialization.isValidJSONObject(details),
+			   let data = try? JSONSerialization.data(withJSONObject: details, options: [.sortedKeys]),
+			   let text = String(data: data, encoding: .utf8) {
+				parts.append("Details: \(text)")
+			}
+			if !parts.isEmpty {
+				return parts.joined(separator: "\n")
+			}
+		}
+		return String(data: data, encoding: .utf8) ?? "Tool completed."
+	}
+
+	private static func toolOutput(error: String) -> String {
+		"Tool error: \(error)"
+	}
+
+	private static func realtimeTools() -> [[String: Any]] {
+		[
+			functionTool(
+				name: "read",
+				description: "Read a text or image file from the Troublemaker workspace. Useful context paths include awareness/context.jsonl, log.jsonl, and settings.json.",
+				properties: [
+					"label": stringSchema("Brief description of what you are reading and why."),
+					"path": stringSchema("Path to the file to read, relative or absolute."),
+					"offset": numberSchema("Optional 1-indexed line number to start reading from."),
+					"limit": numberSchema("Optional maximum number of lines to read."),
+				],
+				required: ["label", "path"]
+			),
+			functionTool(
+				name: "bash",
+				description: "Run a bash command in the Troublemaker workspace. Use for searching, tests, diagnostics, git inspection, or shell operations.",
+				properties: [
+					"label": stringSchema("Brief description of what this command does."),
+					"command": stringSchema("Bash command to execute."),
+					"timeout": numberSchema("Optional timeout in seconds."),
+				],
+				required: ["label", "command"]
+			),
+			functionTool(
+				name: "edit",
+				description: "Edit a file by replacing exact text. Use for precise changes after reading the file.",
+				properties: [
+					"label": stringSchema("Brief description of the edit."),
+					"path": stringSchema("Path to the file to edit."),
+					"oldText": stringSchema("Exact text to replace. Must match exactly."),
+					"newText": stringSchema("Replacement text."),
+				],
+				required: ["label", "path", "oldText", "newText"]
+			),
+			functionTool(
+				name: "write",
+				description: "Write content to a file, creating parent directories and overwriting any existing file.",
+				properties: [
+					"label": stringSchema("Brief description of what you are writing."),
+					"path": stringSchema("Path to write."),
+					"content": stringSchema("Full file content."),
+				],
+				required: ["label", "path", "content"]
+			),
+			functionTool(
+				name: "list_channels",
+				description: "List channels the agent has interacted with and recent Slack thread send targets.",
+				properties: [:],
+				required: []
+			),
+			functionTool(
+				name: "list_threads",
+				description: "List recent Slack thread targets. Use this before read_thread or send_message when choosing among active Slack threads.",
+				properties: [:],
+				required: []
+			),
+			functionTool(
+				name: "read_thread",
+				description: "Read a Slack thread transcript using a target from list_channels, such as slack:<channel>:<thread_ts>.",
+				properties: [
+					"target": stringSchema("Slack thread target from list_channels."),
+					"limit": numberSchema("Optional maximum number of messages."),
+				],
+				required: ["target"]
+			),
+			functionTool(
+				name: "send_message",
+				description: "Send a user-visible message through Troublemaker to Slack, Discord, Telegram, Email, or SMS/iMessage. Use list_channels first if you need a valid target.",
+				properties: [
+					"label": stringSchema("Brief description of what you are sending."),
+					"target": stringSchema("Required destination, e.g. slack:<channel>:<thread_ts>, email-user@example.com, phone-..., Discord snowflake, or Telegram chat ID."),
+					"text": stringSchema("Message text to send."),
+					"attachments": [
+						"type": "array",
+						"items": ["type": "string"],
+						"description": "Optional absolute file paths to attach for email.",
+					],
+					"subject": stringSchema("Optional email subject."),
+				],
+				required: ["label", "target", "text"]
+			),
+		]
+	}
+
+	private static func functionTool(name: String, description: String, properties: [String: Any], required: [String]) -> [String: Any] {
+		[
+			"type": "function",
+			"name": name,
+			"description": description,
+			"parameters": [
+				"type": "object",
+				"properties": properties,
+				"required": required,
+			],
+		]
+	}
+
+	private static func stringSchema(_ description: String) -> [String: Any] {
+		["type": "string", "description": description]
+	}
+
+	private static func numberSchema(_ description: String) -> [String: Any] {
+		["type": "number", "description": description]
+	}
+
+	private static func runtimeToolName(_ name: String) -> String {
+		name == "list_threads" ? "list_channels" : name
 	}
 }
 

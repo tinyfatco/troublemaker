@@ -20,6 +20,8 @@ export type HostToolResponse<T = unknown> = HostToolSuccess<T> | HostToolFailure
 
 export type HostBashRequest = HostToolRequest<BashToolInput>;
 export type HostBashResponse = HostToolResponse<BashToolResult>;
+export type HostToolExecuteRequest = HostToolRequest<Record<string, unknown>>;
+export type HostToolExecuteResponse = HostToolResponse<unknown>;
 
 export function isHostBashRequest(value: unknown): value is HostBashRequest {
 	if (!value || typeof value !== "object") return false;
@@ -32,4 +34,14 @@ export function isHostBashRequest(value: unknown): value is HostBashRequest {
 		&& typeof args.label === "string"
 		&& (args.timeout === undefined || typeof args.timeout === "number")
 		&& (request.stream === undefined || typeof request.stream === "boolean");
+}
+
+export function isHostToolExecuteRequest(value: unknown): value is HostToolExecuteRequest {
+	if (!value || typeof value !== "object") return false;
+	const request = value as HostToolRequest<Record<string, unknown>>;
+	return typeof request.tool === "string"
+		&& request.tool.trim().length > 0
+		&& !!request.args
+		&& typeof request.args === "object"
+		&& !Array.isArray(request.args);
 }

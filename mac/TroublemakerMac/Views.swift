@@ -1,3 +1,4 @@
+import Foundation
 import SwiftUI
 
 struct MainChatView: View {
@@ -1270,15 +1271,8 @@ struct ChatBubble: View {
 				}
 
 				if !message.details.isEmpty {
-					VStack(alignment: .leading, spacing: 5) {
-						ForEach(message.details.suffix(5), id: \.self) { detail in
-							Text(detail)
-								.font(.caption)
-								.foregroundStyle(.secondary)
-								.lineLimit(3)
-						}
-					}
-					.padding(.top, 2)
+					MessageDetailsDisclosure(details: message.details)
+						.padding(.top, 2)
 				}
 			}
 			.padding(12)
@@ -1314,6 +1308,138 @@ struct ChatBubble: View {
 		case .assistant: return Color(nsColor: .controlBackgroundColor).opacity(0.9)
 		case .system: return Color.orange.opacity(0.10)
 		}
+	}
+}
+
+struct MessageDetailsDisclosure: View {
+	let details: [String]
+	@State private var isExpanded = false
+
+	private var visibleDetails: [MessageDetailItem] {
+		details.suffix(8).map { MessageDetailItem(rawValue: $0) }
+	}
+
+	private var title: String {
+		let count = details.count
+		return count == 1 ? "1 detail" : "\(count) details"
+	}
+
+	private var preview: String {
+		visibleDetails.last?.preview ?? ""
+	}
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 7) {
+			Button {
+				withAnimation(.easeOut(duration: 0.16)) {
+					isExpanded.toggle()
+				}
+			} label: {
+				HStack(spacing: 6) {
+					Image(systemName: "chevron.right")
+						.font(.caption2.weight(.bold))
+						.rotationEffect(.degrees(isExpanded ? 90 : 0))
+						.foregroundStyle(.secondary)
+						.frame(width: 10)
+					Text(title)
+						.font(.caption.weight(.semibold))
+						.foregroundStyle(.secondary)
+					if !preview.isEmpty && !isExpanded {
+						Text(preview)
+							.font(.caption)
+							.foregroundStyle(.tertiary)
+							.lineLimit(1)
+							.truncationMode(.tail)
+					}
+					Spacer(minLength: 0)
+				}
+				.contentShape(Rectangle())
+			}
+			.buttonStyle(.plain)
+			.help(isExpanded ? "Hide message details" : "Show message details")
+
+			if isExpanded {
+				VStack(alignment: .leading, spacing: 7) {
+					ForEach(Array(visibleDetails.enumerated()), id: \.offset) { index, detail in
+						MessageDetailBlock(index: details.count - visibleDetails.count + index + 1, detail: detail)
+					}
+				}
+				.transition(.opacity.combined(with: .move(edge: .top)))
+			}
+		}
+	}
+}
+
+struct MessageDetailBlock: View {
+	let index: Int
+	let detail: MessageDetailItem
+
+	var body: some View {
+		VStack(alignment: .leading, spacing: 5) {
+			HStack(spacing: 6) {
+				Text("#\(index)")
+					.font(.caption2.weight(.semibold))
+					.foregroundStyle(.secondary)
+				if detail.isJSON {
+					Text("JSON")
+						.font(.caption2.weight(.semibold))
+						.foregroundStyle(.tertiary)
+				}
+				Spacer(minLength: 0)
+			}
+			Text(detail.displayValue)
+				.font(.system(size: 11, design: detail.isJSON ? .monospaced : .default))
+				.foregroundStyle(.secondary)
+				.textSelection(.enabled)
+				.fixedSize(horizontal: false, vertical: true)
+				.frame(maxWidth: .infinity, alignment: .leading)
+		}
+		.padding(.horizontal, 8)
+		.padding(.vertical, 7)
+		.frame(maxWidth: .infinity, alignment: .leading)
+		.background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
+	}
+}
+
+struct MessageDetailItem {
+	let rawValue: String
+	let displayValue: String
+	let preview: String
+	let isJSON: Bool
+
+	init(rawValue: String) {
+		let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+		if let formatted = Self.prettyPrintedJSON(from: trimmed) {
+			self.rawValue = rawValue
+			displayValue = formatted
+			preview = Self.compactPreview(from: formatted)
+			isJSON = true
+		} else {
+			self.rawValue = rawValue
+			displayValue = trimmed
+			preview = Self.compactPreview(from: trimmed)
+			isJSON = false
+		}
+	}
+
+	private static func prettyPrintedJSON(from value: String) -> String? {
+		guard value.first == "{" || value.first == "[" else { return nil }
+		guard let data = value.data(using: .utf8),
+			  let object = try? JSONSerialization.jsonObject(with: data),
+			  JSONSerialization.isValidJSONObject(object),
+			  let formatted = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]),
+			  let text = String(data: formatted, encoding: .utf8) else {
+			return nil
+		}
+		return text
+	}
+
+	private static func compactPreview(from value: String) -> String {
+		value
+			.replacingOccurrences(of: "\n", with: " ")
+			.replacingOccurrences(of: "\t", with: " ")
+			.split(separator: " ")
+			.joined(separator: " ")
 	}
 }
 

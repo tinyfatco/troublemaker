@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { RuntimeToolOutputStream } from "../../core/runtime-contract.js";
 import type { Executor } from "../../sandbox.js";
-import { isHostBashRequest, type HostBashResponse } from "./protocol.js";
+import { isHostBashRequest, isHostToolExecuteRequest, type HostBashResponse, type HostToolExecuteResponse } from "./protocol.js";
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
 	const chunks: Buffer[] = [];
@@ -14,6 +15,14 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
 }
 
 function writeJson(res: ServerResponse, status: number, body: HostBashResponse): void {
+	res.writeHead(status, {
+		"Content-Type": "application/json",
+		"Cache-Control": "no-store",
+	});
+	res.end(JSON.stringify(body));
+}
+
+function writeToolJson(res: ServerResponse, status: number, body: HostToolExecuteResponse): void {
 	res.writeHead(status, {
 		"Content-Type": "application/json",
 		"Cache-Control": "no-store",
@@ -52,6 +61,11 @@ function isAuthorized(req: IncomingMessage, authToken?: string): boolean {
 
 export interface HostBashRouteOptions {
 	executor: Executor;
+	authToken?: string;
+}
+
+export interface HostToolExecuteRouteOptions {
+	tools: () => AgentTool<any>[];
 	authToken?: string;
 }
 
@@ -100,6 +114,43 @@ export function createHostBashRoute(options: HostBashRouteOptions) {
 					return;
 				}
 				writeJson(res, 500, {
+					ok: false,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	};
+}
+
+export function createHostToolExecuteRoute(options: HostToolExecuteRouteOptions) {
+	return (req: IncomingMessage, res: ServerResponse): void => {
+		if (!isAuthorized(req, options.authToken)) {
+			writeToolJson(res, 401, { ok: false, error: "Unauthorized" });
+			return;
+		}
+
+		readJson(req)
+			.then(async (payload) => {
+				if (!isHostToolExecuteRequest(payload)) {
+					writeToolJson(res, 400, { ok: false, error: "Invalid tool request" });
+					return;
+				}
+
+				const tool = options.tools().find((candidate) => candidate.name === payload.tool);
+				if (!tool) {
+					writeToolJson(res, 404, { ok: false, error: `Tool not available: ${payload.tool}` });
+					return;
+				}
+
+				const args = { ...payload.args };
+				if (typeof args.label !== "string" || !args.label.trim()) {
+					args.label = `Realtime ${tool.name}`;
+				}
+
+				const result = await tool.execute(`realtime-${Date.now()}`, args);
+				writeToolJson(res, 200, { ok: true, result });
+			})
+			.catch((err) => {
+				writeToolJson(res, 500, {
 					ok: false,
 					error: err instanceof Error ? err.message : String(err),
 				});

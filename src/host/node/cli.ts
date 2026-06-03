@@ -33,10 +33,11 @@ import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from ".
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import { Gateway } from "../../gateway.js";
 import * as log from "../../log.js";
-import { createExecutor, parseSandboxArg, type SandboxConfig, validateSandbox } from "../../sandbox.js";
+import { createExecutor, parseSandboxArg, type Executor, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
-import { createHostBashRoute } from "../../modes/host/index.js";
+import { createHostBashRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
+import { createMomTools } from "../../tools/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
 import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
@@ -912,6 +913,22 @@ const gateway = new Gateway({
 	workspaceDir: workingDir,
 });
 
+function shellEscape(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function withExecutorCwd(executor: Executor, cwd: string): Executor {
+	const workspacePath = shellEscape(executor.getWorkspacePath(cwd));
+	return {
+		exec(command, options) {
+			return executor.exec(`cd ${workspacePath} && ${command}`, options);
+		},
+		getWorkspacePath(hostPath) {
+			return executor.getWorkspacePath(hostPath);
+		},
+	};
+}
+
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
 	const running = isRunBusy() ? [AWARENESS_DIR] : [];
@@ -939,11 +956,31 @@ gateway.registerUpgrade("/terminal", handleTerminalUpgrade(workingDir));
 
 // Host tool bridge — lets the Worker edge runtime wake this container only when
 // host-local execution is required. Crawdad calls this via sandbox.fetch.
+const hostToolExecutor = withExecutorCwd(createExecutor(sandbox), workingDir);
 gateway.register("/host/tools/bash", createHostBashRoute({
-	executor: createExecutor(sandbox),
+	executor: hostToolExecutor,
 	authToken: process.env.FAT_TOOLS_TOKEN,
 }));
 gateway.markReady("/host/tools/bash");
+
+gateway.register("/host/tools/execute", createHostToolExecuteRoute({
+	authToken: process.env.FAT_TOOLS_TOKEN,
+	tools: () => {
+		const byName = new Map(
+			[
+				...createMomTools(hostToolExecutor, workingDir),
+				createSendMessageTool(adapters),
+				createListChannelsTool(workingDir, adapters),
+				createReadThreadTool(workingDir, adapters),
+				...mcpBridge.tools(),
+			]
+				.filter((tool) => tool.name !== "speak")
+				.map((tool) => [tool.name, tool] as const),
+		);
+		return Array.from(byName.values());
+	},
+}));
+gateway.markReady("/host/tools/execute");
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
 // authenticates the operator upstream; the container trusts the worker.
