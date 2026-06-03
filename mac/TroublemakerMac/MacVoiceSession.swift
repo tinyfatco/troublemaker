@@ -358,8 +358,11 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
 			guard let self else { return }
 			self.lock.withLock {
-				if let current = self.realtimeBargeInArmedAt,
-				   current <= Date() {
+				if let current = self.realtimeBargeInArmedAt {
+					if current <= Date() {
+						self.micSuppressed = false
+					}
+				} else {
 					self.micSuppressed = false
 				}
 			}
@@ -424,12 +427,19 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	}
 
 	private func setState(_ newState: VoiceRuntimeState, _ message: String) {
+		let shouldReleaseRealtimeMic = newState == .listening && provider?.kind == .openAIRealtime
 		lock.withLock { state = newState }
+		if shouldReleaseRealtimeMic {
+			lock.withLock { micSuppressed = false }
+		}
 		if newState == .listening {
 			flushAudioIfNeeded()
 		}
 		if newState == .listening || newState == .idle || newState == .error {
 			lock.withLock {
+				if newState == .idle || newState == .error {
+					micSuppressed = false
+				}
 				realtimeBargeInArmedAt = nil
 				realtimeBargeInGuardActive = false
 			}
