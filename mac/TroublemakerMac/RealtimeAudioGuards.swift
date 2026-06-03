@@ -2,6 +2,7 @@ import Foundation
 
 struct OpenAIRealtimeSessionConfig {
 	static let vadThreshold = NSDecimalNumber(string: "0.6")
+	static let playbackDrainHoldSeconds: TimeInterval = 0.65
 
 	static func audioConfig(voiceName: String) -> [String: Any] {
 		[
@@ -40,6 +41,10 @@ struct RealtimeMicSuppressionGate {
 		guardActive = true
 		self.armedAt = armedAt
 		micSuppressed = true
+	}
+
+	mutating func holdAfterPlayback(until releaseAt: Date) {
+		arm(armedAt: releaseAt)
 	}
 
 	mutating func releaseAfterDelayIfNeeded(now: Date) {

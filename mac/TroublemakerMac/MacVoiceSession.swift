@@ -119,6 +119,9 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	private var pendingAudioFormat: VoiceAudioPayload?
 	private var micSuppressed = false
 	private var realtimeMicGate = RealtimeMicSuppressionGate()
+	private var pendingRealtimeListeningRelease = false
+	private var realtimePlayedAudioInResponse = false
+	private var realtimeMicReleaseWorkItem: DispatchWorkItem?
 
 	func start(
 		kind: VoiceProviderKind,
@@ -162,12 +165,16 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		player = nil
 		playbackNode.stop()
 		playbackEngine.stop()
+		realtimeMicReleaseWorkItem?.cancel()
 		lock.withLock {
 			scheduledPCMBufferCount = 0
 			pendingAudio.removeAll()
 			pendingAudioFormat = nil
 			micSuppressed = false
 			realtimeMicGate.reset()
+			pendingRealtimeListeningRelease = false
+			realtimePlayedAudioInResponse = false
+			realtimeMicReleaseWorkItem = nil
 		}
 		setState(.idle, "Voice stopped.")
 	}
@@ -281,14 +288,17 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		guard let buffer = Self.pcmFloatBuffer(pcm16: data, sampleRate: sampleRate) else { return }
 		do {
 			try ensurePlaybackEngine(sampleRate: sampleRate)
-			let suppressMic = provider?.kind != .openAIRealtime
-			let shouldArmRealtime = provider?.kind == .openAIRealtime && lock.withLock { !realtimeMicGate.guardActive }
+			let isRealtime = provider?.kind == .openAIRealtime
+			let suppressMic = !isRealtime
+			let shouldArmRealtime = isRealtime && lock.withLock { !realtimeMicGate.guardActive }
 			if shouldArmRealtime {
 				suppressRealtimeMicDuringPlayback()
 			}
 			lock.withLock {
 				if suppressMic {
 					micSuppressed = true
+				} else {
+					realtimePlayedAudioInResponse = true
 				}
 				scheduledPCMBufferCount += 1
 			}
@@ -323,11 +333,18 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	}
 
 	private func completeScheduledPCMBuffer(releaseMic: Bool) {
+		var shouldReleaseRealtimeAfterDrain = false
 		lock.withLock {
 			scheduledPCMBufferCount = max(0, scheduledPCMBufferCount - 1)
 			if releaseMic && scheduledPCMBufferCount == 0 {
 				micSuppressed = false
 			}
+			if !releaseMic && scheduledPCMBufferCount == 0 && pendingRealtimeListeningRelease {
+				shouldReleaseRealtimeAfterDrain = true
+			}
+		}
+		if shouldReleaseRealtimeAfterDrain {
+			scheduleRealtimeMicReleaseAfterPlaybackDrain()
 		}
 	}
 
@@ -335,12 +352,16 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		player?.stop()
 		player = nil
 		playbackNode.stop()
+		realtimeMicReleaseWorkItem?.cancel()
 		lock.withLock {
 			scheduledPCMBufferCount = 0
 			pendingAudio.removeAll()
 			pendingAudioFormat = nil
 			micSuppressed = false
 			realtimeMicGate.reset()
+			pendingRealtimeListeningRelease = false
+			realtimePlayedAudioInResponse = false
+			realtimeMicReleaseWorkItem = nil
 		}
 		setState(.transcribing, "Interrupted; listening...")
 	}
@@ -358,7 +379,8 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		}
 	}
 
-	private func flushAudioIfNeeded() {
+	@discardableResult
+	private func flushAudioIfNeeded() -> Bool {
 		let payload: VoiceAudioPayload? = lock.withLock {
 			guard !pendingAudio.isEmpty, let format = pendingAudioFormat else { return nil }
 			let data = pendingAudio
@@ -371,7 +393,7 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 				return .pcm16(data, sampleRate: sampleRate)
 			}
 		}
-		guard let payload else { return }
+		guard let payload else { return false }
 
 		do {
 			let data: Data
@@ -385,10 +407,44 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 			self.player = player
 			player.delegate = self
 			player.prepareToPlay()
-			player.play()
+			return player.play()
 		} catch {
 			lock.withLock { micSuppressed = false }
 			setState(.listening, "Listening...")
+			return false
+		}
+	}
+
+	private func scheduleRealtimeMicReleaseAfterPlaybackDrain() {
+		realtimeMicReleaseWorkItem?.cancel()
+		let releaseAt = Date().addingTimeInterval(OpenAIRealtimeSessionConfig.playbackDrainHoldSeconds)
+		let workItem = DispatchWorkItem { [weak self] in
+			self?.releaseRealtimeMicAfterPlaybackDrain()
+		}
+		lock.withLock {
+			realtimeMicGate.holdAfterPlayback(until: releaseAt)
+			micSuppressed = realtimeMicGate.micSuppressed
+			realtimeMicReleaseWorkItem = workItem
+		}
+		DispatchQueue.main.asyncAfter(deadline: .now() + OpenAIRealtimeSessionConfig.playbackDrainHoldSeconds, execute: workItem)
+	}
+
+	private func releaseRealtimeMicAfterPlaybackDrain() {
+		var shouldNotify = false
+		lock.withLock {
+			guard pendingRealtimeListeningRelease, scheduledPCMBufferCount == 0 else { return }
+			pendingRealtimeListeningRelease = false
+			realtimePlayedAudioInResponse = false
+			realtimeMicReleaseWorkItem = nil
+			realtimeMicGate.releaseForListening()
+			micSuppressed = realtimeMicGate.micSuppressed
+			state = .listening
+			shouldNotify = true
+		}
+		if shouldNotify {
+			DispatchQueue.main.async { [weak self] in
+				self?.onStateChange?(.listening, "Listening with Realtime 2...")
+			}
 		}
 	}
 
@@ -409,24 +465,80 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 	}
 
 	private func setState(_ newState: VoiceRuntimeState, _ message: String) {
-		let shouldReleaseRealtimeMic = newState == .listening && provider?.kind == .openAIRealtime
-		lock.withLock { state = newState }
-		if shouldReleaseRealtimeMic {
-			lock.withLock {
-				realtimeMicGate.releaseForListening()
-				micSuppressed = realtimeMicGate.micSuppressed
+		if provider?.kind == .openAIRealtime {
+			if newState == .speaking {
+				realtimeMicReleaseWorkItem?.cancel()
+				lock.withLock {
+					realtimeMicReleaseWorkItem = nil
+					pendingRealtimeListeningRelease = false
+					realtimeMicGate.arm(armedAt: .distantFuture)
+					micSuppressed = realtimeMicGate.micSuppressed
+					state = newState
+				}
+				DispatchQueue.main.async { [weak self] in
+					self?.onStateChange?(newState, message)
+				}
+				return
+			}
+
+			if newState == .listening {
+				var shouldDeferRelease = false
+				var shouldScheduleRelease = false
+				lock.withLock {
+					if scheduledPCMBufferCount > 0 {
+						pendingRealtimeListeningRelease = true
+						state = .speaking
+						shouldDeferRelease = true
+					} else if realtimePlayedAudioInResponse {
+						pendingRealtimeListeningRelease = true
+						state = .speaking
+						shouldDeferRelease = true
+						shouldScheduleRelease = true
+					} else {
+						realtimeMicReleaseWorkItem?.cancel()
+						realtimeMicReleaseWorkItem = nil
+						pendingRealtimeListeningRelease = false
+						realtimeMicGate.releaseForListening()
+						micSuppressed = realtimeMicGate.micSuppressed
+						state = .listening
+					}
+				}
+				if shouldScheduleRelease {
+					scheduleRealtimeMicReleaseAfterPlaybackDrain()
+				}
+				if shouldDeferRelease {
+					DispatchQueue.main.async { [weak self] in
+						self?.onStateChange?(.speaking, "Finishing Realtime audio...")
+					}
+					return
+				}
+				DispatchQueue.main.async { [weak self] in
+					self?.onStateChange?(newState, message)
+				}
+				return
 			}
 		}
-		if newState == .listening {
-			flushAudioIfNeeded()
+
+		if newState == .listening, flushAudioIfNeeded() {
+			lock.withLock { state = .speaking }
+			DispatchQueue.main.async { [weak self] in
+				self?.onStateChange?(.speaking, "Speaking...")
+			}
+			return
 		}
-		if newState == .listening || newState == .idle || newState == .error {
-			lock.withLock {
-				if newState == .idle || newState == .error {
-					realtimeMicGate.reset()
-					micSuppressed = realtimeMicGate.micSuppressed
-				}
-				realtimeMicGate.releaseForListening()
+
+		lock.withLock {
+			state = newState
+			if newState == .listening {
+				micSuppressed = false
+			}
+			if newState == .idle || newState == .error {
+				realtimeMicReleaseWorkItem?.cancel()
+				realtimeMicReleaseWorkItem = nil
+				realtimeMicGate.reset()
+				micSuppressed = realtimeMicGate.micSuppressed
+				pendingRealtimeListeningRelease = false
+				realtimePlayedAudioInResponse = false
 			}
 		}
 		DispatchQueue.main.async { [weak self] in
@@ -788,26 +900,7 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 				"tools": Self.realtimeTools(),
 				"tool_choice": "auto",
 				"parallel_tool_calls": false,
-				"audio": [
-					"input": [
-						"format": ["type": "audio/pcm", "rate": 24000],
-						"noise_reduction": ["type": "far_field"],
-						"turn_detection": [
-							"type": "server_vad",
-							"create_response": false,
-							"interrupt_response": false,
-							"prefix_padding_ms": 250,
-							"silence_duration_ms": 450,
-							"threshold": NSDecimalNumber(string: "0.6"),
-						],
-						"transcription": ["model": "gpt-realtime-whisper"],
-					],
-					"output": [
-						"format": ["type": "audio/pcm", "rate": 24000],
-						"voice": voice.rawValue,
-						"speed": 1.0,
-					],
-				],
+				"audio": OpenAIRealtimeSessionConfig.audioConfig(voiceName: voice.rawValue),
 			],
 		])
 	}
