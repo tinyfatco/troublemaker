@@ -1,61 +1,53 @@
 import assert from "node:assert/strict";
-import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { Type } from "typebox";
 import {
-	createRealtimeFunctionTools,
+	createCanonicalSpeechResponse,
 	createRealtimeSessionUpdate,
 	createRealtimeVoiceInstructions,
-	formatRealtimeToolResult,
 } from "../src/adapters/realtime-voice.js";
 
-const bashTool = {
-	name: "bash",
-	label: "bash",
-	description: "Run a command.",
-	parameters: Type.Object({
-		label: Type.String(),
-		command: Type.String(),
-	}),
-	execute: async () => ({
-		content: [{ type: "text" as const, text: "ok" }],
-		details: undefined,
-	}),
-} satisfies AgentTool<any>;
-
-const speakTool = {
-	...bashTool,
-	name: "speak",
-	label: "speak",
-	description: "Legacy speech tool.",
-} satisfies AgentTool<any>;
-
 const instructions = createRealtimeVoiceInstructions();
-assert.match(instructions, /You are Zip\b/, "Realtime voice identity is Zip");
-assert.doesNotMatch(instructions, /agentName|generic/i, "Realtime prompt does not expose generic agent identity");
+assert.match(instructions, /voice transport/i, "Realtime session is explicitly transport-only");
+assert.match(instructions, /not the agent brain/i, "Realtime prompt does not pretend to be Zip's brain");
+assert.doesNotMatch(instructions, /tools for reading|running bash|send_message/i, "Realtime transport prompt does not expose mini-agent tool claims");
 
-const functionTools = createRealtimeFunctionTools([bashTool, speakTool]);
-assert.equal(functionTools.length, 1, "Realtime tool list excludes legacy speak");
-assert.equal(functionTools[0]?.name, "bash", "Realtime function tools preserve host tool names");
-assert.deepEqual((functionTools[0]?.parameters as any).required, ["label", "command"], "Realtime tools preserve JSON schema");
+const update = createRealtimeSessionUpdate({ voice: "marin" });
+const session = objectValue(update.session);
+const audio = objectValue(session.audio);
+const audioInput = objectValue(audio.input);
+const turnDetection = objectValue(audioInput.turn_detection);
+const transcription = objectValue(audioInput.transcription);
+const audioOutput = objectValue(audio.output);
+assert.equal(session.model, "gpt-realtime-2", "Realtime bridge uses gpt-realtime-2");
+assert.deepEqual(session.output_modalities, ["audio"], "Realtime transport outputs audio");
+assert.equal(transcription.model, "gpt-realtime-whisper", "Realtime session keeps Whisper as input transcription model");
+assert.equal(turnDetection.create_response, false, "Canonical runtime owns response creation");
+assert.equal(turnDetection.interrupt_response, false, "Troublemaker owns interruption");
+assert.equal(turnDetection.threshold, 0.6, "Realtime VAD threshold is stable");
+assert.equal(audioOutput.voice, "marin", "Realtime voice remains configurable");
+assert.deepEqual(session.tools, [], "Realtime transport does not expose a separate tool loop");
 
-const update = createRealtimeSessionUpdate({ voice: "marin", tools: [bashTool, speakTool] }) as any;
-assert.equal(update.session.model, "gpt-realtime-2", "Realtime bridge uses gpt-realtime-2");
-assert.equal(update.session.audio.input.transcription.model, "gpt-realtime-whisper", "Realtime session keeps Whisper as input transcription model");
-assert.equal(update.session.audio.input.turn_detection.create_response, false, "Node bridge owns response creation");
-assert.equal(update.session.audio.input.turn_detection.interrupt_response, false, "Node bridge owns interruption");
-assert.equal(update.session.audio.input.turn_detection.threshold, 0.6, "Realtime VAD threshold is stable");
-assert.equal(update.session.audio.output.voice, "marin", "Realtime voice remains configurable");
-assert.equal(update.session.tools.length, 1, "Session tools exclude speak");
+const speech = createCanonicalSpeechResponse("Hello from Zip.");
+const speechResponse = objectValue(speech.response);
+const speechInput = arrayValue(speechResponse.input);
+const firstInput = objectValue(speechInput[0]);
+const content = arrayValue(firstInput.content);
+const firstContent = objectValue(content[0]);
+assert.equal(speech.type, "response.create", "Canonical text is rendered through a Realtime response");
+assert.equal(speechResponse.conversation, "none", "Speech rendering does not pollute the Realtime transcript conversation");
+assert.deepEqual(speechResponse.output_modalities, ["audio"], "Canonical response is rendered as audio");
+assert.match(String(speechResponse.instructions), /exactly/i, "Speech response tells Realtime to read exact canonical text");
+assert.match(String(firstContent.text), /Hello from Zip\./, "Canonical Zip text is supplied to speech renderer");
 
-const resultText = formatRealtimeToolResult({
-	content: [
-		{ type: "text", text: "hello" },
-		{ type: "image", data: "abc", mimeType: "image/png" },
-	],
-	details: { ok: true },
-});
-assert.match(resultText, /hello/, "Tool result includes text content");
-assert.match(resultText, /image png|image\/png/, "Tool result mentions omitted images");
-assert.match(resultText, /"ok":true/, "Tool result includes compact details");
+console.log("realtime voice canonical bridge tests passed");
 
-console.log("realtime voice bridge tests passed");
+function objectValue(value: unknown): Record<string, unknown> {
+	assert.equal(typeof value, "object");
+	assert.notEqual(value, null);
+	assert.equal(Array.isArray(value), false);
+	return value as Record<string, unknown>;
+}
+
+function arrayValue(value: unknown): unknown[] {
+	assert.equal(Array.isArray(value), true);
+	return value as unknown[];
+}

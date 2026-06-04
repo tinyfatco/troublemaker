@@ -75,15 +75,33 @@ npm run doctor:local-mac
 npm run smoke:mac-app
 ```
 
+## Realtime Voice WebSocket
+
+For integrated voice, connect your app to:
+
+```text
+ws://127.0.0.1:3002/voice/realtime
+```
+
+Protocol:
+
+1. Send `{ "type": "start", "voice": "marin" }` as JSON.
+2. Stream mono PCM16 little-endian 24kHz microphone audio as binary frames.
+3. Receive binary mono PCM16 24kHz assistant audio plus JSON status/transcript events.
+4. Send `{ "type": "interrupt" }` to barge in or `{ "type": "stop" }` to close.
+
+OpenAI Realtime is only the audio transport: STT/VAD in, speech out. Final
+transcripts enter Troublemaker's canonical Zip runtime, so voice uses the same
+AgentRunner, memory, tools, awareness, and persistence as web/email/SMS.
+
 ## Input Webhook Payload
 
-In Yappatron or another local voice tool, send final utterances to:
+The older local webhook path still accepts finalized transcripts when an
+external STT tool owns audio capture:
 
 ```text
 http://127.0.0.1:3002/input/webhook
 ```
-
-A local client can post a final utterance to `/input/webhook`:
 
 ```json
 {

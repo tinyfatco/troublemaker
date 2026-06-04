@@ -2,22 +2,39 @@ import { appendFileSync } from "fs";
 import type { IncomingMessage } from "http";
 import type { Socket } from "net";
 import { join } from "path";
-import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import WebSocket, { WebSocketServer } from "ws";
+import {
+	beginAssistantSpeech,
+	finishAssistantSpeech,
+	shouldSuppressAssistantSpeechEcho,
+} from "../audio-feedback-guard.js";
 import * as log from "../log.js";
+import type { ChannelStore } from "../store.js";
 import type { LocalEventboxClient, LocalEventboxEvent } from "../local/eventbox-client.js";
-import { buildContextBriefing } from "../tools/realtime-context.js";
+import {
+	slashCommandHandled,
+	slashCommandPending,
+	type ChannelInfo,
+	type MomContext,
+	type MomEvent,
+	type MomHandler,
+	type PlatformAdapter,
+	type UserInfo,
+} from "./types.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2";
 const REALTIME_MODEL = "gpt-realtime-2";
 const TRANSCRIPTION_MODEL = "gpt-realtime-whisper";
 const DEFAULT_VOICE = "marin";
-const REALTIME_AGENT_NAME = "Zip";
-const MAX_TOOL_OUTPUT_CHARS = 12000;
+const REALTIME_CHANNEL_ID = "mac-realtime";
+const REALTIME_CHANNEL_NAME = "realtime voice";
+const REALTIME_USER_ID = "mac-user";
+const REALTIME_USER_NAME = "Alex";
+const OPENAI_PLACEHOLDER_KEY = "sk-tfat-egress-openai-placeholder";
 
 export interface RealtimeVoiceBridgeConfig {
 	workingDir: string;
-	tools: () => AgentTool<any>[];
+	handler: MomHandler;
 	eventbox?: LocalEventboxClient;
 }
 
@@ -33,25 +50,13 @@ interface RealtimeClientControl {
 	voice?: string;
 }
 
-export function createRealtimeVoiceInstructions(contextBriefing?: string): string {
-	const sections = [
-		"You are Zip, Alex's Troublemaker realtime voice agent running on this Mac. The user is speaking directly to you.",
-		"Answer the user's request; do not repeat, read back, or transcribe their words unless they explicitly ask you to.",
-		"You have tools for reading/editing/writing files, running bash commands, inspecting channels and Slack threads, sending user-visible messages, and querying compact Zip context.",
-		"Use get_context_briefing for cheap Zip orientation and search_context for specific past-chat lookup. Do not load full awareness/context files unless the user explicitly needs raw records.",
-		"Cloud inbound awareness may arrive while this realtime session is active. It is context only, already routed through the normal cloud delivery path; mention it aloud only if useful, and do not send a channel reply unless Alex explicitly asks you to.",
-		"Use tools when files, actions, or channel/thread routing are needed. Do not claim you lack Zip/Troublemaker context before checking the relevant tools.",
-		"Keep spoken responses concise and natural. Do not force a mascot voice, catchphrase, or exaggerated troublemaker persona. When a tool result is long, summarize the useful outcome.",
-	];
-	const briefing = contextBriefing?.trim();
-	if (briefing) {
-		sections.push([
-			"## Current Zip Context Briefing",
-			briefing,
-			"Use this briefing as the starting context for the realtime session. It may include recent persisted activity from before this WebSocket connected.",
-		].join("\n"));
-	}
-	return sections.join("\n\n");
+export function createRealtimeVoiceInstructions(): string {
+	return [
+		"You are Troublemaker's voice transport, not the agent brain.",
+		"Use the microphone audio only to produce input transcription events.",
+		"Do not answer the user from this Realtime session.",
+		"When the server creates an audio response for canonical assistant text, speak that supplied text exactly and add no extra words.",
+	].join("\n");
 }
 
 export function createRealtimeAudioConfig(voice = DEFAULT_VOICE): Record<string, unknown> {
@@ -77,51 +82,46 @@ export function createRealtimeAudioConfig(voice = DEFAULT_VOICE): Record<string,
 	};
 }
 
-export function createRealtimeFunctionTools(tools: AgentTool<any>[]): Record<string, unknown>[] {
-	return tools
-		.filter((tool) => tool.name !== "speak")
-		.map((tool) => ({
-			type: "function",
-			name: tool.name,
-			description: tool.description,
-			parameters: cloneJsonSchema(tool.parameters),
-		}));
-}
-
-export function createRealtimeSessionUpdate(
-	options: { voice?: string; tools: AgentTool<any>[]; contextBriefing?: string },
-): Record<string, unknown> {
+export function createRealtimeSessionUpdate(options: { voice?: string } = {}): Record<string, unknown> {
 	return {
 		type: "session.update",
 		session: {
 			type: "realtime",
 			model: REALTIME_MODEL,
 			output_modalities: ["audio"],
-			instructions: createRealtimeVoiceInstructions(options.contextBriefing),
-			reasoning: { effort: "low" },
-			tools: createRealtimeFunctionTools(options.tools),
-			tool_choice: "auto",
+			instructions: createRealtimeVoiceInstructions(),
+			tools: [],
 			parallel_tool_calls: false,
 			audio: createRealtimeAudioConfig(options.voice ?? DEFAULT_VOICE),
 		},
 	};
 }
 
-export function formatRealtimeToolResult(result: AgentToolResult<unknown>): string {
-	const parts: string[] = [];
-	for (const item of result.content ?? []) {
-		if (item.type === "text" && item.text.trim()) {
-			parts.push(item.text);
-		} else if (item.type === "image") {
-			parts.push(`[image ${item.mimeType || "unknown"} omitted from voice tool output]`);
-		}
-	}
-	if (result.details !== undefined) {
-		const details = safeJson(result.details);
-		if (details) parts.push(`Details: ${details}`);
-	}
-	const text = parts.join("\n").trim() || "Tool completed.";
-	return truncate(text, MAX_TOOL_OUTPUT_CHARS);
+export function createCanonicalSpeechResponse(text: string): Record<string, unknown> {
+	return {
+		type: "response.create",
+		response: {
+			conversation: "none",
+			output_modalities: ["audio"],
+			instructions: [
+				"Read the supplied text aloud exactly as written.",
+				"Do not answer, summarize, explain, translate, add greetings, add confirmations, or add sign-offs.",
+				"If the text contains Markdown, render it naturally for speech while preserving the words and meaning.",
+			].join(" "),
+			input: [
+				{
+					type: "message",
+					role: "user",
+					content: [
+						{
+							type: "input_text",
+							text: `Speak this exact canonical Zip response:\n\n${text}`,
+						},
+					],
+				},
+			],
+		},
+	};
 }
 
 export function handleRealtimeVoiceUpgrade(
@@ -139,21 +139,20 @@ export function handleRealtimeVoiceUpgrade(
 class RealtimeVoiceSession {
 	private readonly client: WebSocket;
 	private readonly config: RealtimeVoiceBridgeConfig;
+	private readonly adapter: RealtimeVoiceCanonicalAdapter;
 	private openai: WebSocket | null = null;
 	private voice = DEFAULT_VOICE;
-	private agentName = REALTIME_AGENT_NAME;
-	private responseActive = false;
-	private responseCancelSent = false;
-	private handledFunctionCallIds = new Set<string>();
-	private handledEventboxEventIds = new Set<string>();
-	private currentAssistantText = "";
+	private outputActive = false;
+	private outputCancelSent = false;
 	private userSpeechActive = false;
-	private pendingEventboxResponse = false;
+	private assistantSpeechId: string | null = null;
 	private eventboxUnsubscribe: (() => void) | null = null;
+	private closed = false;
 
 	constructor(client: WebSocket, config: RealtimeVoiceBridgeConfig) {
 		this.client = client;
 		this.config = config;
+		this.adapter = new RealtimeVoiceCanonicalAdapter(this, config.workingDir);
 	}
 
 	start(): void {
@@ -176,6 +175,51 @@ class RealtimeVoiceSession {
 		this.eventboxUnsubscribe = this.config.eventbox?.onEvent((event) => {
 			this.handleEventboxEvent(event);
 		}) ?? null;
+	}
+
+	isOutputActive(): boolean {
+		return this.outputActive;
+	}
+
+	sendRuntimeStatus(message: string): void {
+		const clean = cleanRuntimeStatus(message);
+		if (clean) this.sendClient({ type: "thinking", message: clean });
+	}
+
+	speakCanonicalText(text: string): void {
+		const clean = text.trim();
+		if (!clean || !this.openai || this.openai.readyState !== WebSocket.OPEN) return;
+
+		this.cancelOutput({ notifyClient: true });
+		this.outputActive = true;
+		this.outputCancelSent = false;
+		this.assistantSpeechId = beginAssistantSpeech(clean);
+		this.sendClient({ type: "assistant_text", text: clean });
+		this.sendClient({ type: "speaking" });
+		this.adapter.logBotResponse(REALTIME_CHANNEL_ID, clean, String(Date.now()));
+		this.publishEventboxTurn("turn.assistant.final", { text: clean });
+		this.sendOpenAI(createCanonicalSpeechResponse(clean));
+	}
+
+	emitContentBlock(block: { type: string; [key: string]: unknown }): void {
+		switch (block.type) {
+			case "toolCall": {
+				const name = stringValue(block.name) || "tool";
+				this.sendClient({ type: "thinking", message: `Using ${name}...` });
+				break;
+			}
+			case "toolResult":
+				this.sendClient({ type: "thinking", message: "Tool finished." });
+				break;
+			case "thinking":
+				this.sendClient({ type: "thinking", message: "Zip is thinking..." });
+				break;
+			case "error":
+				this.sendClient({ type: "error", message: stringValue(block.message) || "Runtime error" });
+				break;
+			default:
+				break;
+		}
 	}
 
 	private handleClientControl(data: WebSocket.RawData): void {
@@ -233,11 +277,12 @@ class RealtimeVoiceSession {
 		this.sendClient({ type: "connecting", message: "Connecting Realtime 2..." });
 
 		ws.on("open", () => {
-			log.logInfo("[realtime-voice] connected to OpenAI Realtime");
+			log.logInfo("[realtime-voice] connected to OpenAI Realtime transport");
 		});
 		ws.on("message", (data) => this.handleOpenAIMessage(data));
 		ws.on("close", () => {
 			log.logInfo("[realtime-voice] OpenAI Realtime closed");
+			this.finishOutput();
 			this.sendClient({ type: "listening" });
 		});
 		ws.on("error", (err) => {
@@ -247,164 +292,126 @@ class RealtimeVoiceSession {
 	}
 
 	private handleOpenAIMessage(data: WebSocket.RawData): void {
-		let event: Record<string, any>;
+		let event: Record<string, unknown>;
 		try {
-			event = JSON.parse(rawDataToString(data)) as Record<string, any>;
+			event = JSON.parse(rawDataToString(data)) as Record<string, unknown>;
 		} catch {
 			return;
 		}
 
 		switch (event.type) {
 			case "session.created":
-				this.sendOpenAI(createRealtimeSessionUpdate({
-					voice: this.voice,
-					tools: this.config.tools(),
-					contextBriefing: this.contextBriefing(),
-				}));
-				this.sendClient({ type: "connecting", message: "Configuring Realtime 2..." });
+				this.sendOpenAI(createRealtimeSessionUpdate({ voice: this.voice }));
+				this.sendClient({ type: "connecting", message: "Configuring Realtime 2 transport..." });
 				break;
 			case "session.updated":
-				this.sendClient({ type: "listening", message: "Realtime 2 ready." });
+				this.sendClient({ type: "listening", message: "Realtime voice ready for Zip." });
 				break;
 			case "response.created":
-				this.responseActive = true;
-				this.responseCancelSent = false;
-				this.currentAssistantText = "";
+				this.outputActive = true;
+				this.outputCancelSent = false;
+				this.sendClient({ type: "speaking" });
 				break;
-			case "input_audio_buffer.speech_started":
+			case "input_audio_buffer.speech_started": {
 				this.userSpeechActive = true;
-				this.sendClient({ type: this.responseActive ? "barge_in" : "transcribing" });
+				const wasOutputActive = this.outputActive;
+				if (wasOutputActive) this.cancelOutput({ notifyClient: true });
+				this.sendClient({ type: wasOutputActive ? "barge_in" : "transcribing" });
 				break;
+			}
 			case "input_audio_buffer.speech_stopped":
-				this.userSpeechActive = false;
-				if (this.pendingEventboxResponse && !this.responseActive) this.sendResponseCreate();
-				break;
 			case "input_audio_buffer.committed":
 				this.userSpeechActive = false;
-				if (!this.responseActive) this.sendClient({ type: "thinking" });
+				if (!this.outputActive) this.sendClient({ type: "thinking" });
 				break;
 			case "conversation.item.input_audio_transcription.delta":
 				this.sendClient({ type: "partial", text: String(event.delta ?? "") });
 				break;
 			case "conversation.item.input_audio_transcription.completed":
-				this.handleInputTranscript(String(event.transcript ?? ""));
+				void this.handleInputTranscript(String(event.transcript ?? ""));
 				break;
 			case "conversation.item.input_audio_transcription.failed":
-				if (!this.responseActive) this.sendResponseCreate();
+				this.sendClient({ type: "error", message: "Realtime transcription failed." });
 				break;
-			case "response.output_text.delta":
-			case "response.audio_transcript.delta":
-			case "response.output_audio_transcript.delta":
-				this.responseActive = true;
-				this.currentAssistantText += String(event.delta ?? "");
-				this.sendClient({ type: "assistant_text_delta", text: String(event.delta ?? "") });
-				this.sendClient({ type: "speaking" });
-				break;
-			case "response.output_text.done":
-			case "response.output_audio_transcript.done": {
-				const finalText = String(event.text ?? event.transcript ?? "");
-				if (finalText) this.currentAssistantText = finalText;
-				this.sendClient({ type: "assistant_text", text: finalText });
-				break;
-			}
 			case "response.output_audio.delta":
 			case "response.audio.delta":
-				this.responseActive = true;
+				this.outputActive = true;
 				this.sendClient({ type: "speaking" });
 				this.sendAudioDelta(String(event.delta ?? ""));
-				break;
-			case "response.output_item.done":
-				if (event.item?.type === "function_call") {
-					void this.handleFunctionCall(event.item);
-				}
 				break;
 			case "response.output_audio.done":
 			case "response.audio.done":
 				break;
 			case "response.done":
-				this.handleResponseDone(event);
+				this.finishOutput();
+				if (!this.userSpeechActive && !this.closed) {
+					this.sendClient({ type: "listening", message: "Listening for Zip..." });
+				}
 				break;
 			case "error":
-				this.sendClient({ type: "error", message: event.error?.message || event.message || "Realtime error" });
+				this.sendClient({ type: "error", message: openAIErrorMessage(event) });
 				break;
 			default:
 				break;
 		}
 	}
 
-	private handleInputTranscript(transcript: string): void {
+	private async handleInputTranscript(transcript: string): Promise<void> {
 		const text = transcript.trim();
 		if (!text) return;
 		this.sendClient({ type: "transcript", text });
-		this.logVoiceLine({ text, isBot: false });
-		this.publishEventboxTurn("turn.user.final", { text });
-		if (this.responseActive) {
-			this.responseCancelSent = true;
-			this.sendClient({ type: "interrupt_audio" });
-			this.sendOpenAI({ type: "response.cancel" });
-		}
-		this.sendResponseCreate();
-	}
-
-	private handleResponseDone(event: Record<string, any>): void {
-		const output = event.response?.output;
-		if (Array.isArray(output)) {
-			for (const item of output) {
-				if (item?.type === "function_call") {
-					void this.handleFunctionCall(item);
-				}
-			}
-		}
-		this.responseActive = false;
-		this.responseCancelSent = false;
-		const assistantText = this.currentAssistantText.trim();
-		if (assistantText) {
-			this.logVoiceLine({ text: assistantText, isBot: true });
-			this.publishEventboxTurn("turn.assistant.final", { text: assistantText });
-		}
-		if (this.pendingEventboxResponse && !this.userSpeechActive) {
-			this.sendResponseCreate();
+		const suppression = shouldSuppressAssistantSpeechEcho(text);
+		if (suppression.suppress) {
+			log.logInfo(
+				`[realtime-voice] Suppressed assistant speech echo: "${text}" ` +
+				`(${suppression.reason}, similarity=${suppression.similarity?.toFixed(2) ?? "n/a"})`,
+			);
+			this.sendClient({ type: "transcript_ignored", reason: suppression.reason });
 			return;
 		}
-		this.sendClient({ type: "listening", message: "Listening with Realtime 2..." });
+		this.cancelOutput({ notifyClient: true });
+		this.adapter.logInbound(text);
+		this.publishEventboxTurn("turn.user.final", { text });
+		await this.dispatchCanonicalUtterance(text);
 	}
 
-	private async handleFunctionCall(item: Record<string, any>): Promise<void> {
-		const callId = String(item.call_id ?? "");
-		const name = String(item.name ?? "");
-		if (!callId || !name || this.handledFunctionCallIds.has(callId)) return;
-		this.handledFunctionCallIds.add(callId);
-		this.sendClient({ type: "thinking", message: `Using ${name}...` });
-
-		const output = await this.executeTool(name, parseArguments(item.arguments));
-		this.sendOpenAI({
-			type: "conversation.item.create",
-			item: {
-				type: "function_call_output",
-				call_id: callId,
-				output,
-			},
-		});
-		this.sendResponseCreate();
-	}
-
-	private async executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-		const tool = this.config.tools().find((candidate) => candidate.name === name);
-		if (!tool) {
-			return `Tool error: Tool not available: ${name}`;
-		}
-
-		const toolArgs = { ...args };
-		if (typeof toolArgs.label !== "string" || !toolArgs.label.trim()) {
-			toolArgs.label = `Realtime ${name}`;
-		}
+	private async dispatchCanonicalUtterance(text: string): Promise<void> {
+		const event: MomEvent = {
+			type: "dm",
+			channel: REALTIME_CHANNEL_ID,
+			ts: String(Date.now()),
+			user: REALTIME_USER_ID,
+			text,
+			rawText: text,
+			sourceEventType: "realtime_voice",
+			directlyAddressed: true,
+		};
 
 		try {
-			const prepared = tool.prepareArguments ? tool.prepareArguments(toolArgs) : toolArgs;
-			const result = await tool.execute(`realtime-${Date.now()}-${name}`, prepared as any);
-			return formatRealtimeToolResult(result);
-		} catch (error) {
-			return `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+			if (this.config.handler.resolvePendingInput(REALTIME_CHANNEL_ID, text)) return;
+
+			if (text.trim().startsWith("/")) {
+				const commandResult = await this.config.handler.handleSlashCommand(event, this.adapter);
+				const pending = slashCommandPending(commandResult);
+				if (pending) await pending;
+				if (slashCommandHandled(commandResult)) return;
+			}
+
+			if (text.toLowerCase().trim() === "stop") {
+				await this.config.handler.handleStop(REALTIME_CHANNEL_ID, this.adapter);
+				return;
+			}
+
+			this.sendClient({ type: "thinking", message: "Zip is thinking..." });
+			if (this.config.handler.isRunning(REALTIME_CHANNEL_ID)) {
+				this.config.handler.handleSteer(event, this.adapter);
+				return;
+			}
+			await this.config.handler.handleEvent(event, this.adapter);
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			log.logWarning("[realtime-voice] canonical handler error", message);
+			this.sendClient({ type: "error", message });
 		}
 	}
 
@@ -420,71 +427,41 @@ class RealtimeVoiceSession {
 
 	private interrupt(): void {
 		this.sendOpenAI({ type: "input_audio_buffer.clear" });
-		this.sendClient({ type: "interrupt_audio" });
-		if (this.responseActive && !this.responseCancelSent) {
-			this.responseCancelSent = true;
+		this.cancelOutput({ notifyClient: true });
+		this.sendClient({ type: "listening", message: "Listening for Zip..." });
+	}
+
+	private cancelOutput(options: { notifyClient: boolean }): void {
+		if (options.notifyClient) this.sendClient({ type: "interrupt_audio" });
+		if (this.outputActive && !this.outputCancelSent) {
+			this.outputCancelSent = true;
 			this.sendOpenAI({ type: "response.cancel" });
 		}
-		this.sendClient({ type: "listening", message: "Listening with Realtime 2..." });
+		this.finishOutput();
 	}
 
-	private sendResponseCreate(): void {
-		this.pendingEventboxResponse = false;
-		this.sendClient({ type: "thinking", message: "Realtime 2 is thinking..." });
-		this.sendOpenAI({ type: "response.create" });
-	}
-
-	private contextBriefing(): string {
-		try {
-			const briefing = buildContextBriefing(this.config.workingDir, {
-				recentLimit: 18,
-				maxChars: 7000,
-			});
-			log.logInfo(`[realtime-voice] loaded context briefing (${briefing.length} chars)`);
-			return briefing;
-		} catch (err) {
-			log.logWarning("[realtime-voice] context briefing unavailable", err instanceof Error ? err.message : String(err));
-			return "";
+	private finishOutput(): void {
+		this.outputActive = false;
+		this.outputCancelSent = false;
+		if (this.assistantSpeechId) {
+			finishAssistantSpeech(this.assistantSpeechId);
+			this.assistantSpeechId = null;
 		}
 	}
 
 	private handleEventboxEvent(event: LocalEventboxEvent): void {
 		if (event.kind !== "cloud.inbound.observed") return;
-		const eventId = event.event_id?.trim() || `${event.kind}:${event.seq ?? ""}:${event.created_at ?? ""}`;
-		if (this.handledEventboxEventIds.has(eventId)) return;
-		this.handledEventboxEventIds.add(eventId);
 		const payload = event.payload ?? {};
 		this.sendClient({
 			type: "cloud_event",
-			eventId,
+			eventId: event.event_id,
 			message: displayCloudInbound(payload),
 		});
-		const context = formatCloudInboundContext(payload);
-		if (!context || !this.openai || this.openai.readyState !== WebSocket.OPEN) return;
-		this.sendOpenAI({
-			event_id: `eventbox_context_${sanitizeEventId(eventId)}`,
-			type: "conversation.item.create",
-			item: {
-				type: "message",
-				role: "user",
-				content: [
-					{
-						type: "input_text",
-						text: context,
-					},
-				],
-			},
-		});
-		if (this.responseActive || this.userSpeechActive) {
-			this.pendingEventboxResponse = true;
-			return;
-		}
-		this.sendResponseCreate();
 	}
 
 	private publishEventboxTurn(kind: string, payload: { text: string }): void {
 		this.config.eventbox?.publish(kind, {
-			channel: "mac-realtime",
+			channel: REALTIME_CHANNEL_ID,
 			adapter: "realtime-voice",
 			text: truncate(payload.text, 2000),
 		});
@@ -507,27 +484,12 @@ class RealtimeVoiceSession {
 		}
 	}
 
-	private logVoiceLine(entry: { text: string; isBot: boolean }): void {
-		try {
-			appendFileSync(join(this.config.workingDir, "log.jsonl"), JSON.stringify({
-				date: new Date().toISOString(),
-				ts: String(Date.now()),
-				channel: "realtime:voice",
-				channelId: "mac-realtime",
-				user: entry.isBot ? "zip" : "mac-user",
-				displayName: entry.isBot ? this.agentName : "Mac user",
-				text: truncate(entry.text, 500),
-				isBot: entry.isBot,
-				adapter: "realtime-voice",
-			}) + "\n");
-		} catch {
-			// Logging must not break a live voice turn.
-		}
-	}
-
 	private close(): void {
+		if (this.closed) return;
+		this.closed = true;
 		this.eventboxUnsubscribe?.();
 		this.eventboxUnsubscribe = null;
+		this.finishOutput();
 		this.openai?.close();
 		this.openai = null;
 		if (this.client.readyState === WebSocket.OPEN) {
@@ -536,32 +498,144 @@ class RealtimeVoiceSession {
 	}
 }
 
-function cloneJsonSchema(schema: unknown): Record<string, unknown> {
-	if (!schema || typeof schema !== "object") {
-		return { type: "object", properties: {}, required: [] };
-	}
-	return JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
-}
+class RealtimeVoiceCanonicalAdapter implements PlatformAdapter {
+	readonly name = "realtime-voice";
+	readonly maxMessageLength = 100000;
+	readonly formatInstructions = `## Realtime Voice
+You are responding through a live voice interface. Keep responses concise, natural, and spoken-friendly.
+Do not use raw Markdown formatting, long tables, or huge code blocks unless Alex explicitly asks.
+This is the canonical Zip runtime: use your normal memory, tools, workspace, and channel awareness.`;
 
-function parseArguments(raw: unknown): Record<string, unknown> {
-	if (typeof raw !== "string" || !raw.trim()) return {};
-	try {
-		const parsed = JSON.parse(raw);
-		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-			return parsed as Record<string, unknown>;
+	private readonly session: RealtimeVoiceSession;
+	private readonly workingDir: string;
+	private readonly users = new Map<string, UserInfo>();
+
+	constructor(session: RealtimeVoiceSession, workingDir: string) {
+		this.session = session;
+		this.workingDir = workingDir;
+		this.users.set(REALTIME_USER_ID, {
+			id: REALTIME_USER_ID,
+			userName: REALTIME_USER_NAME,
+			displayName: REALTIME_USER_NAME,
+		});
+	}
+
+	async start(): Promise<void> {}
+	async stop(): Promise<void> {}
+	dispatch = undefined;
+
+	logInbound(text: string): void {
+		this.logToFile({
+			date: new Date().toISOString(),
+			ts: String(Date.now()),
+			channel: "realtime:voice",
+			channelId: REALTIME_CHANNEL_ID,
+			user: REALTIME_USER_ID,
+			userName: REALTIME_USER_NAME,
+			text,
+			attachments: [],
+			isBot: false,
+			adapter: this.name,
+		});
+	}
+
+	async postMessage(_channel: string, text: string): Promise<string> {
+		this.session.speakCanonicalText(text);
+		return String(Date.now());
+	}
+
+	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {}
+	async deleteMessage(_channel: string, _ts: string): Promise<void> {}
+	async postInThread(_channel: string, _threadTs: string, _text: string): Promise<string> { return String(Date.now()); }
+	async uploadFile(_channel: string, _filePath: string, _title?: string): Promise<void> {}
+
+	logToFile(entry: object): void {
+		try {
+			appendFileSync(join(this.workingDir, "log.jsonl"), JSON.stringify(entry) + "\n");
+		} catch {
+			// Logging must not break live voice.
 		}
-	} catch {
-		// Fall through.
 	}
-	return {};
+
+	logBotResponse(channel: string, text: string, ts: string): void {
+		this.logToFile({
+			date: new Date().toISOString(),
+			ts,
+			channel: `realtime:${channel}`,
+			channelId: channel,
+			user: "zip",
+			text,
+			attachments: [],
+			isBot: true,
+			adapter: this.name,
+		});
+	}
+
+	getUser(userId: string): UserInfo | undefined {
+		return this.users.get(userId);
+	}
+
+	getChannel(channelId: string): ChannelInfo | undefined {
+		return channelId === REALTIME_CHANNEL_ID ? { id: REALTIME_CHANNEL_ID, name: REALTIME_CHANNEL_NAME } : undefined;
+	}
+
+	getAllUsers(): UserInfo[] { return Array.from(this.users.values()); }
+	getAllChannels(): ChannelInfo[] { return [{ id: REALTIME_CHANNEL_ID, name: REALTIME_CHANNEL_NAME }]; }
+
+	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
+		return {
+			message: {
+				text: event.text,
+				rawText: event.rawText ?? event.text,
+				user: event.user,
+				userName: REALTIME_USER_NAME,
+				channel: event.channel,
+				ts: event.ts,
+				eventType: event.type,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
+				threadTs: event.threadTs,
+				replyTarget: event.replyTarget,
+				replyTargetDescription: event.replyTargetDescription,
+				attachments: [],
+			},
+			channelName: REALTIME_CHANNEL_NAME,
+			channels: this.getAllChannels(),
+			users: this.getAllUsers(),
+			respond: async (text: string, shouldLog = true) => {
+				if (!shouldLog) this.session.sendRuntimeStatus(text);
+			},
+			sendFinalResponse: async (text: string) => {
+				this.session.speakCanonicalText(text);
+			},
+			respondInThread: async (_text: string) => {},
+			setTyping: async () => {},
+			uploadFile: async () => {},
+			setWorking: async (working: boolean) => {
+				if (working) {
+					this.session.sendRuntimeStatus("Zip is thinking...");
+				} else if (!this.session.isOutputActive()) {
+					this.session.sendRuntimeStatus("Listening for Zip...");
+				}
+			},
+			deleteMessage: async () => {},
+			restartWorking: async () => {
+				this.session.sendRuntimeStatus("Updating Zip's run...");
+			},
+			emitContentBlock: (block) => this.session.emitContentBlock(block),
+		};
+	}
+
+	enqueueEvent(_event: MomEvent): boolean {
+		return false;
+	}
 }
 
-function safeJson(value: unknown): string | null {
-	try {
-		return JSON.stringify(value);
-	} catch {
-		return null;
-	}
+function cleanRuntimeStatus(text: string): string {
+	return text
+		.replace(/^_+|_+$/g, "")
+		.replace(/^→\s*/, "Using ")
+		.trim();
 }
 
 function rawDataToString(data: WebSocket.RawData): string {
@@ -577,14 +651,19 @@ function sanitizeVoice(value: unknown): string {
 	return /^[a-z][a-z0-9_-]{1,32}$/.test(normalized) ? normalized : DEFAULT_VOICE;
 }
 
+function usableRealtimeKey(value: string | undefined): string | undefined {
+	const trimmed = value?.trim();
+	if (!trimmed) return undefined;
+	if (trimmed === OPENAI_PLACEHOLDER_KEY || trimmed.includes("placeholder")) return undefined;
+	return trimmed;
+}
+
 async function realtimeApiKey(clientApiKey: string | undefined, voice: string): Promise<string> {
 	const localKey = [
-		process.env.OPENAI_API_KEY,
-		process.env.MOM_OPENAI_API_KEY,
-		clientApiKey,
-	]
-		.map((value) => value?.trim())
-		.find((value): value is string => Boolean(value));
+		usableRealtimeKey(process.env.OPENAI_API_KEY),
+		usableRealtimeKey(process.env.MOM_OPENAI_API_KEY),
+		usableRealtimeKey(clientApiKey),
+	].find((value): value is string => Boolean(value));
 	if (localKey) return localKey;
 	return fetchRealtimeClientSecret(voice);
 }
@@ -638,28 +717,6 @@ function extractBrokerError(text: string): string {
 	}
 }
 
-function formatCloudInboundContext(payload: Record<string, unknown>): string {
-	const summary = stringValue(payload.summary);
-	const platform = stringValue(payload.platform) || stringValue(payload.route) || "cloud";
-	const text = stringValue(payload.text);
-	const sender = stringValue(payload.sender_name) || stringValue(payload.sender_id) || stringValue(payload.from);
-	const location = stringValue(payload.channel_id)
-		|| stringValue(payload.chat_name)
-		|| stringValue(payload.chat_id)
-		|| stringValue(payload.subject)
-		|| stringValue(payload.conversation_id);
-	if (!summary && !text) return "";
-	return [
-		"[Cloud inbound awareness]",
-		"This is context for the active Mac realtime session, not a new utterance from Alex.",
-		"The message is already on the normal Crawdad queue/container delivery path. Do not treat this as a second adapter delivery, and do not send a channel reply unless Alex explicitly asks.",
-		`Source: ${platform}${location ? ` / ${location}` : ""}${sender ? ` / from ${sender}` : ""}`,
-		summary ? `Summary: ${summary}` : "",
-		text ? `Message text: ${truncate(text, 1400)}` : "",
-		"If this seems useful to Alex right now, briefly mention it aloud. If it is routine or irrelevant, keep it in mind silently.",
-	].filter(Boolean).join("\n");
-}
-
 function displayCloudInbound(payload: Record<string, unknown>): string {
 	return stringValue(payload.summary)
 		|| stringValue(payload.text)
@@ -672,8 +729,14 @@ function stringValue(value: unknown): string {
 	return "";
 }
 
-function sanitizeEventId(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 80) || String(Date.now());
+function openAIErrorMessage(event: Record<string, unknown>): string {
+	const error = event.error;
+	if (error && typeof error === "object" && !Array.isArray(error)) {
+		const message = (error as Record<string, unknown>).message;
+		if (typeof message === "string" && message.trim()) return message.trim();
+	}
+	const message = event.message;
+	return typeof message === "string" && message.trim() ? message.trim() : "Realtime error";
 }
 
 function truncate(text: string, maxChars: number): string {
