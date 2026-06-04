@@ -1005,7 +1005,7 @@ gateway.markReady("/host/tools/execute");
 
 gateway.registerUpgrade("/voice/realtime", handleRealtimeVoiceUpgrade({
 	workingDir,
-	tools: realtimeHostTools,
+	handler,
 	eventbox: localEventbox ?? undefined,
 }));
 
