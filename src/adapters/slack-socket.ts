@@ -117,7 +117,7 @@ export class SlackSocketAdapter extends SlackBase {
 			if (this.handler.isRunning(e.channel)) {
 				this.handler.handleSteer(momEvent, this);
 			} else {
-				this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+				this.getQueue(e.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 			}
 
 			ack();
@@ -226,7 +226,7 @@ export class SlackSocketAdapter extends SlackBase {
 				if (this.handler.isRunning(e.channel)) {
 					this.handler.handleSteer(momEvent, this);
 				} else {
-					this.getQueue(e.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+					this.getQueue(e.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 				}
 			} else {
 				// Ambient engagement: non-DM, non-mention message

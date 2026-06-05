@@ -22,6 +22,7 @@ import {
 	type MomEvent,
 	type MomHandler,
 	type PlatformAdapter,
+	type RunResult,
 	type SlashCommandResult,
 } from "../../adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
@@ -755,7 +756,7 @@ function scheduleInterruptRestart(): void {
 	});
 }
 
-async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
 	const trimmed = event.text.trim();
 
 	// Lightweight slash commands are pure control-plane work and should not
@@ -817,6 +818,8 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				await platform.postMessage(event.channel, "_Stopped_");
 			}
 		}
+
+		return result;
 	} catch (err) {
 		const errMsg = err instanceof Error ? err.message : String(err);
 		log.logWarning(
@@ -827,6 +830,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			try {
 				await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
 			} catch { /* best-effort */ }
+			return { stopReason: "error", errorMessage: errMsg };
 		}
 	} finally {
 		state.running = false;
@@ -884,7 +888,7 @@ const handler: MomHandler = {
 		return resolvePendingInput(channelId, text);
 	},
 
-	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<void> {
+	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
 		const label = `${platform.name}:${event.channel}`;
 		return withGlobalRunSlot(label, () => runEventInSlot(event, platform, isEvent));
 	},

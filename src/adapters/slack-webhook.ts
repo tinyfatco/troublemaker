@@ -200,7 +200,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		if (this.handler.isRunning(event.channel)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.lastRunDone = this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+			this.lastRunDone = this.getQueue(event.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 		}
 	}
 
@@ -260,7 +260,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			if (this.handler.isRunning(event.channel)) {
 				this.handler.handleSteer(momEvent, this);
 			} else {
-				this.lastRunDone = this.getQueue(event.channel).enqueue(() => this.handler.handleEvent(momEvent, this));
+				this.lastRunDone = this.getQueue(event.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 			}
 		} else {
 			// Ambient engagement: non-DM, non-mention message — let the engagement system decide

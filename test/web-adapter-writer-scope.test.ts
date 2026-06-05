@@ -13,13 +13,23 @@ function assert(condition: boolean, msg: string) {
 	}
 }
 
-function fakeWriter() {
+type FakeWriter = {
+	events: Record<string, unknown>[];
+	errorSent: boolean;
+	send(event: Record<string, unknown>): void;
+	done(): void;
+};
+
+function fakeWriter(): FakeWriter {
 	const events: Record<string, unknown>[] = [];
 	return {
 		events,
+		errorSent: false,
 		send(event: Record<string, unknown>) {
+			if (event.type === "error") this.errorSent = true;
 			events.push(event);
 		},
+		done() {},
 	};
 }
 
@@ -50,6 +60,52 @@ internals.writerScope.run({ channelId: 'web', writer: scopedWriter }, () => {
 assert(scopedWriter.events.length === 1, 'request-scoped writer receives structured tool events');
 assert(staleWriter.events.length === 0, 'stale channel writer does not receive scoped tool events');
 assert(scopedWriter.events[0]?.type === 'toolCall', 'structured tool event is forwarded unchanged');
+
+const errorAdapter = new WebAdapter({ workingDir: process.cwd() });
+const errorWriter = fakeWriter();
+const errorInternals = errorAdapter as unknown as {
+	processMessage(payload: {
+		message: string;
+		channelId: string;
+		user: string;
+		userName: string;
+		freshContext: boolean;
+	}, writer: FakeWriter): Promise<void>;
+};
+
+errorAdapter.setHandler({
+	isRunning: () => false,
+	handleSlashCommand: async () => false,
+	handleSteer: () => {},
+	handleStop: async () => {},
+	resolvePendingInput: () => false,
+	handleEvent: async () => ({
+		stopReason: 'error',
+		errorMessage: 'No API key found for openai-codex.',
+	}),
+} as any);
+
+await errorInternals.processMessage({
+	message: 'hello',
+	channelId: 'web',
+	user: 'web-user',
+	userName: 'user',
+	freshContext: false,
+}, errorWriter);
+
+const errorEvents = errorWriter.events.filter((event) => event.type === 'error');
+assert(errorEvents.length === 1, 'run error result is surfaced as one SSE error event');
+assert(errorEvents[0]?.message === 'No API key found for openai-codex.', 'run error SSE preserves the model error message');
+
+const dedupeWriter = fakeWriter();
+const webInternals = errorAdapter as unknown as {
+	surfaceRunError(result: { stopReason: string; errorMessage?: string }, writer: FakeWriter): void;
+};
+dedupeWriter.send({ type: 'error', message: 'Already streamed' });
+webInternals.surfaceRunError({ stopReason: 'error', errorMessage: 'Second error' }, dedupeWriter);
+const dedupeErrors = dedupeWriter.events.filter((event) => event.type === 'error');
+assert(dedupeErrors.length === 1, 'fallback run error does not duplicate an already-streamed error');
+assert(dedupeErrors[0]?.message === 'Already streamed', 'deduped error keeps the originally streamed message');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

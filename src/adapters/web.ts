@@ -13,6 +13,7 @@ import {
 	type MomEvent,
 	type MomHandler,
 	type PlatformAdapter,
+	type RunResult,
 	type UserInfo,
 } from "./types.js";
 
@@ -65,6 +66,7 @@ export interface WebAdapterConfig {
 class SSEWriter {
 	private res: ServerResponse;
 	private closed = false;
+	errorSent = false;
 
 	constructor(res: ServerResponse) {
 		this.res = res;
@@ -72,6 +74,9 @@ class SSEWriter {
 
 	send(event: Record<string, unknown>): void {
 		if (this.closed) return;
+		if (event.type === "error") {
+			this.errorSent = true;
+		}
 		try {
 			this.res.write(`data: ${JSON.stringify(event)}\n\n`);
 		} catch {
@@ -365,7 +370,8 @@ Keep responses concise and helpful.`;
 					writer.send({ type: "heartbeat", ts: Date.now() });
 				}, 12000);
 			}
-			await this.handler.handleEvent(event, this);
+			const result = await this.handler.handleEvent(event, this);
+			this.surfaceRunError(result, writer);
 		} finally {
 			if (keepalive) clearInterval(keepalive);
 			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
@@ -373,6 +379,22 @@ Keep responses concise and helpful.`;
 			}
 			writer?.done();
 		}
+	}
+
+	private surfaceRunError(result: RunResult | void, writer?: SSEWriter): void {
+		if (!writer || writer.errorSent || !result) return;
+		if (result.stopReason !== "error") return;
+
+		const message = this.formatStreamError(result.errorMessage || "Run failed");
+		writer.send({ type: "error", message });
+	}
+
+	private formatStreamError(message: string): string {
+		const normalized = message.replace(/\s+/g, " ").trim();
+		const redacted = normalized
+			.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
+			.replace(/\b(?:sk|sess|ghp|gho|github_pat)_[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
+		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	}
 
 	private async waitForIdle(channelId: string, writer: SSEWriter): Promise<void> {

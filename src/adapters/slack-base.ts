@@ -365,7 +365,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			return false;
 		}
 		log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
-		queue.enqueue(() => this.handler.handleEvent(event, this, true));
+		queue.enqueue(async () => { await this.handler.handleEvent(event, this, true); });
 		return true;
 	}
 

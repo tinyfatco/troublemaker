@@ -206,7 +206,7 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		if (this.handler.isRunning(channelId)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.enqueueWork(channelId, () => this.handler.handleEvent(momEvent, this));
+			this.enqueueWork(channelId, async () => { await this.handler.handleEvent(momEvent, this); });
 		}
 	}
 
@@ -332,7 +332,7 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		if (this.handler.isRunning(channelId)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.enqueueWork(channelId, () => this.handler.handleEvent(momEvent, this));
+			this.enqueueWork(channelId, async () => { await this.handler.handleEvent(momEvent, this); });
 		}
 	}
 }

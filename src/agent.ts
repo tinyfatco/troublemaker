@@ -15,7 +15,7 @@ import { randomUUID } from "crypto";
 import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
 import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
-import type { MomContext } from "./adapters/types.js";
+import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import {
 	buildSessionPreamble,
@@ -70,7 +70,7 @@ export interface AgentRunner {
 		ctx: MomContext,
 		store: ChannelStore,
 		pendingMessages?: PendingMessage[],
-	): Promise<{ stopReason: string; errorMessage?: string }>;
+	): Promise<RunResult>;
 	abort(): void;
 	/** Steer a message into the active run (mid-run injection via pi-agent) */
 	steer(text: string): void;
@@ -718,7 +718,7 @@ function createRunner(
 			ctx: MomContext,
 			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
-		): Promise<{ stopReason: string; errorMessage?: string }> {
+		): Promise<RunResult> {
 			const tRun = performance.now();
 
 			// Ensure awareness directory exists

@@ -26,6 +26,11 @@ export interface MomEvent {
 	attachments?: Attachment[];
 }
 
+export interface RunResult {
+	stopReason: string;
+	errorMessage?: string;
+}
+
 export interface ChannelInfo {
 	id: string;
 	name: string;
@@ -133,7 +138,7 @@ export interface MomHandler {
 	 * Called only when isRunning() returned false for user messages.
 	 * Events always queue and pass isEvent=true.
 	 */
-	handleEvent(event: MomEvent, adapter: PlatformAdapter, isEvent?: boolean): Promise<void>;
+	handleEvent(event: MomEvent, adapter: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void>;
 
 	/**
 	 * Handle a slash command before busy/steer routing.

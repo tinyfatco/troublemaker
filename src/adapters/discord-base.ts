@@ -315,7 +315,7 @@ When mentioning users, use <@userId> format.`;
 			return false;
 		}
 		log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
-		this.enqueueWork(event.channel, () => this.handler.handleEvent(event, this, true));
+		this.enqueueWork(event.channel, async () => { await this.handler.handleEvent(event, this, true); });
 		return true;
 	}
 

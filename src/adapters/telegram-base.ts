@@ -178,7 +178,7 @@ When mentioning users, use @username format.`;
 		if (this.handler.isRunning(chatId)) {
 			this.handler.handleSteer(momEvent, this);
 		} else {
-			this.lastRunDone = this.enqueueWork(chatId, () => this.handler.handleEvent(momEvent, this));
+			this.lastRunDone = this.enqueueWork(chatId, async () => { await this.handler.handleEvent(momEvent, this); });
 		}
 	}
 
@@ -325,7 +325,7 @@ When mentioning users, use @username format.`;
 			return false;
 		}
 		log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
-		this.enqueueWork(event.channel, () => this.handler.handleEvent(event, this, true));
+		this.enqueueWork(event.channel, async () => { await this.handler.handleEvent(event, this, true); });
 		return true;
 	}
 
