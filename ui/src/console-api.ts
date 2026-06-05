@@ -220,6 +220,36 @@ export function awarenessStreamUrl(): string {
   return consoleAgentUrl('/events/stream');
 }
 
+export async function createRealtimeClientSecret(input: { voice?: string; ttlSeconds?: number } = {}): Promise<string> {
+  const body: Record<string, unknown> = {
+    ttl_seconds: input.ttlSeconds ?? 600,
+  };
+  if (input.voice) body.voice = input.voice;
+
+  const resp = await fetchWithTimeout(consoleAgentUrl('/realtime/client-secret'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, 15000);
+  if (!resp.ok) throw await readError(resp, `Realtime client secret failed: ${resp.status}`);
+
+  const data = await resp.json().catch(() => null) as unknown;
+  const value = realtimeClientSecretValue(data);
+  if (!value) throw new Error('Realtime broker response did not include a client secret value.');
+  return value;
+}
+
+function realtimeClientSecretValue(data: unknown): string | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const topLevel = (data as Record<string, unknown>).value;
+  if (typeof topLevel === 'string' && topLevel.trim()) return topLevel.trim();
+
+  const clientSecret = (data as Record<string, unknown>).client_secret;
+  if (!clientSecret || typeof clientSecret !== 'object' || Array.isArray(clientSecret)) return null;
+  const nestedValue = (clientSecret as Record<string, unknown>).value;
+  return typeof nestedValue === 'string' && nestedValue.trim() ? nestedValue.trim() : null;
+}
+
 export async function listFiles(path: string): Promise<FileNode[]> {
   const params = new URLSearchParams({ path });
   const resp = await fetchWithTimeout(consoleAgentUrl(`/files?${params}`));

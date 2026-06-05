@@ -6,6 +6,11 @@ struct TokenStore: Sendable {
 	let account: String
 	let defaultsKey: String
 
+	private enum StorageMode {
+		case keychain
+		case userDefaults
+	}
+
 	init(issuer: URL, accountSuffix: String = "tokens") {
 		service = "com.tinyfatco.troublemaker.mac"
 		account = "\(issuer.host ?? "default").\(accountSuffix)"
@@ -14,61 +19,77 @@ struct TokenStore: Sendable {
 
 	func save(_ tokens: OAuthClient.Tokens) throws {
 		let data = try JSONEncoder().encode(tokens)
-		UserDefaults.standard.set(data, forKey: defaultsKey)
-		guard usesKeychain else { return }
-
-		var query: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
-		]
-		SecItemDelete(query as CFDictionary)
-		query[kSecValueData as String] = data
-		query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-		let status = SecItemAdd(query as CFDictionary, nil)
-		guard status == errSecSuccess else { throw KeychainError(status: status) }
+		switch storageMode {
+		case .keychain:
+			UserDefaults.standard.removeObject(forKey: defaultsKey)
+			try saveKeychainData(data)
+		case .userDefaults:
+			UserDefaults.standard.set(data, forKey: defaultsKey)
+		}
 	}
 
 	func load() -> OAuthClient.Tokens? {
-		if let data = UserDefaults.standard.data(forKey: defaultsKey),
-		   let tokens = try? JSONDecoder().decode(OAuthClient.Tokens.self, from: data) {
-			return tokens
-		}
-		guard usesKeychain else { return nil }
+		switch storageMode {
+		case .keychain:
+			if let data = loadKeychainData(),
+			   let tokens = try? JSONDecoder().decode(OAuthClient.Tokens.self, from: data) {
+				return tokens
+			}
 
-		let query: [String: Any] = [
-			kSecClass as String: kSecClassGenericPassword,
-			kSecAttrService as String: service,
-			kSecAttrAccount as String: account,
-			kSecReturnData as String: true,
-			kSecMatchLimit as String: kSecMatchLimitOne,
-		]
-		var item: CFTypeRef?
-		guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-			  let data = item as? Data else {
+			if let legacyData = UserDefaults.standard.data(forKey: defaultsKey),
+			   let tokens = try? JSONDecoder().decode(OAuthClient.Tokens.self, from: legacyData) {
+				try? save(tokens)
+				UserDefaults.standard.removeObject(forKey: defaultsKey)
+				return tokens
+			}
 			return nil
+		case .userDefaults:
+			guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return nil }
+			return try? JSONDecoder().decode(OAuthClient.Tokens.self, from: data)
 		}
-		let tokens = try? JSONDecoder().decode(OAuthClient.Tokens.self, from: data)
-		if let tokens, let cached = try? JSONEncoder().encode(tokens) {
-			UserDefaults.standard.set(cached, forKey: defaultsKey)
-		}
-		return tokens
 	}
 
 	func clear() {
 		UserDefaults.standard.removeObject(forKey: defaultsKey)
-		guard usesKeychain else { return }
+		guard storageMode == .keychain else { return }
+		SecItemDelete(keychainQuery() as CFDictionary)
+	}
 
-		let query: [String: Any] = [
+	private var storageMode: StorageMode {
+		switch ProcessInfo.processInfo.environment["TROUBLEMAKER_TOKEN_STORE"]?.lowercased() {
+		case "defaults", "userdefaults", "insecure-defaults":
+			return .userDefaults
+		default:
+			return .keychain
+		}
+	}
+
+	private func keychainQuery() -> [String: Any] {
+		[
 			kSecClass as String: kSecClassGenericPassword,
 			kSecAttrService as String: service,
 			kSecAttrAccount as String: account,
 		]
-		SecItemDelete(query as CFDictionary)
 	}
 
-	private var usesKeychain: Bool {
-		ProcessInfo.processInfo.environment["TROUBLEMAKER_TOKEN_STORE"] == "keychain"
+	private func saveKeychainData(_ data: Data) throws {
+		var query = keychainQuery()
+		SecItemDelete(query as CFDictionary)
+		query[kSecValueData as String] = data
+		query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+		let status = SecItemAdd(query as CFDictionary, nil)
+		guard status == errSecSuccess else { throw KeychainError(status: status) }
+	}
+
+	private func loadKeychainData() -> Data? {
+		var query = keychainQuery()
+		query[kSecReturnData as String] = true
+		query[kSecMatchLimit as String] = kSecMatchLimitOne
+		var item: CFTypeRef?
+		guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+			return nil
+		}
+		return item as? Data
 	}
 }
 

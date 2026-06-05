@@ -36,9 +36,16 @@ export interface UseWebChatReturn {
   status: StreamStatus;
   error: string | null;
   startedAt: string | null;
-  sendMessage: (text: string) => void;
+  sendMessage: (text: string, options?: SendMessageOptions) => void;
   abortStream: () => void;
   clearError: () => void;
+}
+
+export interface SendMessageOptions {
+  source?: string;
+  channelId?: string;
+  freshContext?: boolean;
+  sessionId?: string;
 }
 
 export function useWebChat(): UseWebChatReturn {
@@ -103,7 +110,7 @@ export function useWebChat(): UseWebChatReturn {
     };
   }, [setActiveStreamingEntry]);
 
-  const sendSteeringMessage = useCallback(async (trimmed: string) => {
+  const sendSteeringMessage = useCallback(async (trimmed: string, options: SendMessageOptions = {}) => {
     const now = new Date().toISOString();
     const user: AwarenessEntry = {
       id: `live-user-${Date.now()}`,
@@ -111,8 +118,8 @@ export function useWebChat(): UseWebChatReturn {
       timestamp: now,
       role: 'user',
       content: [{ type: 'text', text: trimmed }],
-      channel: 'web',
-      userName: 'user',
+      channel: options.channelId || 'web',
+      userName: options.source || 'user',
       strippedText: trimmed,
     };
 
@@ -147,7 +154,7 @@ export function useWebChat(): UseWebChatReturn {
       const response = await fetch(postMessageUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify(createMessagePayload(trimmed, options)),
         signal: controller.signal,
       });
       debugStream('send:steering:response', {
@@ -203,11 +210,11 @@ export function useWebChat(): UseWebChatReturn {
     }
   }, [activateStreamingEntry, makeScopedStreamControls, setActiveStreamingEntry]);
 
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, options: SendMessageOptions = {}) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (shouldSendAsSteering(trimmed, !!abortControllerRef.current)) {
-      void sendSteeringMessage(trimmed);
+    if (!options.freshContext && shouldSendAsSteering(trimmed, !!abortControllerRef.current)) {
+      void sendSteeringMessage(trimmed, options);
       return;
     }
 
@@ -220,8 +227,8 @@ export function useWebChat(): UseWebChatReturn {
       timestamp: now,
       role: 'user',
       content: [{ type: 'text', text: trimmed }],
-      channel: 'web',
-      userName: 'user',
+      channel: options.channelId || 'web',
+      userName: options.source || 'user',
       strippedText: trimmed,
     };
 
@@ -262,7 +269,7 @@ export function useWebChat(): UseWebChatReturn {
         response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: trimmed }),
+          body: JSON.stringify(createMessagePayload(trimmed, options)),
           signal: controller.signal,
         });
         debugStream('send:normal:response', {
@@ -360,6 +367,16 @@ export function useWebChat(): UseWebChatReturn {
   }, []);
 
   return { localEntries, userEntry, streamingEntry, isStreaming, status, error, startedAt, sendMessage, abortStream, clearError };
+}
+
+function createMessagePayload(message: string, options: SendMessageOptions): Record<string, unknown> {
+  return {
+    message,
+    ...(options.source ? { source: options.source } : {}),
+    ...(options.channelId ? { channelId: options.channelId } : {}),
+    ...(options.freshContext ? { fresh_context: true } : {}),
+    ...(options.sessionId ? { session_id: options.sessionId } : {}),
+  };
 }
 
 const LOCAL_SLASH_ENTRY_LIMIT = 40;

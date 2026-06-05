@@ -1,5 +1,6 @@
 import { appendFileSync } from "fs";
 import type { IncomingMessage } from "http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Socket } from "net";
 import { join } from "path";
 import WebSocket, { WebSocketServer } from "ws";
@@ -36,6 +37,15 @@ export interface RealtimeVoiceBridgeConfig {
 	workingDir: string;
 	handler: MomHandler;
 	eventbox?: LocalEventboxClient;
+	localControlToken?: string;
+}
+
+export type RealtimeAuthSource = "broker" | "local" | "client" | "none";
+
+export interface RealtimeAuthPlan {
+	source: RealtimeAuthSource;
+	key?: string;
+	reason?: string;
 }
 
 interface RealtimeClientStart {
@@ -129,6 +139,12 @@ export function handleRealtimeVoiceUpgrade(
 ): (req: IncomingMessage, socket: Socket, head: Buffer) => void {
 	const wss = new WebSocketServer({ noServer: true });
 	return (req, socket, head) => {
+		if (!isRealtimeControlTokenAccepted(config.localControlToken, realtimeControlTokenFromRequest(req))) {
+			log.logWarning("[realtime-voice] rejected local client with missing or invalid control token");
+			socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+			socket.destroy();
+			return;
+		}
 		wss.handleUpgrade(req, socket, head, (ws) => {
 			wss.emit("connection", ws, req);
 			new RealtimeVoiceSession(ws, config).start();
@@ -141,6 +157,7 @@ class RealtimeVoiceSession {
 	private readonly config: RealtimeVoiceBridgeConfig;
 	private readonly adapter: RealtimeVoiceCanonicalAdapter;
 	private openai: WebSocket | null = null;
+	private openaiReady = false;
 	private voice = DEFAULT_VOICE;
 	private outputActive = false;
 	private outputCancelSent = false;
@@ -188,7 +205,7 @@ class RealtimeVoiceSession {
 
 	speakCanonicalText(text: string): void {
 		const clean = text.trim();
-		if (!clean || !this.openai || this.openai.readyState !== WebSocket.OPEN) return;
+		if (!clean || !this.openai || this.openai.readyState !== WebSocket.OPEN || !this.openaiReady) return;
 
 		this.cancelOutput({ notifyClient: true });
 		this.outputActive = true;
@@ -259,7 +276,7 @@ class RealtimeVoiceSession {
 		if (!apiKey) {
 			this.sendClient({
 				type: "error",
-				message: "Missing Realtime 2 credentials. Sign in to TinyFat for brokered access or configure OPENAI_API_KEY locally.",
+				message: "Missing Realtime 2 credentials. Sign in to TinyFat for brokered access or explicitly configure local Realtime credentials.",
 			});
 			return;
 		}
@@ -268,10 +285,16 @@ class RealtimeVoiceSession {
 
 	private connectOpenAI(apiKey: string): void {
 		this.openai?.close();
+		this.openaiReady = false;
+		const headers: Record<string, string> = {
+			Authorization: `Bearer ${apiKey}`,
+		};
+		const safetyIdentifier = realtimeSafetyIdentifier(process.env);
+		if (safetyIdentifier) {
+			headers["OpenAI-Safety-Identifier"] = safetyIdentifier;
+		}
 		const ws = new WebSocket(OPENAI_REALTIME_URL, {
-			headers: {
-				Authorization: `Bearer ${apiKey}`,
-			},
+			headers,
 		});
 		this.openai = ws;
 		this.sendClient({ type: "connecting", message: "Connecting Realtime 2..." });
@@ -282,6 +305,7 @@ class RealtimeVoiceSession {
 		ws.on("message", (data) => this.handleOpenAIMessage(data));
 		ws.on("close", () => {
 			log.logInfo("[realtime-voice] OpenAI Realtime closed");
+			this.openaiReady = false;
 			this.finishOutput();
 			this.sendClient({ type: "listening" });
 		});
@@ -305,6 +329,7 @@ class RealtimeVoiceSession {
 				this.sendClient({ type: "connecting", message: "Configuring Realtime 2 transport..." });
 				break;
 			case "session.updated":
+				this.openaiReady = true;
 				this.sendClient({ type: "listening", message: "Realtime voice ready for Zip." });
 				break;
 			case "response.created":
@@ -416,7 +441,7 @@ class RealtimeVoiceSession {
 	}
 
 	private forwardAudio(data: WebSocket.RawData): void {
-		if (!this.openai || this.openai.readyState !== WebSocket.OPEN) return;
+		if (!this.openai || this.openai.readyState !== WebSocket.OPEN || !this.openaiReady) return;
 		const buffer = data instanceof Buffer ? data : Buffer.from(data as ArrayBuffer);
 		if (buffer.byteLength === 0) return;
 		this.sendOpenAI({
@@ -492,6 +517,7 @@ class RealtimeVoiceSession {
 		this.finishOutput();
 		this.openai?.close();
 		this.openai = null;
+		this.openaiReady = false;
 		if (this.client.readyState === WebSocket.OPEN) {
 			this.client.close();
 		}
@@ -638,6 +664,32 @@ function cleanRuntimeStatus(text: string): string {
 		.trim();
 }
 
+function realtimeControlTokenFromRequest(req: IncomingMessage): string | undefined {
+	const headerToken = headerString(req.headers["x-tinyfat-local-control"]);
+	if (headerToken) return headerToken;
+	try {
+		const url = new URL(req.url ?? "/", "http://127.0.0.1");
+		return stringValue(url.searchParams.get("local_control_token"));
+	} catch {
+		return undefined;
+	}
+}
+
+export function isRealtimeControlTokenAccepted(expected: string | undefined, provided: string | undefined): boolean {
+	const cleanExpected = stringValue(expected);
+	if (!cleanExpected) return true;
+	const cleanProvided = stringValue(provided);
+	if (!cleanProvided) return false;
+	const expectedBytes = Buffer.from(cleanExpected, "utf-8");
+	const providedBytes = Buffer.from(cleanProvided, "utf-8");
+	return expectedBytes.byteLength === providedBytes.byteLength && timingSafeEqual(expectedBytes, providedBytes);
+}
+
+function headerString(value: unknown): string {
+	if (Array.isArray(value)) return stringValue(value[0]);
+	return stringValue(value);
+}
+
 function rawDataToString(data: WebSocket.RawData): string {
 	if (typeof data === "string") return data;
 	if (data instanceof Buffer) return data.toString("utf-8");
@@ -659,13 +711,18 @@ function usableRealtimeKey(value: string | undefined): string | undefined {
 }
 
 async function realtimeApiKey(clientApiKey: string | undefined, voice: string): Promise<string> {
-	const localKey = [
-		usableRealtimeKey(process.env.OPENAI_API_KEY),
-		usableRealtimeKey(process.env.MOM_OPENAI_API_KEY),
-		usableRealtimeKey(clientApiKey),
-	].find((value): value is string => Boolean(value));
-	if (localKey) return localKey;
-	return fetchRealtimeClientSecret(voice);
+	const plan = resolveRealtimeAuthPlan({ clientApiKey });
+	switch (plan.source) {
+		case "broker":
+			return fetchRealtimeClientSecret(voice);
+		case "local":
+		case "client":
+			return plan.key ?? "";
+		case "none":
+			if (plan.reason) throw new Error(plan.reason);
+			return "";
+	}
+	return "";
 }
 
 async function fetchRealtimeClientSecret(voice: string): Promise<string> {
@@ -675,16 +732,21 @@ async function fetchRealtimeClientSecret(voice: string): Promise<string> {
 	if (!baseUrl || !agentId || !accessToken) return "";
 
 	const url = new URL(`/api/v2/agents/${agentId}/realtime/client-secret`, baseUrl);
+	const body: Record<string, unknown> = {
+		voice,
+		ttl_seconds: 600,
+	};
+	const safetyIdentifier = realtimeSafetyIdentifier(process.env);
+	if (safetyIdentifier) {
+		body.safety_identifier = safetyIdentifier;
+	}
 	const response = await fetch(url, {
 		method: "POST",
 		headers: {
 			Authorization: `Bearer ${accessToken}`,
 			"Content-Type": "application/json",
 		},
-		body: JSON.stringify({
-			voice,
-			ttl_seconds: 600,
-		}),
+		body: JSON.stringify(body),
 	});
 	const text = await response.text();
 	if (!response.ok) {
@@ -705,6 +767,85 @@ async function fetchRealtimeClientSecret(voice: string): Promise<string> {
 	}
 	log.logInfo("[realtime-voice] using brokered OpenAI Realtime client secret");
 	return value.trim();
+}
+
+export function resolveRealtimeAuthPlan(options: { env?: Record<string, string | undefined>; clientApiKey?: string } = {}): RealtimeAuthPlan {
+	const env = options.env ?? process.env;
+	const mode = stringValue(env.TROUBLEMAKER_REALTIME_AUTH).toLowerCase();
+	const brokerConfig = {
+		baseUrl: stringValue(env.TROUBLEMAKER_CLOUD_BASE_URL),
+		agentId: stringValue(env.TROUBLEMAKER_CLOUD_AGENT_ID),
+		accessToken: stringValue(env.TROUBLEMAKER_CLOUD_ACCESS_TOKEN),
+	};
+	const brokerConfigured = Boolean(brokerConfig.baseUrl && brokerConfig.agentId && brokerConfig.accessToken);
+	const cloudMarked = Boolean(brokerConfig.agentId || brokerConfig.accessToken);
+	const localKey = [
+		usableRealtimeKey(env.OPENAI_API_KEY),
+		usableRealtimeKey(env.MOM_OPENAI_API_KEY),
+	].find((value): value is string => Boolean(value));
+	const clientKey = usableRealtimeKey(options.clientApiKey);
+
+	if (mode === "none" || mode === "disabled") {
+		return { source: "none", reason: "Realtime credentials disabled by TROUBLEMAKER_REALTIME_AUTH." };
+	}
+
+	if (mode === "broker" || mode === "cloud" || mode === "managed" || (cloudMarked && mode !== "local" && mode !== "direct")) {
+		if (brokerConfigured) return { source: "broker" };
+		return {
+			source: "none",
+			reason: "Realtime broker is selected, but TROUBLEMAKER_CLOUD_BASE_URL, TROUBLEMAKER_CLOUD_AGENT_ID, or TROUBLEMAKER_CLOUD_ACCESS_TOKEN is missing.",
+		};
+	}
+
+	if ((mode === "client" || mode === "client-key") && clientKey) {
+		return { source: "client", key: clientKey };
+	}
+
+	if (mode === "client" || mode === "client-key") {
+		return { source: "none", reason: "Realtime client-key mode selected, but no client Realtime key was provided." };
+	}
+
+	if (localKey) return { source: "local", key: localKey };
+
+	if (clientKey && truthy(env.TROUBLEMAKER_ALLOW_CLIENT_REALTIME_KEY)) {
+		return { source: "client", key: clientKey };
+	}
+
+	if (clientKey) {
+		return {
+			source: "none",
+			reason: "Client-supplied Realtime API keys are disabled. Sign in to TinyFat or set TROUBLEMAKER_ALLOW_CLIENT_REALTIME_KEY=1 for local testing.",
+		};
+	}
+
+	return {
+		source: "none",
+		reason: "Missing Realtime 2 credentials. Sign in to TinyFat for brokered access or set TROUBLEMAKER_REALTIME_AUTH=local with OPENAI_API_KEY.",
+	};
+}
+
+export function realtimeSafetyIdentifier(env: Record<string, string | undefined> = process.env): string {
+	const parts = [
+		stringValue(env.TROUBLEMAKER_CLOUD_AGENT_ID),
+		stringValue(env.TROUBLEMAKER_LOCAL_AGENT_ID),
+		stringValue(env.TROUBLEMAKER_AGENT_PROFILE),
+		stringValue(env.TROUBLEMAKER_TENANT_ID),
+	].filter(Boolean);
+	if (parts.length === 0) return "";
+	const digest = createHash("sha256").update(parts.join("\0")).digest("hex");
+	return `tfat:${digest.slice(0, 48)}`;
+}
+
+function truthy(value: string | undefined): boolean {
+	switch (stringValue(value).toLowerCase()) {
+		case "1":
+		case "true":
+		case "yes":
+		case "on":
+			return true;
+		default:
+			return false;
+	}
 }
 
 function extractBrokerError(text: string): string {

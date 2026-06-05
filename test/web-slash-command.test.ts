@@ -101,13 +101,15 @@ async function run() {
 		let eventCount = 0;
 		let steerCount = 0;
 		let stopCount = 0;
+		let lastEvent: MomEvent | undefined;
 		const slowSlashGate = deferred();
 		let slowSlashStarted = false;
 
 		const handler: MomHandler = {
 			isRunning: () => running,
-			handleEvent: async () => {
+			handleEvent: async (event) => {
 				eventCount++;
+				lastEvent = event;
 			},
 			handleSlashCommand: async (event: MomEvent, adapter: PlatformAdapter) => {
 				slashCount++;
@@ -165,6 +167,18 @@ async function run() {
 		running = false;
 		await dispatch(adapter, { message: "hello again" });
 		assert(eventCount === 1, "normal idle message starts an agent run");
+
+		await dispatch(adapter, {
+			message: "voice turn",
+			source: "web-voice",
+			channelId: "web-voice",
+			fresh_context: true,
+			session_id: "voice-session-1",
+		});
+		assert(eventCount === 2, "fresh voice message starts an agent run");
+		assert(lastEvent?.freshContext === true, "fresh voice message carries freshContext into handler");
+		assert(lastEvent?.sessionId === "voice-session-1", "fresh voice message carries session id into handler");
+		assert(lastEvent?.sourceEventType === "web_voice", "fresh voice message marks source event type");
 
 		running = true;
 		const stopResponse = await dispatchStop(adapter);

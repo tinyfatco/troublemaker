@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Security
 import SwiftUI
 
 enum AssistantPhase: String {
@@ -146,11 +147,12 @@ final class AppModel: ObservableObject {
 	private var sendTask: Task<Void, Never>?
 	private var voiceAssistantMessageID: UUID?
 	private var persistedEventKeys = Set<String>()
+	private let localControlToken = AppModel.makeLocalControlToken()
 
 	init(projectRoot: URL? = nil, profile overrideProfile: TenantRuntimeProfile? = nil, oauth: OAuthClient = OAuthClient()) {
 		let resolvedRoot = (try? BundlePaths.projectRoot()) ?? projectRoot ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
 		let savedBinding = AgentBindingStore().load()
-		let resolvedProfile = overrideProfile ?? savedBinding.map { TenantRuntimeProfile.cloudBound($0) } ?? .signedOut()
+		let resolvedProfile = overrideProfile ?? savedBinding.map { TenantRuntimeProfile.cloudBound($0) } ?? .current()
 
 		self.projectRoot = resolvedRoot
 		self.oauth = oauth
@@ -171,13 +173,16 @@ final class AppModel: ObservableObject {
 		if let savedBinding {
 			recordActivity(.status, title: "Agent selected", detail: savedBinding.name, symbol: "person.badge.key")
 		} else {
-			recordActivity(.status, title: "Awaiting sign-in", detail: "No cloud agent is bound to this Mac.", symbol: "lock")
+			recordActivity(.status, title: "Local runtime", detail: resolvedProfile.agentName, symbol: "desktopcomputer")
 		}
 		wireVoiceCallbacks()
 	}
 
 	var canUseBoundRuntime: Bool {
-		authPhase.isSignedIn && selectedCloudBinding != nil
+		if profile.isCloudBound {
+			return authPhase.isSignedIn && selectedCloudBinding != nil
+		}
+		return true
 	}
 
 	var canUseJarvisChat: Bool {
@@ -236,7 +241,7 @@ final class AppModel: ObservableObject {
 				self.beginBackendMonitoring()
 			} else {
 				self.backend.state = .stopped
-				self.backend.message = "Sign in and choose an agent."
+				self.backend.message = "Sign in to use the selected cloud agent."
 				self.phase = .idle
 			}
 		}
@@ -334,11 +339,11 @@ final class AppModel: ObservableObject {
 		authPhase = .signedOut
 		authError = nil
 		stopBackend()
-		applyRuntimeProfile(.signedOut())
+		applyRuntimeProfile(.current())
 		messages = []
 		persistedEventKeys = []
 		activity = []
-		recordActivity(.status, title: "Signed out", detail: "Local runtime binding cleared.", symbol: "lock")
+		recordActivity(.status, title: "Signed out", detail: "Using local runtime profile.", symbol: "desktopcomputer")
 	}
 
 	func refreshCloudAgents() {
@@ -379,9 +384,9 @@ final class AppModel: ObservableObject {
 
 	func restartBackend(build: Bool = false) {
 		guard canUseBoundRuntime else {
-			authError = "Sign in and choose an agent before starting the local runtime."
-			backend.message = "No cloud agent selected."
-			recordActivity(.error, title: "Runtime blocked", detail: "No signed-in cloud agent is bound.", symbol: "lock")
+			authError = "Sign in before starting the selected cloud agent."
+			backend.message = "Cloud agent is not authenticated."
+			recordActivity(.error, title: "Runtime blocked", detail: authError ?? "Cloud agent is not authenticated.", symbol: "lock")
 			return
 		}
 		appendLog(build ? "Restarting backend with build." : "Restarting backend.")
@@ -447,7 +452,7 @@ final class AppModel: ObservableObject {
 
 	func startVoice() {
 		guard canUseVoice else {
-			authError = "Sign in and choose an agent before starting voice."
+			authError = profile.isCloudBound ? "Sign in and choose an agent before starting voice." : "Start the local runtime before starting voice."
 			recordActivity(.error, title: "Voice blocked", detail: authError ?? "Voice is not ready.", symbol: "mic.slash")
 			return
 		}
@@ -458,7 +463,8 @@ final class AppModel: ObservableObject {
 				kind: self.selectedVoiceProvider,
 				runtimePort: self.backend.port,
 				agentName: self.selectedAgentName,
-				realtimeVoice: self.selectedRealtimeVoice
+				realtimeVoice: self.selectedRealtimeVoice,
+				localControlToken: self.localControlToken
 			)
 		}
 	}
@@ -481,7 +487,7 @@ final class AppModel: ObservableObject {
 
 	func send(_ text: String, channelId: String = "mac") {
 		guard canUseJarvisChat else {
-			authError = "Sign in and choose an agent before sending a command."
+			authError = profile.isCloudBound ? "Sign in and choose an agent before sending a command." : "Start the local runtime before sending a command."
 			recordActivity(
 				.error,
 				title: "Command blocked",
@@ -563,7 +569,7 @@ final class AppModel: ObservableObject {
 		guard let tokens = tokenStore.load(), let cid = clientIDStore.load() else {
 			authPhase = .signedOut
 			cloudClient = nil
-			backend.message = "Sign in and choose an agent."
+			backend.message = profile.isCloudBound ? "Sign in to use the selected cloud agent." : "Local runtime profile ready."
 			return
 		}
 		clientID = cid
@@ -683,7 +689,7 @@ final class AppModel: ObservableObject {
 	private func ensureBackend() async {
 		guard canUseBoundRuntime else {
 			backend.state = .stopped
-			backend.message = "Sign in and choose an agent."
+			backend.message = "Sign in to use the selected cloud agent."
 			phase = .idle
 			return
 		}
@@ -725,7 +731,7 @@ final class AppModel: ObservableObject {
 		while !Task.isCancelled {
 			guard canUseBoundRuntime else {
 				backend.state = .stopped
-				backend.message = "Sign in and choose an agent."
+				backend.message = "Sign in to use the selected cloud agent."
 				phase = .idle
 				return
 			}
@@ -813,7 +819,10 @@ final class AppModel: ObservableObject {
 		phase = .starting
 		try? await Task.sleep(nanoseconds: 500_000_000)
 		do {
-			try supervisor.start(build: CommandLine.arguments.contains("--build"))
+			try supervisor.start(
+				build: CommandLine.arguments.contains("--build"),
+				environmentOverrides: runtimeEnvironmentOverrides()
+			)
 			return true
 		} catch {
 			backend.state = .crashed
@@ -1036,12 +1045,18 @@ final class AppModel: ObservableObject {
 	}
 
 	private func runtimeEnvironmentOverrides() -> [String: String] {
-		guard profile.cloudAgentID != nil,
-			  let token = tokenStore.load()?.accessToken,
-			  !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-			return [:]
+		var env = [
+			"TROUBLEMAKER_LOCAL_CONTROL_TOKEN": localControlToken,
+		]
+		guard profile.cloudAgentID != nil else {
+			return env
 		}
-		return ["TROUBLEMAKER_CLOUD_ACCESS_TOKEN": token]
+		if let token = tokenStore.load()?.accessToken,
+		   !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+			env["TROUBLEMAKER_CLOUD_ACCESS_TOKEN"] = token
+			env["TROUBLEMAKER_REALTIME_AUTH"] = "broker"
+		}
+		return env
 	}
 
 	private func applyProfileToPublished(_ profile: TenantRuntimeProfile) {
@@ -1049,6 +1064,16 @@ final class AppModel: ObservableObject {
 		selectedAgentName = profile.agentName
 		cloudAgentID = profile.cloudAgentID
 		tenantID = profile.tenantID
+	}
+
+	private static func makeLocalControlToken() -> String {
+		var bytes = [UInt8](repeating: 0, count: 32)
+		let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+		let data = status == errSecSuccess ? Data(bytes) : Data(UUID().uuidString.utf8)
+		return data.base64EncodedString()
+			.replacingOccurrences(of: "+", with: "-")
+			.replacingOccurrences(of: "/", with: "_")
+			.replacingOccurrences(of: "=", with: "")
 	}
 
 	private func wireSupervisorCallbacks() {

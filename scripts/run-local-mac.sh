@@ -9,6 +9,8 @@ CLOUD_AGENT_ID="${TROUBLEMAKER_CLOUD_AGENT_ID:-}"
 TENANT_ID="${TROUBLEMAKER_TENANT_ID:-}"
 CLOUD_BASE_URL="${TROUBLEMAKER_CLOUD_BASE_URL:-https://crawdad.tinyfat.com}"
 APP_OWNED_RUNTIME="${TROUBLEMAKER_APP_OWNED_RUNTIME:-0}"
+ALLOW_LOCAL_OPENAI_KEY="${TROUBLEMAKER_ALLOW_LOCAL_OPENAI_KEY:-0}"
+REALTIME_AUTH_MODE="${TROUBLEMAKER_REALTIME_AUTH:-}"
 LOCAL_AGENT_ID="${TROUBLEMAKER_LOCAL_AGENT_ID:-${CLOUD_AGENT_ID:-${AGENT_PROFILE:-local-desktop}}}"
 SAFE_LOCAL_AGENT_ID="$(printf "%s" "$LOCAL_AGENT_ID" | tr -c '[:alnum:]_.-' '-')"
 PROFILE_ACTIVE=0
@@ -33,6 +35,28 @@ PEEKABOO_MCP_COMMAND="${PEEKABOO_MCP_COMMAND:-$(command -v peekaboo || true)}"
 PEEKABOO_MCP_ARGS="${PEEKABOO_MCP_ARGS:-mcp --no-remote}"
 KEYCHAIN_SERVICE="${TROUBLEMAKER_KEYCHAIN_SERVICE:-com.tinyfatco.troublemaker.local}"
 BUILD=1
+
+truthy() {
+	case "${1:-}" in
+		1|true|TRUE|yes|YES|on|ON)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
+
+local_realtime_auth() {
+	case "$(printf "%s" "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+		local|direct)
+			return 0
+			;;
+		*)
+			return 1
+			;;
+	esac
+}
 
 for arg in "$@"; do
 	case "$arg" in
@@ -77,8 +101,13 @@ load_keychain_secret() {
 }
 
 load_keychain_secret FIREWORKS_API_KEY FIREWORKS_API_KEY
-load_keychain_secret OPENAI_API_KEY OPENAI_API_KEY MOM_OPENAI_API_KEY
-load_keychain_secret MOM_OPENAI_API_KEY MOM_OPENAI_API_KEY OPENAI_API_KEY
+if [ -n "$CLOUD_AGENT_ID" ] && ! truthy "$ALLOW_LOCAL_OPENAI_KEY" && ! local_realtime_auth "$REALTIME_AUTH_MODE"; then
+	unset OPENAI_API_KEY MOM_OPENAI_API_KEY
+	export TROUBLEMAKER_REALTIME_AUTH="${TROUBLEMAKER_REALTIME_AUTH:-broker}"
+else
+	load_keychain_secret OPENAI_API_KEY OPENAI_API_KEY MOM_OPENAI_API_KEY
+	load_keychain_secret MOM_OPENAI_API_KEY MOM_OPENAI_API_KEY OPENAI_API_KEY
+fi
 load_keychain_secret MOM_ELEVENLABS_API_KEY MOM_ELEVENLABS_API_KEY ELEVENLABS_API_KEY
 load_keychain_secret MOM_ELEVENLABS_VOICE_ID MOM_ELEVENLABS_VOICE_ID ELEVENLABS_VOICE_ID
 load_keychain_secret MOM_ELEVENLABS_MODEL_ID MOM_ELEVENLABS_MODEL_ID ELEVENLABS_MODEL_ID

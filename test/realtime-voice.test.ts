@@ -3,6 +3,9 @@ import {
 	createCanonicalSpeechResponse,
 	createRealtimeSessionUpdate,
 	createRealtimeVoiceInstructions,
+	isRealtimeControlTokenAccepted,
+	realtimeSafetyIdentifier,
+	resolveRealtimeAuthPlan,
 } from "../src/adapters/realtime-voice.js";
 
 const instructions = createRealtimeVoiceInstructions();
@@ -37,6 +40,59 @@ assert.equal(speechResponse.conversation, "none", "Speech rendering does not pol
 assert.deepEqual(speechResponse.output_modalities, ["audio"], "Canonical response is rendered as audio");
 assert.match(String(speechResponse.instructions), /exactly/i, "Speech response tells Realtime to read exact canonical text");
 assert.match(String(firstContent.text), /Hello from Zip\./, "Canonical Zip text is supplied to speech renderer");
+
+assert.equal(isRealtimeControlTokenAccepted(undefined, undefined), true, "Control token is optional for unmanaged local runtimes");
+assert.equal(isRealtimeControlTokenAccepted("local-secret", undefined), false, "Configured control token rejects missing client token");
+assert.equal(isRealtimeControlTokenAccepted("local-secret", "wrong-secret"), false, "Configured control token rejects wrong client token");
+assert.equal(isRealtimeControlTokenAccepted("local-secret", "local-secret"), true, "Configured control token accepts exact client token");
+
+assert.deepEqual(
+	resolveRealtimeAuthPlan({
+		env: {
+			TROUBLEMAKER_CLOUD_BASE_URL: "https://crawdad.example",
+			TROUBLEMAKER_CLOUD_AGENT_ID: "agent-1",
+			TROUBLEMAKER_CLOUD_ACCESS_TOKEN: "tfat-token",
+			OPENAI_API_KEY: "sk-local",
+		},
+	}),
+	{ source: "broker" },
+	"Cloud-bound runtimes prefer brokered Realtime credentials over inherited local OpenAI keys",
+);
+assert.deepEqual(
+	resolveRealtimeAuthPlan({
+		env: {
+			TROUBLEMAKER_REALTIME_AUTH: "local",
+			TROUBLEMAKER_CLOUD_BASE_URL: "https://crawdad.example",
+			TROUBLEMAKER_CLOUD_AGENT_ID: "agent-1",
+			OPENAI_API_KEY: "sk-local",
+		},
+	}),
+	{ source: "local", key: "sk-local" },
+	"Explicit local auth can opt into a local OpenAI key",
+);
+assert.deepEqual(
+	resolveRealtimeAuthPlan({
+		env: {},
+		clientApiKey: "sk-client",
+	}).source,
+	"none",
+	"Client-supplied Realtime keys are disabled by default",
+);
+assert.deepEqual(
+	resolveRealtimeAuthPlan({
+		env: { TROUBLEMAKER_ALLOW_CLIENT_REALTIME_KEY: "1" },
+		clientApiKey: "sk-client",
+	}),
+	{ source: "client", key: "sk-client" },
+	"Client-supplied Realtime keys require an explicit local testing opt-in",
+);
+const safetyIdentifier = realtimeSafetyIdentifier({
+	TROUBLEMAKER_CLOUD_AGENT_ID: "agent-1",
+	TROUBLEMAKER_LOCAL_AGENT_ID: "agent-1",
+	TROUBLEMAKER_AGENT_PROFILE: "cloud-agent",
+});
+assert.match(safetyIdentifier, /^tfat:[a-f0-9]{48}$/, "Safety identifier is a stable hashed value");
+assert.doesNotMatch(safetyIdentifier, /agent-1/, "Safety identifier does not expose the raw agent id");
 
 console.log("realtime voice canonical bridge tests passed");
 

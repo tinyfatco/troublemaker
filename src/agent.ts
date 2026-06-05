@@ -429,6 +429,45 @@ function createRunner(
 		agent.state.messages = [];
 	};
 
+	const resetContextFile = async (label: string): Promise<{ messagesCleared: number; quarantined?: string }> => {
+		let messagesCleared = 0;
+		try {
+			const restored = getSessionManager().buildSessionContext();
+			messagesCleared = restored.messages.length;
+		} catch (err) {
+			log.logWarning(`[awareness] ${label}: could not read context before reset (continuing): ${err instanceof Error ? err.message : String(err)}`);
+		}
+
+		let quarantined: string | undefined;
+		try {
+			await archiveContext(contextFile);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log.logWarning(`[awareness] ${label}: archive failed (${msg}) — quarantining broken file`);
+			try {
+				if (existsSync(contextFile)) {
+					const ts = new Date().toISOString().replace(/[:.]/g, "-");
+					const broken = `${contextFile}.broken-${ts}`;
+					renameSync(contextFile, broken);
+					quarantined = broken;
+					log.logInfo(`[awareness] ${label}: quarantined corrupt context to ${broken}`);
+				}
+			} catch (qerr) {
+				log.logWarning(`[awareness] ${label}: quarantine also failed (continuing): ${qerr instanceof Error ? qerr.message : String(qerr)}`);
+			}
+		}
+
+		try {
+			writeFileSync(contextFile, "", "utf-8");
+		} catch (err) {
+			log.logWarning(`[awareness] ${label}: truncate failed (${err instanceof Error ? err.message : String(err)})`);
+			throw err;
+		}
+		resetSessionState();
+		log.logInfo(`[awareness] ${label}: context reset (${messagesCleared} messages archived)`);
+		return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
+	};
+
 	// Mutable per-run state
 	const runState = {
 		ctx: null as MomContext | null,
@@ -725,6 +764,15 @@ function createRunner(
 			await mkdir(awarenessDir, { recursive: true });
 
 			const tR2 = performance.now();
+			if (ctx.message.freshContext) {
+				const sessionLabel = ctx.message.sessionId ? ` session=${ctx.message.sessionId}` : "";
+				await resetContextFile(`fresh context for ${ctx.message.sourceEventType || ctx.message.channel}${sessionLabel}`);
+				ctx.emitContentBlock?.({
+					type: "status",
+					status: "fresh_context",
+					message: "Fresh voice session started",
+				});
+			}
 			const sm = getSessionManager();
 
 			// No sync step — the runner is the sole writer to context.jsonl
@@ -1175,71 +1223,13 @@ function createRunner(
 		set onActivity(fn: (() => void) | undefined) { onActivity = fn; },
 
 		async clear(): Promise<{ messagesCleared: number; quarantined?: string }> {
-			const contextFile = join(awarenessDir, "context.jsonl");
-
-			// FAT-347: /clear must always succeed in truncating, even when read or
-			// archive fails (e.g. gocryptfs EIO from a corrupt block). Each step
-			// below is best-effort with its own try/catch; we always reach the
-			// truncate at the end.
-
-			// Step 1: best-effort load + count messages. If reading fails, count = 0.
-			let messagesCleared = 0;
-			try {
-				const sm = getSessionManager();
-				const currentSession = getSession();
-				if (currentSession.messages.length === 0) {
-					const restored = sm.buildSessionContext();
-					if (restored.messages.length > 0) {
-						agent.state.messages = restored.messages;
-					}
-				}
-				messagesCleared = currentSession.messages.length;
-			} catch (err) {
-				log.logWarning(`[awareness] /clear: could not load context for counting (continuing): ${err instanceof Error ? err.message : String(err)}`);
-			}
-
-			// Step 2: best-effort archive. If copy fails (likely the same EIO), move
-			// the broken file aside so subsequent reads don't fail again.
-			let quarantined: string | undefined;
-			try {
-				await archiveContext(contextFile);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				log.logWarning(`[awareness] /clear: archive failed (${msg}) — quarantining broken file`);
-				try {
-					if (existsSync(contextFile)) {
-						const ts = new Date().toISOString().replace(/[:.]/g, "-");
-						const broken = `${contextFile}.broken-${ts}`;
-						renameSync(contextFile, broken);
-						quarantined = broken;
-						log.logInfo(`[awareness] /clear: quarantined corrupt context to ${broken}`);
-					}
-				} catch (qerr) {
-					log.logWarning(`[awareness] /clear: quarantine also failed (continuing): ${qerr instanceof Error ? qerr.message : String(qerr)}`);
-				}
-			}
-
-			// Step 3: always truncate. After quarantine the file may not exist —
-			// writeFileSync creates a fresh empty file in that case.
-			try {
-				writeFileSync(contextFile, "", "utf-8");
-			} catch (err) {
-				log.logWarning(`[awareness] /clear: truncate failed (${err instanceof Error ? err.message : String(err)})`);
-				// Re-throw — if we can't even create an empty file at this path,
-				// the agent is in a worse state than corrupt data and the caller
-				// needs to know.
-				throw err;
-			}
-
-			// Step 4: always reset in-memory state.
-			resetSessionState();
-
-			if (quarantined) {
-				log.logInfo(`[awareness] Context cleared — previous file was unreadable and quarantined to ${quarantined}`);
+			const result = await resetContextFile("/clear");
+			if (result.quarantined) {
+				log.logInfo(`[awareness] Context cleared — previous file was unreadable and quarantined to ${result.quarantined}`);
 			} else {
-				log.logInfo(`[awareness] Context cleared (${messagesCleared} messages archived)`);
+				log.logInfo(`[awareness] Context cleared (${result.messagesCleared} messages archived)`);
 			}
-			return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
+			return result;
 		},
 	};
 }

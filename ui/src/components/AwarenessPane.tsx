@@ -7,7 +7,7 @@
 
 import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties, type TouchEvent, type WheelEvent } from 'react';
 import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
-import { useWebChat } from '../hooks/useWebChat';
+import { useWebChat, type SendMessageOptions } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
@@ -51,7 +51,10 @@ export function AwarenessPane({
     clearError,
   } = useWebChat();
 
-  const voice = useVoiceChat();
+  const handleVoiceTranscript = useCallback((text: string, options?: SendMessageOptions) => {
+    sendMessage(text, options);
+  }, [sendMessage]);
+  const voice = useVoiceChat({ onTranscript: handleVoiceTranscript });
   const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
   const voiceStatusText = useMemo(() => {
     if (voice.assistantText) return voice.assistantText;
@@ -60,9 +63,9 @@ export function AwarenessPane({
     if (voice.transcript && (voice.state === 'thinking' || voice.state === 'transcribing')) return voice.transcript;
     switch (voice.state) {
       case 'connecting': return 'Connecting Realtime 2...';
-      case 'listening': return 'Listening with Realtime 2...';
+      case 'listening': return 'Fresh voice session ready...';
       case 'transcribing': return 'Speech detected...';
-      case 'thinking': return 'Realtime 2 is thinking...';
+      case 'thinking': return 'Zip is thinking...';
       case 'speaking': return 'Zip is speaking...';
       default: return '';
     }
@@ -82,6 +85,7 @@ export function AwarenessPane({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
   const userScrolledRef = useRef(false);
+  const lastVoiceSpeechKeyRef = useRef<string | null>(null);
   const prevScrollHeightRef = useRef(0);
   const composerHeightRef = useRef(0);
   const pendingExpansionFollowRef = useRef(false);
@@ -161,6 +165,16 @@ export function AwarenessPane({
       scrollToBottom('instant');
     }
   }, [backlogDone]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!allowVoice || !isVoiceActive || !streamingEntry || streamingEntry.isStreaming) return;
+    const text = getSpokenAssistantText(streamingEntry);
+    if (!text) return;
+    const key = `${streamingEntry.id}:${text}`;
+    if (lastVoiceSpeechKeyRef.current === key) return;
+    lastVoiceSpeechKeyRef.current = key;
+    voice.speak(text);
+  }, [allowVoice, isVoiceActive, streamingEntry, voice.speak]);
 
   // After loading more (prepend), preserve scroll position
   useEffect(() => {
@@ -358,6 +372,7 @@ export function AwarenessPane({
           <button
             className={`mic-button ${isVoiceActive ? 'active' : ''}`}
             onClick={isVoiceActive ? voice.stop : voice.start}
+            disabled={isStreaming && !isVoiceActive}
             title={isVoiceActive ? 'Stop Realtime 2 voice' : 'Start Realtime 2 voice'}
           >
             {isVoiceActive ? (
@@ -376,6 +391,14 @@ export function AwarenessPane({
       />
     </div>
   );
+}
+
+function getSpokenAssistantText(entry: AwarenessEntry): string {
+  return (entry.content || [])
+    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n')
+    .trim();
 }
 
 function getLiveScrollSignal(entries: AwarenessEntry[]): string {

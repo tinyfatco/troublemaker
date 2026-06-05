@@ -16,6 +16,10 @@ export interface MomEvent {
 	user: string;
 	text: string;
 	rawText?: string;
+	/** Start this event from a freshly archived Pi session context. */
+	freshContext?: boolean;
+	/** Client-scoped conversational session id, when the transport has one. */
+	sessionId?: string;
 	sourceEventType?: string;
 	directlyAddressed?: boolean;
 	threadTs?: string;
@@ -100,6 +104,8 @@ export interface MomContext {
 		userName?: string;
 		channel: string;
 		ts: string;
+		freshContext?: boolean;
+		sessionId?: string;
 		eventType?: MomEvent["type"];
 		sourceEventType?: string;
 		directlyAddressed?: boolean;

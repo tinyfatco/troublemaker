@@ -128,7 +128,8 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		localVoicePort: Int = 8766,
 		runtimePort: Int = 3017,
 		agentName: String,
-		realtimeVoice: RealtimeVoice = .marin
+		realtimeVoice: RealtimeVoice = .marin,
+		localControlToken: String? = nil
 	) async {
 		stop()
 		setState(.connecting, "Connecting \(kind.title)...")
@@ -144,7 +145,8 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 				localVoicePort: localVoicePort,
 				runtimePort: runtimePort,
 				agentName: agentName,
-				realtimeVoice: realtimeVoice
+				realtimeVoice: realtimeVoice,
+				localControlToken: localControlToken
 			)
 			provider.callbacks = callbacks()
 			self.provider = provider
@@ -212,13 +214,14 @@ final class MacVoiceSession: NSObject, AVAudioPlayerDelegate {
 		localVoicePort: Int,
 		runtimePort: Int,
 		agentName: String,
-		realtimeVoice: RealtimeVoice
+		realtimeVoice: RealtimeVoice,
+		localControlToken: String?
 	) throws -> VoiceSessionProvider {
 		switch kind {
 		case .localTroublemaker:
 			return LocalTroublemakerVoiceProvider(port: localVoicePort)
 		case .openAIRealtime:
-			return OpenAIRealtimeVoiceProvider(runtimePort: runtimePort, voice: realtimeVoice)
+			return OpenAIRealtimeVoiceProvider(runtimePort: runtimePort, voice: realtimeVoice, localControlToken: localControlToken)
 		case .deepgram:
 			let apiKey = try VoiceSecretStore.firstValue(accounts: ["DEEPGRAM_API_KEY", "MOM_DEEPGRAM_API_KEY"])
 			return DeepgramSTTVoiceProvider(apiKey: apiKey)
@@ -810,18 +813,25 @@ private final class OpenAIRealtimeVoiceProvider: VoiceSessionProvider {
 
 	private let runtimePort: Int
 	private let voice: RealtimeVoice
+	private let localControlToken: String?
 	private let session: URLSession
 	private var task: URLSessionWebSocketTask?
 	private var isStopping = false
 
-	init(runtimePort: Int, voice: RealtimeVoice) {
+	init(runtimePort: Int, voice: RealtimeVoice, localControlToken: String?) {
 		self.runtimePort = runtimePort
 		self.voice = voice
+		self.localControlToken = localControlToken?.trimmingCharacters(in: .whitespacesAndNewlines)
 		session = URLSession(configuration: .default)
 	}
 
 	func connect() throws {
-		let task = session.webSocketTask(with: URL(string: "ws://127.0.0.1:\(runtimePort)/voice/realtime")!)
+		let url = URL(string: "ws://127.0.0.1:\(runtimePort)/voice/realtime")!
+		var request = URLRequest(url: url)
+		if let localControlToken, !localControlToken.isEmpty {
+			request.setValue(localControlToken, forHTTPHeaderField: "X-TinyFat-Local-Control")
+		}
+		let task = session.webSocketTask(with: request)
 		self.task = task
 		isStopping = false
 		task.resume()

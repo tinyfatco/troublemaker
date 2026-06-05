@@ -32,6 +32,12 @@ interface WebChatPayload {
 	append_text?: string;
 	channelId?: string;
 	channel_id?: string;
+	freshContext?: boolean;
+	fresh_context?: boolean;
+	resetContext?: boolean;
+	reset_context?: boolean;
+	sessionId?: string;
+	session_id?: string;
 	source?: string;
 	origin?: string;
 	role?: string;
@@ -45,6 +51,9 @@ interface NormalizedWebChatPayload {
 	channelId: string;
 	user: string;
 	userName: string;
+	freshContext: boolean;
+	sessionId?: string;
+	sourceEventType?: string;
 }
 
 interface WebStopPayload {
@@ -264,12 +273,17 @@ Keep responses concise and helpful.`;
 			? payload.source.trim()
 			: "web";
 		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
+		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
+		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(source.toLowerCase());
 
 		return {
 			message,
 			channelId,
 			user: source === "web" ? "web-user" : `${source}-user`,
 			userName: source === "web" ? "user" : source,
+			freshContext: payload.freshContext === true || payload.fresh_context === true || payload.resetContext === true || payload.reset_context === true,
+			...(sessionId ? { sessionId } : {}),
+			...(isVoiceSource ? { sourceEventType: "web_voice" } : {}),
 		};
 	}
 
@@ -308,6 +322,11 @@ Keep responses concise and helpful.`;
 			ts,
 			user: payload.user,
 			text: payload.message,
+			rawText: payload.message,
+			freshContext: payload.freshContext,
+			sessionId: payload.sessionId,
+			sourceEventType: payload.sourceEventType,
+			directlyAddressed: true,
 		};
 
 		this.logToFile({
@@ -318,6 +337,9 @@ Keep responses concise and helpful.`;
 			user: payload.user,
 			userName: payload.userName,
 			text: event.text,
+			freshContext: payload.freshContext,
+			sessionId: payload.sessionId,
+			sourceEventType: payload.sourceEventType,
 			attachments: [],
 			isBot: false,
 		});
@@ -505,6 +527,8 @@ Keep responses concise and helpful.`;
 				userName: "user",
 				channel: event.channel,
 				ts: event.ts,
+				freshContext: event.freshContext,
+				sessionId: event.sessionId,
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
 				directlyAddressed: event.directlyAddressed,

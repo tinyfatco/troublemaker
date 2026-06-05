@@ -1011,6 +1011,7 @@ gateway.registerUpgrade("/voice/realtime", handleRealtimeVoiceUpgrade({
 	workingDir,
 	handler,
 	eventbox: localEventbox ?? undefined,
+	localControlToken: process.env.TROUBLEMAKER_LOCAL_CONTROL_TOKEN,
 }));
 
 // Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
