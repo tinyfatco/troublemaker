@@ -399,6 +399,7 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
  * AuthStorage checks: runtime override → auth.json → OAuth token → env var → fallback.
  */
 export async function resolveApiKey(authStorage: AuthStorage, provider: string): Promise<string> {
+	authStorage.reload();
 	const key = await authStorage.getApiKey(provider);
 	if (!key) {
 		throw new Error(

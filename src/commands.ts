@@ -6,7 +6,6 @@
  */
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
 import { randomUUID } from "crypto";
 import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
@@ -14,7 +13,7 @@ import type { AgentRunner } from "./agent.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 /**
  * Pending input — when a command needs the user's next message (e.g. /login),
@@ -406,7 +405,7 @@ async function handleLoginCommand(
 			const toolsToken = process.env.FAT_TOOLS_TOKEN;
 			if (toolsToken && secretKey) {
 				try {
-					const authPath = join(homedir(), ".pi", "agent", "auth.json");
+					const authPath = join(getAgentDir(), "auth.json");
 					const authData = JSON.parse(readFileSync(authPath, "utf-8"));
 					const creds = authData[providerId];
 					if (creds) {
