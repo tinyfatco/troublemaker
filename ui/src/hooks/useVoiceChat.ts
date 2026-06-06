@@ -6,7 +6,7 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { createRealtimeClientSecret, executeWorkspaceTool } from '../console-api';
+import { createRealtimeClientSecret, executeWorkspaceTool, fetchRealtimeVoicePreference } from '../console-api';
 import type { AwarenessEntry } from '../types';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
@@ -55,6 +55,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const activeUserEntryIdRef = useRef<string | null>(null);
   const activeAssistantEntryIdRef = useRef<string | null>(null);
   const activeToolEntryIdsRef = useRef<Map<string, string>>(new Map());
+  const activeVoiceRef = useRef(DEFAULT_REALTIME_VOICE);
   const entrySequenceRef = useRef(0);
   const sessionIdRef = useRef(0);
 
@@ -243,7 +244,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     switch (event.type) {
       case 'session.created':
-        sendRealtimeEvent(createRealtimeSessionUpdate(DEFAULT_REALTIME_VOICE));
+        sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current));
         setState('connecting');
         break;
       case 'session.updated':
@@ -366,8 +367,12 @@ export function useVoiceChat(): UseVoiceChatReturn {
     const sessionId = sessionIdRef.current + 1;
     sessionIdRef.current = sessionId;
     try {
+      const selectedVoice = await fetchRealtimeVoicePreference();
+      activeVoiceRef.current = selectedVoice;
+      if (sessionIdRef.current !== sessionId) return;
+
       const clientSecret = await createRealtimeClientSecret({
-        voice: DEFAULT_REALTIME_VOICE,
+        voice: selectedVoice,
         ttlSeconds: 600,
       });
       if (sessionIdRef.current !== sessionId) return;
@@ -411,7 +416,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
       dcRef.current = dc;
       dc.onopen = () => {
         if (sessionIdRef.current !== sessionId) return;
-        sendRealtimeEvent(createRealtimeSessionUpdate(DEFAULT_REALTIME_VOICE));
+        sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current));
         setState('listening');
       };
       dc.onmessage = (message) => {

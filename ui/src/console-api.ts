@@ -46,6 +46,20 @@ export interface AgentScheduleManifest {
   events: AgentScheduleManifestEvent[];
 }
 
+const DEFAULT_REALTIME_VOICE = 'marin';
+const REALTIME_VOICE_NAMES = new Set([
+  'alloy',
+  'ash',
+  'ballad',
+  'coral',
+  'echo',
+  'sage',
+  'shimmer',
+  'verse',
+  'marin',
+  'cedar',
+]);
+
 export interface AgentModelOption {
   provider: string;
   id: string;
@@ -237,6 +251,24 @@ export async function createRealtimeClientSecret(input: { voice?: string; ttlSec
   const value = realtimeClientSecretValue(data);
   if (!value) throw new Error('Realtime broker response did not include a client secret value.');
   return value;
+}
+
+export async function fetchRealtimeVoicePreference(): Promise<string> {
+  try {
+    const content = await readFile('settings.json');
+    const parsed = JSON.parse(content) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return DEFAULT_REALTIME_VOICE;
+    const voice = normalizeRealtimeVoice((parsed as Record<string, unknown>).realtimeVoice);
+    return voice || DEFAULT_REALTIME_VOICE;
+  } catch {
+    return DEFAULT_REALTIME_VOICE;
+  }
+}
+
+function normalizeRealtimeVoice(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  return REALTIME_VOICE_NAMES.has(normalized) ? normalized : null;
 }
 
 function realtimeClientSecretValue(data: unknown): string | null {

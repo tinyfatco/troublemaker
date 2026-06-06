@@ -18,6 +18,12 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
     insertText: '/model ',
   },
   {
+    command: '/voice',
+    label: 'Voice',
+    description: 'Show or switch the Realtime voice.',
+    insertText: '/voice ',
+  },
+  {
     command: '/context',
     label: 'Context',
     description: 'Show the current context window.',

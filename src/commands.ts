@@ -11,6 +11,12 @@ import { randomUUID } from "crypto";
 import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
+import {
+	DEFAULT_REALTIME_VOICE,
+	formatRealtimeVoiceList,
+	normalizeRealtimeVoiceName,
+	realtimeVoiceDescription,
+} from "./realtime-voices.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
 import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -112,6 +118,9 @@ export async function handleSlashCommand(
 		case "/model":
 			await handleModelCommand(parts.slice(1), channelId, workingDir, platform);
 			return true;
+		case "/voice":
+			await handleVoiceCommand(parts.slice(1), channelId, workingDir, platform);
+			return true;
 		case "/context":
 			await handleContextCommand(channelId, platform, runner);
 			return true;
@@ -212,6 +221,62 @@ async function handleModelCommand(
 		channelId,
 		`Switched to *${match.provider}/${match.id}*\n_(takes effect on next message)_`,
 	);
+}
+
+async function handleVoiceCommand(
+	args: string[],
+	channelId: string,
+	workingDir: string,
+	platform: PlatformAdapter,
+): Promise<void> {
+	const settings = readSettingsJson(workingDir);
+	const currentVoice = currentRealtimeVoice(settings);
+	const subcommand = args[0]?.toLowerCase();
+
+	if (!subcommand || subcommand === "list" || subcommand === "available") {
+		await platform.postMessage(channelId, formatRealtimeVoiceList(currentVoice));
+		return;
+	}
+
+	const nextVoice = normalizeRealtimeVoiceName(subcommand);
+	if (!nextVoice) {
+		await platform.postMessage(
+			channelId,
+			`Unknown voice: "${args[0]}"\n\n${formatRealtimeVoiceList(currentVoice)}`,
+		);
+		return;
+	}
+
+	settings.realtimeVoice = nextVoice;
+	writeSettingsJson(workingDir, settings);
+	log.logInfo(`Realtime voice switched to ${nextVoice} via /voice command`);
+	logSystemAction(workingDir, "system", `/voice -> ${nextVoice}`);
+
+	const description = realtimeVoiceDescription(nextVoice);
+	await platform.postMessage(
+		channelId,
+		`Switched Realtime voice to *${nextVoice}*${description ? ` - ${description}` : ""}\n_(takes effect on the next Realtime voice session)_`,
+	);
+}
+
+function currentRealtimeVoice(settings: Record<string, unknown>): string {
+	return normalizeRealtimeVoiceName(settings.realtimeVoice) || DEFAULT_REALTIME_VOICE;
+}
+
+function readSettingsJson(workingDir: string): Record<string, unknown> {
+	const settingsPath = join(workingDir, "settings.json");
+	if (!existsSync(settingsPath)) return {};
+	try {
+		const parsed = JSON.parse(readFileSync(settingsPath, "utf-8"));
+		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+	} catch {
+		return {};
+	}
+}
+
+function writeSettingsJson(workingDir: string, settings: Record<string, unknown>): void {
+	const settingsPath = join(workingDir, "settings.json");
+	writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
 }
 
 async function handleContextCommand(

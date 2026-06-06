@@ -12,6 +12,8 @@ assert.match(voiceHook, /create_response:\s*true/, "Realtime server VAD creates 
 assert.match(voiceHook, /interrupt_response:\s*true/, "Realtime handles barge-in interruption");
 assert.match(voiceHook, /tool_choice:\s*'auto'/, "Realtime can choose workspace tools");
 assert.match(voiceHook, /executeWorkspaceTool/, "Realtime function calls execute through the console tool proxy");
+assert.match(voiceHook, /fetchRealtimeVoicePreference/, "web voice reads the configured Realtime voice");
+assert.match(voiceHook, /activeVoiceRef\.current/, "web voice reuses the selected voice for session updates");
 assert.match(voiceHook, /name:\s*'read'/, "Realtime exposes the read tool");
 assert.match(voiceHook, /name:\s*'write'/, "Realtime exposes the write tool");
 assert.match(voiceHook, /name:\s*'edit'/, "Realtime exposes the edit tool");
