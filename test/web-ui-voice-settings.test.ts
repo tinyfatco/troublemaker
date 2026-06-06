@@ -21,6 +21,7 @@ for (const voice of REALTIME_VOICE_OPTIONS) {
 assert.match(consoleApi, /\/realtime\/voice'\)/, 'console API reads voice settings through Crawdad');
 assert.match(consoleApi, /method:\s*'PUT'/, 'console API saves voice settings through Crawdad');
 assert.match(consoleApi, /\/realtime\/voice-preview'/, 'console API brokers voice preview audio');
+assert.match(consoleApi, /realtimeVoicePreviewCache/, 'console API memoizes voice preview blobs per page session');
 assert(voiceMenu.includes('aria-label={previewing ?'), 'preview buttons are accessible');
 assert.match(voiceMenu, /Selected/, 'voice menu marks the selected voice');
 assert.match(slashCommands, /isVoiceCommand/, 'slash command helper identifies local /voice');

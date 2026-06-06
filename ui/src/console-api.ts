@@ -67,6 +67,7 @@ export const REALTIME_VOICE_OPTIONS: RealtimeVoiceOption[] = [
 ];
 
 const REALTIME_VOICE_NAMES = new Set(REALTIME_VOICE_OPTIONS.map((voice) => voice.name));
+const realtimeVoicePreviewCache = new Map<string, Blob>();
 
 export interface AgentModelOption {
   provider: string;
@@ -297,13 +298,18 @@ export async function setRealtimeVoicePreference(voice: string): Promise<void> {
 export async function previewRealtimeVoice(voice: string): Promise<Blob> {
   const normalized = normalizeRealtimeVoice(voice);
   if (!normalized) throw new Error(`Unknown Realtime voice: ${voice}`);
+  const cached = realtimeVoicePreviewCache.get(normalized);
+  if (cached) return cached;
+
   const resp = await fetchWithTimeout(consoleAgentUrl('/realtime/voice-preview'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ voice: normalized }),
   }, 30000);
   if (!resp.ok) throw await readError(resp, `Voice preview failed: ${resp.status}`);
-  return resp.blob();
+  const audio = await resp.blob();
+  realtimeVoicePreviewCache.set(normalized, audio);
+  return audio;
 }
 
 export function normalizeRealtimeVoice(value: unknown): string | null {
