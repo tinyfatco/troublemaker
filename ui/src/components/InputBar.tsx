@@ -121,8 +121,8 @@ export function InputBar({
   const applySlashCommand = (command?: string) => {
     if (!command) return;
     const definition = getSlashCommand(command);
-    if (command === '/settings') {
-      if (onSlashCommand?.('/settings')) {
+    if (command === '/settings' || command === '/voice') {
+      if (onSlashCommand?.(command)) {
         setValue('');
         return;
       }

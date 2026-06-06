@@ -46,19 +46,27 @@ export interface AgentScheduleManifest {
   events: AgentScheduleManifestEvent[];
 }
 
-const DEFAULT_REALTIME_VOICE = 'marin';
-const REALTIME_VOICE_NAMES = new Set([
-  'alloy',
-  'ash',
-  'ballad',
-  'coral',
-  'echo',
-  'sage',
-  'shimmer',
-  'verse',
-  'marin',
-  'cedar',
-]);
+export interface RealtimeVoiceOption {
+  name: string;
+  description: string;
+}
+
+export const DEFAULT_REALTIME_VOICE = 'marin';
+
+export const REALTIME_VOICE_OPTIONS: RealtimeVoiceOption[] = [
+  { name: 'marin', description: 'Natural, clear, and conversational for the default TinyFat voice.' },
+  { name: 'cedar', description: 'Warm, grounded, and steady for a calmer alternative.' },
+  { name: 'alloy', description: 'Balanced and neutral with a straightforward assistant tone.' },
+  { name: 'ash', description: 'Smooth and lower-pitched with a restrained delivery.' },
+  { name: 'ballad', description: 'Measured and expressive with a more narrated feel.' },
+  { name: 'coral', description: 'Bright and upbeat without sounding too casual.' },
+  { name: 'echo', description: 'Crisp and articulate with a clean spoken edge.' },
+  { name: 'sage', description: 'Calm and even for focused work sessions.' },
+  { name: 'shimmer', description: 'Light and energetic with quick, friendly pacing.' },
+  { name: 'verse', description: 'Expressive and dynamic for more animated replies.' },
+];
+
+const REALTIME_VOICE_NAMES = new Set(REALTIME_VOICE_OPTIONS.map((voice) => voice.name));
 
 export interface AgentModelOption {
   provider: string;
@@ -255,6 +263,16 @@ export async function createRealtimeClientSecret(input: { voice?: string; ttlSec
 
 export async function fetchRealtimeVoicePreference(): Promise<string> {
   try {
+    const resp = await fetchWithTimeout(consoleAgentUrl('/realtime/voice'), {}, 8000);
+    if (resp.ok) {
+      const data = await resp.json().catch(() => null) as { voice?: unknown } | null;
+      return normalizeRealtimeVoice(data?.voice) || DEFAULT_REALTIME_VOICE;
+    }
+  } catch {
+    // Fall through to the legacy direct-file read while older Workers roll out.
+  }
+
+  try {
     const content = await readFile('settings.json');
     const parsed = JSON.parse(content) as unknown;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return DEFAULT_REALTIME_VOICE;
@@ -265,7 +283,30 @@ export async function fetchRealtimeVoicePreference(): Promise<string> {
   }
 }
 
-function normalizeRealtimeVoice(value: unknown): string | null {
+export async function setRealtimeVoicePreference(voice: string): Promise<void> {
+  const normalized = normalizeRealtimeVoice(voice);
+  if (!normalized) throw new Error(`Unknown Realtime voice: ${voice}`);
+  const resp = await fetchWithTimeout(consoleAgentUrl('/realtime/voice'), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice: normalized }),
+  }, 12000);
+  if (!resp.ok) throw await readError(resp, `Voice save failed: ${resp.status}`);
+}
+
+export async function previewRealtimeVoice(voice: string): Promise<Blob> {
+  const normalized = normalizeRealtimeVoice(voice);
+  if (!normalized) throw new Error(`Unknown Realtime voice: ${voice}`);
+  const resp = await fetchWithTimeout(consoleAgentUrl('/realtime/voice-preview'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice: normalized }),
+  }, 30000);
+  if (!resp.ok) throw await readError(resp, `Voice preview failed: ${resp.status}`);
+  return resp.blob();
+}
+
+export function normalizeRealtimeVoice(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const normalized = value.trim().toLowerCase();
   return REALTIME_VOICE_NAMES.has(normalized) ? normalized : null;

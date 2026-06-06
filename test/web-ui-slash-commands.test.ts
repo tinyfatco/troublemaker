@@ -1,6 +1,8 @@
 import {
+  getSlashCommand,
   isKnownSlashCommand,
   isSettingsCommand,
+  isVoiceCommand,
   matchSlashCommands,
   parseSlashCommand,
 } from '../ui/src/slashCommands.ts';
@@ -28,6 +30,9 @@ assert(!isKnownSlashCommand('/verbose'), '/verbose stays removed');
 assert(!isKnownSlashCommand('/made-up'), 'unknown slash command is invalid');
 assert(isSettingsCommand('/settings'), 'exact /settings opens settings');
 assert(!isSettingsCommand('/settings now'), '/settings with args does not open settings');
+assert(isVoiceCommand('/voice'), 'exact /voice opens voice settings');
+assert(!isVoiceCommand('/voice cedar'), '/voice with args stays an agent slash command');
+assert(getSlashCommand('/voice')?.insertText === undefined, '/voice menu opens the local voice panel');
 assert(matchSlashCommands('/se').some((item) => item.command === '/settings'), 'slash menu matches /settings');
 assert(matchSlashCommands('/vo').some((item) => item.command === '/voice'), 'slash menu matches /voice');
 

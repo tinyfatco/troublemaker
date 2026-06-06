@@ -2618,6 +2618,127 @@ html, body, #root {
   font-family: var(--font-mono);
 }
 
+.voice-settings-menu {
+  max-height: min(560px, calc(100vh - var(--composer-height, 0px) - 120px));
+  overflow: hidden;
+}
+
+.voice-settings-list {
+  display: flex;
+  flex-direction: column;
+  max-height: min(470px, calc(100vh - var(--composer-height, 0px) - 205px));
+  overflow-y: auto;
+}
+
+.voice-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.62rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.voice-settings-row:last-child {
+  border-bottom: 0;
+}
+
+.voice-settings-row.active {
+  background: var(--accent-muted);
+}
+
+.voice-settings-copy {
+  min-width: 0;
+}
+
+.voice-settings-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.voice-settings-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-settings-current {
+  flex: 0 0 auto;
+  padding: 0.08rem 0.32rem;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 0.62rem;
+  font-weight: 650;
+}
+
+.voice-settings-description {
+  margin-top: 0.18rem;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.voice-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.voice-preview-button,
+.voice-select-button {
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.voice-preview-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
+.voice-preview-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.voice-select-button {
+  min-width: 64px;
+  padding: 0 0.55rem;
+  font-size: 0.72rem;
+}
+
+.voice-preview-button:hover:not(:disabled),
+.voice-select-button:hover:not(:disabled) {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.voice-preview-button.active,
+.voice-select-button:disabled {
+  background: var(--accent-muted);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
+.voice-preview-button:disabled,
+.voice-select-button:disabled {
+  cursor: not-allowed;
+}
+
 /* ========================================================================
    Voice Chat
    ======================================================================== */
@@ -3060,5 +3181,14 @@ html, body, #root {
   .slash-command-menu button {
     grid-template-columns: 1fr;
     gap: 0.18rem;
+  }
+
+  .voice-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.5rem;
+  }
+
+  .voice-settings-actions {
+    justify-content: flex-start;
   }
 }

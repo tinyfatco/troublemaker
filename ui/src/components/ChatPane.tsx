@@ -5,7 +5,8 @@ import { mergeOptimisticEntries } from '../optimisticEntries';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
-import { isSettingsCommand } from '../slashCommands';
+import { VoiceSettingsMenu } from './VoiceSettingsMenu';
+import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 
 export function ChatPane() {
   const { entries, isLoading, error: streamError } = useAwarenessStream();
@@ -20,6 +21,7 @@ export function ChatPane() {
     clearError,
   } = useWebChat();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const error = localError || chatError || streamError;
@@ -42,7 +44,14 @@ export function ChatPane() {
   const handleSlashCommand = useCallback((text: string) => {
     if (isSettingsCommand(text)) {
       setLocalError(null);
+      setVoiceSettingsOpen(false);
       setSettingsOpen(true);
+      return true;
+    }
+    if (isVoiceCommand(text)) {
+      setLocalError(null);
+      setSettingsOpen(false);
+      setVoiceSettingsOpen(true);
       return true;
     }
     return false;
@@ -85,6 +94,7 @@ export function ChatPane() {
       )}
 
       <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <VoiceSettingsMenu open={voiceSettingsOpen} onClose={() => setVoiceSettingsOpen(false)} />
 
       <InputBar
         onSend={handleSend}

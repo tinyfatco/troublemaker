@@ -11,10 +11,11 @@ import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
-import { isSettingsCommand } from '../slashCommands';
+import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
+import { VoiceSettingsMenu } from './VoiceSettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
@@ -68,6 +69,7 @@ export function AwarenessPane({
     }
   }, [voice.assistantText, voice.cloudEvent, voice.partial, voice.transcript, voice.state]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const error = localError || chatError || streamError || voice.error;
@@ -267,11 +269,22 @@ export function AwarenessPane({
   const handleSlashCommand = useCallback((text: string) => {
     if (allowSettings && isSettingsCommand(text)) {
       setLocalError(null);
+      setVoiceSettingsOpen(false);
       setSettingsOpen(true);
       return true;
     }
+    if (isVoiceCommand(text)) {
+      setLocalError(null);
+      if (!allowVoice) {
+        setLocalError('Voice is not available in this view.');
+      } else {
+        setSettingsOpen(false);
+        setVoiceSettingsOpen(true);
+      }
+      return true;
+    }
     return false;
-  }, [allowSettings]);
+  }, [allowSettings, allowVoice]);
 
   const clearVisibleError = useCallback(() => {
     if (localError) {
@@ -346,6 +359,7 @@ export function AwarenessPane({
       )}
 
       {allowSettings && <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+      {allowVoice && <VoiceSettingsMenu open={voiceSettingsOpen} onClose={() => setVoiceSettingsOpen(false)} />}
 
       <InputBar
         onSend={handleSend}

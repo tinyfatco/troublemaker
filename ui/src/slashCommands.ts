@@ -20,8 +20,7 @@ export const SLASH_COMMANDS: SlashCommandDefinition[] = [
   {
     command: '/voice',
     label: 'Voice',
-    description: 'Show or switch the Realtime voice.',
-    insertText: '/voice ',
+    description: 'Open Realtime voice settings.',
   },
   {
     command: '/context',
@@ -81,4 +80,9 @@ export function matchSlashCommands(text: string): SlashCommandDefinition[] {
 export function isSettingsCommand(text: string): boolean {
   const trimmed = text.trim();
   return trimmed === '/settings';
+}
+
+export function isVoiceCommand(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed === '/voice';
 }
