@@ -344,6 +344,30 @@ export async function saveWorkspaceFile(path: string, content: string): Promise<
   if (!resp.ok) throw await readError(resp, `Save failed: ${resp.status}`);
 }
 
+export interface WorkspaceToolExecuteResponse {
+  ok: boolean;
+  result?: unknown;
+  error?: string;
+}
+
+export async function executeWorkspaceTool(tool: string, args: Record<string, unknown>): Promise<WorkspaceToolExecuteResponse> {
+  const resp = await fetchWithTimeout(consoleAgentUrl('/tools/execute'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, args }),
+  }, 150000);
+
+  const data = await resp.json().catch(() => null) as WorkspaceToolExecuteResponse | null;
+  if (!resp.ok) {
+    const message = data?.error || `Tool execution failed: ${resp.status}`;
+    throw new Error(message);
+  }
+  if (!data || typeof data !== 'object') {
+    throw new Error('Tool execution returned an invalid response.');
+  }
+  return data;
+}
+
 export async function uploadWorkspaceFiles(files: File[], targetDir = 'attachments'): Promise<string[]> {
   const form = new FormData();
   form.append('targetDir', targetDir);

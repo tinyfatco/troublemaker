@@ -6,7 +6,7 @@
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { createRealtimeClientSecret } from '../console-api';
+import { createRealtimeClientSecret, executeWorkspaceTool } from '../console-api';
 import type { AwarenessEntry } from '../types';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
@@ -30,6 +30,12 @@ export interface UseVoiceChatReturn {
 
 type RealtimeEvent = Record<string, unknown> & { type?: string };
 
+interface RealtimeFunctionCall {
+  callId: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
 export function useVoiceChat(): UseVoiceChatReturn {
   const [state, setState] = useState<VoiceState>('idle');
   const [partial, setPartial] = useState('');
@@ -48,6 +54,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const assistantTextRef = useRef('');
   const activeUserEntryIdRef = useRef<string | null>(null);
   const activeAssistantEntryIdRef = useRef<string | null>(null);
+  const activeToolEntryIdsRef = useRef<Map<string, string>>(new Map());
   const entrySequenceRef = useRef(0);
   const sessionIdRef = useRef(0);
 
@@ -112,6 +119,29 @@ export function useVoiceChat(): UseVoiceChatReturn {
     assistantTextRef.current = '';
   }, [updateLocalEntry]);
 
+  const appendToolCallEntry = useCallback((call: RealtimeFunctionCall) => {
+    const id = nextEntryId('tool');
+    activeToolEntryIdsRef.current.set(call.callId, id);
+    appendLocalEntry(createVoiceToolEntry(id, call, true));
+  }, [appendLocalEntry, nextEntryId]);
+
+  const finishToolCallEntry = useCallback((callId: string, result: string, isError: boolean) => {
+    const id = activeToolEntryIdsRef.current.get(callId);
+    if (!id) return;
+    activeToolEntryIdsRef.current.delete(callId);
+    updateLocalEntry(id, (entry) => {
+      const content = (entry.content || []).filter((block) => !(block.type === 'toolResult' && block.toolCallId === callId));
+      return {
+        ...entry,
+        content: [
+          ...content,
+          { type: 'toolResult' as const, toolCallId: callId, result, isError },
+        ],
+        isStreaming: false,
+      };
+    });
+  }, [updateLocalEntry]);
+
   const sendRealtimeEvent = useCallback((event: Record<string, unknown>): boolean => {
     const dc = dcRef.current;
     if (!dc || dc.readyState !== 'open') return false;
@@ -126,6 +156,52 @@ export function useVoiceChat(): UseVoiceChatReturn {
     finishAssistantEntry();
   }, [finishAssistantEntry, sendRealtimeEvent]);
 
+  const handleRealtimeFunctionCalls = useCallback(async (calls: RealtimeFunctionCall[]) => {
+    if (calls.length === 0) return;
+
+    setState('thinking');
+    for (const call of calls) {
+      const args = normalizeRealtimeToolArgs(call.name, call.arguments);
+      const normalizedCall = { ...call, arguments: args };
+      appendToolCallEntry(normalizedCall);
+
+      let output: unknown;
+      let isError = false;
+      try {
+        const result = await executeWorkspaceTool(call.name, args);
+        isError = !result.ok;
+        output = result.ok ? result : { ok: false, error: result.error || 'Tool execution failed.' };
+      } catch (err) {
+        isError = true;
+        output = { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+
+      finishToolCallEntry(call.callId, realtimeToolResultText(output), isError);
+      const sent = sendRealtimeEvent({
+        type: 'conversation.item.create',
+        item: {
+          type: 'function_call_output',
+          call_id: call.callId,
+          output: JSON.stringify(output),
+        },
+      });
+      if (!sent) {
+        setError('Realtime voice data channel closed before tool results could be sent.');
+        setState('error');
+        return;
+      }
+    }
+
+    assistantTextRef.current = '';
+    setAssistantText('');
+    if (!sendRealtimeEvent({ type: 'response.create' })) {
+      setError('Realtime voice data channel closed before the tool response could continue.');
+      setState('error');
+      return;
+    }
+    setState('thinking');
+  }, [appendToolCallEntry, finishToolCallEntry, sendRealtimeEvent]);
+
   const stop = useCallback(() => {
     sessionIdRef.current += 1;
     outputActiveRef.current = false;
@@ -133,15 +209,17 @@ export function useVoiceChat(): UseVoiceChatReturn {
     assistantTextRef.current = '';
     const activeUserId = activeUserEntryIdRef.current;
     const activeAssistantId = activeAssistantEntryIdRef.current;
-    if (activeUserId || activeAssistantId) {
+    const activeToolIds = new Set(activeToolEntryIdsRef.current.values());
+    if (activeUserId || activeAssistantId || activeToolIds.size > 0) {
       setLocalEntries((prev) => prev.map((entry) => (
-        entry.id === activeUserId || entry.id === activeAssistantId
+        entry.id === activeUserId || entry.id === activeAssistantId || activeToolIds.has(entry.id)
           ? { ...entry, isStreaming: false }
           : entry
       )));
     }
     activeUserEntryIdRef.current = null;
     activeAssistantEntryIdRef.current = null;
+    activeToolEntryIdsRef.current.clear();
 
     dcRef.current?.close();
     dcRef.current = null;
@@ -252,6 +330,13 @@ export function useVoiceChat(): UseVoiceChatReturn {
       case 'response.done':
         outputActiveRef.current = false;
         finishAssistantEntry();
+        {
+          const functionCalls = getRealtimeFunctionCalls(event);
+          if (functionCalls.length > 0) {
+            void handleRealtimeFunctionCalls(functionCalls);
+            break;
+          }
+        }
         setState('listening');
         break;
       case 'error':
@@ -261,7 +346,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
       default:
         break;
     }
-  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
+  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, handleRealtimeFunctionCalls, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
 
   const start = useCallback(async () => {
     if (state !== 'idle' && state !== 'error') return;
@@ -400,6 +485,152 @@ function createVoiceAssistantEntry(id: string, text: string, isStreaming: boolea
   };
 }
 
+function createVoiceToolEntry(id: string, call: RealtimeFunctionCall, isStreaming: boolean): AwarenessEntry {
+  return {
+    id,
+    type: 'message',
+    timestamp: new Date().toISOString(),
+    role: 'assistant',
+    content: [{ type: 'toolCall', id: call.callId, name: call.name, arguments: call.arguments }],
+    model: REALTIME_MODEL,
+    isStreaming,
+  };
+}
+
+function getRealtimeFunctionCalls(event: RealtimeEvent): RealtimeFunctionCall[] {
+  const response = isRecord(event.response) ? event.response : undefined;
+  const output = Array.isArray(response?.output) ? response.output : [];
+  const calls: RealtimeFunctionCall[] = [];
+
+  for (const item of output) {
+    if (!isRecord(item) || item.type !== 'function_call') continue;
+    const callId = typeof item.call_id === 'string' ? item.call_id : '';
+    const name = typeof item.name === 'string' ? item.name : '';
+    if (!callId || !name) continue;
+    calls.push({
+      callId,
+      name,
+      arguments: parseRealtimeFunctionArguments(item.arguments),
+    });
+  }
+
+  return calls;
+}
+
+function parseRealtimeFunctionArguments(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeRealtimeToolArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...args };
+  if (tool === 'edit') {
+    if (typeof next.oldText !== 'string' && typeof next.old_text === 'string') next.oldText = next.old_text;
+    if (typeof next.newText !== 'string' && typeof next.new_text === 'string') next.newText = next.new_text;
+  }
+  if (typeof next.label !== 'string' || !next.label.trim()) {
+    next.label = `Realtime ${tool}`;
+  }
+  return next;
+}
+
+function realtimeToolResultText(output: unknown): string {
+  if (isRecord(output) && output.ok === false) {
+    const error = output.error;
+    return typeof error === 'string' && error.trim() ? error : 'Tool execution failed.';
+  }
+
+  const result = isRecord(output) && 'result' in output ? output.result : output;
+  const content = isRecord(result) && Array.isArray(result.content) ? result.content : undefined;
+  if (content) {
+    const text = content
+      .map((part) => isRecord(part) && typeof part.text === 'string' ? part.text : '')
+      .filter(Boolean)
+      .join('\n');
+    if (text.trim()) return text;
+  }
+
+  if (typeof result === 'string') return result;
+  try {
+    return JSON.stringify(result);
+  } catch {
+    return String(result);
+  }
+}
+
+function realtimeWorkspaceToolDefinitions(): Array<Record<string, unknown>> {
+  return [
+    {
+      type: 'function',
+      name: 'read',
+      description: "Read a file from Zip's workspace. Supports optional 1-indexed line offset and maximum line limit.",
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Brief user-facing reason for reading this file.' },
+          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
+          offset: { type: 'number', description: 'Optional 1-indexed starting line.' },
+          limit: { type: 'number', description: 'Optional maximum number of lines to read.' },
+        },
+        required: ['label', 'path'],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: 'function',
+      name: 'write',
+      description: "Write full content to a file in Zip's workspace, creating parent directories as needed.",
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Brief user-facing description of what is being written.' },
+          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
+          content: { type: 'string', description: 'Complete file content to write.' },
+        },
+        required: ['label', 'path', 'content'],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: 'function',
+      name: 'edit',
+      description: 'Edit a file by replacing one exact text span. The oldText value must match exactly and uniquely.',
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Brief user-facing description of the edit.' },
+          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
+          oldText: { type: 'string', description: 'Exact existing text to replace.' },
+          newText: { type: 'string', description: 'Replacement text.' },
+        },
+        required: ['label', 'path', 'oldText', 'newText'],
+        additionalProperties: false,
+      },
+    },
+    {
+      type: 'function',
+      name: 'bash',
+      description: "Run a bounded bash command in Zip's workspace. Use for repository inspection, tests, builds, and verification.",
+      parameters: {
+        type: 'object',
+        properties: {
+          label: { type: 'string', description: 'Brief user-facing description of what this command does.' },
+          command: { type: 'string', description: 'Bash command to execute.' },
+          timeout: { type: 'number', description: 'Optional timeout in seconds. Default is 60 seconds.' },
+        },
+        required: ['label', 'command'],
+        additionalProperties: false,
+      },
+    },
+  ];
+}
+
 function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
   return {
     type: 'session.update',
@@ -411,11 +642,12 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
         "You are Zip, TinyFat's live voice agent.",
         'Speak directly to Alex in a concise, natural voice.',
         'You are running in the TinyFat web workspace voice UI.',
-        'For this first shipped slice, you have no tools. If the user asks you to build, deploy, inspect files, or change state, say briefly that voice actions are not wired yet and ask them to use text chat for that action.',
+        'You can use workspace tools to read files, write files, edit exact text, and run bounded bash commands in Zip\'s workspace.',
+        'Use tools when the user asks you to inspect, build, change, or verify workspace state. Keep tool use tight and say what changed.',
         'Do not mention transcripts, transport, or implementation details unless Alex asks.',
       ].join('\n'),
-      tools: [],
-      tool_choice: 'none',
+      tools: realtimeWorkspaceToolDefinitions(),
+      tool_choice: 'auto',
       parallel_tool_calls: false,
       audio: {
         input: {
@@ -458,4 +690,8 @@ function openAIErrorMessage(event: RealtimeEvent): string {
   }
   const message = event.message;
   return typeof message === 'string' && message.trim() ? message : 'Realtime voice error';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }

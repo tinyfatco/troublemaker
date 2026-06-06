@@ -10,7 +10,14 @@ assert.doesNotMatch(voiceHook, /not the agent brain/i, "web voice no longer tell
 assert.doesNotMatch(voiceHook, /Do not answer the user/i, "web voice no longer suppresses Realtime answers");
 assert.match(voiceHook, /create_response:\s*true/, "Realtime server VAD creates model responses");
 assert.match(voiceHook, /interrupt_response:\s*true/, "Realtime handles barge-in interruption");
-assert.match(voiceHook, /tool_choice:\s*'none'/, "first slice exposes no tools");
+assert.match(voiceHook, /tool_choice:\s*'auto'/, "Realtime can choose workspace tools");
+assert.match(voiceHook, /executeWorkspaceTool/, "Realtime function calls execute through the console tool proxy");
+assert.match(voiceHook, /name:\s*'read'/, "Realtime exposes the read tool");
+assert.match(voiceHook, /name:\s*'write'/, "Realtime exposes the write tool");
+assert.match(voiceHook, /name:\s*'edit'/, "Realtime exposes the edit tool");
+assert.match(voiceHook, /name:\s*'bash'/, "Realtime exposes the bash tool");
+assert.match(voiceHook, /conversation\.item\.create/, "Realtime returns function_call_output items");
+assert.match(voiceHook, /response\.create/, "Realtime continues the assistant response after tool output");
 assert.match(voiceHook, /localEntries:\s*AwarenessEntry\[\]/, "web voice exposes local awareness entries for visible Realtime turns");
 assert.match(voiceHook, /channel:\s*'voice'/, "web voice labels visible turns as voice channel entries");
 assert.doesNotMatch(voiceHook, /createCanonicalSpeechResponse/, "canonical speech handoff is removed from web voice");
