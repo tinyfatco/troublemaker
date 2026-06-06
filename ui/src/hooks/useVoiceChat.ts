@@ -245,9 +245,11 @@ export function useVoiceChat(): UseVoiceChatReturn {
         }
         break;
       }
-      case 'response.done':
       case 'response.output_audio.done':
       case 'response.audio.done':
+        outputActiveRef.current = false;
+        break;
+      case 'response.done':
         outputActiveRef.current = false;
         finishAssistantEntry();
         setState('listening');
