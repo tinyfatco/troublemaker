@@ -11,11 +11,14 @@ assert.doesNotMatch(voiceHook, /Do not answer the user/i, "web voice no longer s
 assert.match(voiceHook, /create_response:\s*true/, "Realtime server VAD creates model responses");
 assert.match(voiceHook, /interrupt_response:\s*true/, "Realtime handles barge-in interruption");
 assert.match(voiceHook, /tool_choice:\s*'none'/, "first slice exposes no tools");
+assert.match(voiceHook, /localEntries:\s*AwarenessEntry\[\]/, "web voice exposes local awareness entries for visible Realtime turns");
+assert.match(voiceHook, /channel:\s*'voice'/, "web voice labels visible turns as voice channel entries");
 assert.doesNotMatch(voiceHook, /createCanonicalSpeechResponse/, "canonical speech handoff is removed from web voice");
 assert.doesNotMatch(voiceHook, /source:\s*'web-voice'/, "web voice no longer posts transcripts to web chat");
 
 assert.match(awarenessPane, /const voice = useVoiceChat\(\);/, "AwarenessPane starts voice without a transcript callback");
-assert.doesNotMatch(awarenessPane, /handleVoiceTranscript/, "AwarenessPane has no voice transcript bridge");
+assert.match(awarenessPane, /voice\.localEntries/, "AwarenessPane renders local Realtime voice turns in the message stream");
+assert.doesNotMatch(awarenessPane, /handleVoiceTranscript/, "AwarenessPane has no voice transcript bridge back to web chat");
 assert.doesNotMatch(awarenessPane, /voice\.speak/, "AwarenessPane no longer speaks text-chat responses through Realtime");
 
 console.log("web realtime agent wiring ok");

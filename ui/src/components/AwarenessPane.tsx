@@ -71,10 +71,14 @@ export function AwarenessPane({
   const [localError, setLocalError] = useState<string | null>(null);
 
   const error = localError || chatError || streamError || voice.error;
+  const localVisibleEntries = useMemo(
+    () => [...localEntries, ...voice.localEntries],
+    [localEntries, voice.localEntries],
+  );
 
   const visibleEntries = useMemo(
-    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
-    [entries, userEntry, streamingEntry, localEntries],
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries)),
+    [entries, userEntry, streamingEntry, localVisibleEntries],
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);

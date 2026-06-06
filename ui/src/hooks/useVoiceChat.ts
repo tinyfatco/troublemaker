@@ -7,6 +7,7 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { createRealtimeClientSecret } from '../console-api';
+import type { AwarenessEntry } from '../types';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 const REALTIME_MODEL = 'gpt-realtime-2';
@@ -20,6 +21,7 @@ export interface UseVoiceChatReturn {
   partial: string;
   transcript: string;
   assistantText: string;
+  localEntries: AwarenessEntry[];
   cloudEvent: string;
   start: () => Promise<void>;
   stop: () => void;
@@ -33,6 +35,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const [partial, setPartial] = useState('');
   const [transcript, setTranscript] = useState('');
   const [assistantText, setAssistantText] = useState('');
+  const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>([]);
   const [cloudEvent, setCloudEvent] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -42,7 +45,72 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const outputActiveRef = useRef(false);
   const partialRef = useRef('');
+  const assistantTextRef = useRef('');
+  const activeUserEntryIdRef = useRef<string | null>(null);
+  const activeAssistantEntryIdRef = useRef<string | null>(null);
+  const entrySequenceRef = useRef(0);
   const sessionIdRef = useRef(0);
+
+  const nextEntryId = useCallback((role: string) => {
+    entrySequenceRef.current += 1;
+    return `voice-${role}-${Date.now()}-${entrySequenceRef.current}`;
+  }, []);
+
+  const appendLocalEntry = useCallback((entry: AwarenessEntry) => {
+    setLocalEntries((prev) => [...prev, entry].slice(-LOCAL_VOICE_ENTRY_LIMIT));
+  }, []);
+
+  const updateLocalEntry = useCallback((id: string, update: (entry: AwarenessEntry) => AwarenessEntry) => {
+    setLocalEntries((prev) => prev.map((entry) => entry.id === id ? update(entry) : entry));
+  }, []);
+
+  const ensureUserEntry = useCallback((text = ''): string => {
+    if (activeUserEntryIdRef.current) return activeUserEntryIdRef.current;
+    const id = nextEntryId('user');
+    activeUserEntryIdRef.current = id;
+    appendLocalEntry(createVoiceUserEntry(id, text, true));
+    return id;
+  }, [appendLocalEntry, nextEntryId]);
+
+  const updateUserEntryText = useCallback((text: string, isStreaming: boolean) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const id = ensureUserEntry(trimmed);
+    updateLocalEntry(id, (entry) => ({
+      ...entry,
+      content: [{ type: 'text', text: trimmed }],
+      strippedText: trimmed,
+      isStreaming,
+    }));
+  }, [ensureUserEntry, updateLocalEntry]);
+
+  const ensureAssistantEntry = useCallback((): string => {
+    if (activeAssistantEntryIdRef.current) return activeAssistantEntryIdRef.current;
+    const id = nextEntryId('assistant');
+    activeAssistantEntryIdRef.current = id;
+    assistantTextRef.current = '';
+    appendLocalEntry(createVoiceAssistantEntry(id, '', true));
+    return id;
+  }, [appendLocalEntry, nextEntryId]);
+
+  const updateAssistantEntryText = useCallback((text: string, isStreaming: boolean) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const id = ensureAssistantEntry();
+    updateLocalEntry(id, (entry) => ({
+      ...entry,
+      content: [{ type: 'text', text: trimmed }],
+      isStreaming,
+    }));
+  }, [ensureAssistantEntry, updateLocalEntry]);
+
+  const finishAssistantEntry = useCallback(() => {
+    const id = activeAssistantEntryIdRef.current;
+    if (!id) return;
+    updateLocalEntry(id, (entry) => ({ ...entry, isStreaming: false }));
+    activeAssistantEntryIdRef.current = null;
+    assistantTextRef.current = '';
+  }, [updateLocalEntry]);
 
   const sendRealtimeEvent = useCallback((event: Record<string, unknown>): boolean => {
     const dc = dcRef.current;
@@ -55,12 +123,25 @@ export function useVoiceChat(): UseVoiceChatReturn {
     if (!outputActiveRef.current) return;
     sendRealtimeEvent({ type: 'response.cancel' });
     outputActiveRef.current = false;
-  }, [sendRealtimeEvent]);
+    finishAssistantEntry();
+  }, [finishAssistantEntry, sendRealtimeEvent]);
 
   const stop = useCallback(() => {
     sessionIdRef.current += 1;
     outputActiveRef.current = false;
     partialRef.current = '';
+    assistantTextRef.current = '';
+    const activeUserId = activeUserEntryIdRef.current;
+    const activeAssistantId = activeAssistantEntryIdRef.current;
+    if (activeUserId || activeAssistantId) {
+      setLocalEntries((prev) => prev.map((entry) => (
+        entry.id === activeUserId || entry.id === activeAssistantId
+          ? { ...entry, isStreaming: false }
+          : entry
+      )));
+    }
+    activeUserEntryIdRef.current = null;
+    activeAssistantEntryIdRef.current = null;
 
     dcRef.current?.close();
     dcRef.current = null;
@@ -92,6 +173,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
         break;
       case 'input_audio_buffer.speech_started':
         partialRef.current = '';
+        activeUserEntryIdRef.current = null;
         setPartial('');
         cancelRealtimeOutput();
         setState('transcribing');
@@ -104,6 +186,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
         const delta = String(event.delta ?? '');
         partialRef.current += delta;
         setPartial(partialRef.current);
+        updateUserEntryText(partialRef.current, true);
         setState('transcribing');
         break;
       }
@@ -114,6 +197,8 @@ export function useVoiceChat(): UseVoiceChatReturn {
         if (!text) break;
         setTranscript(text);
         setAssistantText('');
+        updateUserEntryText(text, false);
+        activeUserEntryIdRef.current = null;
         setState(outputActiveRef.current ? 'speaking' : 'thinking');
         break;
       }
@@ -123,11 +208,15 @@ export function useVoiceChat(): UseVoiceChatReturn {
         break;
       case 'response.created':
         outputActiveRef.current = true;
+        activeAssistantEntryIdRef.current = null;
+        assistantTextRef.current = '';
         setAssistantText('');
+        ensureAssistantEntry();
         setState('speaking');
         break;
       case 'response.output_item.added':
         outputActiveRef.current = true;
+        ensureAssistantEntry();
         setState('speaking');
         break;
       case 'response.output_audio_transcript.delta':
@@ -135,7 +224,11 @@ export function useVoiceChat(): UseVoiceChatReturn {
       case 'response.output_text.delta':
       case 'response.text.delta': {
         const delta = String(event.delta ?? '');
-        if (delta) setAssistantText((prev) => prev + delta);
+        if (delta) {
+          assistantTextRef.current += delta;
+          setAssistantText(assistantTextRef.current);
+          updateAssistantEntryText(assistantTextRef.current, true);
+        }
         outputActiveRef.current = true;
         setState('speaking');
         break;
@@ -145,13 +238,18 @@ export function useVoiceChat(): UseVoiceChatReturn {
       case 'response.output_text.done':
       case 'response.text.done': {
         const text = String(event.transcript ?? event.text ?? '').trim();
-        if (text) setAssistantText(text);
+        if (text) {
+          assistantTextRef.current = text;
+          setAssistantText(text);
+          updateAssistantEntryText(text, false);
+        }
         break;
       }
       case 'response.done':
       case 'response.output_audio.done':
       case 'response.audio.done':
         outputActiveRef.current = false;
+        finishAssistantEntry();
         setState('listening');
         break;
       case 'error':
@@ -161,7 +259,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
       default:
         break;
     }
-  }, [cancelRealtimeOutput, sendRealtimeEvent]);
+  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
 
   const start = useCallback(async () => {
     if (state !== 'idle' && state !== 'error') return;
@@ -269,7 +367,35 @@ export function useVoiceChat(): UseVoiceChatReturn {
     }
   }, [handleRealtimeEvent, sendRealtimeEvent, state, stop]);
 
-  return { state, partial, transcript, assistantText, cloudEvent, start, stop, error };
+  return { state, partial, transcript, assistantText, localEntries, cloudEvent, start, stop, error };
+}
+
+const LOCAL_VOICE_ENTRY_LIMIT = 80;
+
+function createVoiceUserEntry(id: string, text: string, isStreaming: boolean): AwarenessEntry {
+  return {
+    id,
+    type: 'message',
+    timestamp: new Date().toISOString(),
+    role: 'user',
+    content: text ? [{ type: 'text', text }] : [],
+    channel: 'voice',
+    userName: 'you',
+    strippedText: text,
+    isStreaming,
+  };
+}
+
+function createVoiceAssistantEntry(id: string, text: string, isStreaming: boolean): AwarenessEntry {
+  return {
+    id,
+    type: 'message',
+    timestamp: new Date().toISOString(),
+    role: 'assistant',
+    content: text ? [{ type: 'text', text }] : [],
+    model: REALTIME_MODEL,
+    isStreaming,
+  };
 }
 
 function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
