@@ -1,12 +1,11 @@
 /**
- * useVoiceChat - browser mic capture + OpenAI Realtime WebRTC transport.
+ * useVoiceChat - browser mic capture + OpenAI Realtime WebRTC voice agent.
  *
- * Realtime handles live transcription and speech rendering. The first real
- * utterance in each voice session asks the agent runtime to start from fresh
- * context before the normal tool-capable Zip path handles the turn.
+ * Realtime owns the live voice turn. This hook does not bridge completed
+ * transcripts into the text /web/chat agent path.
  */
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import { createRealtimeClientSecret } from '../console-api';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
@@ -16,17 +15,6 @@ const DEFAULT_REALTIME_VOICE = 'marin';
 
 export type VoiceState = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'error';
 
-export interface UseVoiceChatOptions {
-  onTranscript?: (text: string, options?: VoiceTranscriptOptions) => void;
-}
-
-export interface VoiceTranscriptOptions {
-  source: string;
-  channelId: string;
-  freshContext: boolean;
-  sessionId: string;
-}
-
 export interface UseVoiceChatReturn {
   state: VoiceState;
   partial: string;
@@ -35,13 +23,12 @@ export interface UseVoiceChatReturn {
   cloudEvent: string;
   start: () => Promise<void>;
   stop: () => void;
-  speak: (text: string) => void;
   error: string | null;
 }
 
 type RealtimeEvent = Record<string, unknown> & { type?: string };
 
-export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatReturn {
+export function useVoiceChat(): UseVoiceChatReturn {
   const [state, setState] = useState<VoiceState>('idle');
   const [partial, setPartial] = useState('');
   const [transcript, setTranscript] = useState('');
@@ -56,14 +43,6 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
   const outputActiveRef = useRef(false);
   const partialRef = useRef('');
   const sessionIdRef = useRef(0);
-  const voiceSessionIdRef = useRef('');
-  const freshContextPendingRef = useRef(false);
-  const onTranscriptRef = useRef(options.onTranscript);
-  const lastAssistantSpeechRef = useRef<{ text: string; at: number } | null>(null);
-
-  useEffect(() => {
-    onTranscriptRef.current = options.onTranscript;
-  }, [options.onTranscript]);
 
   const sendRealtimeEvent = useCallback((event: Record<string, unknown>): boolean => {
     const dc = dcRef.current;
@@ -80,7 +59,6 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
 
   const stop = useCallback(() => {
     sessionIdRef.current += 1;
-    freshContextPendingRef.current = false;
     outputActiveRef.current = false;
     partialRef.current = '';
 
@@ -102,19 +80,6 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     setPartial('');
     setCloudEvent('');
   }, []);
-
-  const speak = useCallback((text: string) => {
-    const clean = text.trim();
-    if (!clean) return;
-    if (!sendRealtimeEvent(createCanonicalSpeechResponse(clean))) {
-      setError('Realtime voice is not ready to speak yet.');
-      return;
-    }
-    lastAssistantSpeechRef.current = { text: clean, at: Date.now() };
-    outputActiveRef.current = true;
-    setAssistantText(clean);
-    setState('speaking');
-  }, [sendRealtimeEvent]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     switch (event.type) {
@@ -149,19 +114,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
         if (!text) break;
         setTranscript(text);
         setAssistantText('');
-        if (shouldSuppressAssistantEcho(text, lastAssistantSpeechRef.current)) {
-          setState('listening');
-          break;
-        }
-        setState('thinking');
-        const freshContext = freshContextPendingRef.current;
-        freshContextPendingRef.current = false;
-        onTranscriptRef.current?.(text, {
-          source: 'web-voice',
-          channelId: 'web-voice',
-          freshContext,
-          sessionId: voiceSessionIdRef.current,
-        });
+        setState(outputActiveRef.current ? 'speaking' : 'thinking');
         break;
       }
       case 'conversation.item.input_audio_transcription.failed':
@@ -169,10 +122,32 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
         setState('error');
         break;
       case 'response.created':
+        outputActiveRef.current = true;
+        setAssistantText('');
+        setState('speaking');
+        break;
       case 'response.output_item.added':
         outputActiveRef.current = true;
         setState('speaking');
         break;
+      case 'response.output_audio_transcript.delta':
+      case 'response.audio_transcript.delta':
+      case 'response.output_text.delta':
+      case 'response.text.delta': {
+        const delta = String(event.delta ?? '');
+        if (delta) setAssistantText((prev) => prev + delta);
+        outputActiveRef.current = true;
+        setState('speaking');
+        break;
+      }
+      case 'response.output_audio_transcript.done':
+      case 'response.audio_transcript.done':
+      case 'response.output_text.done':
+      case 'response.text.done': {
+        const text = String(event.transcript ?? event.text ?? '').trim();
+        if (text) setAssistantText(text);
+        break;
+      }
       case 'response.done':
       case 'response.output_audio.done':
       case 'response.audio.done':
@@ -205,9 +180,6 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
 
     const sessionId = sessionIdRef.current + 1;
     sessionIdRef.current = sessionId;
-    voiceSessionIdRef.current = createVoiceSessionId();
-    freshContextPendingRef.current = true;
-
     try {
       const clientSecret = await createRealtimeClientSecret({
         voice: DEFAULT_REALTIME_VOICE,
@@ -297,7 +269,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     }
   }, [handleRealtimeEvent, sendRealtimeEvent, state, stop]);
 
-  return { state, partial, transcript, assistantText, cloudEvent, start, stop, speak, error };
+  return { state, partial, transcript, assistantText, cloudEvent, start, stop, error };
 }
 
 function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
@@ -308,20 +280,22 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
       model: REALTIME_MODEL,
       output_modalities: ['audio'],
       instructions: [
-        "You are Troublemaker's voice transport, not the agent brain.",
-        'Use microphone audio only to produce input transcription events.',
-        'Do not answer the user from this Realtime session.',
-        'When asked to speak canonical assistant text, read it exactly and add no extra words.',
+        "You are Zip, TinyFat's live voice agent.",
+        'Speak directly to Alex in a concise, natural voice.',
+        'You are running in the TinyFat web workspace voice UI.',
+        'For this first shipped slice, you have no tools. If the user asks you to build, deploy, inspect files, or change state, say briefly that voice actions are not wired yet and ask them to use text chat for that action.',
+        'Do not mention transcripts, transport, or implementation details unless Alex asks.',
       ].join('\n'),
       tools: [],
+      tool_choice: 'none',
       parallel_tool_calls: false,
       audio: {
         input: {
           noise_reduction: { type: 'far_field' },
           turn_detection: {
             type: 'server_vad',
-            create_response: false,
-            interrupt_response: false,
+            create_response: true,
+            interrupt_response: true,
             prefix_padding_ms: 250,
             silence_duration_ms: 450,
             threshold: 0.6,
@@ -333,33 +307,6 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
           speed: 1.0,
         },
       },
-    },
-  };
-}
-
-function createCanonicalSpeechResponse(text: string): Record<string, unknown> {
-  return {
-    type: 'response.create',
-    response: {
-      conversation: 'none',
-      output_modalities: ['audio'],
-      instructions: [
-        'Read the supplied text aloud exactly as written.',
-        'Do not answer, summarize, explain, translate, add greetings, add confirmations, or add sign-offs.',
-        'If the text contains Markdown, render it naturally for speech while preserving the words and meaning.',
-      ].join(' '),
-      input: [
-        {
-          type: 'message',
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: `Speak this exact canonical Zip response:\n\n${text}`,
-            },
-          ],
-        },
-      ],
     },
   };
 }
@@ -383,33 +330,4 @@ function openAIErrorMessage(event: RealtimeEvent): string {
   }
   const message = event.message;
   return typeof message === 'string' && message.trim() ? message : 'Realtime voice error';
-}
-
-function shouldSuppressAssistantEcho(transcript: string, assistant: { text: string; at: number } | null): boolean {
-  if (!assistant) return false;
-  if (Date.now() - assistant.at > 15000) return false;
-  const spoken = normalizeSpeechText(assistant.text);
-  const heard = normalizeSpeechText(transcript);
-  if (!spoken || !heard) return false;
-  if (spoken.includes(heard) || heard.includes(spoken)) return true;
-
-  const spokenWords = new Set(spoken.split(' ').filter(Boolean));
-  const heardWords = heard.split(' ').filter(Boolean);
-  if (heardWords.length < 4 || spokenWords.size === 0) return false;
-  const overlap = heardWords.filter((word) => spokenWords.has(word)).length / heardWords.length;
-  return overlap >= 0.72;
-}
-
-function normalizeSpeechText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function createVoiceSessionId(): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID();
-  return `voice-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

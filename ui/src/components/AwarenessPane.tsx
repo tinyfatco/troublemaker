@@ -7,7 +7,7 @@
 
 import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties, type TouchEvent, type WheelEvent } from 'react';
 import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
-import { useWebChat, type SendMessageOptions } from '../hooks/useWebChat';
+import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
@@ -51,10 +51,7 @@ export function AwarenessPane({
     clearError,
   } = useWebChat();
 
-  const handleVoiceTranscript = useCallback((text: string, options?: SendMessageOptions) => {
-    sendMessage(text, options);
-  }, [sendMessage]);
-  const voice = useVoiceChat({ onTranscript: handleVoiceTranscript });
+  const voice = useVoiceChat();
   const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
   const voiceStatusText = useMemo(() => {
     if (voice.assistantText) return voice.assistantText;
@@ -85,7 +82,6 @@ export function AwarenessPane({
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [composerHeight, setComposerHeight] = useState(0);
   const userScrolledRef = useRef(false);
-  const lastVoiceSpeechKeyRef = useRef<string | null>(null);
   const prevScrollHeightRef = useRef(0);
   const composerHeightRef = useRef(0);
   const pendingExpansionFollowRef = useRef(false);
@@ -165,16 +161,6 @@ export function AwarenessPane({
       scrollToBottom('instant');
     }
   }, [backlogDone]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (!allowVoice || !isVoiceActive || !streamingEntry || streamingEntry.isStreaming) return;
-    const text = getSpokenAssistantText(streamingEntry);
-    if (!text) return;
-    const key = `${streamingEntry.id}:${text}`;
-    if (lastVoiceSpeechKeyRef.current === key) return;
-    lastVoiceSpeechKeyRef.current = key;
-    voice.speak(text);
-  }, [allowVoice, isVoiceActive, streamingEntry, voice.speak]);
 
   // After loading more (prepend), preserve scroll position
   useEffect(() => {
@@ -391,14 +377,6 @@ export function AwarenessPane({
       />
     </div>
   );
-}
-
-function getSpokenAssistantText(entry: AwarenessEntry): string {
-  return (entry.content || [])
-    .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n')
-    .trim();
 }
 
 function getLiveScrollSignal(entries: AwarenessEntry[]): string {

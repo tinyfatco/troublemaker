@@ -72,6 +72,7 @@
 		"test:mcp-cursor-premove": "npx tsx test/mcp-cursor-premove.test.ts",
 		"test:web-chat-steering-request-gate": "npx tsx test/web-chat-steering-request-gate.test.ts",
 		"test:web-slash-command": "npx tsx test/web-slash-command.test.ts",
+		"test:web-realtime-agent": "npx tsx test/web-realtime-agent.test.ts",
 		"test:web-ui-slash-commands": "npx tsx test/web-ui-slash-commands.test.ts",
 		"test:web-ui-model-autocomplete": "npx tsx test/web-ui-model-autocomplete.test.ts",
 		"test:web-ui-settings-command-wiring": "npx tsx test/web-ui-settings-command-wiring.test.ts",
