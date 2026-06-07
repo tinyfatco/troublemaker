@@ -766,6 +766,7 @@ function createRunner(
 			...(project.previewUrl ? [`Canonical preview URL: ${project.previewUrl}`] : []),
 			...(project.productionUrl ? [`Production URL: ${project.productionUrl}`] : []),
 			...(project.state ? [`Project state: ${project.state}`] : []),
+			...(project.initialBrief ? [`Initial user brief: ${project.initialBrief}`] : []),
 			...(project.latestDeploymentUrl ? [`Latest deployment URL: ${project.latestDeploymentUrl}`] : []),
 			...(project.latestDeploymentState ? [`Latest deployment state: ${project.latestDeploymentState}`] : []),
 			"",

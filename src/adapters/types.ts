@@ -21,6 +21,7 @@ export interface ProjectChatContext {
 	previewUrl?: string;
 	productionUrl?: string | null;
 	state?: string;
+	initialBrief?: string;
 	latestDeploymentUrl?: string;
 	latestDeploymentState?: string;
 	/** Container workspace path, normally /data/projects/<slug>. */

@@ -96,6 +96,7 @@ async function run() {
 				workspacePath: projectWorkspace,
 				threadId: "default",
 				latestDeploymentUrl: "https://demo-site.preview.tinyfat.dev/",
+				initialBrief: "Build a warm neighborhood bakery website.",
 				latestDeploymentState: "live",
 			},
 		});
@@ -106,6 +107,7 @@ async function run() {
 		assert(lastEvent?.project?.slug === "demo-site", "project slug reaches MomEvent");
 		assert(lastEvent?.project?.threadId === "default", "project thread id reaches MomEvent");
 		assert(lastEvent?.project?.workspacePath === projectWorkspace, "project workspace path reaches MomEvent");
+		assert(lastEvent?.project?.initialBrief === "Build a warm neighborhood bakery website.", "project initial brief reaches MomEvent");
 
 		const transcriptPath = join(projectWorkspace, "threads", "default.jsonl");
 		const summaryPath = join(projectWorkspace, "threads", "default.summary.md");

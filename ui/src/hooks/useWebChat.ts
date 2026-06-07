@@ -418,6 +418,7 @@ function readUrlProjectChatOptions(): SendMessageOptions {
   setIfString(project, 'previewUrl', params.get('tf_project_preview'), 500);
   setIfString(project, 'productionUrl', params.get('tf_project_production'), 500);
   setIfString(project, 'state', params.get('tf_project_state'), 80);
+  setIfString(project, 'initialBrief', params.get('tf_project_brief'), 1200);
   setIfString(project, 'latestDeploymentUrl', params.get('tf_project_deploy'), 500);
   setIfString(project, 'latestDeploymentState', params.get('tf_project_deploy_state'), 80);
 

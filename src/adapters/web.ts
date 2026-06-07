@@ -57,6 +57,8 @@ interface WebChatPayload {
 	production_url?: string;
 	workspacePath?: string;
 	workspace_path?: string;
+	initialBrief?: string;
+	initial_brief?: string;
 	source?: string;
 	origin?: string;
 	role?: string;
@@ -350,6 +352,7 @@ Keep responses concise and helpful.`;
 			...this.optionalProjectString("previewUrl", project.previewUrl, project.preview_url, payload.previewUrl, payload.preview_url),
 			...this.optionalProjectNullableString("productionUrl", project.productionUrl, project.production_url, payload.productionUrl, payload.production_url),
 			...this.optionalProjectString("state", project.state),
+			...this.optionalProjectString("initialBrief", project.initialBrief, project.initial_brief, payload.initialBrief, payload.initial_brief),
 			...this.optionalProjectString("latestDeploymentUrl", project.latestDeploymentUrl, project.latest_deployment_url),
 			...this.optionalProjectString("latestDeploymentState", project.latestDeploymentState, project.latest_deployment_state),
 		};
