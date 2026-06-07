@@ -110,7 +110,7 @@ function ToolCallBlock({ block, isRunning, output, result, onExpandingContent }:
   const detailFrames = buildToolDetailFrames(args);
   const hasArgs = detailFrames.length > 0;
   const liveOutputText = output?.text ? String(output.text) : '';
-  const resultText = result?.result ? String(result.result) : liveOutputText;
+  const resultText = result ? String(result.result ?? '') : liveOutputText;
   const hasOutputMeta = typeof output?.pid === 'number';
   const hasDetails = hasArgs || !!resultText || hasOutputMeta;
   const [manualDetailsOpen, setManualDetailsOpen] = useState(false);
@@ -359,9 +359,6 @@ function buildArgumentChips(args: Record<string, unknown>, primaryKey?: string):
 
   addPrimaryKindChip(primaryKey, chips);
 
-  if (typeof args.label === 'string' && args.label.trim()) {
-    add('label', args.label, 'accent');
-  }
   if (typeof args.timeout === 'number') {
     add('timeout', `${args.timeout}s`, 'accent');
   }
