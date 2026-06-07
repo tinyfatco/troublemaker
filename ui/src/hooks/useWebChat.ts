@@ -43,12 +43,16 @@ export interface UseWebChatReturn {
 
 export interface SendMessageOptions {
   source?: string;
+  sourceEventType?: string;
   channelId?: string;
   freshContext?: boolean;
   sessionId?: string;
+  threadId?: string;
+  project?: Record<string, unknown>;
 }
 
 export function useWebChat(): UseWebChatReturn {
+  const defaultOptionsRef = useRef<SendMessageOptions>(readUrlProjectChatOptions());
   const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>([]);
   const [userEntry, setUserEntry] = useState<AwarenessEntry | null>(null);
   const [streamingEntry, setStreamingEntry] = useState<AwarenessEntry | null>(null);
@@ -110,7 +114,17 @@ export function useWebChat(): UseWebChatReturn {
     };
   }, [setActiveStreamingEntry]);
 
+  const applyDefaultOptions = useCallback((options: SendMessageOptions = {}): SendMessageOptions => {
+    const defaults = defaultOptionsRef.current;
+    return {
+      ...defaults,
+      ...options,
+      project: options.project ?? defaults.project,
+    };
+  }, []);
+
   const sendSteeringMessage = useCallback(async (trimmed: string, options: SendMessageOptions = {}) => {
+    const effectiveOptions = applyDefaultOptions(options);
     const now = new Date().toISOString();
     const user: AwarenessEntry = {
       id: `live-user-${Date.now()}`,
@@ -118,8 +132,8 @@ export function useWebChat(): UseWebChatReturn {
       timestamp: now,
       role: 'user',
       content: [{ type: 'text', text: trimmed }],
-      channel: options.channelId || 'web',
-      userName: options.source || 'user',
+      channel: effectiveOptions.channelId || 'web',
+      userName: effectiveOptions.source || 'user',
       strippedText: trimmed,
     };
 
@@ -154,7 +168,7 @@ export function useWebChat(): UseWebChatReturn {
       const response = await fetch(postMessageUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(createMessagePayload(trimmed, options)),
+        body: JSON.stringify(createMessagePayload(trimmed, effectiveOptions)),
         signal: controller.signal,
       });
       debugStream('send:steering:response', {
@@ -208,13 +222,14 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, setActiveStreamingEntry]);
+  }, [activateStreamingEntry, applyDefaultOptions, makeScopedStreamControls, setActiveStreamingEntry]);
 
   const sendMessage = useCallback(async (text: string, options: SendMessageOptions = {}) => {
     const trimmed = text.trim();
     if (!trimmed) return;
-    if (!options.freshContext && shouldSendAsSteering(trimmed, !!abortControllerRef.current)) {
-      void sendSteeringMessage(trimmed, options);
+    const effectiveOptions = applyDefaultOptions(options);
+    if (!effectiveOptions.freshContext && shouldSendAsSteering(trimmed, !!abortControllerRef.current)) {
+      void sendSteeringMessage(trimmed, effectiveOptions);
       return;
     }
 
@@ -227,8 +242,8 @@ export function useWebChat(): UseWebChatReturn {
       timestamp: now,
       role: 'user',
       content: [{ type: 'text', text: trimmed }],
-      channel: options.channelId || 'web',
-      userName: options.source || 'user',
+      channel: effectiveOptions.channelId || 'web',
+      userName: effectiveOptions.source || 'user',
       strippedText: trimmed,
     };
 
@@ -269,7 +284,7 @@ export function useWebChat(): UseWebChatReturn {
         response = await fetch(postMessageUrl(), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(createMessagePayload(trimmed, options)),
+          body: JSON.stringify(createMessagePayload(trimmed, effectiveOptions)),
           signal: controller.signal,
         });
         debugStream('send:normal:response', {
@@ -339,7 +354,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, sendSteeringMessage, setActiveStreamingEntry]);
+  }, [activateStreamingEntry, applyDefaultOptions, makeScopedStreamControls, sendSteeringMessage, setActiveStreamingEntry]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
@@ -349,7 +364,7 @@ export function useWebChat(): UseWebChatReturn {
       });
       requestGateRef.current.deactivate();
       setStatus('stopping');
-      stopActiveMessage().catch((err) => {
+      stopActiveMessage(defaultOptionsRef.current.channelId || 'web').catch((err) => {
         setError(err instanceof Error ? err.message : 'Failed to stop active run');
       });
       abortControllerRef.current.abort();
@@ -373,10 +388,73 @@ function createMessagePayload(message: string, options: SendMessageOptions): Rec
   return {
     message,
     ...(options.source ? { source: options.source } : {}),
+    ...(options.sourceEventType ? { sourceEventType: options.sourceEventType } : {}),
     ...(options.channelId ? { channelId: options.channelId } : {}),
     ...(options.freshContext ? { fresh_context: true } : {}),
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
+    ...(options.threadId ? { threadId: options.threadId } : {}),
+    ...(options.project ? { project: options.project } : {}),
   };
+}
+
+function readUrlProjectChatOptions(): SendMessageOptions {
+  if (typeof window === 'undefined') return {};
+
+  const params = new URLSearchParams(window.location.search);
+  const slug = cleanProjectSlug(params.get('tf_project_slug') || params.get('project') || '');
+  if (!slug) return {};
+
+  const threadId = cleanProjectThreadId(params.get('tf_project_thread') || params.get('threadId') || 'default');
+  const sessionId = cleanString(params.get('tf_project_session'), 160) || `project:${slug}:${threadId}`;
+  const workspacePath = cleanWorkspacePath(params.get('tf_project_workspace'), slug);
+  const project: Record<string, unknown> = {
+    slug,
+    threadId,
+    workspacePath,
+  };
+
+  setIfString(project, 'siteId', params.get('tf_project_site_id'), 80);
+  setIfString(project, 'displayName', params.get('tf_project_name'), 120);
+  setIfString(project, 'previewUrl', params.get('tf_project_preview'), 500);
+  setIfString(project, 'productionUrl', params.get('tf_project_production'), 500);
+  setIfString(project, 'state', params.get('tf_project_state'), 80);
+  setIfString(project, 'latestDeploymentUrl', params.get('tf_project_deploy'), 500);
+  setIfString(project, 'latestDeploymentState', params.get('tf_project_deploy_state'), 80);
+
+  return {
+    source: 'project',
+    sourceEventType: 'tinyfat_project_chat',
+    channelId: `project:${slug}:${threadId}`,
+    sessionId,
+    threadId,
+    project,
+  };
+}
+
+function cleanString(value: string | null, maxLength: number): string {
+  return (value || '').trim().slice(0, maxLength);
+}
+
+function cleanProjectSlug(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return /^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(trimmed) ? trimmed : '';
+}
+
+function cleanProjectThreadId(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(trimmed) ? trimmed : 'default';
+}
+
+function cleanWorkspacePath(value: string | null, slug: string): string {
+  const fallback = `/data/projects/${slug}`;
+  const trimmed = cleanString(value, 240);
+  if (!trimmed) return fallback;
+  return trimmed.endsWith(`/projects/${slug}`) || trimmed.includes(`/projects/${slug}/`) ? trimmed : fallback;
+}
+
+function setIfString(target: Record<string, unknown>, key: string, value: string | null, maxLength: number): void {
+  const cleaned = cleanString(value, maxLength);
+  if (cleaned) target[key] = cleaned;
 }
 
 const LOCAL_SLASH_ENTRY_LIMIT = 40;
