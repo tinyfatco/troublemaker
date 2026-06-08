@@ -5,8 +5,8 @@
  * before the message reaches the agent loop.
  */
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { randomUUID } from "crypto";
 import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
@@ -19,7 +19,7 @@ import {
 } from "./realtime-voices.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
-import { AuthStorage, getAgentDir } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, getAgentDir, type AuthCredential } from "@earendil-works/pi-coding-agent";
 
 /**
  * Pending input — when a command needs the user's next message (e.g. /login),
@@ -357,6 +357,92 @@ async function handleClearCommand(
 	}
 }
 
+
+interface PlatformCredentialPersistenceOptions {
+	authStorage: AuthStorage;
+	providerId: string;
+	secretKey: string;
+	toolsToken: string;
+	authPath?: string;
+	fetchImpl?: typeof fetch;
+}
+
+type PlatformCredentialPersistenceResult =
+	| { ok: true; status: number }
+	| { ok: false; reason: "missing_credential" | "http_error"; status?: number };
+
+function isAuthData(value: unknown): value is Record<string, AuthCredential> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function readExistingAuthData(authPath: string): Record<string, AuthCredential> {
+	if (!existsSync(authPath)) return {};
+	try {
+		const parsed = JSON.parse(readFileSync(authPath, "utf-8")) as unknown;
+		return isAuthData(parsed) ? parsed : {};
+	} catch {
+		return {};
+	}
+}
+
+function stripCredentialType(credential: AuthCredential): Record<string, unknown> {
+	const { type: _type, ...rawCredential } = credential;
+	return rawCredential as Record<string, unknown>;
+}
+
+/**
+ * Rewrites auth.json from AuthStorage's in-memory credential after login.
+ * This repairs a malformed auth file that would otherwise block persistence.
+ */
+export function normalizeLoginCredentialFile(
+	authStorage: AuthStorage,
+	providerId: string,
+	authPath = join(getAgentDir(), "auth.json"),
+): AuthCredential | undefined {
+	const credential = authStorage.get(providerId);
+	if (!credential) return undefined;
+
+	const authData = readExistingAuthData(authPath);
+	authData[providerId] = credential;
+
+	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 });
+	writeFileSync(authPath, `${JSON.stringify(authData, null, 2)}\n`, "utf-8");
+	chmodSync(authPath, 0o600);
+	authStorage.reload();
+
+	return credential;
+}
+
+export async function persistLoginCredentialToPlatform({
+	authStorage,
+	providerId,
+	secretKey,
+	toolsToken,
+	authPath,
+	fetchImpl = fetch,
+}: PlatformCredentialPersistenceOptions): Promise<PlatformCredentialPersistenceResult> {
+	const credential = normalizeLoginCredentialFile(authStorage, providerId, authPath);
+	if (!credential) {
+		return { ok: false, reason: "missing_credential" };
+	}
+
+	const rawCredential = stripCredentialType(credential);
+	const resp = await fetchImpl("https://tinyfat.com/api/agent/secrets", {
+		method: "PATCH",
+		headers: {
+			"Authorization": `Bearer ${toolsToken}`,
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify({ [secretKey]: JSON.stringify(rawCredential) }),
+	});
+
+	if (!resp.ok) {
+		return { ok: false, reason: "http_error", status: resp.status };
+	}
+
+	return { ok: true, status: resp.status };
+}
+
 async function handleLoginCommand(
 	args: string[],
 	channelId: string,
@@ -470,29 +556,22 @@ async function handleLoginCommand(
 			const toolsToken = process.env.FAT_TOOLS_TOKEN;
 			if (toolsToken && secretKey) {
 				try {
-					const authPath = join(getAgentDir(), "auth.json");
-					const authData = JSON.parse(readFileSync(authPath, "utf-8"));
-					const creds = authData[providerId];
-					if (creds) {
-						// Strip the "type" field — platform stores raw OAuth creds
-						const { type: _, ...rawCreds } = creds;
-						const resp = await fetch("https://tinyfat.com/api/agent/secrets", {
-							method: "PATCH",
-							headers: {
-								"Authorization": `Bearer ${toolsToken}`,
-								"Content-Type": "application/json",
-							},
-							body: JSON.stringify({ [secretKey]: JSON.stringify(rawCreds) }),
-						});
-						if (resp.ok) {
-							log.logInfo(`[/login] Credentials for ${providerId} persisted to platform`);
-						} else {
-							log.logWarning(`[/login] Failed to persist credentials: ${resp.status}`);
-							await platform.postMessage(
-								channelId,
-								`⚠ Logged in but failed to persist credentials (${resp.status}). They may be lost on container restart.`,
-							);
-						}
+					const result = await persistLoginCredentialToPlatform({
+						authStorage,
+						providerId,
+						secretKey,
+						toolsToken,
+					});
+					if (result.ok) {
+						log.logInfo(`[/login] Credentials for ${providerId} persisted to platform`);
+					} else if (result.reason === "http_error") {
+						log.logWarning(`[/login] Failed to persist credentials: ${result.status}`);
+						await platform.postMessage(
+							channelId,
+							`⚠ Logged in but failed to persist credentials (${result.status}). They may be lost on container restart.`,
+						);
+					} else {
+						log.logWarning(`[/login] No credentials found for ${providerId} after login`);
 					}
 				} catch (persistErr) {
 					const msg = persistErr instanceof Error ? persistErr.message : String(persistErr);
