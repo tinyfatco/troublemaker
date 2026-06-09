@@ -87,6 +87,10 @@ case "$*" in
     echo '{"auth_url":"https://accounts.google.com/o/oauth2/auth?state=test-state","state_reused":false}'
     ;;
   *"auth add callie@example.com"*"--step 2"* )
+    if [[ "$*" != *"--force-consent"* ]]; then
+      echo "missing force consent" >&2
+      exit 73
+    fi
     if [[ "$*" != *"--auth-url http://127.0.0.1:1234/oauth2/callback?code=abc&state=xyz"* ]]; then
       echo "missing callback url" >&2
       exit 72

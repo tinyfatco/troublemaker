@@ -826,6 +826,7 @@ async function handleGoogleLoginCommand(
 				"--remote",
 				"--step",
 				"2",
+				"--force-consent",
 				"--auth-url",
 				callbackUrl,
 			], GOG_LOGIN_TIMEOUT_MS);
