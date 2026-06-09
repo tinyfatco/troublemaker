@@ -5,6 +5,7 @@
  * before the message reaches the agent loop.
  */
 
+import { spawn } from "child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { randomUUID } from "crypto";
@@ -31,6 +32,13 @@ interface PendingInput {
 }
 
 const pendingInput = new Map<string, PendingInput>();
+
+
+const GOOGLE_LOGIN_ALIASES = new Set(["google", "gog", "gogcli"]);
+const GOG_DEFAULT_SERVICES = "gmail,calendar,drive,contacts,docs,sheets";
+const GOG_LOGIN_TIMEOUT_MS = 10 * 60 * 1000;
+const GOG_COMMAND_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_GOG_KEYRING_PASSWORD = "";
 
 function handled(pending?: Promise<void>): SlashCommandResult {
 	return pending ? { handled: true, pending } : true;
@@ -79,6 +87,120 @@ function waitForInput(channelId: string): Promise<string> {
 	return new Promise((resolve, reject) => {
 		pendingInput.set(channelId, { resolve, reject });
 	});
+}
+
+
+function waitForInputWithTimeout(channelId: string, timeoutMs: number): Promise<string> {
+	return new Promise((resolve, reject) => {
+		const timer = setTimeout(() => {
+			pendingInput.delete(channelId);
+			reject(new Error("Login timed out. Try /login google again."));
+		}, timeoutMs);
+
+		waitForInput(channelId).then(
+			(value) => {
+				clearTimeout(timer);
+				resolve(value);
+			},
+			(err) => {
+				clearTimeout(timer);
+				reject(err);
+			},
+		);
+	});
+}
+
+interface CommandResult {
+	code: number | null;
+	stdout: string;
+	stderr: string;
+	error?: Error;
+}
+
+function appendOutput(current: string, chunk: Buffer | string): string {
+	const next = current + chunk.toString();
+	return next.length > 20_000 ? next.slice(-20_000) : next;
+}
+
+function runCommand(
+	command: string,
+	args: string[],
+	options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+): Promise<CommandResult> {
+	return new Promise((resolve) => {
+		const child = spawn(command, args, { env: options.env });
+		let stdout = "";
+		let stderr = "";
+		let settled = false;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+
+		const finish = (result: CommandResult) => {
+			if (settled) return;
+			settled = true;
+			if (timer) clearTimeout(timer);
+			resolve(result);
+		};
+
+		timer = setTimeout(() => {
+			child.kill("SIGTERM");
+			finish({
+				code: null,
+				stdout,
+				stderr: appendOutput(stderr, `Timed out after ${options.timeoutMs ?? GOG_COMMAND_TIMEOUT_MS}ms`),
+			});
+		}, options.timeoutMs ?? GOG_COMMAND_TIMEOUT_MS);
+
+		child.stdout?.on("data", (chunk: Buffer) => {
+			stdout = appendOutput(stdout, chunk);
+		});
+		child.stderr?.on("data", (chunk: Buffer) => {
+			stderr = appendOutput(stderr, chunk);
+		});
+		child.on("error", (error) => {
+			finish({ code: null, stdout, stderr: appendOutput(stderr, error.message), error });
+		});
+		child.on("close", (code) => {
+			finish({ code, stdout, stderr });
+		});
+	});
+}
+
+function runGog(args: string[], timeoutMs = GOG_COMMAND_TIMEOUT_MS): Promise<CommandResult> {
+	return runCommand(process.env.GOG_CLI_PATH || "gog", args, {
+		timeoutMs,
+		env: {
+			...process.env,
+			GOG_KEYRING_BACKEND: process.env.GOG_KEYRING_BACKEND || "file",
+			GOG_KEYRING_PASSWORD: process.env.GOG_KEYRING_PASSWORD || DEFAULT_GOG_KEYRING_PASSWORD,
+		},
+	});
+}
+
+function commandNotFound(result: CommandResult): boolean {
+	const code = result.error && "code" in result.error ? String((result.error as NodeJS.ErrnoException).code) : "";
+	return code === "ENOENT";
+}
+
+function redactOAuthDetails(text: string): string {
+	return text
+		.replace(/([?&]code=)[^&\s]+/gi, "$1[redacted]")
+		.replace(/([?&]state=)[^&\s]+/gi, "$1[redacted]");
+}
+
+function gogFailureMessage(action: string, result: CommandResult): string {
+	if (commandNotFound(result)) return "`gog` is not installed in this container yet.";
+	const detail = (result.stderr || result.stdout || result.error?.message || "").trim();
+	return detail ? `${action}: ${redactOAuthDetails(detail)}` : action;
+}
+
+function parseJsonObject(output: string, action: string): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(output);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+	} catch {
+		// Fall through to the formatted error below.
+	}
+	throw new Error(`${action}: gog returned invalid JSON`);
 }
 
 /** Write a system action to context.jsonl so it shows in the awareness stream. */
@@ -465,16 +587,18 @@ async function handleLoginCommand(
 			const status = hasAuth ? "✓ logged in" : "✗ not logged in";
 			response += `  \`${p.id}\` — ${p.name} (${status})\n`;
 		}
-		response += `\nUse \`/login <provider>\` to log in. Example: \`/login openai-codex\``;
+		response += await googleLoginProviderLine();
+		response += `\nUse \`/login <provider>\` to log in. Examples: \`/login openai-codex\`, \`/login google you@example.com\``;
 		await platform.postMessage(channelId, response);
 		return handled();
 	}
 
 	const providerId = args[0].toLowerCase();
+	if (GOOGLE_LOGIN_ALIASES.has(providerId)) return handleGoogleLoginCommand(args.slice(1), channelId, workingDir, platform);
 	const provider = providers.find((p) => p.id === providerId);
 
 	if (!provider) {
-		const available = providers.map((p) => `\`${p.id}\``).join(", ");
+		const available = [...providers.map((p) => `\`${p.id}\``), "`google`"].join(", ");
 		await platform.postMessage(
 			channelId,
 			`Unknown provider: "${providerId}"\n\nAvailable: ${available}`,
@@ -592,6 +716,128 @@ async function handleLoginCommand(
 			log.logWarning(`[/login] Login failed for ${providerId}: ${msg}`);
 			pendingInput.delete(channelId); // Clean up any dangling resolver
 			await platform.postMessage(channelId, `_Login failed: ${msg}_`);
+		}
+	})();
+	return handled(pending);
+}
+
+
+async function googleLoginProviderLine(): Promise<string> {
+	const result = await runGog(["--version"], 5_000);
+	const status = result.code === 0 ? "available" : "not installed";
+	return `  \`google\` — Google Workspace via gog (${status})\n`;
+}
+
+function normalizeGoogleServices(raw?: string): string {
+	const services = (raw || "").trim().replace(/\s+/g, "");
+	return services || GOG_DEFAULT_SERVICES;
+}
+
+function looksLikeEmail(value: string): boolean {
+	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function looksLikeRedirectUrl(value: string): boolean {
+	return /^https?:\/\//i.test(value) && /[?&]code=/.test(value);
+}
+
+async function handleGoogleLoginCommand(
+	args: string[],
+	channelId: string,
+	workingDir: string,
+	platform: PlatformAdapter,
+): Promise<SlashCommandResult> {
+	const pending = (async () => {
+		try {
+			let email = (args[0] || "").trim();
+			const services = normalizeGoogleServices(args[1]);
+
+			if (!email) {
+				await platform.postMessage(channelId, "*Google Workspace login*\n\nReply with the Google email address to authorize, or send `/cancel`.");
+				email = (await waitForInputWithTimeout(channelId, GOG_LOGIN_TIMEOUT_MS)).trim().split(/\s+/)[0] || "";
+			}
+
+			if (!looksLikeEmail(email)) {
+				throw new Error(`Invalid Google email address: ${email || "(empty)"}`);
+			}
+
+			await platform.postMessage(channelId, `_Starting Google Workspace login for ${email}..._`);
+
+			const credentialsResult = await runGog(["--json", "--no-input", "auth", "credentials", "list"]);
+			if (credentialsResult.code !== 0) {
+				throw new Error(gogFailureMessage("Could not inspect Google OAuth client credentials", credentialsResult));
+			}
+
+			const credentialsJson = parseJsonObject(credentialsResult.stdout, "Could not inspect Google OAuth client credentials");
+			const clients = credentialsJson.clients;
+			if (!Array.isArray(clients) || clients.length === 0) {
+				await platform.postMessage(
+					channelId,
+					[
+						"*Google OAuth client credentials are not configured yet.*",
+						"",
+						"Store a Desktop OAuth client JSON at `/data/.config/gogcli/credentials.json`, or run:",
+						"`gog auth credentials set /path/to/client_secret.json`",
+						"",
+						"Then retry `/login google you@example.com`.",
+					].join("\n"),
+				);
+				return;
+			}
+
+			const step1 = await runGog([
+				"--json",
+				"--no-input",
+				"auth",
+				"add",
+				email,
+				"--services",
+				services,
+				"--remote",
+				"--step",
+				"1",
+				"--force-consent",
+			]);
+			if (step1.code !== 0) throw new Error(gogFailureMessage("Could not start Google login", step1));
+
+			const step1Json = parseJsonObject(step1.stdout, "Could not start Google login");
+			const authUrl = typeof step1Json.auth_url === "string" ? step1Json.auth_url.trim() : "";
+			if (!authUrl) throw new Error("Could not start Google login: gog did not return an auth_url");
+
+			await platform.postMessage(
+				channelId,
+				`*Open this Google authorization URL:*\n\n${authUrl}\n\nRequested services: \`${services}\`\n\nAfter authorizing, your browser will redirect to a \`localhost\` URL that may not load. Copy the *full URL* from your browser's address bar and paste it here.`,
+			);
+
+			const callbackUrl = (await waitForInputWithTimeout(channelId, GOG_LOGIN_TIMEOUT_MS)).trim();
+			if (!looksLikeRedirectUrl(callbackUrl)) {
+				throw new Error("Expected the full Google redirect URL with a code parameter.");
+			}
+
+			await platform.postMessage(channelId, "_Finishing Google Workspace login..._");
+			const step2 = await runGog([
+				"--json",
+				"--no-input",
+				"auth",
+				"add",
+				email,
+				"--services",
+				services,
+				"--remote",
+				"--step",
+				"2",
+				"--auth-url",
+				callbackUrl,
+			], GOG_LOGIN_TIMEOUT_MS);
+			if (step2.code !== 0) throw new Error(gogFailureMessage("Could not finish Google login", step2));
+
+			logSystemAction(workingDir, "system", `/login google ${email} — success`);
+			await platform.postMessage(channelId, `✓ Logged in to *Google Workspace* as ${email}`);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log.logWarning(`[/login google] Login failed: ${redactOAuthDetails(msg)}`);
+			pendingInput.delete(channelId);
+			await platform.postMessage(channelId, `_Google login failed: ${redactOAuthDetails(msg)}_`);
 		}
 	})();
 	return handled(pending);
