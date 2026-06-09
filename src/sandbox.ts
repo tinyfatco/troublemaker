@@ -85,7 +85,7 @@ export interface Executor {
 	/**
 	 * Get the workspace path prefix for this executor
 	 * Host: returns the actual path
-	 * Docker: returns /workspace
+	 * Docker: returns /data, the mounted agent workspace
 	 */
 	getWorkspacePath(hostPath: string): string;
 }
@@ -205,8 +205,8 @@ class DockerExecutor implements Executor {
 	}
 
 	getWorkspacePath(_hostPath: string): string {
-		// Docker container sees /workspace
-		return "/workspace";
+		// Crawdad mounts the agent workspace at /data inside the container.
+		return "/data";
 	}
 }
 

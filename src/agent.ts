@@ -1298,9 +1298,12 @@ function translateToHostPath(
 	awarenessDir: string,
 	workspacePath: string,
 ): string {
-	if (workspacePath === "/workspace") {
-		if (containerPath.startsWith("/workspace/")) {
-			return join(awarenessDir, "..", containerPath.slice("/workspace/".length));
+	if (workspacePath === "/data" || workspacePath === "/workspace") {
+		const prefixes = workspacePath === "/data" ? ["/data/", "/workspace/"] : ["/workspace/", "/data/"];
+		for (const prefix of prefixes) {
+			if (containerPath.startsWith(prefix)) {
+				return join(awarenessDir, "..", containerPath.slice(prefix.length));
+			}
 		}
 	}
 	return containerPath;
