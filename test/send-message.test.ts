@@ -67,7 +67,8 @@ async function run() {
 	const discord = makeAdapter("discord");
 	const telegram = makeAdapter("telegram");
 	const slack = makeAdapter("slack");
-	const adapters = [telegram.adapter, discord.adapter, slack.adapter];
+	const email = makeAdapter("email");
+	const adapters = [telegram.adapter, discord.adapter, slack.adapter, email.adapter];
 
 	assertEqual(normalizeDiscordChannel(`discord:${snowflake}`), snowflake, "normalizes discord: snowflake");
 	assertEqual(normalizeDiscordChannel(`discord-${snowflake}`), snowflake, "normalizes discord- snowflake");
@@ -85,6 +86,8 @@ async function run() {
 	assertEqual(resolveAdapter(telegramId, adapters)?.name, "telegram", "shorter numeric ID still resolves to Telegram");
 	assertEqual(resolveMessageTarget(`discord:${snowflake}`, [telegram.adapter]), undefined, "discord target fails closed without Discord adapter");
 	assertEqual(resolveMessageTarget("slack:C1234567890:1710000000.123456", adapters)?.threadTs, "1710000000.123456", "slack thread target resolves thread timestamp");
+	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.adapter.name, "email", "email thread target resolves to Email adapter");
+	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.channel, "email-thread:0123456789abcdef", "email thread target keeps thread channel for adapter resolution");
 	assert(isObsoleteSilentControlMessage("[SILENT]"), "detects exact obsolete silent marker");
 	assert(isObsoleteSilentControlMessage("  [silent]\n"), "detects whitespace/case variants of obsolete silent marker");
 	assert(!isObsoleteSilentControlMessage("[SILENT] please log this"), "does not suppress normal text that merely mentions silent marker");
@@ -119,6 +122,14 @@ async function run() {
 	assertEqual(slack.threadSent.length, 1, "tool sends slack thread targets through postInThread");
 	assertEqual(slack.threadSent[0]?.channel, "C1234567890", "slack thread target passes raw channel");
 	assertEqual(slack.threadSent[0]?.threadTs, "1710000000.123456", "slack thread target passes thread timestamp");
+
+	await (tool.execute as any)("call-email-thread", {
+		label: "email thread test",
+		target: "email-thread:0123456789abcdef",
+		text: "hello email thread",
+	});
+	assertEqual(email.sent.length, 1, "tool sends email-thread targets through Email postMessage");
+	assertEqual(email.sent[0]?.channel, "email-thread:0123456789abcdef", "email thread target passes through to Email adapter");
 
 	const silentResult = await (tool.execute as any)("call-2", {
 		label: "legacy silent",

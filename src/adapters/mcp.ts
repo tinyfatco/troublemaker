@@ -18,9 +18,10 @@ import { z } from "zod";
 import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
-import { collectChannelsFromLog, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
+import { collectChannelsFromLog, collectPhoneConversations, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
-import { collectSlackThreadMessages, formatSlackThreadTranscript } from "../tools/read-thread.js";
+import { collectThreadMessages, formatThreadTranscript } from "../tools/read-thread.js";
+import { collectEmailThreadListings } from "../adapters/email/thread-ledger.js";
 import type {
 	ChannelInfo,
 	MomContext,
@@ -319,10 +320,10 @@ export class McpAdapter implements PlatformAdapter {
 					"Send a message on the agent's behalf to one of its connected channels " +
 					"(Telegram, Slack, Discord, Email, SMS/iMessage). The required target determines routing: " +
 					"discord:<17-20 digit ID> or raw 17-20 digit snowflake → Discord, shorter numeric → Telegram, " +
-					"C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, email-{address} → Email, phone-{hash} → SMS/iMessage. The send appears in the agent's " +
+					"C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, email-thread:<id> → existing Email thread, email-{address} → Email, phone-{hash} → SMS/iMessage conversation. The send appears in the agent's " +
 					"awareness stream but does NOT trigger a run. Use list_channels to discover valid IDs.",
 				inputSchema: {
-					target: z.string().describe("Required target (discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-{addr} for Email, phone-{hash} for SMS/iMessage)"),
+					target: z.string().describe("Required target (discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-thread:<id> for existing Email threads, email-{addr} for Email, phone-{hash} for SMS/iMessage conversations)"),
 					text: z.string().describe("Message text to send"),
 					subject: z.string().optional().describe("Subject line (email only)"),
 					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
@@ -333,7 +334,7 @@ export class McpAdapter implements PlatformAdapter {
 
 				if (!target.trim()) {
 					return {
-						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as a channel ID, email-user@example.com, phone-..., or slack:<channel>:<thread_ts>." }],
+						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as a channel ID, email-thread:<id>, email-user@example.com, phone-..., or slack:<channel>:<thread_ts>." }],
 						isError: true,
 					};
 				}
@@ -341,7 +342,7 @@ export class McpAdapter implements PlatformAdapter {
 				const resolved = resolveMessageTarget(target.trim(), this.peerAdapters);
 				if (!resolved) {
 					return {
-						content: [{ type: "text" as const, text: `No adapter found for target "${target}". Valid patterns: discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), slack:<channel>:<thread_ts> (Slack thread), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
+						content: [{ type: "text" as const, text: `No adapter found for target "${target}". Valid patterns: discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), slack:<channel>:<thread_ts> (Slack thread), email-thread:<id> (existing Email thread), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
 						isError: true,
 					};
 				}
@@ -414,16 +415,17 @@ export class McpAdapter implements PlatformAdapter {
 			"list_channels",
 			{
 				description:
-					"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. Uses Slack API " +
-					"for live Slack thread discovery when available, with log.jsonl as a durable fallback for all adapters. " +
-					"Returns markdown tables of channels and concrete Slack thread " +
-					"send targets. Use slack:<channel>:<thread_ts> targets returned here with send_message when choosing among threads.",
+					"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. Uses Slack API " +
+					"for live Slack thread discovery when available, with log.jsonl/ledgers as durable fallback for all adapters. " +
+					"Returns markdown tables of channels and concrete conversation send targets. Use slack:<channel>:<thread_ts>, email-thread:<id>, or phone-... targets returned here with send_message when choosing among conversations.",
 				inputSchema: {},
 			},
 			async () => {
 				const channels = collectChannelsFromLog(this.workingDir);
 				const slackThreads = await collectSlackThreads(this.workingDir, this.peerAdapters);
-				log.logInfo(`[mcp] list_channels: ${channels.length} channels, ${slackThreads.length} slack threads`);
+				const emailThreads = collectEmailThreadListings(this.workingDir);
+				const phoneConversations = collectPhoneConversations(this.workingDir);
+				log.logInfo(`[mcp] list_channels: ${channels.length} channels, ${slackThreads.length} slack threads, ${emailThreads.length} email threads, ${phoneConversations.length} phone conversations`);
 				this.logToFile({
 					date: new Date().toISOString(),
 					channel: "mcp",
@@ -431,9 +433,11 @@ export class McpAdapter implements PlatformAdapter {
 					tool: "list_channels",
 					count: channels.length,
 					thread_count: slackThreads.length,
+					email_thread_count: emailThreads.length,
+					phone_conversation_count: phoneConversations.length,
 					success: true,
 				});
-				return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads) }] };
+				return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads, emailThreads, phoneConversations) }] };
 			},
 		);
 
@@ -442,18 +446,18 @@ export class McpAdapter implements PlatformAdapter {
 			"read_thread",
 			{
 				description:
-					"Read the Slack API transcript for a Slack thread target returned by list_channels, " +
-					"such as slack:<channel>:<thread_ts>. Falls back to log.jsonl if Slack API access is unavailable. " +
-					"Use this to distinguish similar Slack threads before send_message.",
+					"Read the transcript for a conversation target returned by list_channels, " +
+					"such as slack:<channel>:<thread_ts>, email-thread:<id>, or phone-.... Falls back to log.jsonl/ledgers when live API access is unavailable. " +
+					"Use this to distinguish similar conversations before send_message.",
 				inputSchema: {
-					target: z.string().describe("Slack thread target, e.g. slack:C0AN1GL51K7:1779777014.658729"),
+					target: z.string().describe("Conversation target, e.g. slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..."),
 					limit: z.number().optional().describe("Maximum messages to return, default 40, max 100"),
 				},
 			},
 			async ({ target, limit }) => {
-				const result = await collectSlackThreadMessages(this.workingDir, target, this.peerAdapters, limit);
+				const result = await collectThreadMessages(this.workingDir, target, this.peerAdapters, limit);
 				if (!result) {
-					return { content: [{ type: "text" as const, text: `Invalid Slack thread target "${target}". Expected slack:<channel>:<thread_ts>.` }], isError: true };
+					return { content: [{ type: "text" as const, text: `Invalid conversation target "${target}". Expected slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....` }], isError: true };
 				}
 				log.logInfo(`[mcp] read_thread: ${target} (${result.messages.length} messages, source=${result.source})`);
 				this.logToFile({
@@ -466,7 +470,7 @@ export class McpAdapter implements PlatformAdapter {
 					source: result.source,
 					success: true,
 				});
-				return { content: [{ type: "text" as const, text: formatSlackThreadTranscript(result) }] };
+				return { content: [{ type: "text" as const, text: formatThreadTranscript(result) }] };
 			},
 		);
 	}

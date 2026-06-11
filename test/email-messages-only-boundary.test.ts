@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EmailWebhookAdapter } from "../src/adapters/email-webhook.js";
+import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
 import type { MomEvent } from "../src/adapters/types.js";
 import type { ChannelStore } from "../src/store.js";
 
@@ -121,6 +122,39 @@ async function run() {
 			assert.equal(calls.length, 1, "forced runtime errors still send in messages-only email");
 			const metadata = readJsonBody(calls[0]?.body);
 			assert.match(String(metadata.body), /test failure/);
+		}
+
+		{
+			const calls: FetchCall[] = [];
+			installFetchRecorder(calls);
+			const adapter = makeAdapter(workingDir);
+			writeFileSync(join(workingDir, "email-thread-events.jsonl"), [
+				{
+					type: "inbound",
+					at: "2026-05-26T10:00:00.000Z",
+					channelId: "email-alex_example_com",
+					from: "alex@example.com",
+					to: ["zip@tinyfat.ai"],
+					subject: "Project timing",
+					body: "Please keep this in the existing Gmail thread.",
+					messageId: "<email-thread-root@example.com>",
+					references: "<older-root@example.com>",
+				},
+			].map((row) => JSON.stringify(row)).join("\n") + "\n");
+			const target = collectEmailThreadListings(workingDir)[0]?.sendTarget;
+			assert.ok(target, "email ledger exposes a thread target");
+
+			await adapter.postMessage(target, "thread-selected reply");
+
+			assert.equal(calls.length, 1, "email-thread target sends exactly one email");
+			const metadata = readJsonBody(calls[0]?.body);
+			assert.equal(metadata.to, "alex@example.com");
+			assert.equal(metadata.subject, "Re: Project timing");
+			assert.equal(metadata.in_reply_to, "<email-thread-root@example.com>");
+			assert.match(String(metadata.references), /<older-root@example.com>/);
+			assert.match(String(metadata.references), /<email-thread-root@example.com>/);
+			assert.match(String(metadata.body), /thread-selected reply/);
+			assert.match(String(metadata.body), /existing Gmail thread/);
 		}
 	} finally {
 		globalThis.fetch = originalFetch;

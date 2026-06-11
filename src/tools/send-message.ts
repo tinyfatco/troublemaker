@@ -11,6 +11,7 @@
  *   numeric (positive or negative)  -> Telegram
  *   C/D/G prefix                    -> Slack channel/DM/group
  *   slack:<channel>:<thread_ts>     -> Slack thread
+ *   email-thread:<id>               -> Email thread
  *   email-{address}                 -> Email
  *   phone-{hash}                    -> SMS/iMessage phone messaging
  */
@@ -24,6 +25,7 @@ import * as log from "../log.js";
 const DISCORD_TARGET_RE = /^discord[:-](\d{17,20})$/;
 const DISCORD_SNOWFLAKE_RE = /^\d{17,20}$/;
 const SLACK_THREAD_TARGET_RE = /^slack:([CDG][A-Z0-9]+):(\d+\.\d+)$/i;
+const EMAIL_THREAD_TARGET_RE = /^email-thread:[a-f0-9]{16}$/i;
 
 export interface ResolvedMessageTarget {
 	adapter: PlatformAdapter;
@@ -56,6 +58,10 @@ export function resolveMessageTarget(target: string, adapters: PlatformAdapter[]
 		const adapter = adapters.find((a) => a.name === "slack");
 		if (adapter) return { adapter, channel: slackThread[1], threadTs: slackThread[2], inputTarget: target };
 	}
+	if (EMAIL_THREAD_TARGET_RE.test(target)) {
+		const adapter = adapters.find((a) => a.name === "email");
+		if (adapter) return { adapter, channel: target.toLowerCase(), inputTarget: target };
+	}
 
 	const discordChannel = normalizeDiscordChannel(target);
 	if (discordChannel) {
@@ -85,7 +91,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
 		target: Type.String({
-			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, discord:<channel id>, email-user@example.com, phone-...",
+			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, discord:<channel id>, email-thread:<id>, email-user@example.com, phone-...",
 		}),
 		text: Type.String({ description: "Message text to send" }),
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
@@ -98,9 +104,9 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		description:
 			"Send a user-visible message. This is the only normal way to deliver text to people on Telegram, Slack, Discord, Email, or SMS/iMessage. " +
 			"`target` is required; never omit it. If you do not know where to send, use list_channels or ask for clarification. " +
-			"Target formats: discord:<17-20 digit ID> or raw 17-20 digit snowflake -> Discord, shorter numeric IDs -> Telegram, C/D/G-prefixed -> Slack, slack:<channel>:<thread_ts> -> Slack thread, email-{address} -> Email, phone-{hash} -> SMS/iMessage. " +
+			"Target formats: discord:<17-20 digit ID> or raw 17-20 digit snowflake -> Discord, shorter numeric IDs -> Telegram, C/D/G-prefixed -> Slack, slack:<channel>:<thread_ts> -> Slack thread, email-thread:<id> -> existing Email thread, email-{address} -> Email address, phone-{hash} -> SMS/iMessage conversation. " +
 			"For email, you can include file attachments and an optional subject line. " +
-			"If you send to the active email conversation target, the adapter preserves reply threading and adds a native-style quoted reply block automatically. " +
+			"If you send to an email-thread target, the adapter preserves native Gmail/Outlook threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
@@ -115,7 +121,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			if (signal?.aborted) throw new Error("Operation aborted");
 
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("send_message requires a target. Give me a destination such as a channel ID, email-user@example.com, phone-..., or slack:<channel>:<thread_ts>.");
+				throw new Error("send_message requires a target. Give me a destination such as a channel ID, email-thread:<id>, email-user@example.com, phone-..., or slack:<channel>:<thread_ts>.");
 			}
 			if (typeof text !== "string" || !text.trim()) {
 				throw new Error("send_message requires non-empty text.");
@@ -131,7 +137,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 
 			const resolved = resolveMessageTarget(target.trim(), adapters);
 			if (!resolved) {
-				throw new Error(`No adapter found for target "${target}". Valid targets include discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-{address}, or phone-{hash}.`);
+				throw new Error(`No adapter found for target "${target}". Valid targets include discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
 			}
 
 			try {

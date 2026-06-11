@@ -2,7 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import type { PlatformAdapter } from "../src/adapters/types.js";
-import { collectChannelsFromLog, collectSlackThreads, collectSlackThreadsFromLog, formatChannelTable } from "../src/tools/list-channels.js";
+import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
+import { collectChannelsFromLog, collectPhoneConversations, collectSlackThreads, collectSlackThreadsFromLog, formatChannelTable } from "../src/tools/list-channels.js";
 
 let passed = 0;
 let failed = 0;
@@ -59,11 +60,57 @@ try {
 			channelId: "1234567890",
 			text: "hello",
 		},
+		{
+			date: "2026-05-26T08:04:00.000Z",
+			ts: "2026-05-26T08:04:00.000Z",
+			channel: "phone:sms/+15551234567",
+			channelId: "phone-abc123",
+			user: "+15551234567",
+			text: "Can the group meet tomorrow?",
+			isBot: false,
+			transport: "sms",
+		},
 	];
 	writeFileSync(join(workingDir, "log.jsonl"), rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+	writeFileSync(join(workingDir, "email-thread-events.jsonl"), [
+		{
+			type: "inbound",
+			at: "2026-05-26T08:05:00.000Z",
+			channelId: "email-alex_example_com",
+			from: "alex@example.com",
+			to: ["zip@tinyfat.ai"],
+			subject: "Project timing",
+			body: "Can you update this thread?",
+			messageId: "<root@example.com>",
+		},
+		{
+			type: "outbound",
+			at: "2026-05-26T08:06:00.000Z",
+			channelId: "email-alex_example_com",
+			to: ["alex@example.com"],
+			subject: "Re: Project timing",
+			body: "Yes, I will update it here.",
+			inReplyTo: "<root@example.com>",
+			references: "<root@example.com>",
+		},
+	].map((row) => JSON.stringify(row)).join("\n") + "\n");
+	writeFileSync(join(workingDir, "phone-channels.json"), JSON.stringify({
+		version: 1,
+		channels: {
+			"phone-abc123": {
+				channelId: "phone-abc123",
+				transport: "sms",
+				displayName: "sms/group-site-team",
+				participants: ["+15551234567", "+15557654321", "+15550001111"],
+				updatedAt: "2026-05-26T08:04:00.000Z",
+			},
+		},
+	}, null, 2));
 
 	const channels = collectChannelsFromLog(workingDir);
 	const threads = collectSlackThreadsFromLog(workingDir);
+	const emailThreads = collectEmailThreadListings(workingDir);
+	const phoneConversations = collectPhoneConversations(workingDir);
 	const apiOnlyThreadTarget = "slack:C0AN1GL51K7:1779777200.000500";
 	const slackApiAdapter = {
 		name: "slack",
@@ -102,8 +149,8 @@ try {
 	} as unknown as PlatformAdapter;
 	const combinedThreads = await collectSlackThreads(workingDir, [slackApiAdapter]);
 	const fallbackThreads = await collectSlackThreads(workingDir, [throwingSlackApiAdapter]);
-	const table = formatChannelTable(channels, threads);
-	const combinedTable = formatChannelTable(channels, combinedThreads);
+	const table = formatChannelTable(channels, threads, emailThreads, phoneConversations);
+	const combinedTable = formatChannelTable(channels, combinedThreads, emailThreads, phoneConversations);
 
 	assert(channels.some((c) => c.adapter === "slack" && c.id === "C0AN1GL51K7"), "channel list still includes Slack channel target");
 	assert(threads.length === 2, "two Slack thread roots stay distinct");
@@ -122,6 +169,14 @@ try {
 	assert(table.includes("`slack:C0AN1GL51K7:1779777100.000300`"), "formatted output shows send_message-ready thread target");
 	assert(combinedTable.includes("Slack API"), "formatted output tells the agent when a target came from Slack API");
 	assert(combinedTable.includes("local log"), "formatted output tells the agent when a target came from local log fallback");
+	assert(emailThreads.length === 1, "email ledger produces a thread target");
+	assert(emailThreads[0]?.sendTarget.startsWith("email-thread:"), "email thread target is send_message-ready");
+	assert(table.includes("Recent email thread targets:"), "formatted output has an email thread section");
+	assert(table.includes("Project timing"), "email thread listing keeps subject context");
+	assert(phoneConversations.length === 1, "phone registry produces a conversation target");
+	assert(phoneConversations[0]?.participants.includes("+15557654321"), "phone conversation listing includes group participants");
+	assert(table.includes("Recent phone conversation targets:"), "formatted output has a phone conversation section");
+	assert(table.includes("sms/group-site-team"), "phone conversation listing keeps registry display name");
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });
 }

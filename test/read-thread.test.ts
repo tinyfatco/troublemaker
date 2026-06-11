@@ -4,9 +4,12 @@ import { join } from "path";
 import {
 	collectSlackThreadMessages,
 	collectSlackThreadMessagesFromLog,
+	collectThreadMessages,
 	formatSlackThreadTranscript,
+	formatThreadTranscript,
 	parseSlackThreadTarget,
 } from "../src/tools/read-thread.js";
+import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
 import type { PlatformAdapter } from "../src/adapters/types.js";
 
 let passed = 0;
@@ -70,6 +73,61 @@ try {
 		},
 	];
 	writeFileSync(join(workingDir, "log.jsonl"), rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+	writeFileSync(join(workingDir, "email-thread-events.jsonl"), [
+		{
+			type: "inbound",
+			at: "2026-05-26T10:00:00.000Z",
+			channelId: "email-alex_example_com",
+			from: "alex@example.com",
+			to: ["zip@tinyfat.ai"],
+			subject: "Project timing",
+			body: "Can you answer in this email thread?",
+			messageId: "<email-root@example.com>",
+		},
+		{
+			type: "outbound",
+			at: "2026-05-26T10:01:00.000Z",
+			channelId: "email-alex_example_com",
+			to: ["alex@example.com"],
+			subject: "Re: Project timing",
+			body: "Yes, this reply should stay in the same native email thread.",
+			inReplyTo: "<email-root@example.com>",
+			references: "<email-root@example.com>",
+		},
+	].map((row) => JSON.stringify(row)).join("\n") + "\n");
+	writeFileSync(join(workingDir, "phone-channels.json"), JSON.stringify({
+		version: 1,
+		channels: {
+			"phone-abc123": {
+				channelId: "phone-abc123",
+				transport: "sms",
+				displayName: "sms/group-site-team",
+				participants: ["+15551234567", "+15557654321"],
+				updatedAt: "2026-05-26T11:00:00.000Z",
+			},
+		},
+	}, null, 2));
+	writeFileSync(join(workingDir, "log.jsonl"), [
+		...rows,
+		{
+			date: "2026-05-26T11:00:00.000Z",
+			ts: "2026-05-26T11:00:00.000Z",
+			channel: "phone:sms/group-site-team",
+			channelId: "phone-abc123",
+			displayName: "+15551234567",
+			text: "Group text root",
+			isBot: false,
+		},
+		{
+			date: "2026-05-26T11:01:00.000Z",
+			ts: "2026-05-26T11:01:00.000Z",
+			channel: "phone:sms/group-site-team",
+			channelId: "phone-abc123",
+			user: "bot",
+			text: "Phone group reply",
+			isBot: true,
+		},
+	].map((row) => JSON.stringify(row)).join("\n") + "\n");
 
 	assert(parseSlackThreadTarget("slack:C0AN1GL51K7:1779777000.000100")?.channelId === "C0AN1GL51K7", "valid Slack thread target parses");
 	assert(parseSlackThreadTarget("C0AN1GL51K7") === null, "plain Slack channel is not a thread target");
@@ -132,6 +190,18 @@ try {
 	assert(apiResult?.source === "slack-api", "read_thread prefers live Slack API transcript when available");
 	assert(apiResult?.messages.some((m) => m.text.includes("API-only reply")), "Slack API transcript can include messages not present in local log");
 	assert(formatSlackThreadTranscript(apiResult!).includes("Source: Slack API"), "formatted API transcript shows Slack API source");
+
+	const emailTarget = collectEmailThreadListings(workingDir)[0]?.sendTarget;
+	assert(Boolean(emailTarget), "email thread target is discoverable for read_thread");
+	const emailResult = await collectThreadMessages(workingDir, emailTarget!, []);
+	assert(emailResult?.source === "email-ledger", "generic read_thread reads email ledger targets");
+	assert(emailResult?.messages.some((m) => m.text.includes("native email thread")), "email transcript includes outbound thread context");
+	assert(formatThreadTranscript(emailResult!).includes("Email thread"), "generic formatter labels email threads");
+
+	const phoneResult = await collectThreadMessages(workingDir, "phone-abc123", []);
+	assert(phoneResult?.source === "phone-log", "generic read_thread reads phone conversation targets");
+	assert(phoneResult?.messages.some((m) => m.text.includes("Phone group reply")), "phone transcript includes group text replies");
+	assert(formatThreadTranscript(phoneResult!).includes("Phone conversation"), "generic formatter labels phone conversations");
 
 	const failingSlackApiAdapter = {
 		name: "slack",

@@ -11,6 +11,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { PlatformAdapter, ThreadTranscriptMessage } from "../adapters/types.js";
+import { parseEmailThreadTarget, readEmailThreadById, type EmailThreadLedgerRecord } from "../adapters/email/thread-ledger.js";
 import { displayNameForEntry, readLogEntries, type LogEntry } from "./list-channels.js";
 
 const SLACK_THREAD_TARGET_RE = /^slack:([CDG][A-Z0-9]+):(\d+\.\d+)$/i;
@@ -39,6 +40,30 @@ export interface SlackThreadReadResult {
 	target: SlackThreadTargetParts;
 	messages: SlackThreadMessage[];
 	source: "slack-api" | "log";
+	warning?: string;
+}
+
+export interface ConversationThreadTargetParts {
+	platform: "slack" | "email" | "phone";
+	inputTarget: string;
+	label: string;
+}
+
+export interface ConversationThreadMessage {
+	date: string;
+	ts: string;
+	sender: string;
+	text: string;
+	isRoot: boolean;
+	isBot: boolean;
+	directlyAddressed?: boolean;
+	sourceEventType?: string;
+}
+
+export interface ConversationThreadReadResult {
+	target: ConversationThreadTargetParts;
+	messages: ConversationThreadMessage[];
+	source: "slack-api" | "log" | "email-ledger" | "phone-log";
 	warning?: string;
 }
 
@@ -136,6 +161,80 @@ export async function collectSlackThreadMessages(
 	return collectSlackThreadMessagesFromLog(workingDir, target, limit);
 }
 
+export async function collectThreadMessages(
+	workingDir: string,
+	target: string,
+	adapters: PlatformAdapter[] = [],
+	limit = 40,
+): Promise<ConversationThreadReadResult | null> {
+	const slack = await collectSlackThreadMessages(workingDir, target, adapters, limit);
+	if (slack) return slackToConversationThread(slack);
+
+	const email = collectEmailThreadMessages(workingDir, target, limit);
+	if (email) return email;
+
+	const phone = collectPhoneThreadMessagesFromLog(workingDir, target, limit);
+	if (phone) return phone;
+
+	return null;
+}
+
+export function collectEmailThreadMessages(
+	workingDir: string,
+	target: string,
+	limit = 40,
+): ConversationThreadReadResult | null {
+	const parsed = parseEmailThreadTarget(target);
+	if (!parsed) return null;
+	const records = readEmailThreadById(workingDir, parsed.threadId, limit);
+	const subject = records.find((record) => record.subject)?.subject || parsed.threadId;
+	return {
+		target: {
+			platform: "email",
+			inputTarget: parsed.inputTarget,
+			label: subject,
+		},
+		messages: records.map(emailRecordToThreadMessage),
+		source: "email-ledger",
+	};
+}
+
+export function collectPhoneThreadMessagesFromLog(
+	workingDir: string,
+	target: string,
+	limit = 40,
+): ConversationThreadReadResult | null {
+	const normalizedTarget = target.trim();
+	if (!normalizedTarget.startsWith("phone-")) return null;
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
+	const messages = readLogEntries(workingDir)
+		.filter((entry) => entry.channelId === normalizedTarget && entry.channel?.startsWith("phone:"))
+		.sort((a, b) => (a.date || a.ts || "").localeCompare(b.date || b.ts || ""))
+		.slice(-boundedLimit)
+		.map((entry, index) => ({
+			date: entry.date || "",
+			ts: entry.ts || entry.date || "",
+			sender: displayNameForEntry(entry),
+			text: normalizeText(entry.text),
+			isRoot: index === 0,
+			isBot: Boolean(entry.isBot),
+			directlyAddressed: entry.directlyAddressed,
+			sourceEventType: entry.sourceEventType,
+		}));
+	const label = readLogEntries(workingDir)
+		.find((entry) => entry.channelId === normalizedTarget && entry.channel?.startsWith("phone:"))
+		?.channel?.slice("phone:".length) || normalizedTarget;
+	return {
+		target: {
+			platform: "phone",
+			inputTarget: normalizedTarget,
+			label,
+		},
+		messages,
+		source: "phone-log",
+	};
+}
+
 function normalizeThreadTranscriptMessage(message: ThreadTranscriptMessage): SlackThreadMessage {
 	return {
 		date: message.date || "",
@@ -194,9 +293,91 @@ export function formatSlackThreadTranscript(
 	return lines.join("\n");
 }
 
+export function formatThreadTranscript(result: ConversationThreadReadResult): string {
+	const { target, messages, source, warning } = result;
+	const platformName = target.platform === "slack" ? "Slack thread" : target.platform === "email" ? "Email thread" : "Phone conversation";
+	const sourceLabel = source === "slack-api"
+		? "Slack API"
+		: source === "email-ledger"
+			? "email ledger"
+			: source === "phone-log"
+				? "phone log"
+				: "local log";
+
+	if (messages.length === 0) {
+		return [
+			`${platformName} ${target.inputTarget}`,
+			`Subject/Conversation: ${target.label}`,
+			`Source: ${sourceLabel}`,
+			...(warning ? [`Warning: ${warning}`] : []),
+			"",
+			"No messages were found for this target. Use list_channels to discover recent conversation targets, or wait for new activity to be logged.",
+		].join("\n");
+	}
+
+	const lines = [
+		`${platformName} ${target.inputTarget}`,
+		`Subject/Conversation: ${target.label}`,
+		`Source: ${sourceLabel}`,
+		`Messages shown: ${messages.length}`,
+		"",
+		"Transcript:",
+	];
+	if (warning) lines.splice(3, 0, `Warning: ${warning}`);
+
+	for (const message of messages) {
+		const marker = message.isRoot ? "root" : "reply";
+		const flags = [
+			message.isBot ? "Zip" : "human",
+			message.directlyAddressed ? "direct" : undefined,
+			message.sourceEventType,
+		].filter(Boolean).join(", ");
+		const when = message.date || message.ts;
+		lines.push(`- [${marker}] ${when} ${message.sender}${flags ? ` (${flags})` : ""}: ${message.text || "(no text captured)"}`);
+	}
+
+	return lines.join("\n");
+}
+
+function slackToConversationThread(result: SlackThreadReadResult): ConversationThreadReadResult {
+	const first = result.messages[0];
+	const label = first?.channelName ? `#${first.channelName}` : result.target.channelId;
+	return {
+		target: {
+			platform: "slack",
+			inputTarget: result.target.inputTarget,
+			label,
+		},
+		messages: result.messages.map((message) => ({
+			date: message.date,
+			ts: message.ts,
+			sender: message.sender,
+			text: message.text,
+			isRoot: message.isRoot,
+			isBot: message.isBot,
+			directlyAddressed: message.directlyAddressed,
+			sourceEventType: message.sourceEventType,
+		})),
+		source: result.source,
+		warning: result.warning,
+	};
+}
+
+function emailRecordToThreadMessage(record: EmailThreadLedgerRecord): ConversationThreadMessage {
+	return {
+		date: record.at || "",
+		ts: record.providerMessageId || record.messageId || record.at || "",
+		sender: record.type === "outbound" ? "Zip" : record.from || "unknown",
+		text: normalizeText(record.body),
+		isRoot: !record.inReplyTo && !record.references,
+		isBot: record.type === "outbound",
+		sourceEventType: `email_${record.type}`,
+	};
+}
+
 export function createReadThreadTool(workingDir: string, adapters: PlatformAdapter[] = []): AgentTool<any> {
 	const schema = Type.Object({
-		target: Type.String({ description: "Slack thread target from list_channels or delivery context, e.g. slack:C0AN1GL51K7:1779777014.658729" }),
+		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..." }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
 	});
 
@@ -204,20 +385,20 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 		name: "read_thread",
 		label: "read_thread",
 		description:
-			"Read the Slack API transcript for a Slack thread target such as slack:<channel>:<thread_ts>, with log fallback. " +
-			"Use this after list_channels when several Slack threads are active and you need the nuance/context before choosing a send_message target.",
+			"Read the transcript for a conversation target such as slack:<channel>:<thread_ts>, email-thread:<id>, or phone-..., with log/ledger fallback. " +
+			"Use this after list_channels when several conversations are active and you need the nuance/context before choosing a send_message target.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
 			const { target, limit } = params as { target?: string; limit?: number };
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("read_thread requires a Slack thread target like slack:C0AN1GL51K7:1779777014.658729. Use list_channels to discover targets.");
+				throw new Error("read_thread requires a conversation target like slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
 			}
-			const result = await collectSlackThreadMessages(workingDir, target, adapters, limit);
+			const result = await collectThreadMessages(workingDir, target, adapters, limit);
 			if (!result) {
-				throw new Error(`Invalid Slack thread target "${target}". Expected slack:<channel>:<thread_ts>, for example slack:C0AN1GL51K7:1779777014.658729.`);
+				throw new Error(`Invalid conversation target "${target}". Expected slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....`);
 			}
 			return {
-				content: [{ type: "text" as const, text: formatSlackThreadTranscript(result) }],
+				content: [{ type: "text" as const, text: formatThreadTranscript(result) }],
 				details: undefined,
 			};
 		},

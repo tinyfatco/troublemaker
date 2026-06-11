@@ -6,7 +6,12 @@ import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { composeEmailReplyBody, type EmailReplyQuote } from "./email/reply-composer.js";
 import { buildReplyThreadHeaders } from "./email/thread-headers.js";
-import { appendEmailThreadEvent } from "./email/thread-ledger.js";
+import {
+	appendEmailThreadEvent,
+	emailThreadIdForEvent,
+	latestInboundEmailThreadEvent,
+	parseEmailThreadTarget,
+} from "./email/thread-ledger.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 // ============================================================================
@@ -57,6 +62,7 @@ interface ActiveEmailReplyContext {
 	references?: string;
 	replyQuote?: EmailReplyQuote;
 	explicitOutboundSent?: boolean;
+	threadTarget?: string;
 }
 
 interface LoggedEmailThreadEntry {
@@ -407,9 +413,17 @@ Keep responses concise and professional. The user will receive one email with yo
 			messageId: payload.messageId,
 			references: payload.references,
 			replyQuote: this.buildReplyQuote(channelId, payload, currentTs, fallbackSentAt),
+			threadTarget: `email-thread:${emailThreadIdForEvent({
+				channelId,
+				subject: payload.subject,
+				messageId: payload.messageId,
+				inReplyTo: payload.inReplyTo,
+				references: payload.references,
+			})}`,
 		};
 		this.activeReplyContexts.set(channelId, context);
 		this.activeReplyContexts.set(canonicalChannel, context);
+		if (context.threadTarget) this.activeReplyContexts.set(context.threadTarget, context);
 		return context;
 	}
 
@@ -417,6 +431,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		if (!context) return;
 		this.activeReplyContexts.delete(context.channelId);
 		this.activeReplyContexts.delete(context.canonicalChannel);
+		if (context.threadTarget) this.activeReplyContexts.delete(context.threadTarget);
 	}
 
 	private resolveActiveReplyContext(channel: string): ActiveEmailReplyContext | undefined {
@@ -427,19 +442,47 @@ Keep responses concise and professional. The user will receive one email with yo
 		return this.activeReplyContexts.get(`email-${this.normalizeEmailAddress(emailMatch[1])}`);
 	}
 
+	private resolveStoredReplyContext(channel: string): ActiveEmailReplyContext | undefined {
+		const parsed = parseEmailThreadTarget(channel);
+		if (!parsed) return undefined;
+		const latestInbound = latestInboundEmailThreadEvent(this.workingDir, parsed.threadId);
+		if (!latestInbound?.from) return undefined;
+		const toAddress = this.normalizeEmailAddress(latestInbound.from);
+		return {
+			channelId: latestInbound.channelId,
+			canonicalChannel: `email-${toAddress}`,
+			toAddress,
+			subject: latestInbound.subject || "(no subject)",
+			messageId: latestInbound.messageId,
+			references: latestInbound.references,
+			replyQuote: latestInbound.body?.trim()
+				? {
+					body: latestInbound.body,
+					from: latestInbound.from,
+					sentAt: latestInbound.at,
+				}
+				: undefined,
+			threadTarget: parsed.inputTarget,
+		};
+	}
+
 	// ==========================================================================
 	// PlatformAdapter — message operations (mostly no-ops for email)
 	// ==========================================================================
 
 	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string> {
-		// Cross-channel send: channel format is "email-{address}"
+		// Cross-channel send: channel format is "email-{address}" or "email-thread:{id}"
 		const emailMatch = channel.match(/^email-(.+)$/);
-		if (!emailMatch) {
+		const threadTarget = parseEmailThreadTarget(channel);
+		if (!emailMatch && !threadTarget) {
 			throw new Error(`postMessage called with non-email channel: ${channel}`);
 		}
 
-		const replyContext = this.resolveActiveReplyContext(channel);
-		const toAddress = replyContext?.toAddress || this.normalizeEmailAddress(emailMatch[1]);
+		const replyContext = this.resolveActiveReplyContext(channel) || this.resolveStoredReplyContext(channel);
+		const toAddress = replyContext?.toAddress || this.normalizeEmailAddress(emailMatch?.[1] || "");
+		if (!toAddress) {
+			throw new Error(`Could not resolve email recipient for ${channel}. Use list_channels to choose a known email thread or email-{address}.`);
+		}
 		const body = replyContext ? composeEmailReplyBody(text, replyContext.replyQuote) : text;
 		const resolvedSubject = replyContext
 			? (subject || this.buildReplySubject(replyContext.subject))
@@ -495,13 +538,13 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		const result = (await response.json()) as { ok: boolean; messageId?: string };
 		log.logInfo(`[email] Outbound sent: messageId=${result.messageId}`);
-		if (replyContext) {
+		if (replyContext && this.resolveActiveReplyContext(channel)) {
 			replyContext.explicitOutboundSent = true;
 		}
 		this.logThreadEvent({
 			type: "outbound",
 			at: new Date().toISOString(),
-			channelId: channel,
+			channelId: replyContext?.channelId || channel,
 			to: [toAddress],
 			subject: resolvedSubject,
 			body: text,
@@ -552,8 +595,9 @@ Keep responses concise and professional. The user will receive one email with yo
 		// arrive here as channel="email-alex@gmail.com" while inbound uses
 		// channelId="email-alex_gmail_com" — and buildConversationReplyBody's
 		// channelId filter never matches across turns.
-		const stripped = channel.startsWith("email-") ? channel.slice("email-".length) : channel;
-		const normalizedChannelId = `email-${stripped.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+		const replyContext = this.resolveActiveReplyContext(channel) || this.resolveStoredReplyContext(channel);
+		const stripped = replyContext?.toAddress || (channel.startsWith("email-") ? channel.slice("email-".length) : channel);
+		const normalizedChannelId = replyContext?.channelId || `email-${stripped.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
 		this.logToFile({
 			date: new Date().toISOString(),
 			ts,

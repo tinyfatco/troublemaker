@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { PlatformAdapter, SlackThreadTargetInfo } from "../adapters/types.js";
+import { collectEmailThreadListings, type EmailThreadListing } from "../adapters/email/thread-ledger.js";
 
 export interface ChannelListing {
 	adapter: string;
@@ -38,6 +39,19 @@ export interface SlackThreadListing {
 	source?: "slack-api" | "log";
 }
 
+export interface PhoneConversationListing {
+	adapter: "phone";
+	channelId: string;
+	sendTarget: string;
+	displayName: string;
+	transport: string;
+	participants: string[];
+	lastPreview: string;
+	messageCount: number;
+	lastSeen: string;
+	source: "phone-registry";
+}
+
 export interface LogEntry {
 	channel?: string;
 	channelId?: string;
@@ -51,6 +65,20 @@ export interface LogEntry {
 	isBot?: boolean;
 	directlyAddressed?: boolean;
 	sourceEventType?: string;
+	provider?: string;
+	transport?: string;
+}
+
+interface PhoneChannelRegistryFile {
+	version?: number;
+	channels?: Record<string, {
+		channelId?: string;
+		transport?: string;
+		conversationId?: string;
+		participants?: string[];
+		displayName?: string;
+		updatedAt?: string;
+	}>;
 }
 
 function sendTargetForChannel(channel: ChannelListing): string {
@@ -229,8 +257,86 @@ function normalizeSlackThreadListing(thread: SlackThreadTargetInfo | SlackThread
 	};
 }
 
+export function collectPhoneConversations(workingDir: string, limit = 20): PhoneConversationListing[] {
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
+	const registry = readPhoneRegistry(workingDir);
+	const logEntries = readLogEntries(workingDir).filter((entry) => entry.channelId?.startsWith("phone-"));
+	const byChannel = new Map<string, PhoneConversationListing>();
+
+	for (const [channelId, record] of registry) {
+		byChannel.set(channelId, {
+			adapter: "phone",
+			channelId,
+			sendTarget: channelId,
+			displayName: preview(record.displayName, 60) || channelId,
+			transport: preview(record.transport, 20) || "phone",
+			participants: (record.participants || []).map((participant) => preview(participant, 40)).filter(Boolean).slice(0, 8),
+			lastPreview: "",
+			messageCount: 0,
+			lastSeen: record.updatedAt || "",
+			source: "phone-registry",
+		});
+	}
+
+	for (const entry of logEntries) {
+		const channelId = entry.channelId;
+		if (!channelId) continue;
+		const existing = byChannel.get(channelId) || {
+			adapter: "phone" as const,
+			channelId,
+			sendTarget: channelId,
+			displayName: entry.channel?.startsWith("phone:") ? entry.channel.slice("phone:".length) : channelId,
+			transport: preview(entry.transport, 20) || "phone",
+			participants: [],
+			lastPreview: "",
+			messageCount: 0,
+			lastSeen: "",
+			source: "phone-registry" as const,
+		};
+		const sender = displayNameForEntry(entry);
+		if (sender && sender !== "unknown" && !existing.participants.includes(sender)) {
+			existing.participants = [...existing.participants, sender].slice(0, 8);
+		}
+		existing.messageCount += 1;
+		if (!existing.lastSeen || (entry.date && entry.date > existing.lastSeen)) {
+			existing.lastSeen = entry.date || existing.lastSeen;
+			existing.lastPreview = preview(entry.text) || existing.lastPreview;
+			existing.transport = preview(entry.transport, 20) || existing.transport;
+		}
+		byChannel.set(channelId, existing);
+	}
+
+	return Array.from(byChannel.values())
+		.sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""))
+		.slice(0, boundedLimit)
+		.map((conversation) => ({
+			...conversation,
+			lastPreview: conversation.lastPreview || "(no text captured)",
+		}));
+}
+
+function readPhoneRegistry(workingDir: string): Map<string, NonNullable<PhoneChannelRegistryFile["channels"]>[string]> {
+	const path = join(workingDir, "phone-channels.json");
+	const out = new Map<string, NonNullable<PhoneChannelRegistryFile["channels"]>[string]>();
+	if (!existsSync(path)) return out;
+	try {
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as PhoneChannelRegistryFile;
+		for (const [channelId, record] of Object.entries(parsed.channels || {})) {
+			out.set(record.channelId || channelId, record);
+		}
+	} catch {
+		return out;
+	}
+	return out;
+}
+
 /** Format channel and thread listings as markdown tables for human/agent consumption. */
-export function formatChannelTable(channels: ChannelListing[], slackThreads: SlackThreadListing[] = []): string {
+export function formatChannelTable(
+	channels: ChannelListing[],
+	slackThreads: SlackThreadListing[] = [],
+	emailThreads: EmailThreadListing[] = [],
+	phoneConversations: PhoneConversationListing[] = [],
+): string {
 	const sections: string[] = [];
 
 	if (channels.length === 0) {
@@ -253,6 +359,24 @@ export function formatChannelTable(channels: ChannelListing[], slackThreads: Sla
 		].join("\n"));
 	}
 
+	if (emailThreads.length > 0) {
+		sections.push([
+			"Recent email thread targets:",
+			"| Send Target | Subject | Latest Message | Participants | Last Seen | Source |",
+			"|-------------|---------|----------------|--------------|-----------|--------|",
+			...emailThreads.map((t) => `| \`${t.sendTarget}\` | ${t.subject} | ${t.lastPreview} | ${t.participants.join(", ") || "-"} (${t.messageCount}) | ${t.lastSeen || "-"} | email ledger |`),
+		].join("\n"));
+	}
+
+	if (phoneConversations.length > 0) {
+		sections.push([
+			"Recent phone conversation targets:",
+			"| Transport | Send Target | Conversation | Latest Message | Participants | Last Seen |",
+			"|-----------|-------------|--------------|----------------|--------------|-----------|",
+			...phoneConversations.map((c) => `| ${c.transport} | \`${c.sendTarget}\` | ${c.displayName} | ${c.lastPreview} | ${c.participants.join(", ") || "-"} (${c.messageCount}) | ${c.lastSeen || "-"} |`),
+		].join("\n"));
+	}
+
 	return sections.join("\n\n");
 }
 
@@ -263,17 +387,19 @@ export function createListChannelsTool(workingDir: string, adapters: PlatformAda
 		name: "list_channels",
 		label: "list_channels",
 		description:
-			"List every channel the agent has ever sent or received a message on, plus recent Slack thread targets. " +
+			"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. " +
 			"Uses Slack API for recent Slack thread targets when available and log.jsonl as durable fallback. " +
 			"Reads channels from log.jsonl, so it covers all adapters (Telegram, Slack, Email, " +
 			"Discord, SMS/iMessage, etc.) and survives container restarts. Use this to discover valid " +
-			"send_message targets, including slack:<channel>:<thread_ts> when choosing among Slack threads.",
+			"send_message targets, including slack:<channel>:<thread_ts>, email-thread:<id>, and phone-... when choosing among conversations.",
 		parameters: schema,
 		execute: async () => {
 			const channels = collectChannelsFromLog(workingDir);
 			const slackThreads = await collectSlackThreads(workingDir, adapters);
+			const emailThreads = collectEmailThreadListings(workingDir);
+			const phoneConversations = collectPhoneConversations(workingDir);
 			return {
-				content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads) }],
+				content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads, emailThreads, phoneConversations) }],
 				details: undefined,
 			};
 		},
