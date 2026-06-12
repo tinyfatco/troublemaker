@@ -10,8 +10,8 @@ export interface RealtimeContextWindowStatus {
   handoffLimitTokens: number;
   percentOfCap: number;
   label: string;
-  stateLabel: 'fits' | 'compact';
-  tone: 'normal' | 'warning';
+  stateLabel: 'direct handoff' | 'compact handoff';
+  tone: 'normal' | 'attention';
   title: string;
 }
 
@@ -36,9 +36,11 @@ export function buildContextWindowStatus(
   const messageCount = entries.filter((entry) => entry.type === 'message').length;
   const tokenEstimate = estimateAwarenessContextTokens(entries);
   const contextLabel = tokenEstimate > 0
-    ? `ctx ~${formatContextTokens(tokenEstimate)}`
-    : 'ctx 0';
-  const sourceLabel = options.allLoaded ? `${messageCount} msgs` : `recent ${messageCount}`;
+    ? `~${formatContextTokens(tokenEstimate)} loaded`
+    : 'no loaded tokens';
+  const sourceLabel = options.allLoaded
+    ? `${messageCount} loaded messages`
+    : `${messageCount} recent messages`;
 
   return {
     tokenEstimate,
@@ -77,10 +79,10 @@ function buildRealtimeContextWindowStatus(tokenEstimate: number): RealtimeContex
     capTokens: config.contextWindowTokens,
     handoffLimitTokens,
     percentOfCap,
-    label: `rt ~${formatContextTokens(tokenEstimate)}/${formatContextTokens(config.contextWindowTokens)}`,
-    stateLabel: willCompact ? 'compact' : 'fits',
-    tone: willCompact ? 'warning' : 'normal',
-    title: `Realtime voice cap ${formatContextTokens(config.contextWindowTokens)} tokens; compact handoff above ${formatContextTokens(handoffLimitTokens)}.`,
+    label: willCompact ? 'voice will compact' : 'voice handoff ready',
+    stateLabel: willCompact ? 'compact handoff' : 'direct handoff',
+    tone: willCompact ? 'attention' : 'normal',
+    title: `Realtime voice uses ${formatContextTokens(config.contextWindowTokens)} session context with about ${formatContextTokens(handoffLimitTokens)} available for startup context after audio and response reserve. Larger text threads are handed off compactly.`,
   };
 }
 

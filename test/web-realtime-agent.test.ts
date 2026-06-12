@@ -37,7 +37,9 @@ assert.match(awarenessPane, /useVoiceChat\(\{ contextEntries: contextEntriesForV
 assert.match(awarenessPane, /voice\.localEntries/, "AwarenessPane renders local Realtime voice turns in the message stream");
 assert.match(awarenessPane, /voice\.toggleMode/, "AwarenessPane exposes a minimal Realtime/turn-based voice mode switch");
 assert.match(awarenessPane, /buildContextWindowStatus/, "AwarenessPane computes visible context-window status");
-assert.match(awarenessPane, /contextWindow=\{contextWindow\}/, "AwarenessPane passes context-window status into the status strip");
+assert.match(awarenessPane, /<ChatTopBar/, "AwarenessPane renders the product chat top bar");
+assert.match(awarenessPane, /contextWindow=\{contextWindow\}/, "AwarenessPane passes context-window status into the context inspector");
+assert.doesNotMatch(awarenessPane, /StatusStrip/, "AwarenessPane no longer mounts the legacy debug status strip");
 assert.doesNotMatch(awarenessPane, /handleVoiceTranscript/, "AwarenessPane has no voice transcript bridge back to web chat");
 assert.doesNotMatch(awarenessPane, /voice\.speak/, "AwarenessPane no longer speaks text-chat responses through Realtime");
 

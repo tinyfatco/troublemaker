@@ -40,7 +40,7 @@ const compact = mustHandoff(buildRealtimeContextHandoff(entries, {
 	tokenLimit: 1000,
 }));
 assert.equal(compact.compacted, true, "Oversized or partial context receives a compact handoff");
-assert(compact.warning?.includes("compact context handoff"), "Compacted handoff includes a user-visible warning");
+assert.equal(compact.warning, null, "Routine compact handoff does not create a user-visible warning every activation");
 assert(compact.includedEntryCount < compact.totalEntryCount, "Compacted handoff reports omitted context");
 assert(estimateRealtimeTokens(compact.text) <= 1000, "Compacted handoff respects the configured token limit");
 assert(compact.text.includes("context turn 35"), "Compaction preserves the newest useful context");

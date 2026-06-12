@@ -14,13 +14,14 @@ import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { AwarenessEntryComponent } from './AwarenessEntry';
+import { ChatTopBar } from './ChatTopBar';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
-import { StatusStrip } from './StatusStrip';
 import { VoiceSettingsMenu } from './VoiceSettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
+  agentName?: string;
   allowCommands?: boolean;
   allowSettings?: boolean;
   allowVoice?: boolean;
@@ -29,6 +30,7 @@ interface AwarenessPaneProps {
 
 export function AwarenessPane({
   stream,
+  agentName,
   allowCommands = true,
   allowSettings = true,
   allowVoice = true,
@@ -42,7 +44,6 @@ export function AwarenessPane({
     isLoadingMore,
     allLoaded,
     connectionState,
-    lastEventAt,
     error: streamError,
   } = stream;
   const {
@@ -58,6 +59,7 @@ export function AwarenessPane({
   } = useWebChat();
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsVersion, setSettingsVersion] = useState(0);
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
 
@@ -314,15 +316,34 @@ export function AwarenessPane({
     clearError();
   }, [clearError, localError]);
 
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsVersion((version) => version + 1);
+  }, []);
+
   return (
     <div className="awareness-pane" style={paneStyle}>
-      <StatusStrip
+      <ChatTopBar
+        agentName={agentName}
         connectionState={connectionState}
         chatStatus={chatStatus}
         isLoading={isLoading}
         isLoadingMore={isLoadingMore}
-        lastEventAt={lastEventAt}
         contextWindow={contextWindow}
+        allowSettings={allowSettings}
+        allowVoice={allowVoice}
+        voiceMode={voice.mode}
+        voiceState={voice.state}
+        isVoiceActive={isVoiceActive}
+        settingsVersion={settingsVersion}
+        onOpenSettings={() => {
+          setVoiceSettingsOpen(false);
+          setSettingsOpen(true);
+        }}
+        onOpenVoiceSettings={() => {
+          setSettingsOpen(false);
+          setVoiceSettingsOpen(true);
+        }}
       />
       <div
         className="awareness-pane-messages"
@@ -386,7 +407,7 @@ export function AwarenessPane({
         </div>
       )}
 
-      {allowSettings && <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+      {allowSettings && <SettingsMenu open={settingsOpen} onClose={closeSettings} />}
       {allowVoice && <VoiceSettingsMenu open={voiceSettingsOpen} onClose={() => setVoiceSettingsOpen(false)} />}
 
       <InputBar
@@ -411,12 +432,12 @@ export function AwarenessPane({
               >
                 {voice.mode === 'realtime' ? (
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 ) : (
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 )}
               </button>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { configureAgentSetting, fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
+import { formatCurrentModel } from '../agentSettingsDisplay';
 import { getModelSuggestions } from '../modelAutocomplete';
 
 interface SettingsMenuProps {
@@ -225,11 +226,6 @@ function isCurrentSetting(
   if (target === 'spontaneity.enabled') return snapshot.spontaneity?.enabled === value;
   if (target === 'spontaneity.level') return Number(snapshot.spontaneity?.level ?? 3) === value;
   return false;
-}
-
-function formatCurrentModel(snapshot: AgentSettingsSnapshot): string {
-  if (snapshot.provider && snapshot.model) return `${snapshot.provider}/${snapshot.model}`;
-  return snapshot.model || 'default model';
 }
 
 function applyLocalSetting(

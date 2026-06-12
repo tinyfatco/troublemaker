@@ -1,6 +1,29 @@
 # Current Work
 
-**Last updated:** 2026-05-22
+**Last updated:** 2026-06-12
+
+## Status: Workspace Chat UI Reset Shipped
+
+2026-06-12: The hosted workspace chat started a product-UX reset after Alex
+called out that the visible surface had become incoherent: status/debug labels,
+context estimates, Realtime voice caps, theme controls, colored cards, and voice
+state all competed in the same small area. The first slice removes the mounted
+legacy `StatusStrip`, adds a real chat top bar with model/thinking/mode
+affordances, moves token/context detail behind an inspector, stops normal
+Realtime compact handoffs from warning every activation, flips the voice-mode
+toggle icon to show the target mode, and calms message/tool styling.
+
+Design contract:
+
+- Context visibility should clarify, not scare. Realtime 2's startup handoff
+  budget is not the whole text model context window.
+- The default stream should feel like a calm transcript, with tool and context
+  details available when requested.
+- Voice mode choices must stay explicit: text chat, Realtime voice, and
+  turn-based voice are different product modes with different context behavior.
+
+Canonical design note:
+`memory-bank/03-design/2026-06-12-workspace-chat-ui-reset.md`
 
 ## Status: Pi Distribution Migration Queued
 

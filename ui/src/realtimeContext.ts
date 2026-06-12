@@ -88,7 +88,9 @@ export function buildRealtimeContextHandoff(
   const tokenEstimate = estimateRealtimeTokens(text);
   return {
     text,
-    warning: `Realtime voice received a compact context handoff (${selected.length}/${totalEntryCount} entries, ~${tokenEstimate}/${originalTokenEstimate} tokens). Use context search for older details.`,
+    warning: selected.length === 0
+      ? 'Realtime voice could not include recent context in the startup handoff. Use context search for older details.'
+      : null,
     compacted: true,
     tokenEstimate,
     originalTokenEstimate,

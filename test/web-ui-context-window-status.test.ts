@@ -38,11 +38,11 @@ assert(estimate < 10, "hidden session context is not counted in the visible esti
 assert.equal(formatContextTokens(32000), "32k", "token caps use compact k formatting");
 
 const recent = buildContextWindowStatus(entries, { allLoaded: false, realtimeVoice: true });
-assert.equal(recent.contextLabel, `ctx ~${formatContextTokens(estimate)}`, "context label exposes the current estimate");
-assert.equal(recent.sourceLabel, "recent 2", "partial awareness history is marked as recent");
+assert.equal(recent.contextLabel, `~${formatContextTokens(estimate)} loaded`, "context label exposes the current estimate without debug prefixes");
+assert.equal(recent.sourceLabel, "2 recent messages", "partial awareness history is marked as recent");
 assert.equal(recent.realtime?.capTokens, 32000, "Realtime voice status exposes the 32k-ish cap");
-assert.equal(recent.realtime?.label, `rt ~${formatContextTokens(estimate)}/32k`, "Realtime label includes estimate and cap");
-assert.equal(recent.realtime?.stateLabel, "fits", "small Realtime context visibly fits the cap");
+assert.equal(recent.realtime?.label, "voice handoff ready", "Realtime label avoids always-visible token soup");
+assert.equal(recent.realtime?.stateLabel, "direct handoff", "small Realtime context uses direct handoff copy");
 
 const largeEntries = Array.from({ length: 140 }, (_, index): AwarenessEntry => ({
 	id: `large-${index}`,
@@ -53,8 +53,8 @@ const largeEntries = Array.from({ length: 140 }, (_, index): AwarenessEntry => (
 }));
 
 const large = buildContextWindowStatus(largeEntries, { allLoaded: true, realtimeVoice: true });
-assert.equal(large.sourceLabel, "140 msgs", "fully loaded awareness history shows the message count");
-assert.equal(large.realtime?.stateLabel, "compact", "oversized Realtime context visibly reports compaction");
-assert.equal(large.realtime?.tone, "warning", "oversized Realtime context uses warning tone");
+assert.equal(large.sourceLabel, "140 loaded messages", "fully loaded awareness history shows the message count");
+assert.equal(large.realtime?.stateLabel, "compact handoff", "oversized Realtime context reports compact handoff when inspected");
+assert.equal(large.realtime?.tone, "attention", "oversized Realtime context uses attention tone without an alarm label");
 
 console.log("web UI context-window status ok");
