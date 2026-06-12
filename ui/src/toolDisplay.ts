@@ -9,6 +9,12 @@ const SEND_MESSAGE_TOOL_NAMES = new Set([
   'send_message',
   'functions.send_message',
 ]);
+const CONFIGURE_TOOL_NAMES = new Set([
+  'configure',
+  'functions.configure',
+  'self_configure',
+  'functions.self_configure',
+]);
 
 export function getToolTitle(block: ToolCallContent): string {
   const args = block.arguments || {};
@@ -27,6 +33,10 @@ export function getToolDetail(block: ToolCallContent): string | null {
   }
   if (SEND_MESSAGE_TOOL_NAMES.has(block.name)) {
     const detail = getSendMessageDetail(args);
+    if (detail) return detail;
+  }
+  if (CONFIGURE_TOOL_NAMES.has(block.name)) {
+    const detail = getConfigureDetail(args);
     if (detail) return detail;
   }
   for (const key of DETAIL_KEYS) {
@@ -71,6 +81,41 @@ function getSendMessageDetail(args: Record<string, unknown>): string | null {
   const formattedTarget = target ? formatMessageTarget(target) : 'Target required';
   if (!text) return formattedTarget;
   return `${formattedTarget}: ${truncateOneLine(text, 96)}`;
+}
+
+function getConfigureDetail(args: Record<string, unknown>): string | null {
+  const target = firstString(args, ['setting', 'target', 'key', 'path']);
+  const hasValue = Object.prototype.hasOwnProperty.call(args, 'value')
+    || Object.prototype.hasOwnProperty.call(args, 'newValue');
+  const value = Object.prototype.hasOwnProperty.call(args, 'value') ? args.value : args.newValue;
+  if (!target && !hasValue) return null;
+
+  const formattedValue = hasValue ? formatConfigureValue(target, value) : null;
+  if (target && formattedValue) return `${target} = ${formattedValue}`;
+  return target || formattedValue;
+}
+
+function firstString(args: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function formatConfigureValue(target: string, value: unknown): string | null {
+  if (value === undefined) return null;
+  if (isSensitiveConfigureTarget(target)) return '[redacted]';
+  if (typeof value === 'string') return truncateOneLine(value || '""', 96);
+  try {
+    return truncateOneLine(JSON.stringify(value), 96);
+  } catch {
+    return truncateOneLine(String(value), 96);
+  }
+}
+
+function isSensitiveConfigureTarget(target: string): boolean {
+  return /(^|[._-])(secret|secrets|token|password|credential|credentials|api[_-]?key|private[_-]?key)([._-]|$)/i.test(target);
 }
 
 function formatMessageTarget(target: string): string {

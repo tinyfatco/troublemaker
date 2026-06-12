@@ -1,23 +1,37 @@
 /**
- * useVoiceChat - browser mic capture + OpenAI Realtime WebRTC voice agent.
+ * useVoiceChat - browser mic capture for Realtime 2 and turn-based voice.
  *
- * Realtime owns the live voice turn. This hook does not bridge completed
- * transcripts into the text /web/chat agent path.
+ * Realtime 2 gets a compact context handoff plus narrow read/search tools.
+ * Turn-based voice uses the existing /voice/stream canonical agent path.
  */
 
 import { useState, useRef, useCallback } from 'react';
-import { createRealtimeClientSecret, executeWorkspaceTool, fetchRealtimeVoicePreference } from '../console-api';
+import { apiUrl } from '../api';
+import { createRealtimeClientSecret, executeWorkspaceTool, fetchAwarenessBacklog, fetchRealtimeVoicePreference } from '../console-api';
+import {
+  REALTIME_CONTEXT_BACKLOG_LIMIT,
+  buildRealtimeContextHandoff,
+  createRealtimeContextItem,
+  createRealtimeTruncationConfig,
+  isBenignRealtimeCancellationError,
+  mergeRealtimeContextEntries,
+  parseRealtimeContextBacklog,
+  type RealtimeContextHandoff,
+} from '../realtimeContext';
 import type { AwarenessEntry } from '../types';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 const REALTIME_MODEL = 'gpt-realtime-2';
 const TRANSCRIPTION_MODEL = 'gpt-realtime-whisper';
 const DEFAULT_REALTIME_VOICE = 'marin';
+const TURN_VOICE_SAMPLE_RATE = 16000;
 
 export type VoiceState = 'idle' | 'connecting' | 'listening' | 'transcribing' | 'thinking' | 'speaking' | 'error';
+export type VoiceMode = 'realtime' | 'turn';
 
 export interface UseVoiceChatReturn {
   state: VoiceState;
+  mode: VoiceMode;
   partial: string;
   transcript: string;
   assistantText: string;
@@ -25,7 +39,13 @@ export interface UseVoiceChatReturn {
   cloudEvent: string;
   start: () => Promise<void>;
   stop: () => void;
+  setMode: (mode: VoiceMode) => void;
+  toggleMode: () => void;
   error: string | null;
+}
+
+export interface UseVoiceChatOptions {
+  contextEntries?: AwarenessEntry[];
 }
 
 type RealtimeEvent = Record<string, unknown> & { type?: string };
@@ -36,8 +56,22 @@ interface RealtimeFunctionCall {
   arguments: Record<string, unknown>;
 }
 
-export function useVoiceChat(): UseVoiceChatReturn {
+const PCM_CAPTURE_WORKLET_CODE = `
+class PcmCaptureProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const input = inputs[0];
+    if (input && input[0] && input[0].length > 0) {
+      this.port.postMessage(input[0].slice());
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-capture', PcmCaptureProcessor);
+`;
+
+export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatReturn {
   const [state, setState] = useState<VoiceState>('idle');
+  const [mode, setModeState] = useState<VoiceMode>('realtime');
   const [partial, setPartial] = useState('');
   const [transcript, setTranscript] = useState('');
   const [assistantText, setAssistantText] = useState('');
@@ -49,6 +83,15 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const dcRef = useRef<RTCDataChannel | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const turnWsRef = useRef<WebSocket | null>(null);
+  const turnAudioCtxRef = useRef<AudioContext | null>(null);
+  const turnWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const turnSourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const turnMuteNodeRef = useRef<GainNode | null>(null);
+  const turnAudioChunksRef = useRef<BlobPart[]>([]);
+  const turnPlaybackRef = useRef<HTMLAudioElement | null>(null);
+  const turnPlaybackUrlRef = useRef<string | null>(null);
+  const turnSuppressMicRef = useRef(false);
   const outputActiveRef = useRef(false);
   const partialRef = useRef('');
   const assistantTextRef = useRef('');
@@ -58,6 +101,12 @@ export function useVoiceChat(): UseVoiceChatReturn {
   const activeVoiceRef = useRef(DEFAULT_REALTIME_VOICE);
   const entrySequenceRef = useRef(0);
   const sessionIdRef = useRef(0);
+  const modeRef = useRef<VoiceMode>('realtime');
+  const contextEntriesRef = useRef<AwarenessEntry[]>([]);
+  const pendingContextHandoffRef = useRef<RealtimeContextHandoff | null>(null);
+  const contextHandoffSentRef = useRef(false);
+
+  contextEntriesRef.current = options.contextEntries || [];
 
   const nextEntryId = useCallback((role: string) => {
     entrySequenceRef.current += 1;
@@ -150,6 +199,38 @@ export function useVoiceChat(): UseVoiceChatReturn {
     return true;
   }, []);
 
+  const appendContextNotice = useCallback((text: string) => {
+    const clean = text.trim();
+    if (!clean) return;
+    appendLocalEntry(createVoiceNoticeEntry(nextEntryId('context'), clean));
+  }, [appendLocalEntry, nextEntryId]);
+
+  const sendRealtimeContextHandoff = useCallback(() => {
+    const handoff = pendingContextHandoffRef.current;
+    if (!handoff || contextHandoffSentRef.current) return;
+    if (!sendRealtimeEvent(createRealtimeContextItem(handoff))) return;
+    contextHandoffSentRef.current = true;
+    if (handoff.warning) {
+      setCloudEvent(handoff.warning);
+      appendContextNotice(handoff.warning);
+    } else {
+      setCloudEvent('Realtime voice has current context.');
+    }
+  }, [appendContextNotice, sendRealtimeEvent]);
+
+  const setMode = useCallback((nextMode: VoiceMode) => {
+    if (state !== 'idle' && state !== 'error') return;
+    modeRef.current = nextMode;
+    setModeState(nextMode);
+    setCloudEvent(nextMode === 'realtime'
+      ? 'Realtime 2 voice selected.'
+      : 'Turn-based voice selected.');
+  }, [state]);
+
+  const toggleMode = useCallback(() => {
+    setMode(modeRef.current === 'realtime' ? 'turn' : 'realtime');
+  }, [setMode]);
+
   const cancelRealtimeOutput = useCallback(() => {
     if (!outputActiveRef.current) return;
     sendRealtimeEvent({ type: 'response.cancel' });
@@ -221,11 +302,33 @@ export function useVoiceChat(): UseVoiceChatReturn {
     activeUserEntryIdRef.current = null;
     activeAssistantEntryIdRef.current = null;
     activeToolEntryIdsRef.current.clear();
+    pendingContextHandoffRef.current = null;
+    contextHandoffSentRef.current = false;
 
     dcRef.current?.close();
     dcRef.current = null;
     pcRef.current?.close();
     pcRef.current = null;
+    turnWsRef.current?.close();
+    turnWsRef.current = null;
+    turnWorkletNodeRef.current?.disconnect();
+    turnWorkletNodeRef.current = null;
+    turnSourceNodeRef.current?.disconnect();
+    turnSourceNodeRef.current = null;
+    turnMuteNodeRef.current?.disconnect();
+    turnMuteNodeRef.current = null;
+    if (turnAudioCtxRef.current && turnAudioCtxRef.current.state !== 'closed') {
+      turnAudioCtxRef.current.close().catch(() => {});
+    }
+    turnAudioCtxRef.current = null;
+    turnAudioChunksRef.current = [];
+    turnSuppressMicRef.current = false;
+    turnPlaybackRef.current?.pause();
+    turnPlaybackRef.current = null;
+    if (turnPlaybackUrlRef.current) {
+      URL.revokeObjectURL(turnPlaybackUrlRef.current);
+      turnPlaybackUrlRef.current = null;
+    }
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
 
@@ -248,6 +351,7 @@ export function useVoiceChat(): UseVoiceChatReturn {
         setState('connecting');
         break;
       case 'session.updated':
+        sendRealtimeContextHandoff();
         setState('listening');
         break;
       case 'input_audio_buffer.speech_started':
@@ -341,21 +445,262 @@ export function useVoiceChat(): UseVoiceChatReturn {
         setState('listening');
         break;
       case 'error':
+        if (isBenignRealtimeCancellationError(event)) {
+          outputActiveRef.current = false;
+          break;
+        }
         setError(openAIErrorMessage(event));
         setState('error');
         break;
       default:
         break;
     }
-  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, handleRealtimeFunctionCalls, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
+  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, handleRealtimeFunctionCalls, sendRealtimeContextHandoff, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
 
-  const start = useCallback(async () => {
-    if (state !== 'idle' && state !== 'error') return;
+  const playTurnAudio = useCallback(() => {
+    const chunks = turnAudioChunksRef.current;
+    turnAudioChunksRef.current = [];
+    if (chunks.length === 0) {
+      finishAssistantEntry();
+      setState('listening');
+      return;
+    }
+
+    turnPlaybackRef.current?.pause();
+    if (turnPlaybackUrlRef.current) URL.revokeObjectURL(turnPlaybackUrlRef.current);
+    const url = URL.createObjectURL(new Blob(chunks, { type: 'audio/mpeg' }));
+    const audio = new Audio(url);
+    turnPlaybackRef.current = audio;
+    turnPlaybackUrlRef.current = url;
+    turnSuppressMicRef.current = true;
+    setState('speaking');
+    audio.onended = () => {
+      turnSuppressMicRef.current = false;
+      if (turnPlaybackRef.current === audio) turnPlaybackRef.current = null;
+      if (turnPlaybackUrlRef.current === url) {
+        URL.revokeObjectURL(url);
+        turnPlaybackUrlRef.current = null;
+      }
+      finishAssistantEntry();
+      setState('listening');
+    };
+    audio.onerror = () => {
+      turnSuppressMicRef.current = false;
+      finishAssistantEntry();
+      setState('listening');
+    };
+    audio.play().catch(() => {
+      turnSuppressMicRef.current = false;
+      finishAssistantEntry();
+      setState('listening');
+    });
+  }, [finishAssistantEntry]);
+
+  const startRealtimeVoice = useCallback(async (sessionId: number) => {
     if (!('RTCPeerConnection' in window) || !navigator.mediaDevices?.getUserMedia) {
       setError('This browser does not support Realtime voice.');
       setState('error');
       return;
     }
+
+    const [selectedVoice, contextHandoff] = await Promise.all([
+      fetchRealtimeVoicePreference(),
+      loadRealtimeContextHandoff(contextEntriesRef.current),
+    ]);
+    activeVoiceRef.current = selectedVoice;
+    pendingContextHandoffRef.current = contextHandoff;
+    contextHandoffSentRef.current = false;
+    if (sessionIdRef.current !== sessionId) return;
+
+    const clientSecret = await createRealtimeClientSecret({
+      voice: selectedVoice,
+      ttlSeconds: 600,
+    });
+    if (sessionIdRef.current !== sessionId) return;
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    streamRef.current = stream;
+
+    const pc = new RTCPeerConnection();
+    pcRef.current = pc;
+
+    const audio = document.createElement('audio');
+    audio.autoplay = true;
+    audio.playsInline = true;
+    audioElementRef.current = audio;
+    document.body.appendChild(audio);
+
+    pc.ontrack = (event) => {
+      audio.srcObject = event.streams[0];
+      audio.play().catch(() => {});
+    };
+    pc.onconnectionstatechange = () => {
+      if (sessionIdRef.current !== sessionId) return;
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        setError('Realtime voice connection failed.');
+        setState('error');
+      }
+    };
+
+    for (const track of stream.getAudioTracks()) {
+      pc.addTrack(track, stream);
+    }
+
+    const dc = pc.createDataChannel('oai-events');
+    dcRef.current = dc;
+    dc.onopen = () => {
+      if (sessionIdRef.current !== sessionId) return;
+      sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current));
+      setState('connecting');
+    };
+    dc.onmessage = (message) => {
+      try {
+        handleRealtimeEvent(JSON.parse(String(message.data)) as RealtimeEvent);
+      } catch {
+        // Ignore malformed Realtime events.
+      }
+    };
+    dc.onerror = () => {
+      setError('Realtime voice data channel failed.');
+      setState('error');
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (sessionIdRef.current !== sessionId) return;
+    if (!offer.sdp) throw new Error('Could not create a Realtime voice offer.');
+
+    const answerResponse = await fetch(OPENAI_REALTIME_CALLS_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${clientSecret}`,
+        'Content-Type': 'application/sdp',
+      },
+      body: offer.sdp,
+    });
+    if (!answerResponse.ok) {
+      throw new Error(await readRealtimeAnswerError(answerResponse));
+    }
+
+    await pc.setRemoteDescription({
+      type: 'answer',
+      sdp: await answerResponse.text(),
+    });
+  }, [handleRealtimeEvent, sendRealtimeEvent]);
+
+  const startTurnVoice = useCallback(async (sessionId: number) => {
+    if (!navigator.mediaDevices?.getUserMedia || !('AudioContext' in window) || !('WebSocket' in window)) {
+      setError('This browser does not support turn-based voice.');
+      setState('error');
+      return;
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: TURN_VOICE_SAMPLE_RATE,
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    streamRef.current = stream;
+
+    const audioCtx = new AudioContext({ sampleRate: TURN_VOICE_SAMPLE_RATE });
+    turnAudioCtxRef.current = audioCtx;
+    const workletUrl = URL.createObjectURL(new Blob([PCM_CAPTURE_WORKLET_CODE], { type: 'application/javascript' }));
+    await audioCtx.audioWorklet.addModule(workletUrl);
+    URL.revokeObjectURL(workletUrl);
+
+    const source = audioCtx.createMediaStreamSource(stream);
+    const workletNode = new AudioWorkletNode(audioCtx, 'pcm-capture');
+    const muteNode = audioCtx.createGain();
+    muteNode.gain.value = 0;
+    turnSourceNodeRef.current = source;
+    turnWorkletNodeRef.current = workletNode;
+    turnMuteNodeRef.current = muteNode;
+    source.connect(workletNode);
+    workletNode.connect(muteNode);
+    muteNode.connect(audioCtx.destination);
+
+    const ws = new WebSocket(getTurnVoiceWsUrl());
+    ws.binaryType = 'arraybuffer';
+    turnWsRef.current = ws;
+    turnAudioChunksRef.current = [];
+
+    ws.onopen = () => {
+      if (sessionIdRef.current !== sessionId) return;
+      setCloudEvent('Turn-based voice uses the normal agent path.');
+      setState('listening');
+      workletNode.port.onmessage = (event: MessageEvent) => {
+        if (ws.readyState !== WebSocket.OPEN || turnSuppressMicRef.current) return;
+        ws.send(floatToPcm16(event.data as Float32Array));
+      };
+    };
+    ws.onmessage = (message) => {
+      if (message.data instanceof ArrayBuffer) {
+        turnAudioChunksRef.current.push(message.data);
+        setState('speaking');
+        return;
+      }
+
+      try {
+        const event = JSON.parse(String(message.data)) as Record<string, unknown>;
+        const type = String(event.type || '');
+        if (type === 'partial') {
+          const text = String(event.text || '');
+          partialRef.current = text;
+          setPartial(text);
+          updateUserEntryText(text, true);
+        } else if (type === 'transcript') {
+          const text = String(event.text || '').trim();
+          partialRef.current = '';
+          setPartial('');
+          if (text) {
+            setTranscript(text);
+            updateUserEntryText(text, false);
+            activeUserEntryIdRef.current = null;
+          }
+          setState('thinking');
+        } else if (type === 'assistant_text') {
+          const text = String(event.text || '').trim();
+          if (text) {
+            assistantTextRef.current = text;
+            setAssistantText(text);
+            updateAssistantEntryText(text, true);
+          }
+        } else if (type === 'thinking') {
+          setState('thinking');
+        } else if (type === 'speaking') {
+          setState('speaking');
+        } else if (type === 'listening') {
+          playTurnAudio();
+        } else if (type === 'error') {
+          setError(String(event.message || 'Turn-based voice error'));
+          setState('error');
+        }
+      } catch {
+        // Ignore malformed turn-based voice events.
+      }
+    };
+    ws.onerror = () => {
+      setError('Turn-based voice connection failed.');
+      setState('error');
+    };
+    ws.onclose = () => {
+      if (sessionIdRef.current === sessionId) stop();
+    };
+  }, [playTurnAudio, stop, updateAssistantEntryText, updateUserEntryText]);
+
+  const start = useCallback(async () => {
+    if (state !== 'idle' && state !== 'error') return;
 
     setState('connecting');
     setError(null);
@@ -367,102 +712,56 @@ export function useVoiceChat(): UseVoiceChatReturn {
     const sessionId = sessionIdRef.current + 1;
     sessionIdRef.current = sessionId;
     try {
-      const selectedVoice = await fetchRealtimeVoicePreference();
-      activeVoiceRef.current = selectedVoice;
-      if (sessionIdRef.current !== sessionId) return;
-
-      const clientSecret = await createRealtimeClientSecret({
-        voice: selectedVoice,
-        ttlSeconds: 600,
-      });
-      if (sessionIdRef.current !== sessionId) return;
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-      streamRef.current = stream;
-
-      const pc = new RTCPeerConnection();
-      pcRef.current = pc;
-
-      const audio = document.createElement('audio');
-      audio.autoplay = true;
-      audio.playsInline = true;
-      audioElementRef.current = audio;
-      document.body.appendChild(audio);
-
-      pc.ontrack = (event) => {
-        audio.srcObject = event.streams[0];
-        audio.play().catch(() => {});
-      };
-      pc.onconnectionstatechange = () => {
-        if (sessionIdRef.current !== sessionId) return;
-        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-          setError('Realtime voice connection failed.');
-          setState('error');
-        }
-      };
-
-      for (const track of stream.getAudioTracks()) {
-        pc.addTrack(track, stream);
+      if (modeRef.current === 'turn') {
+        await startTurnVoice(sessionId);
+      } else {
+        await startRealtimeVoice(sessionId);
       }
-
-      const dc = pc.createDataChannel('oai-events');
-      dcRef.current = dc;
-      dc.onopen = () => {
-        if (sessionIdRef.current !== sessionId) return;
-        sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current));
-        setState('listening');
-      };
-      dc.onmessage = (message) => {
-        try {
-          handleRealtimeEvent(JSON.parse(String(message.data)) as RealtimeEvent);
-        } catch {
-          // Ignore malformed Realtime events.
-        }
-      };
-      dc.onerror = () => {
-        setError('Realtime voice data channel failed.');
-        setState('error');
-      };
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      if (sessionIdRef.current !== sessionId) return;
-      if (!offer.sdp) throw new Error('Could not create a Realtime voice offer.');
-
-      const answerResponse = await fetch(OPENAI_REALTIME_CALLS_URL, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${clientSecret}`,
-          'Content-Type': 'application/sdp',
-        },
-        body: offer.sdp,
-      });
-      if (!answerResponse.ok) {
-        throw new Error(await readRealtimeAnswerError(answerResponse));
-      }
-
-      await pc.setRemoteDescription({
-        type: 'answer',
-        sdp: await answerResponse.text(),
-      });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Mic access denied');
       setState('error');
       stop();
     }
-  }, [handleRealtimeEvent, sendRealtimeEvent, state, stop]);
+  }, [startRealtimeVoice, startTurnVoice, state, stop]);
 
-  return { state, partial, transcript, assistantText, localEntries, cloudEvent, start, stop, error };
+  return { state, mode, partial, transcript, assistantText, localEntries, cloudEvent, start, stop, setMode, toggleMode, error };
 }
 
 const LOCAL_VOICE_ENTRY_LIMIT = 80;
+
+async function loadRealtimeContextHandoff(contextEntries: AwarenessEntry[]): Promise<RealtimeContextHandoff | null> {
+  try {
+    const backlog = await fetchAwarenessBacklog(REALTIME_CONTEXT_BACKLOG_LIMIT);
+    const entries = mergeRealtimeContextEntries(
+      parseRealtimeContextBacklog(backlog.lines),
+      contextEntries,
+    );
+    return buildRealtimeContextHandoff(entries, {
+      model: REALTIME_MODEL,
+      totalEntryCount: Math.max(backlog.total, entries.length),
+    });
+  } catch {
+    return buildRealtimeContextHandoff(contextEntries, {
+      model: REALTIME_MODEL,
+      totalEntryCount: contextEntries.length,
+    });
+  }
+}
+
+function getTurnVoiceWsUrl(): string {
+  const url = new URL(apiUrl('/voice/stream'), window.location.href);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+function floatToPcm16(float32: Float32Array): ArrayBuffer {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    const sample = Math.max(-1, Math.min(1, float32[i]));
+    int16[i] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+  return int16.buffer;
+}
 
 function createVoiceUserEntry(id: string, text: string, isStreaming: boolean): AwarenessEntry {
   return {
@@ -487,6 +786,18 @@ function createVoiceAssistantEntry(id: string, text: string, isStreaming: boolea
     content: text ? [{ type: 'text', text }] : [],
     model: REALTIME_MODEL,
     isStreaming,
+  };
+}
+
+function createVoiceNoticeEntry(id: string, text: string): AwarenessEntry {
+  return {
+    id,
+    type: 'message',
+    timestamp: new Date().toISOString(),
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    model: REALTIME_MODEL,
+    isStreaming: false,
   };
 }
 
@@ -574,7 +885,7 @@ function realtimeWorkspaceToolDefinitions(): Array<Record<string, unknown>> {
     {
       type: 'function',
       name: 'read',
-      description: "Read a file from Zip's workspace. Supports optional 1-indexed line offset and maximum line limit.",
+      description: "Read a file from Zip's workspace when current file contents are necessary for a voice answer.",
       parameters: {
         type: 'object',
         properties: {
@@ -589,47 +900,29 @@ function realtimeWorkspaceToolDefinitions(): Array<Record<string, unknown>> {
     },
     {
       type: 'function',
-      name: 'write',
-      description: "Write full content to a file in Zip's workspace, creating parent directories as needed.",
+      name: 'get_context_briefing',
+      description: "Return a compact briefing of Zip's identity, memory files, and recent persisted activity. Use this before answering questions that depend on TinyFat or Zip context.",
       parameters: {
         type: 'object',
         properties: {
-          label: { type: 'string', description: 'Brief user-facing description of what is being written.' },
-          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
-          content: { type: 'string', description: 'Complete file content to write.' },
+          recentLimit: { type: 'number', description: 'Maximum recent context entries to include. Default 10, max 24.' },
+          maxChars: { type: 'number', description: 'Maximum briefing characters. Default 4000, max 8000.' },
         },
-        required: ['label', 'path', 'content'],
         additionalProperties: false,
       },
     },
     {
       type: 'function',
-      name: 'edit',
-      description: 'Edit a file by replacing one exact text span. The oldText value must match exactly and uniquely.',
+      name: 'search_context',
+      description: "Search Zip's persisted awareness, adapter log, and memory files for prior chats, names, projects, decisions, or specific terms from past context.",
       parameters: {
         type: 'object',
         properties: {
-          label: { type: 'string', description: 'Brief user-facing description of the edit.' },
-          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
-          oldText: { type: 'string', description: 'Exact existing text to replace.' },
-          newText: { type: 'string', description: 'Replacement text.' },
+          query: { type: 'string', description: "Case-insensitive text to search for in Zip's persisted context and chat logs." },
+          source: { type: 'string', description: 'Optional source: all, awareness, log, or memory. Defaults to all.' },
+          limit: { type: 'number', description: 'Maximum matching entries to return. Default 12, max 30.' },
         },
-        required: ['label', 'path', 'oldText', 'newText'],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: 'function',
-      name: 'bash',
-      description: "Run a bounded bash command in Zip's workspace. Use for repository inspection, tests, builds, and verification.",
-      parameters: {
-        type: 'object',
-        properties: {
-          label: { type: 'string', description: 'Brief user-facing description of what this command does.' },
-          command: { type: 'string', description: 'Bash command to execute.' },
-          timeout: { type: 'number', description: 'Optional timeout in seconds. Default is 60 seconds.' },
-        },
-        required: ['label', 'command'],
+        required: ['query'],
         additionalProperties: false,
       },
     },
@@ -647,13 +940,18 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
         "You are Zip, TinyFat's live voice agent.",
         'Speak directly to Alex in a concise, natural voice.',
         'You are running in the TinyFat web workspace voice UI.',
-        'You can use workspace tools to read files, write files, edit exact text, and run bounded bash commands in Zip\'s workspace.',
-        'Use tools when the user asks you to inspect, build, change, or verify workspace state. Keep tool use tight and say what changed.',
-        'Do not mention transcripts, transport, or implementation details unless Alex asks.',
+        'You receive a compact current-context handoff when the session starts.',
+        'Use get_context_briefing and search_context for TinyFat, Zip, prior-chat, memory, or relationship context instead of guessing.',
+        'Use read only when current file contents are necessary for a spoken answer.',
+        'Do not write files, edit files, run shell commands, or act like the full normal agent runtime from Realtime voice.',
+        'For broad build, edit, verification, or tool-heavy work, tell Alex to use turn-based voice or text chat.',
+        'Keep answers tight and spoken. Do not mention transcripts, transport, or implementation details unless Alex asks.',
       ].join('\n'),
       tools: realtimeWorkspaceToolDefinitions(),
       tool_choice: 'auto',
       parallel_tool_calls: false,
+      max_response_output_tokens: 4096,
+      truncation: createRealtimeTruncationConfig(REALTIME_MODEL),
       audio: {
         input: {
           noise_reduction: { type: 'far_field' },

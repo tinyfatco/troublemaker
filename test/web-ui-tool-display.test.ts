@@ -76,12 +76,49 @@ const sendEmailCall: ToolCallContent = {
 	},
 };
 
+const configureCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-6",
+	name: "configure",
+	arguments: {
+		description: "Update heartbeat level",
+		target: "spontaneity.level",
+		value: 4,
+	},
+};
+
+const selfConfigureCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-7",
+	name: "self_configure",
+	arguments: {
+		label: "Change thinking level",
+		setting: "thinking_level",
+		value: "high",
+	},
+};
+
+const sensitiveConfigureCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-8",
+	name: "functions.configure",
+	arguments: {
+		description: "Update Google credentials",
+		target: "secrets.gog_credentials",
+		value: { client_id: "abc", client_secret: "def" },
+	},
+};
+
 assert(getToolTitle(bashCall) === "Find WorkspaceLayout source", "tool title prefers human label over raw tool name");
 assert(getToolDetail(bashCall) === "rg -n \"WorkspaceLayout\" ui/src", "tool detail uses command as secondary text");
 assert(getToolDetail(yieldNoActionCall) === "heartbeat only; nothing useful to add", "yield_no_action reason is shown as secondary text");
 assert(getToolDetail(namespacedYieldNoActionCall) === "ambient conversation; no direct address", "namespaced yield_no_action reason is shown as secondary text");
 assert(getToolDetail(sendTelegramCall) === "Telegram: I'll take a look and send the draft shortly.", "send_message shows destination and message preview");
 assert(getToolDetail(sendEmailCall) === "Email alex@tinyfat.com: Line one Line two with a little more detail", "send_message aliases show destination and collapsed message preview");
+assert(getToolTitle(configureCall) === "Update heartbeat level", "configure title still uses the description");
+assert(getToolDetail(configureCall) === "spontaneity.level = 4", "configure detail shows target and value as secondary text");
+assert(getToolDetail(selfConfigureCall) === "thinking_level = high", "self_configure detail shows setting and value as secondary text");
+assert(getToolDetail(sensitiveConfigureCall) === "secrets.gog_credentials = [redacted]", "configure detail redacts sensitive-looking values");
 assert(getToolStatus(false) === "done", "historical tool call without a result is done, not pending");
 assert(getToolStatus(true, result) === "running", "streaming unresolved call is running");
 assert(getToolStatus(false, { ...result, isError: true }) === "error", "errored result reports error");

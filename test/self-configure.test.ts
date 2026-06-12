@@ -46,6 +46,15 @@ try {
 	assert(checklist.path === "HEARTBEAT.md", "heartbeat checklist reports file path");
 	assert(readFileSync(join(workingDir, "HEARTBEAT.md"), "utf-8") === "Check the inbox.", "heartbeat checklist writes file");
 
+	const voice = applySelfConfiguration(workingDir, "realtime_voice", "cedar");
+	settings = readSettings(workingDir);
+	assert(voice.newValue === "cedar", "realtime voice result reports selected voice");
+	assert(settings.realtimeVoice === "cedar", "realtime_voice writes realtimeVoice");
+	const voiceAlias = applySelfConfiguration(workingDir, "voice", "marin");
+	settings = readSettings(workingDir);
+	assert(voiceAlias.newValue === "marin", "voice alias reports selected voice");
+	assert(settings.realtimeVoice === "marin", "voice alias writes realtimeVoice");
+
 	const tool = createSelfConfigureTool(workingDir);
 	const result = await (tool.execute as any)("call-1", {
 		label: "set thinking high",

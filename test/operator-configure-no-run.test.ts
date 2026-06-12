@@ -27,6 +27,7 @@ for (const name of [
   'configureSimpleSetting',
   'configureModel',
   'configureThinkingLevel',
+  'configureRealtimeVoice',
   'configureVerbose',
   'configureSpontaneity',
   'configureHeartbeatChecklist',

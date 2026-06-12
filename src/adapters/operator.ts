@@ -51,6 +51,12 @@ import type {
 	UserInfo,
 } from "./types.js";
 import { findModel, listModels } from "../model-config.js";
+import {
+	DEFAULT_REALTIME_VOICE,
+	REALTIME_VOICE_OPTIONS,
+	normalizeRealtimeVoiceName,
+	realtimeVoiceDescription,
+} from "../realtime-voices.js";
 
 export const OPERATOR_CHANNEL_ID = "operator";
 const OPERATOR_CHANNEL_LABEL = "operator:control";
@@ -82,6 +88,7 @@ const SPONTANEITY_LEAF_TARGETS = new Set([
 
 /** Special file-tier target: writes `/data/HEARTBEAT.md`. */
 const HEARTBEAT_CHECKLIST_TARGET = "heartbeat.checklist";
+const REALTIME_VOICE_TARGET = "realtime_voice";
 
 /**
  * Legacy aliases advertised by older Agency MCP docstrings. Accepted with a
@@ -91,6 +98,9 @@ const HEARTBEAT_CHECKLIST_TARGET = "heartbeat.checklist";
 const LEGACY_ALIASES: Record<string, string> = {
 	"heartbeat.interval": "spontaneity.intervalMinutes",
 	"heartbeat.enabled": "spontaneity.enabled",
+	"voice": REALTIME_VOICE_TARGET,
+	"realtimeVoice": REALTIME_VOICE_TARGET,
+	"realtime.voice": REALTIME_VOICE_TARGET,
 };
 
 /** Pattern match for nested verbose targets like `verbose.slack.C09...`. */
@@ -460,6 +470,9 @@ Replies to the operator happen through whatever channel you were already using w
 		if (target === "model") {
 			return this.configureModel(originalTarget, body.value, res);
 		}
+		if (target === REALTIME_VOICE_TARGET) {
+			return this.configureRealtimeVoice(originalTarget, body.value, res);
+		}
 		if (SIMPLE_SETTINGS_TARGETS.has(target)) {
 			return this.configureSimpleSetting(originalTarget, target, body.value, res);
 		}
@@ -643,6 +656,50 @@ Replies to the operator happen through whatever channel you were already using w
 			accepted_values: [...THINKING_LEVEL_VALUES],
 			applied_at: nowIso(),
 			note: "Takes effect on next wake.",
+		});
+	}
+
+	private configureRealtimeVoice(
+		originalTarget: string,
+		value: unknown,
+		res: ServerResponse,
+	): void {
+		if (typeof value !== "string" || !value.trim()) {
+			return sendError(res, 400, "invalid_value", "voice must be a non-empty string");
+		}
+		const voice = normalizeRealtimeVoiceName(value);
+		if (!voice) {
+			return sendError(
+				res,
+				400,
+				"invalid_value",
+				`voice must be one of: ${REALTIME_VOICE_OPTIONS.map((option) => option.name).join(", ")}`,
+			);
+		}
+
+		const settings = this.loadSettingsRaw();
+		if (settings instanceof Response) return sendError(res, 500, "settings_read_failed");
+
+		const previousValue = normalizeRealtimeVoiceName(settings.realtimeVoice) || DEFAULT_REALTIME_VOICE;
+		settings.realtimeVoice = voice;
+
+		if (!this.saveSettingsRaw(settings)) {
+			return sendError(res, 500, "settings_write_failed");
+		}
+
+		const changed = this.writeConfiguredAwareness(originalTarget, voice, previousValue);
+		const description = realtimeVoiceDescription(voice);
+
+		sendJson(res, 200, {
+			edited: true,
+			changed,
+			target: originalTarget,
+			tier: "container",
+			previous_value: previousValue,
+			new_value: voice,
+			accepted_values: REALTIME_VOICE_OPTIONS.map((option) => option.name),
+			applied_at: nowIso(),
+			note: `Realtime voice changes apply to the next voice session.${description ? ` ${description}` : ""}`,
 		});
 	}
 
@@ -971,6 +1028,9 @@ Replies to the operator happen through whatever channel you were already using w
 		const thinkingLevel = rawSettings instanceof Response
 			? raw.defaultThinkingLevel ?? null
 			: (rawSettings as Record<string, unknown>).thinking_level ?? raw.defaultThinkingLevel ?? null;
+		const realtimeVoice = rawSettings instanceof Response
+			? normalizeRealtimeVoiceName(raw.realtimeVoice) || DEFAULT_REALTIME_VOICE
+			: normalizeRealtimeVoiceName((rawSettings as Record<string, unknown>).realtimeVoice) || DEFAULT_REALTIME_VOICE;
 
 		let models: Array<{ provider: string; id: string; name: string; api: string }> = [];
 		try {
@@ -990,6 +1050,8 @@ Replies to the operator happen through whatever channel you were already using w
 			models,
 			thinking_level: thinkingLevel,
 			thinking_level_accepted: [...THINKING_LEVEL_VALUES],
+			voice: realtimeVoice,
+			voice_accepted: REALTIME_VOICE_OPTIONS.map((option) => option.name),
 			heartbeat: {
 				checklist: heartbeatChecklist,
 				checklist_present: heartbeatChecklist !== null,

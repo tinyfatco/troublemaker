@@ -52,25 +52,32 @@ export function AwarenessPane({
     clearError,
   } = useWebChat();
 
-  const voice = useVoiceChat();
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const contextEntriesForVoice = useMemo(
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
+    [entries, userEntry, streamingEntry, localEntries],
+  );
+
+  const voice = useVoiceChat({ contextEntries: contextEntriesForVoice });
   const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
   const voiceStatusText = useMemo(() => {
     if (voice.assistantText) return voice.assistantText;
     if (voice.cloudEvent) return voice.cloudEvent;
     if (voice.partial) return voice.partial;
     if (voice.transcript && (voice.state === 'thinking' || voice.state === 'transcribing')) return voice.transcript;
+    const modeLabel = voice.mode === 'turn' ? 'Turn-based voice' : 'Realtime 2';
     switch (voice.state) {
-      case 'connecting': return 'Connecting Realtime 2...';
-      case 'listening': return 'Fresh voice session ready...';
+      case 'connecting': return `Connecting ${modeLabel}...`;
+      case 'listening': return `${modeLabel} ready...`;
       case 'transcribing': return 'Speech detected...';
       case 'thinking': return 'Zip is thinking...';
       case 'speaking': return 'Zip is speaking...';
       default: return '';
     }
-  }, [voice.assistantText, voice.cloudEvent, voice.partial, voice.transcript, voice.state]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
-  const [localError, setLocalError] = useState<string | null>(null);
+  }, [voice.assistantText, voice.cloudEvent, voice.mode, voice.partial, voice.transcript, voice.state]);
 
   const error = localError || chatError || streamError || voice.error;
   const localVisibleEntries = useMemo(
@@ -373,24 +380,45 @@ export function AwarenessPane({
         streamingPlaceholder={allowCommands ? undefined : 'Ask a follow-up...'}
         streamingSendLabel={allowCommands ? undefined : 'Send follow-up'}
         extraButtons={allowVoice ? (
-          <button
-            className={`mic-button ${isVoiceActive ? 'active' : ''}`}
-            onClick={isVoiceActive ? voice.stop : voice.start}
-            disabled={isStreaming && !isVoiceActive}
-            title={isVoiceActive ? 'Stop Realtime 2 voice' : 'Start Realtime 2 voice'}
-          >
-            {isVoiceActive ? (
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
-              </svg>
-            ) : (
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
-                <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-                <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
+          <>
+            {!isVoiceActive && (
+              <button
+                className="mic-button"
+                onClick={voice.toggleMode}
+                disabled={isStreaming}
+                title={voice.mode === 'realtime' ? 'Switch to turn-based voice' : 'Switch to Realtime 2 voice'}
+              >
+                {voice.mode === 'realtime' ? (
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                ) : (
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                  </svg>
+                )}
+              </button>
             )}
-          </button>
+            <button
+              className={`mic-button ${isVoiceActive ? 'active' : ''}`}
+              onClick={isVoiceActive ? voice.stop : voice.start}
+              disabled={isStreaming && !isVoiceActive}
+              title={isVoiceActive ? 'Stop voice' : voice.mode === 'turn' ? 'Start turn-based voice' : 'Start Realtime 2 voice'}
+            >
+              {isVoiceActive ? (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
+                  <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                  <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              )}
+            </button>
+          </>
         ) : null}
       />
     </div>

@@ -80,6 +80,7 @@ export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
+	realtimeVoice?: string;
 	verbose?: VerbosityLevel | MomVerboseSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;

@@ -13,6 +13,11 @@ import { join } from "path";
 import { MomSettingsManager, type MomSpontaneitySettings } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { findModel } from "../model-config.js";
+import {
+	DEFAULT_REALTIME_VOICE,
+	normalizeRealtimeVoiceName,
+	realtimeVoiceDescription,
+} from "../realtime-voices.js";
 import * as log from "../log.js";
 
 const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -28,7 +33,16 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"spontaneity.quietHours.end",
 	"spontaneity.timezone",
 	"heartbeat.checklist",
+	"voice",
+	"realtime_voice",
+	"realtime.voice",
 ]);
+
+const SELF_CONFIGURE_ALIASES: Record<string, string> = {
+	"voice": "realtime_voice",
+	"realtimeVoice": "realtime_voice",
+	"realtime.voice": "realtime_voice",
+};
 
 interface SelfConfigureResult {
 	changed: true;
@@ -205,18 +219,40 @@ function configureHeartbeatChecklist(workingDir: string, value: unknown): SelfCo
 	};
 }
 
+function configureRealtimeVoice(workingDir: string, value: unknown): SelfConfigureResult {
+	const query = parseString(value, "realtime_voice").trim();
+	const voice = normalizeRealtimeVoiceName(query);
+	if (!voice) throw new Error(`Unknown Realtime voice: ${query || JSON.stringify(value)}. Use /voice list to see available voices.`);
+
+	const settings = loadSettingsRaw(workingDir);
+	const previousValue = normalizeRealtimeVoiceName(settings.realtimeVoice) || DEFAULT_REALTIME_VOICE;
+	settings.realtimeVoice = voice;
+	saveSettingsRaw(workingDir, settings);
+
+	const description = realtimeVoiceDescription(voice);
+	return {
+		changed: true,
+		setting: "realtime_voice",
+		previousValue,
+		newValue: voice,
+		note: `Realtime voice changes apply to the next voice session.${description ? ` ${description}` : ""}`,
+	};
+}
+
 export function applySelfConfiguration(
 	workingDir: string,
 	setting: string,
 	value: unknown,
 ): SelfConfigureResult {
-	if (!SELF_CONFIGURE_SETTINGS.has(setting)) {
+	const target = SELF_CONFIGURE_ALIASES[setting] ?? setting;
+	if (!SELF_CONFIGURE_SETTINGS.has(target)) {
 		throw new Error(`Unknown self_configure setting: ${setting}. Supported settings: ${Array.from(SELF_CONFIGURE_SETTINGS).join(", ")}`);
 	}
-	if (setting === "model") return configureModel(workingDir, value);
-	if (setting === "thinking_level") return configureThinkingLevel(workingDir, value);
-	if (setting.startsWith("spontaneity.")) return configureSpontaneity(workingDir, setting, value);
-	if (setting === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
+	if (target === "model") return configureModel(workingDir, value);
+	if (target === "thinking_level") return configureThinkingLevel(workingDir, value);
+	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
+	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
+	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
 	throw new Error(`Unsupported self_configure setting: ${setting}`);
 }
 
@@ -240,7 +276,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 			description:
 				"Setting to change. Supported: model, thinking_level, spontaneity.enabled, spontaneity.level, " +
 				"spontaneity.intervalMinutes, spontaneity.spontaneity, spontaneity.quietHours.start, " +
-				"spontaneity.quietHours.end, spontaneity.timezone, heartbeat.checklist.",
+				"spontaneity.quietHours.end, spontaneity.timezone, heartbeat.checklist, voice/realtime_voice.",
 		}),
 		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
 	});
@@ -249,7 +285,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, heartbeat/spontaneity, or heartbeat checklist settings. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
