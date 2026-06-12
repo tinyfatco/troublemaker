@@ -39,10 +39,9 @@ import { createExecutor, parseSandboxArg, type Executor, type SandboxConfig, val
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
 import { getAssistantSpeechGuardState } from "../../audio-feedback-guard.js";
-import { createHostBashRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
+import { createHostBashRoute, createHostToolDefinitionsRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
 import { createMomTools } from "../../tools/index.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
-import { createRealtimeContextTools } from "../../tools/realtime-context.js";
 import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
@@ -986,7 +985,8 @@ function realtimeHostTools() {
 			createSendMessageTool(adapters),
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
-			...createRealtimeContextTools(workingDir),
+			createSelfConfigureTool(workingDir),
+			createYieldNoActionTool(),
 			...mcpBridge.tools(),
 		]
 			.filter((tool) => tool.name !== "speak")
@@ -1006,6 +1006,11 @@ gateway.register("/host/tools/execute", createHostToolExecuteRoute({
 	tools: realtimeHostTools,
 }));
 gateway.markReady("/host/tools/execute");
+
+gateway.registerGet("/host/tools", createHostToolDefinitionsRoute({
+	authToken: process.env.FAT_TOOLS_TOKEN,
+	tools: realtimeHostTools,
+}));
 
 gateway.registerUpgrade("/voice/realtime", handleRealtimeVoiceUpgrade({
 	workingDir,

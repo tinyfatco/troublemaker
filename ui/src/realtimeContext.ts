@@ -60,7 +60,7 @@ export function buildRealtimeContextHandoff(
   const intro = [
     'Realtime voice context handoff.',
     'Treat this as passive current context, not as a user request to answer directly.',
-    'Use get_context_briefing for a compact persisted briefing and search_context for exact prior-chat lookup when needed.',
+    'Use the available workspace tools for exact files, prior-chat lookup, commands, edits, or verification when needed.',
   ].join('\n');
   const fullText = `${intro}\n\nRecent context:\n${rendered.join('\n')}`;
   const originalTokenEstimate = estimateRealtimeTokens(fullText);
@@ -81,7 +81,7 @@ export function buildRealtimeContextHandoff(
   const compactIntro = [
     'Realtime voice compact context handoff.',
     'The full current context was larger than the Realtime handoff budget, so this includes the most recent useful entries only.',
-    'Use get_context_briefing and search_context before answering questions that depend on earlier details.',
+    'Use the available workspace tools before answering questions that depend on earlier details.',
   ].join('\n');
   const selected = newestLinesWithinTokenLimit(rendered, tokenLimit, compactIntro);
   const text = `${compactIntro}\n\nRecent context:\n${selected.join('\n')}`;

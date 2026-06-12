@@ -1,13 +1,13 @@
 /**
  * useVoiceChat - browser mic capture for Realtime 2 and turn-based voice.
  *
- * Realtime 2 gets a compact context handoff plus narrow read/search tools.
+ * Realtime 2 gets a compact context handoff plus the live workspace tool list.
  * Turn-based voice uses the existing /voice/stream canonical agent path.
  */
 
 import { useState, useRef, useCallback } from 'react';
 import { apiUrl } from '../api';
-import { createRealtimeClientSecret, executeWorkspaceTool, fetchAwarenessBacklog, fetchRealtimeVoicePreference } from '../console-api';
+import { createRealtimeClientSecret, executeWorkspaceTool, fetchAwarenessBacklog, fetchRealtimeVoicePreference, fetchWorkspaceToolDefinitions, type WorkspaceToolDefinition } from '../console-api';
 import {
   REALTIME_CONTEXT_BACKLOG_LIMIT,
   buildRealtimeContextHandoff,
@@ -503,9 +503,10 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       return;
     }
 
-    const [selectedVoice, contextHandoff] = await Promise.all([
+    const [selectedVoice, contextHandoff, toolDefinitions] = await Promise.all([
       fetchRealtimeVoicePreference(),
       loadRealtimeContextHandoff(contextEntriesRef.current),
+      fetchWorkspaceToolDefinitions(),
     ]);
     activeVoiceRef.current = selectedVoice;
     pendingContextHandoffRef.current = contextHandoff;
@@ -557,7 +558,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     dcRef.current = dc;
     dc.onopen = () => {
       if (sessionIdRef.current !== sessionId) return;
-      sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current));
+      sendRealtimeEvent(createRealtimeSessionUpdate(activeVoiceRef.current, toolDefinitions));
       setState('connecting');
     };
     dc.onmessage = (message) => {
@@ -880,56 +881,7 @@ function realtimeToolResultText(output: unknown): string {
   }
 }
 
-function realtimeWorkspaceToolDefinitions(): Array<Record<string, unknown>> {
-  return [
-    {
-      type: 'function',
-      name: 'read',
-      description: "Read a file from Zip's workspace when current file contents are necessary for a voice answer.",
-      parameters: {
-        type: 'object',
-        properties: {
-          label: { type: 'string', description: 'Brief user-facing reason for reading this file.' },
-          path: { type: 'string', description: 'Workspace-relative or absolute file path.' },
-          offset: { type: 'number', description: 'Optional 1-indexed starting line.' },
-          limit: { type: 'number', description: 'Optional maximum number of lines to read.' },
-        },
-        required: ['label', 'path'],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: 'function',
-      name: 'get_context_briefing',
-      description: "Return a compact briefing of Zip's identity, memory files, and recent persisted activity. Use this before answering questions that depend on TinyFat or Zip context.",
-      parameters: {
-        type: 'object',
-        properties: {
-          recentLimit: { type: 'number', description: 'Maximum recent context entries to include. Default 10, max 24.' },
-          maxChars: { type: 'number', description: 'Maximum briefing characters. Default 4000, max 8000.' },
-        },
-        additionalProperties: false,
-      },
-    },
-    {
-      type: 'function',
-      name: 'search_context',
-      description: "Search Zip's persisted awareness, adapter log, and memory files for prior chats, names, projects, decisions, or specific terms from past context.",
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: "Case-insensitive text to search for in Zip's persisted context and chat logs." },
-          source: { type: 'string', description: 'Optional source: all, awareness, log, or memory. Defaults to all.' },
-          limit: { type: 'number', description: 'Maximum matching entries to return. Default 12, max 30.' },
-        },
-        required: ['query'],
-        additionalProperties: false,
-      },
-    },
-  ];
-}
-
-function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
+function createRealtimeSessionUpdate(voice: string, tools: WorkspaceToolDefinition[]): Record<string, unknown> {
   return {
     type: 'session.update',
     session: {
@@ -941,13 +893,12 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
         'Speak directly to Alex in a concise, natural voice.',
         'You are running in the TinyFat web workspace voice UI.',
         'You receive a compact current-context handoff when the session starts.',
-        'Use get_context_briefing and search_context for TinyFat, Zip, prior-chat, memory, or relationship context instead of guessing.',
-        'Use read only when current file contents are necessary for a spoken answer.',
-        'Do not write files, edit files, run shell commands, or act like the full normal agent runtime from Realtime voice.',
-        'For broad build, edit, verification, or tool-heavy work, tell Alex to use turn-based voice or text chat.',
+        'You have the same workspace tool surface as the normal TinyFat agent path.',
+        'Use tools when Alex asks you to inspect, build, edit, send messages, read threads, run commands, or verify workspace state.',
+        'Do not claim tool work is unavailable unless the relevant tool call fails.',
         'Keep answers tight and spoken. Do not mention transcripts, transport, or implementation details unless Alex asks.',
       ].join('\n'),
-      tools: realtimeWorkspaceToolDefinitions(),
+      tools,
       tool_choice: 'auto',
       parallel_tool_calls: false,
       max_output_tokens: 4096,

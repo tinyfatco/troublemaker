@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isHostBashRequest } from "../src/modes/host/protocol.js";
+import { isHostBashRequest, isHostToolExecuteRequest } from "../src/modes/host/protocol.js";
 
 assert.equal(isHostBashRequest({
 	tool: "bash",
@@ -23,6 +23,20 @@ assert.equal(isHostBashRequest({
 		label: "Wrong tool",
 		command: "ls",
 	},
+}), false);
+
+assert.equal(isHostToolExecuteRequest({
+	tool: "write",
+	args: {
+		label: "Write file",
+		path: "note.txt",
+		content: "hello",
+	},
+}), true);
+
+assert.equal(isHostToolExecuteRequest({
+	tool: "",
+	args: {},
 }), false);
 
 console.log("host-protocol ok");

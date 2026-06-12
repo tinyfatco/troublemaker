@@ -429,6 +429,30 @@ export interface WorkspaceToolExecuteResponse {
   error?: string;
 }
 
+export interface WorkspaceToolDefinition {
+  type: 'function';
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+export async function fetchWorkspaceToolDefinitions(): Promise<WorkspaceToolDefinition[]> {
+  const resp = await fetchWithTimeout(consoleAgentUrl('/tools'), {}, 15000);
+  if (!resp.ok) throw await readError(resp, `Tool list failed: ${resp.status}`);
+
+  const data = await resp.json().catch(() => null) as unknown;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('Tool list returned an invalid response.');
+  }
+
+  const tools = (data as Record<string, unknown>).tools;
+  if (!Array.isArray(tools)) {
+    throw new Error('Tool list did not include tools.');
+  }
+
+  return tools.flatMap((tool) => normalizeWorkspaceToolDefinition(tool));
+}
+
 export async function executeWorkspaceTool(tool: string, args: Record<string, unknown>): Promise<WorkspaceToolExecuteResponse> {
   const resp = await fetchWithTimeout(consoleAgentUrl('/tools/execute'), {
     method: 'POST',
@@ -445,6 +469,22 @@ export async function executeWorkspaceTool(tool: string, args: Record<string, un
     throw new Error('Tool execution returned an invalid response.');
   }
   return data;
+}
+
+function normalizeWorkspaceToolDefinition(value: unknown): WorkspaceToolDefinition[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const tool = value as Record<string, unknown>;
+  if (tool.type !== 'function') return [];
+  if (typeof tool.name !== 'string' || !tool.name.trim()) return [];
+  if (typeof tool.description !== 'string') return [];
+  const parameters = tool.parameters;
+  if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) return [];
+  return [{
+    type: 'function',
+    name: tool.name.trim(),
+    description: tool.description,
+    parameters: parameters as Record<string, unknown>,
+  }];
 }
 
 export async function uploadWorkspaceFiles(files: File[], targetDir = 'attachments'): Promise<string[]> {

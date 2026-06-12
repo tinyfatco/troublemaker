@@ -23,6 +23,18 @@ export type HostBashResponse = HostToolResponse<BashToolResult>;
 export type HostToolExecuteRequest = HostToolRequest<Record<string, unknown>>;
 export type HostToolExecuteResponse = HostToolResponse<unknown>;
 
+export interface HostToolDefinition {
+	type: "function";
+	name: string;
+	description: string;
+	parameters: Record<string, unknown>;
+}
+
+export interface HostToolDefinitionsResponse {
+	ok: true;
+	tools: HostToolDefinition[];
+}
+
 export function isHostBashRequest(value: unknown): value is HostBashRequest {
 	if (!value || typeof value !== "object") return false;
 	const request = value as HostToolRequest<Record<string, unknown>>;

@@ -2,7 +2,14 @@ import type { IncomingMessage, ServerResponse } from "http";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { RuntimeToolOutputStream } from "../../core/runtime-contract.js";
 import type { Executor } from "../../sandbox.js";
-import { isHostBashRequest, isHostToolExecuteRequest, type HostBashResponse, type HostToolExecuteResponse } from "./protocol.js";
+import {
+	isHostBashRequest,
+	isHostToolExecuteRequest,
+	type HostBashResponse,
+	type HostToolDefinition,
+	type HostToolDefinitionsResponse,
+	type HostToolExecuteResponse,
+} from "./protocol.js";
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
 	const chunks: Buffer[] = [];
@@ -23,6 +30,14 @@ function writeJson(res: ServerResponse, status: number, body: HostBashResponse):
 }
 
 function writeToolJson(res: ServerResponse, status: number, body: HostToolExecuteResponse): void {
+	res.writeHead(status, {
+		"Content-Type": "application/json",
+		"Cache-Control": "no-store",
+	});
+	res.end(JSON.stringify(body));
+}
+
+function writeToolDefinitionsJson(res: ServerResponse, status: number, body: HostToolDefinitionsResponse | HostToolExecuteResponse): void {
 	res.writeHead(status, {
 		"Content-Type": "application/json",
 		"Cache-Control": "no-store",
@@ -67,6 +82,34 @@ export interface HostBashRouteOptions {
 export interface HostToolExecuteRouteOptions {
 	tools: () => AgentTool<any>[];
 	authToken?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function serializeToolParameters(parameters: unknown): Record<string, unknown> {
+	if (!isRecord(parameters)) {
+		return { type: "object", properties: {}, additionalProperties: false };
+	}
+
+	try {
+		const cloned = JSON.parse(JSON.stringify(parameters)) as unknown;
+		if (isRecord(cloned)) return cloned;
+	} catch {
+		// Fall through to the empty object schema.
+	}
+
+	return { type: "object", properties: {}, additionalProperties: false };
+}
+
+function toolDefinition(tool: AgentTool<any>): HostToolDefinition {
+	return {
+		type: "function",
+		name: tool.name,
+		description: tool.description || tool.name,
+		parameters: serializeToolParameters(tool.parameters),
+	};
 }
 
 export function createHostBashRoute(options: HostBashRouteOptions) {
@@ -118,6 +161,27 @@ export function createHostBashRoute(options: HostBashRouteOptions) {
 					error: err instanceof Error ? err.message : String(err),
 				});
 			});
+	};
+}
+
+export function createHostToolDefinitionsRoute(options: HostToolExecuteRouteOptions) {
+	return (req: IncomingMessage, res: ServerResponse): void => {
+		if (!isAuthorized(req, options.authToken)) {
+			writeToolDefinitionsJson(res, 401, { ok: false, error: "Unauthorized" });
+			return;
+		}
+
+		try {
+			writeToolDefinitionsJson(res, 200, {
+				ok: true,
+				tools: options.tools().map(toolDefinition),
+			});
+		} catch (err) {
+			writeToolDefinitionsJson(res, 500, {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	};
 }
 
