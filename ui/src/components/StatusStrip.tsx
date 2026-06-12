@@ -1,3 +1,4 @@
+import type { ContextWindowStatus } from '../contextWindowStatus';
 import type { StreamStatus } from '../hooks/useWebChat';
 
 interface StatusStripProps {
@@ -6,6 +7,7 @@ interface StatusStripProps {
   isLoading: boolean;
   isLoadingMore: boolean;
   lastEventAt: string | null;
+  contextWindow?: ContextWindowStatus;
 }
 
 function formatStatusTime(ts: string | null): string {
@@ -45,6 +47,7 @@ export function StatusStrip({
   isLoading,
   isLoadingMore,
   lastEventAt,
+  contextWindow,
 }: StatusStripProps) {
   const live = connectionState === 'connected';
   const eventTime = formatStatusTime(lastEventAt);
@@ -63,6 +66,34 @@ export function StatusStrip({
         <>
           <span className="status-divider" />
           <span className="status-label">older messages</span>
+        </>
+      )}
+      {contextWindow && (
+        <>
+          <span className="status-divider" />
+          <span className="status-label context-window-label" title={contextWindow.title}>
+            {contextWindow.contextLabel}
+          </span>
+          <span className="status-label muted context-window-source">{contextWindow.sourceLabel}</span>
+          {contextWindow.realtime && (
+            <>
+              <span
+                className={`context-window-meter context-window-meter-${contextWindow.realtime.tone}`}
+                aria-hidden="true"
+              >
+                <span style={{ width: `${contextWindow.realtime.percentOfCap}%` }} />
+              </span>
+              <span
+                className={`status-label context-window-realtime context-window-${contextWindow.realtime.tone}`}
+                title={contextWindow.realtime.title}
+              >
+                {contextWindow.realtime.label}
+              </span>
+              <span className={`status-label context-window-state context-window-${contextWindow.realtime.tone}`}>
+                {contextWindow.realtime.stateLabel}
+              </span>
+            </>
+          )}
         </>
       )}
       {eventTime && (

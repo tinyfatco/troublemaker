@@ -1059,7 +1059,7 @@ if (parsedArgs.adapters.includes("voice")) {
 
 // Register web voice chat — browser mic → STT → agent → TTS → browser speakers.
 // Runs on its own port (8766) since Cloudflare container proxying requires a dedicated port.
-// Always available when ElevenLabs API key is set (no need for --adapter=voice).
+// Uses MOM_ELEVENLABS_API_KEY as a managed-egress placeholder in hosted runtimes.
 if (process.env.MOM_ELEVENLABS_API_KEY) {
 	const { createServer: createHttpServer } = await import("http");
 	const { WebSocketServer } = await import("ws");
@@ -1067,7 +1067,6 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 	const wss = new WebSocketServer({ server: webVoiceServer });
 	const webVoiceAdapter = new WebVoiceBridgeAdapter(workingDir);
 	webVoiceAdapter.setHandler(handler);
-	adapters.push(webVoiceAdapter as unknown as AdapterWithHandler);
 
 	wss.on("connection", (ws) => {
 		handleWebVoiceSession(ws, {
@@ -1079,7 +1078,8 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 	});
 
 	await new Promise<void>((resolve) => {
-		webVoiceServer.listen(8766, () => {
+		webVoiceServer.listen(8766, async () => {
+			await webVoiceAdapter.start();
 			log.logInfo("[web-voice] WebSocket server listening on port 8766");
 			resolve();
 		});

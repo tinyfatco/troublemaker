@@ -533,7 +533,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
 
     const audio = document.createElement('audio');
     audio.autoplay = true;
-    audio.playsInline = true;
+    audio.setAttribute("playsinline", "true");
     audioElementRef.current = audio;
     document.body.appendChild(audio);
 
@@ -950,7 +950,7 @@ function createRealtimeSessionUpdate(voice: string): Record<string, unknown> {
       tools: realtimeWorkspaceToolDefinitions(),
       tool_choice: 'auto',
       parallel_tool_calls: false,
-      max_response_output_tokens: 4096,
+      max_output_tokens: 4096,
       truncation: createRealtimeTruncationConfig(REALTIME_MODEL),
       audio: {
         input: {

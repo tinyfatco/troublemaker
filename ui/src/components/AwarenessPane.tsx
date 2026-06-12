@@ -9,12 +9,14 @@ import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties, 
 import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
+import { buildContextWindowStatus } from '../contextWindowStatus';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
+import { StatusStrip } from './StatusStrip';
 import { VoiceSettingsMenu } from './VoiceSettingsMenu';
 
 interface AwarenessPaneProps {
@@ -39,6 +41,8 @@ export function AwarenessPane({
     loadMore,
     isLoadingMore,
     allLoaded,
+    connectionState,
+    lastEventAt,
     error: streamError,
   } = stream;
   const {
@@ -46,6 +50,7 @@ export function AwarenessPane({
     userEntry,
     streamingEntry,
     isStreaming,
+    status: chatStatus,
     error: chatError,
     sendMessage,
     abortStream,
@@ -88,6 +93,14 @@ export function AwarenessPane({
   const visibleEntries = useMemo(
     () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries)),
     [entries, userEntry, streamingEntry, localVisibleEntries],
+  );
+
+  const contextWindow = useMemo(
+    () => buildContextWindowStatus(visibleEntries, {
+      allLoaded,
+      realtimeVoice: allowVoice && voice.mode === 'realtime',
+    }),
+    [allLoaded, allowVoice, visibleEntries, voice.mode],
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -303,6 +316,14 @@ export function AwarenessPane({
 
   return (
     <div className="awareness-pane" style={paneStyle}>
+      <StatusStrip
+        connectionState={connectionState}
+        chatStatus={chatStatus}
+        isLoading={isLoading}
+        isLoadingMore={isLoadingMore}
+        lastEventAt={lastEventAt}
+        contextWindow={contextWindow}
+      />
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}
@@ -390,12 +411,12 @@ export function AwarenessPane({
               >
                 {voice.mode === 'realtime' ? (
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 ) : (
                   <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
                   </svg>
                 )}
               </button>

@@ -1350,6 +1350,42 @@ html, body, #root {
 
 .status-label.muted { opacity: 0.7; }
 
+.context-window-label,
+.context-window-realtime {
+  color: var(--text);
+}
+
+.context-window-source,
+.context-window-realtime,
+.context-window-state {
+  flex-shrink: 0;
+}
+
+.context-window-meter {
+  width: 42px;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  flex: 0 0 42px;
+  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
+}
+
+.context-window-meter > span {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.context-window-meter-warning > span {
+  background: var(--warning);
+}
+
+.context-window-warning {
+  color: var(--warning);
+}
+
 .status-divider {
   width: 1px;
   height: 12px;
@@ -1365,6 +1401,17 @@ html, body, #root {
 }
 
 .chat-status-error { color: var(--error); }
+
+@media (max-width: 768px) {
+  .context-window-source {
+    display: none;
+  }
+
+  .context-window-meter {
+    width: 32px;
+    flex-basis: 32px;
+  }
+}
 
 /* Scroll-to-bottom button */
 .scroll-to-bottom-btn {
@@ -2073,10 +2120,10 @@ html, body, #root {
 
 .tool-detail-chip {
   display: inline-flex;
-  align-items: center;
-  gap: 0.28rem;
-  max-width: 100%;
-  padding: 0.12rem 0.48rem;
+  align-items: baseline;
+  gap: 0.18rem;
+  max-width: min(11rem, 100%);
+  padding: 0.08rem 0.32rem;
   border-radius: 999px;
   background: color-mix(in srgb, var(--surface) 80%, var(--text-muted) 20%);
   border: 1px solid color-mix(in srgb, var(--text-muted) 13%, transparent);
@@ -2084,7 +2131,6 @@ html, body, #root {
   font-family: var(--font-mono);
   font-size: 0.61rem;
   line-height: 1.25;
-  white-space: nowrap;
 }
 
 .tool-detail-chip.accent {
@@ -2105,6 +2151,8 @@ html, body, #root {
 
 .tool-detail-chip-value {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
