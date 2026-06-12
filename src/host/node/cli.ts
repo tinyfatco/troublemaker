@@ -204,7 +204,7 @@ function parseArgs(): ParsedArgs {
 		if (process.env.MOM_MCP === "true") {
 			adapters.push("mcp");
 		}
-		if (process.env.MOM_ELEVENLABS_API_KEY) {
+		if (process.env.MOM_VOICE_ADAPTER === "true") {
 			adapters.push("voice");
 		}
 		// Default to slack if nothing detected

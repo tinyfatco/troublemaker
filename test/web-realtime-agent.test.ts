@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 
 const voiceHook = readFileSync("ui/src/hooks/useVoiceChat.ts", "utf8");
 const awarenessPane = readFileSync("ui/src/components/AwarenessPane.tsx", "utf8");
+const cli = readFileSync("src/host/node/cli.ts", "utf8");
 
 assert.match(voiceHook, /compact context handoff plus narrow read\/search tools/, "web voice hook documents narrowed Realtime ownership");
 assert.doesNotMatch(voiceHook, /onTranscript/, "web voice no longer exposes transcript handoff callback");
@@ -39,5 +40,8 @@ assert.match(awarenessPane, /buildContextWindowStatus/, "AwarenessPane computes 
 assert.match(awarenessPane, /contextWindow=\{contextWindow\}/, "AwarenessPane passes context-window status into the status strip");
 assert.doesNotMatch(awarenessPane, /handleVoiceTranscript/, "AwarenessPane has no voice transcript bridge back to web chat");
 assert.doesNotMatch(awarenessPane, /voice\.speak/, "AwarenessPane no longer speaks text-chat responses through Realtime");
+
+assert.match(cli, /MOM_VOICE_ADAPTER === "true"/, "legacy port-8765 voice requires an explicit adapter env");
+assert.doesNotMatch(cli, /if \(process\.env\.MOM_ELEVENLABS_API_KEY\) \{\s*adapters\.push\("voice"\)/, "managed ElevenLabs web voice does not auto-start the legacy adapter");
 
 console.log("web realtime agent wiring ok");
