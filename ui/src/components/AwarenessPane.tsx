@@ -16,13 +16,11 @@ import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
 import { fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
 import { AwarenessEntryComponent } from './AwarenessEntry';
-import { ChatTopBar } from './ChatTopBar';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
-  agentName?: string;
   allowCommands?: boolean;
   allowSettings?: boolean;
   allowVoice?: boolean;
@@ -31,7 +29,6 @@ interface AwarenessPaneProps {
 
 export function AwarenessPane({
   stream,
-  agentName,
   allowCommands = true,
   allowSettings = true,
   allowVoice = true,
@@ -44,7 +41,6 @@ export function AwarenessPane({
     loadMore,
     isLoadingMore,
     allLoaded,
-    connectionState,
     error: streamError,
   } = stream;
   const {
@@ -52,7 +48,6 @@ export function AwarenessPane({
     userEntry,
     streamingEntry,
     isStreaming,
-    status: chatStatus,
     error: chatError,
     sendMessage,
     abortStream,
@@ -362,13 +357,6 @@ export function AwarenessPane({
 
   return (
     <div className="awareness-pane" style={paneStyle}>
-      <ChatTopBar
-        agentName={agentName}
-        connectionState={connectionState}
-        chatStatus={chatStatus}
-        isLoading={isLoading}
-        isLoadingMore={isLoadingMore}
-      />
       <div
         className="awareness-pane-messages"
         ref={scrollContainerRef}

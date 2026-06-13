@@ -1363,67 +1363,6 @@ html, body, #root {
   gap: 4px;
 }
 
-/* Chat top bar — identity and transient run state only. */
-.chat-top-shell {
-  position: relative;
-  z-index: 8;
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-raised);
-}
-
-.chat-top-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.7rem;
-  min-height: 34px;
-  padding: 0.32rem 0.65rem;
-  color: var(--text);
-}
-
-.chat-top-identity {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  flex: 1 1 auto;
-  gap: 0.45rem;
-}
-
-.chat-live-dot {
-  width: 0.45rem;
-  height: 0.45rem;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--warning);
-}
-
-.chat-live-dot.connected { background: var(--success); }
-.chat-live-dot.reconnecting { animation: status-pulse 1.2s ease-in-out infinite; }
-
-.chat-agent-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.chat-top-status {
-  flex: 0 0 auto;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  white-space: nowrap;
-}
-
-@media (max-width: 768px) {
-  .chat-top-bar {
-    min-height: 32px;
-  }
-}
-
 /* Legacy compact connection/run state. Retained for older embeds, no longer
    mounted by the workspace chat. */
 .status-strip {

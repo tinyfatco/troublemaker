@@ -412,7 +412,6 @@ export function WorkspaceLayout() {
     <div className="awareness-sidebar" style={chatStyle}>
       <AwarenessPane
         stream={awarenessStream}
-        agentName={config.agent_name}
         allowCommands={!embedMode}
         allowSettings={!embedMode}
         allowVoice={!embedMode && capabilities.voice !== false}
