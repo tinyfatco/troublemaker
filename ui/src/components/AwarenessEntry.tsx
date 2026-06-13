@@ -695,8 +695,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       if (block.type === 'text') {
         const cleaned = stripSessionContext(block.text);
         if (!cleaned.trim()) return;
+        const phaseClass = block.phase ? `phase-${block.phase.replace('_', '-')}` : '';
         renderedBlocks.push(
-          <div key={i} className={`awareness-entry assistant-entry ${entry.isStreaming ? 'streaming' : ''}`}>
+          <div key={i} className={`awareness-entry assistant-entry ${phaseClass} ${entry.isStreaming ? 'streaming' : ''}`}>
             {!entry.isStreaming && entry.timestamp && (
               <div className="awareness-meta">
                 <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>

@@ -18,7 +18,15 @@ import {
   parseRealtimeContextBacklog,
   type RealtimeContextHandoff,
 } from '../realtimeContext';
-import type { AwarenessEntry } from '../types';
+import {
+  extractRealtimeResponseOutputItems,
+  isRealtimeTextOutputItemEvent,
+  realtimeOutputIndexFromEvent,
+  realtimeOutputKeyFromEvent,
+  realtimeOutputPhaseFromEvent,
+  realtimeOutputTextFromEvent,
+} from '../realtimePhases';
+import type { AwarenessEntry, ContentBlock, RealtimeOutputPhase } from '../types';
 
 const OPENAI_REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls';
 const REALTIME_MODEL = 'gpt-realtime-2';
@@ -56,6 +64,12 @@ interface RealtimeFunctionCall {
   arguments: Record<string, unknown>;
 }
 
+interface RealtimeAssistantOutputBlock {
+  key: string;
+  phase?: RealtimeOutputPhase;
+  text: string;
+}
+
 const PCM_CAPTURE_WORKLET_CODE = `
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
@@ -75,7 +89,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
   const [partial, setPartial] = useState('');
   const [transcript, setTranscript] = useState('');
   const [assistantText, setAssistantText] = useState('');
-  const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>([]);
+  const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>(() => loadPersistedVoiceEntries());
   const [cloudEvent, setCloudEvent] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -95,6 +109,10 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
   const outputActiveRef = useRef(false);
   const partialRef = useRef('');
   const assistantTextRef = useRef('');
+  const realtimeOutputBlocksRef = useRef<Map<string, RealtimeAssistantOutputBlock>>(new Map());
+  const realtimeOutputOrderRef = useRef<string[]>([]);
+  const realtimeOutputIndexKeysRef = useRef<Map<number, string>>(new Map());
+  const activeRealtimeOutputKeyRef = useRef<string | null>(null);
   const activeUserEntryIdRef = useRef<string | null>(null);
   const activeAssistantEntryIdRef = useRef<string | null>(null);
   const activeToolEntryIdsRef = useRef<Map<string, string>>(new Map());
@@ -113,13 +131,21 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     return `voice-${role}-${Date.now()}-${entrySequenceRef.current}`;
   }, []);
 
-  const appendLocalEntry = useCallback((entry: AwarenessEntry) => {
-    setLocalEntries((prev) => [...prev, entry].slice(-LOCAL_VOICE_ENTRY_LIMIT));
+  const commitLocalEntries = useCallback((update: (entries: AwarenessEntry[]) => AwarenessEntry[]) => {
+    setLocalEntries((prev) => {
+      const next = update(prev).slice(-LOCAL_VOICE_ENTRY_LIMIT);
+      persistVoiceEntries(next);
+      return next;
+    });
   }, []);
 
+  const appendLocalEntry = useCallback((entry: AwarenessEntry) => {
+    commitLocalEntries((prev) => [...prev, entry]);
+  }, [commitLocalEntries]);
+
   const updateLocalEntry = useCallback((id: string, update: (entry: AwarenessEntry) => AwarenessEntry) => {
-    setLocalEntries((prev) => prev.map((entry) => entry.id === id ? update(entry) : entry));
-  }, []);
+    commitLocalEntries((prev) => prev.map((entry) => entry.id === id ? update(entry) : entry));
+  }, [commitLocalEntries]);
 
   const ensureUserEntry = useCallback((text = ''): string => {
     if (activeUserEntryIdRef.current) return activeUserEntryIdRef.current;
@@ -160,6 +186,78 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       isStreaming,
     }));
   }, [ensureAssistantEntry, updateLocalEntry]);
+
+  const resetRealtimeAssistantOutput = useCallback(() => {
+    realtimeOutputBlocksRef.current.clear();
+    realtimeOutputOrderRef.current = [];
+    realtimeOutputIndexKeysRef.current.clear();
+    activeRealtimeOutputKeyRef.current = null;
+    assistantTextRef.current = '';
+    setAssistantText('');
+  }, []);
+
+  const getRealtimeAssistantDisplayText = useCallback((): string => {
+    for (const key of [...realtimeOutputOrderRef.current].reverse()) {
+      const text = realtimeOutputBlocksRef.current.get(key)?.text.trim();
+      if (text) return text;
+    }
+    return '';
+  }, []);
+
+  const updateRealtimeAssistantOutput = useCallback((patch: {
+    key: string;
+    phase?: RealtimeOutputPhase;
+    text?: string;
+    appendText?: string;
+    outputIndex?: number;
+    isStreaming: boolean;
+  }) => {
+    const key = patch.key || activeRealtimeOutputKeyRef.current || 'output-0';
+    activeRealtimeOutputKeyRef.current = key;
+    if (patch.outputIndex !== undefined) {
+      realtimeOutputIndexKeysRef.current.set(patch.outputIndex, key);
+    }
+
+    const blocks = realtimeOutputBlocksRef.current;
+    const existing = blocks.get(key);
+    if (!existing) {
+      realtimeOutputOrderRef.current = [...realtimeOutputOrderRef.current, key];
+    }
+
+    const nextText = patch.text !== undefined
+      ? patch.text
+      : `${existing?.text || ''}${patch.appendText || ''}`;
+    blocks.set(key, {
+      key,
+      phase: patch.phase ?? existing?.phase,
+      text: nextText,
+    });
+
+    const id = ensureAssistantEntry();
+    const content = realtimeOutputOrderRef.current
+      .map((orderedKey, contentIndex): ContentBlock | null => {
+        const output = blocks.get(orderedKey);
+        const text = output?.text.trim();
+        if (!output || !text) return null;
+        return {
+          type: 'text',
+          text,
+          phase: output.phase,
+          contentIndex,
+        };
+      })
+      .filter((block): block is ContentBlock => block !== null);
+
+    updateLocalEntry(id, (entry) => ({
+      ...entry,
+      content,
+      isStreaming: patch.isStreaming,
+    }));
+
+    const displayText = getRealtimeAssistantDisplayText();
+    assistantTextRef.current = displayText;
+    setAssistantText(displayText);
+  }, [ensureAssistantEntry, getRealtimeAssistantDisplayText, updateLocalEntry]);
 
   const finishAssistantEntry = useCallback(() => {
     const id = activeAssistantEntryIdRef.current;
@@ -236,7 +334,8 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     sendRealtimeEvent({ type: 'response.cancel' });
     outputActiveRef.current = false;
     finishAssistantEntry();
-  }, [finishAssistantEntry, sendRealtimeEvent]);
+    resetRealtimeAssistantOutput();
+  }, [finishAssistantEntry, resetRealtimeAssistantOutput, sendRealtimeEvent]);
 
   const handleRealtimeFunctionCalls = useCallback(async (calls: RealtimeFunctionCall[]) => {
     if (calls.length === 0) return;
@@ -274,26 +373,25 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       }
     }
 
-    assistantTextRef.current = '';
-    setAssistantText('');
+    resetRealtimeAssistantOutput();
     if (!sendRealtimeEvent({ type: 'response.create' })) {
       setError('Realtime voice data channel closed before the tool response could continue.');
       setState('error');
       return;
     }
     setState('thinking');
-  }, [appendToolCallEntry, finishToolCallEntry, sendRealtimeEvent]);
+  }, [appendToolCallEntry, finishToolCallEntry, resetRealtimeAssistantOutput, sendRealtimeEvent]);
 
   const stop = useCallback(() => {
     sessionIdRef.current += 1;
     outputActiveRef.current = false;
     partialRef.current = '';
-    assistantTextRef.current = '';
+    resetRealtimeAssistantOutput();
     const activeUserId = activeUserEntryIdRef.current;
     const activeAssistantId = activeAssistantEntryIdRef.current;
     const activeToolIds = new Set(activeToolEntryIdsRef.current.values());
     if (activeUserId || activeAssistantId || activeToolIds.size > 0) {
-      setLocalEntries((prev) => prev.map((entry) => (
+      commitLocalEntries((prev) => prev.map((entry) => (
         entry.id === activeUserId || entry.id === activeAssistantId || activeToolIds.has(entry.id)
           ? { ...entry, isStreaming: false }
           : entry
@@ -342,7 +440,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     setState('idle');
     setPartial('');
     setCloudEvent('');
-  }, []);
+  }, [commitLocalEntries, resetRealtimeAssistantOutput]);
 
   const handleRealtimeEvent = useCallback((event: RealtimeEvent) => {
     switch (event.type) {
@@ -379,7 +477,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
         setPartial('');
         if (!text) break;
         setTranscript(text);
-        setAssistantText('');
+        resetRealtimeAssistantOutput();
         updateUserEntryText(text, false);
         activeUserEntryIdRef.current = null;
         setState(outputActiveRef.current ? 'speaking' : 'thinking');
@@ -392,14 +490,22 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       case 'response.created':
         outputActiveRef.current = true;
         activeAssistantEntryIdRef.current = null;
-        assistantTextRef.current = '';
-        setAssistantText('');
+        resetRealtimeAssistantOutput();
         ensureAssistantEntry();
         setState('speaking');
         break;
       case 'response.output_item.added':
         outputActiveRef.current = true;
-        ensureAssistantEntry();
+        if (isRealtimeTextOutputItemEvent(event)) {
+          updateRealtimeAssistantOutput({
+            key: realtimeOutputKeyFromEvent(event, `output-${realtimeOutputOrderRef.current.length}`),
+            phase: realtimeOutputPhaseFromEvent(event),
+            outputIndex: realtimeOutputIndexFromEvent(event),
+            isStreaming: true,
+          });
+        } else {
+          ensureAssistantEntry();
+        }
         setState('speaking');
         break;
       case 'response.output_audio_transcript.delta':
@@ -408,9 +514,13 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       case 'response.text.delta': {
         const delta = String(event.delta ?? '');
         if (delta) {
-          assistantTextRef.current += delta;
-          setAssistantText(assistantTextRef.current);
-          updateAssistantEntryText(assistantTextRef.current, true);
+          updateRealtimeAssistantOutput({
+            key: realtimeOutputKeyFromEvent(event, activeRealtimeOutputKeyRef.current || 'output-0'),
+            phase: realtimeOutputPhaseFromEvent(event),
+            appendText: delta,
+            outputIndex: realtimeOutputIndexFromEvent(event),
+            isStreaming: true,
+          });
         }
         outputActiveRef.current = true;
         setState('speaking');
@@ -420,11 +530,15 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       case 'response.audio_transcript.done':
       case 'response.output_text.done':
       case 'response.text.done': {
-        const text = String(event.transcript ?? event.text ?? '').trim();
+        const text = realtimeOutputTextFromEvent(event);
         if (text) {
-          assistantTextRef.current = text;
-          setAssistantText(text);
-          updateAssistantEntryText(text, false);
+          updateRealtimeAssistantOutput({
+            key: realtimeOutputKeyFromEvent(event, activeRealtimeOutputKeyRef.current || 'output-0'),
+            phase: realtimeOutputPhaseFromEvent(event),
+            text,
+            outputIndex: realtimeOutputIndexFromEvent(event),
+            isStreaming: true,
+          });
         }
         break;
       }
@@ -434,6 +548,18 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
         break;
       case 'response.done':
         outputActiveRef.current = false;
+        for (const item of extractRealtimeResponseOutputItems(event)) {
+          const key = item.outputIndex !== undefined
+            ? realtimeOutputIndexKeysRef.current.get(item.outputIndex) || item.key
+            : item.key;
+          updateRealtimeAssistantOutput({
+            key,
+            phase: item.phase,
+            text: item.text,
+            outputIndex: item.outputIndex,
+            isStreaming: false,
+          });
+        }
         finishAssistantEntry();
         {
           const functionCalls = getRealtimeFunctionCalls(event);
@@ -455,7 +581,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
       default:
         break;
     }
-  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, handleRealtimeFunctionCalls, sendRealtimeContextHandoff, sendRealtimeEvent, updateAssistantEntryText, updateUserEntryText]);
+  }, [cancelRealtimeOutput, ensureAssistantEntry, finishAssistantEntry, handleRealtimeFunctionCalls, resetRealtimeAssistantOutput, sendRealtimeContextHandoff, sendRealtimeEvent, updateRealtimeAssistantOutput, updateUserEntryText]);
 
   const playTurnAudio = useCallback(() => {
     const chunks = turnAudioChunksRef.current;
@@ -729,6 +855,125 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
 }
 
 const LOCAL_VOICE_ENTRY_LIMIT = 80;
+const VOICE_ENTRY_STORAGE_PREFIX = 'tinyfat.voice.entries.';
+
+function voiceEntryStorageKey(): string {
+  if (typeof window === 'undefined') return `${VOICE_ENTRY_STORAGE_PREFIX}default`;
+  return `${VOICE_ENTRY_STORAGE_PREFIX}${window.location.pathname || 'default'}`;
+}
+
+function loadPersistedVoiceEntries(): AwarenessEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(voiceEntryStorageKey());
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((entry) => normalizePersistedVoiceEntry(entry))
+      .filter((entry): entry is AwarenessEntry => entry !== null)
+      .slice(-LOCAL_VOICE_ENTRY_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function persistVoiceEntries(entries: AwarenessEntry[]) {
+  if (typeof window === 'undefined') return;
+  try {
+    const normalized = entries
+      .map((entry) => normalizePersistedVoiceEntry(entry))
+      .filter((entry): entry is AwarenessEntry => entry !== null)
+      .slice(-LOCAL_VOICE_ENTRY_LIMIT);
+    window.localStorage.setItem(voiceEntryStorageKey(), JSON.stringify(normalized));
+  } catch {
+    // Ignore storage quota/private-mode failures; the live UI still works.
+  }
+}
+
+function normalizePersistedVoiceEntry(value: unknown): AwarenessEntry | null {
+  if (!isRecord(value) || value.type !== 'message') return null;
+  const role = value.role === 'user' || value.role === 'assistant' || value.role === 'toolResult'
+    ? value.role
+    : undefined;
+  if (!role) return null;
+
+  const rawContent = Array.isArray(value.content) ? value.content : [];
+  const content = rawContent
+    .map((block) => normalizePersistedVoiceContentBlock(block))
+    .filter((block): block is ContentBlock => block !== null);
+
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : `voice-${Date.now()}`,
+    type: 'message',
+    timestamp: typeof value.timestamp === 'string' ? value.timestamp : new Date().toISOString(),
+    role,
+    content,
+    channel: typeof value.channel === 'string' ? value.channel : undefined,
+    userName: typeof value.userName === 'string' ? value.userName : undefined,
+    strippedText: typeof value.strippedText === 'string' ? value.strippedText : undefined,
+    model: typeof value.model === 'string' ? value.model : undefined,
+    stopReason: typeof value.stopReason === 'string' ? value.stopReason : undefined,
+    isStreaming: false,
+    isAmbient: value.isAmbient === true,
+    isSystemAction: value.isSystemAction === true,
+  };
+}
+
+function normalizePersistedVoiceContentBlock(value: unknown): ContentBlock | null {
+  if (!isRecord(value)) return null;
+
+  const contentIndex = typeof value.contentIndex === 'number' ? value.contentIndex : undefined;
+  if (value.type === 'text') {
+    return {
+      type: 'text',
+      text: typeof value.text === 'string' ? value.text : '',
+      phase: normalizePersistedVoicePhase(value.phase),
+      contentIndex,
+    };
+  }
+  if (value.type === 'thinking') {
+    return {
+      type: 'thinking',
+      thinking: typeof value.thinking === 'string' ? value.thinking : '',
+      thinkingSignature: typeof value.thinkingSignature === 'string' ? value.thinkingSignature : undefined,
+      contentIndex,
+    };
+  }
+  if (value.type === 'toolCall') {
+    return {
+      type: 'toolCall',
+      id: typeof value.id === 'string' ? value.id : '',
+      name: typeof value.name === 'string' ? value.name : 'tool',
+      arguments: isRecord(value.arguments) ? value.arguments : {},
+      contentIndex,
+    };
+  }
+  if (value.type === 'toolResult') {
+    return {
+      type: 'toolResult',
+      toolCallId: typeof value.toolCallId === 'string' ? value.toolCallId : '',
+      result: typeof value.result === 'string' ? value.result : JSON.stringify(value.result ?? ''),
+      isError: value.isError === true,
+    };
+  }
+  if (value.type === 'toolOutput') {
+    return {
+      type: 'toolOutput',
+      toolCallId: typeof value.toolCallId === 'string' ? value.toolCallId : '',
+      stream: value.stream === 'stderr' || value.stream === 'system' ? value.stream : 'stdout',
+      text: typeof value.text === 'string' ? value.text : '',
+      pid: typeof value.pid === 'number' ? value.pid : undefined,
+      sequence: typeof value.sequence === 'number' ? value.sequence : undefined,
+    };
+  }
+
+  return null;
+}
+
+function normalizePersistedVoicePhase(value: unknown): RealtimeOutputPhase | undefined {
+  return value === 'commentary' || value === 'final_answer' ? value : undefined;
+}
 
 async function loadRealtimeContextHandoff(contextEntries: AwarenessEntry[]): Promise<RealtimeContextHandoff | null> {
   try {

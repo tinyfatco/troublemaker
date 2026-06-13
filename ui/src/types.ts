@@ -8,10 +8,13 @@ import { stripModelContextBlocks } from './contextBlocks';
  */
 
 /** Content block types from pi-agent-core */
+export type RealtimeOutputPhase = 'commentary' | 'final_answer';
+
 export interface TextContent {
   type: 'text';
   text: string;
   contentIndex?: number;
+  phase?: RealtimeOutputPhase;
 }
 
 export interface ThinkingContent {
@@ -163,7 +166,11 @@ function normalizeContentBlock(block: unknown): ContentBlock | null {
   const raw = block as Record<string, unknown>;
 
   if (raw.type === 'text') {
-    return { type: 'text', text: typeof raw.text === 'string' ? raw.text : '' };
+    return {
+      type: 'text',
+      text: typeof raw.text === 'string' ? raw.text : '',
+      phase: normalizeRealtimeOutputPhase(raw.phase),
+    };
   }
   if (raw.type === 'thinking') {
     return {
@@ -206,6 +213,10 @@ function normalizeContentBlock(block: unknown): ContentBlock | null {
 
 function normalizeToolOutputStream(value: unknown): ToolOutputContent['stream'] {
   return value === 'stderr' || value === 'system' ? value : 'stdout';
+}
+
+function normalizeRealtimeOutputPhase(value: unknown): RealtimeOutputPhase | undefined {
+  return value === 'commentary' || value === 'final_answer' ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

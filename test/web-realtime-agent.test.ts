@@ -20,6 +20,10 @@ assert.match(voiceHook, /activeVoiceRef\.current/, "web voice reuses the selecte
 assert.match(voiceHook, /buildRealtimeContextHandoff/, "Realtime starts with a compact context handoff");
 assert.match(voiceHook, /createRealtimeTruncationConfig/, "Realtime config sets an explicit context cap");
 assert.match(voiceHook, /isBenignRealtimeCancellationError/, "Realtime ignores the benign no-active-response cancel race");
+assert.match(voiceHook, /extractRealtimeResponseOutputItems/, "Realtime reconciles done output without dropping phase metadata");
+assert.match(voiceHook, /realtimeOutputBlocksRef/, "Realtime keeps separate assistant output blocks per API output item");
+assert.match(voiceHook, /phase:\s*output\.phase/, "Realtime stores the output phase on rendered text blocks");
+assert.match(voiceHook, /persistVoiceEntries/, "web voice persists local voice entries across panel reloads");
 assert.doesNotMatch(voiceHook, /function realtimeWorkspaceToolDefinitions/, "Realtime no longer hard-codes a stale browser tool subset");
 assert.doesNotMatch(voiceHook, /Do not write files, edit files, run shell commands/, "Realtime is not prompted to refuse normal tools");
 assert.doesNotMatch(voiceHook, /turn-based voice or text chat/, "Realtime is not prompted to hand off normal tool work");
@@ -34,9 +38,9 @@ assert.doesNotMatch(voiceHook, /source:\s*'web-voice'/, "web voice no longer pos
 
 assert.match(awarenessPane, /useVoiceChat\(\{ contextEntries: contextEntriesForVoice \}\)/, "AwarenessPane passes current context into voice startup");
 assert.match(awarenessPane, /voice\.localEntries/, "AwarenessPane renders local Realtime voice turns in the message stream");
-assert.match(awarenessPane, /voice\.toggleMode/, "AwarenessPane exposes a minimal Realtime/turn-based voice mode switch");
+assert.match(awarenessPane, /settingsSection.*voice/, "AwarenessPane routes voice controls through the unified settings menu");
 assert.match(awarenessPane, /buildContextWindowStatus/, "AwarenessPane computes visible context-window status");
-assert.match(awarenessPane, /<ChatTopBar/, "AwarenessPane renders the product chat top bar");
+assert.doesNotMatch(awarenessPane, /<ChatTopBar/, "AwarenessPane no longer renders the noisy product chat top bar");
 assert.match(awarenessPane, /contextWindow=\{contextWindow\}/, "AwarenessPane passes context-window status into the context inspector");
 assert.doesNotMatch(awarenessPane, /StatusStrip/, "AwarenessPane no longer mounts the legacy debug status strip");
 assert.doesNotMatch(awarenessPane, /handleVoiceTranscript/, "AwarenessPane has no voice transcript bridge back to web chat");

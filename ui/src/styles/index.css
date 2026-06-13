@@ -1769,6 +1769,16 @@ html, body, #root {
   padding-left: 0.65rem;
 }
 
+.awareness-entry.assistant-entry.phase-commentary {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.awareness-entry.assistant-entry.phase-commentary .markdown-content {
+  opacity: 0.88;
+}
+
 .entry-timestamp {
   font-size: 0.6rem;
   color: var(--text-muted);
