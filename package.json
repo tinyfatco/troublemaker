@@ -51,6 +51,7 @@
 		"test:email-busy-interrupt": "npx tsx test/email-busy-interrupt.test.ts",
 		"test:email-messages-only-boundary": "npx tsx test/email-messages-only-boundary.test.ts",
 		"test:phone-messages-only-boundary": "npx tsx test/phone-messages-only-boundary.test.ts",
+		"test:form-webhook": "npx tsx test/form-webhook.test.ts",
 		"test:model-config-current-selection": "npx tsx test/model-config-current-selection.test.ts",
 		"test:model-config-list-models": "npx tsx test/model-config-list-models.test.ts",
 		"test:fireworks-model-resolution": "npx tsx test/fireworks-model-resolution.test.ts",

@@ -14,6 +14,7 @@ import { VoiceAdapter } from "../../adapters/voice.js";
 import { WebAdapter } from "../../adapters/web.js";
 import { McpAdapter } from "../../adapters/mcp.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
+import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
 import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "../../adapters/web-voice.js";
 import { handleTerminalUpgrade } from "../../terminal.js";
@@ -72,6 +73,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
 			if (channelId.startsWith("email-")) return `email:${channelId.replace("email-", "")}`;
 			if (channelId.startsWith("phone-")) return `phone:${ch.name}`;
+			if (channelId.startsWith("form-")) return `form:${ch.name}`;
 			if (channelId.startsWith("web-")) return `web:${ch.name}`;
 			if (channelId.startsWith("voice-")) return `voice:${ch.name}`;
 			if (channelId === "heartbeat") return `heartbeat:${ch.name}`;
@@ -197,6 +199,9 @@ function parseArgs(): ParsedArgs {
 		if (process.env.MOM_PHONE_MESSAGING === "true" || process.env.LOOPMESSAGE_API_KEY || process.env.MOM_LOOPMESSAGE_API_KEY || process.env.TWILIO_ACCOUNT_SID || process.env.MOM_TWILIO_ACCOUNT_SID) {
 			adapters.push("phone-messaging:webhook");
 		}
+		if (process.env.MOM_FORM_INGRESS === "true") {
+			adapters.push("form:webhook");
+		}
 		if (process.env.MOM_WEB_CHAT === "true") {
 			adapters.push("web");
 		}
@@ -244,7 +249,7 @@ if (parsedArgs.downloadChannel) {
 if (!parsedArgs.workingDir) {
 	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, web, mcp, voice");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
 	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
@@ -449,6 +454,9 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "phone:webhook": {
 			return new PhoneMessagingWebhookAdapter({ workingDir });
 		}
+		case "form:webhook": {
+			return new FormWebhookAdapter({ workingDir });
+		}
 		case "web": {
 			return new WebAdapter({ workingDir });
 		}
@@ -471,7 +479,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			});
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'web', 'mcp', or 'voice'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'phone-messaging:webhook', 'form:webhook', 'web', 'mcp', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -915,6 +923,7 @@ const DISPATCH_PATHS: Record<string, string> = {
 	"email:webhook": "/email/inbound",
 	"phone-messaging:webhook": "/phone-messaging/webhook",
 	"phone:webhook": "/phone-messaging/webhook",
+	"form:webhook": "/form/webhook",
 	"web": "/web/chat",
 	"mcp": "/mcp",
 };
