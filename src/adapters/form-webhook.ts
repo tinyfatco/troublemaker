@@ -53,7 +53,7 @@ export class FormWebhookAdapter implements PlatformAdapter {
 	readonly name = "form";
 	readonly maxMessageLength = 100000;
 	readonly formatInstructions = `## Website Form Ingress
-You are handling a website contact-form submission. Treat it as a lead or customer inquiry for the site's owner. There is no direct website-form reply transport in this channel yet, so do not assume your final answer is sent to the visitor. Use available tools such as send_message to notify the owner or another configured channel when action is needed.`;
+You are handling a website contact-form submission. Treat it as a lead or customer inquiry for the site's owner. There is no direct website-form reply transport in this channel yet, so do not assume your final answer is sent to the visitor and do not send_message to a form-* channel. Use available tools such as send_message to notify the owner or another configured channel only when you know a real outbound target.`;
 
 	private workingDir: string;
 	private handler!: MomHandler;
@@ -127,8 +127,6 @@ You are handling a website contact-form submission. Treat it as a lead or custom
 			rawText: text,
 			sourceEventType: "form_submission",
 			directlyAddressed: true,
-			replyTarget: record.channelId,
-			replyTargetDescription: `Website form submission for ${payload.site.displayName}`,
 		};
 
 		this.logToFile({

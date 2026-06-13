@@ -22,8 +22,10 @@ try {
 	assert.equal(mgr.getVerbose("1443881334165733493", "discord"), "messages-only", "Discord is send_message-only");
 	assert.equal(mgr.getVerbose("email-alex_example_com", "email"), "messages-only", "Email is send_message-only");
 	assert.equal(mgr.getVerbose("phone-abc123", "phone"), "messages-only", "Phone messaging is send_message-only");
+	assert.equal(mgr.getVerbose("form-abc123", "form"), true, "Form ingress does not force the generic send_message-only prompt");
 	assert.equal(mgr.getVerbose("web", "web"), true, "Web chat keeps direct harness streaming");
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids infer send_message-only policy");
+	assert.equal(isSendMessageOnlyPlatform("form-abc123"), false, "Form channels do not infer send_message-only policy");
 	assert.equal(isSendMessageOnlyPlatform("web", "web"), false, "Web is not send_message-only");
 
 	console.log("channel-delivery-policy ok");

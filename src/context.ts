@@ -119,7 +119,7 @@ const DEFAULT_SPONTANEITY: MomSpontaneitySettings = {
 	quietHours: { start: "23:00", end: "07:00" },
 };
 
-const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "telegram", "discord", "email", "phone", "form"]);
+const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "telegram", "discord", "email", "phone"]);
 
 export function inferPlatformFromChannelId(channelId: string): string | undefined {
 	if (/^[CDG]/.test(channelId)) return "slack";

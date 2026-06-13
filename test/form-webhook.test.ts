@@ -72,6 +72,7 @@ try {
 	assert.match(handled[0]!.channel, /^form-/);
 	assert.equal(handled[0]!.sourceEventType, "form_submission");
 	assert.equal(handled[0]!.user, "jordan@example.com");
+	assert.equal(handled[0]!.replyTarget, undefined, "form ingress does not advertise a fake outbound reply target");
 	assert.match(handled[0]!.text, /Acme Roofing/);
 	assert.match(handled[0]!.text, /roof repair/);
 
