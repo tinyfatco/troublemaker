@@ -12,6 +12,7 @@ export { setUploadFunction } from "./attach.js";
 export { createSelfConfigureTool } from "./self-configure.js";
 export { createSendMessageTool } from "./send-message.js";
 export { createSpeakTool } from "./speak.js";
+export { createSearchToolsTool } from "./search-tools.js";
 
 export { createReadThreadTool } from "./read-thread.js";
 export function createMomTools(executor: Executor, workspaceDir = process.cwd()): AgentTool<any>[] {

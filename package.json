@@ -62,6 +62,7 @@
 		"test:audio-feedback-guard": "npx tsx test/audio-feedback-guard.test.ts",
 		"test:realtime-voice": "npx tsx test/realtime-voice.test.ts",
 		"test:read-thread": "npx tsx test/read-thread.test.ts",
+		"test:search-tools": "npx tsx test/search-tools.test.ts",
 		"test:speak-tool": "npx tsx test/speak-tool.test.ts",
 		"test:yield-no-action": "npx tsx test/yield-no-action.test.ts",
 		"test:list-channels": "npx tsx test/list-channels.test.ts",

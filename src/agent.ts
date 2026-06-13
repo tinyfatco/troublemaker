@@ -4,10 +4,10 @@ import {
 	AgentSession,
 	AuthStorage,
 	convertToLlm,
-	createExtensionRuntime,
+	DefaultResourceLoader,
+	getAgentDir,
 	loadSkillsFromDir,
 	ModelRegistry,
-	type ResourceLoader,
 	SessionManager,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
@@ -32,9 +32,11 @@ import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream } from "./tools/tool-output-stream.js";
 import { wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
+import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -276,6 +278,14 @@ function formatToolArgs(_toolName: string, args: Record<string, unknown>): strin
 // Cache runners per awareness dir
 const runners = new Map<string, AgentRunner>();
 
+function parseExtensionPaths(value: string | undefined): string[] {
+	if (!value) return [];
+	return value
+		.split(/[\n,:]/)
+		.map((entry) => entry.trim())
+		.filter(Boolean);
+}
+
 /**
  * Get or create an AgentRunner for the unified awareness.
  * One runner per agent process — persistent across messages.
@@ -311,8 +321,15 @@ function createRunner(
 
 	const workspaceDir = join(awarenessDir, "..");
 
-	// Create tools (core + extras like send_message)
-	const tools = [...createMomTools(executor, workspaceDir), ...extraTools];
+	const toolSearchRegistry: { current: ToolSearchRegistry | null } = { current: null };
+
+	// Create tools (core + extras like send_message). Extension/custom tools are
+	// loaded into the session registry and activated through search_tools.
+	const tools = [
+		...createMomTools(executor, workspaceDir),
+		...extraTools,
+		createSearchToolsTool(() => toolSearchRegistry.current),
+	];
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
 	const systemPrompt = "Initializing...";
@@ -365,17 +382,18 @@ function createRunner(
 
 	log.logInfo(`[perf] createRunner (no R2 reads): ${(performance.now() - t0).toFixed(0)}ms`);
 
-	const resourceLoader: ResourceLoader = {
-		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-		getSkills: () => ({ skills: [], diagnostics: [] }),
-		getPrompts: () => ({ prompts: [], diagnostics: [] }),
-		getThemes: () => ({ themes: [], diagnostics: [] }),
-		getAgentsFiles: () => ({ agentsFiles: [] }),
-		getSystemPrompt: () => systemPrompt,
-		getAppendSystemPrompt: () => [],
-		extendResources: () => {},
-		reload: async () => {},
-	};
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: workspaceDir,
+		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
+		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
+		extensionFactories: [tinyfatDomainsExtension],
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+		systemPrompt,
+	});
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
@@ -404,8 +422,19 @@ function createRunner(
 	// Session created lazily on first run
 	let session: AgentSession | null = null;
 	let unsubscribeSession: (() => void) | null = null;
-	const getSession = () => {
+	let resourceLoaderReady = false;
+	const getSession = async () => {
 		if (!session) {
+			if (!resourceLoaderReady) {
+				const t = performance.now();
+				await resourceLoader.reload();
+				resourceLoaderReady = true;
+				const extensions = resourceLoader.getExtensions();
+				for (const error of extensions.errors) {
+					log.logWarning(`[extensions] ${error.path}: ${error.error}`);
+				}
+				log.logInfo(`[perf] resourceLoader.reload (${extensions.extensions.length} extensions): ${(performance.now() - t).toFixed(0)}ms`);
+			}
 			session = new AgentSession({
 				agent,
 				sessionManager: getSessionManager(),
@@ -415,6 +444,17 @@ function createRunner(
 				resourceLoader,
 				baseToolsOverride,
 			});
+			toolSearchRegistry.current = {
+				getAllTools: () => session?.getAllTools() ?? [],
+				getActiveToolNames: () => session?.getActiveToolNames() ?? [],
+				setActiveToolsByName: (toolNames) => {
+					if (!session) return;
+					const currentSystemPrompt = session.agent.state.systemPrompt;
+					session.setActiveToolsByName(toolNames);
+					session.agent.state.systemPrompt = currentSystemPrompt;
+				},
+			};
+			session.setActiveToolsByName(tools.map((tool) => tool.name));
 			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
@@ -425,7 +465,9 @@ function createRunner(
 		unsubscribeSession = null;
 		session?.dispose();
 		session = null;
+		toolSearchRegistry.current = null;
 		sessionManager = null;
+		resourceLoaderReady = false;
 		agent.state.messages = [];
 	};
 
@@ -834,7 +876,7 @@ function createRunner(
 
 			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
 
-			const currentSession = getSession();
+			const currentSession = await getSession();
 
 			// Re-resolve model each run and keep the session prompt aligned with it.
 			const currentModel = resolveModel(workspaceDir, modelRegistry);
@@ -1135,20 +1177,23 @@ function createRunner(
 		},
 
 		steer(text: string): void {
-			const s = getSession();
-			if (s.isStreaming) {
-				s.steer(text).catch((err: Error) => {
-					log.logWarning(`[awareness] steer failed`, err.message);
-				});
-			} else {
-				// A platform message can arrive after the global run gate is held but
-				// before pi has entered its streaming phase. Preserve the message as a
-				// follow-up instead of dropping it or starting a competing prompt.
-				log.logInfo(`[awareness] steer called before streaming; queueing as follow-up`);
-				s.followUp(text).catch((err: Error) => {
-					log.logWarning(`[awareness] follow-up queue failed`, err.message);
-				});
-			}
+			void getSession().then((s) => {
+				if (s.isStreaming) {
+					s.steer(text).catch((err: Error) => {
+						log.logWarning(`[awareness] steer failed`, err.message);
+					});
+				} else {
+					// A platform message can arrive after the global run gate is held but
+					// before pi has entered its streaming phase. Preserve the message as a
+					// follow-up instead of dropping it or starting a competing prompt.
+					log.logInfo(`[awareness] steer called before streaming; queueing as follow-up`);
+					s.followUp(text).catch((err: Error) => {
+						log.logWarning(`[awareness] follow-up queue failed`, err.message);
+					});
+				}
+			}).catch((err: Error) => {
+				log.logWarning(`[awareness] steer session init failed`, err.message);
+			});
 		},
 
 		getContextInfo(): ContextInfo {
@@ -1158,14 +1203,13 @@ function createRunner(
 
 			// Ensure messages are loaded from context.jsonl
 			const sm = getSessionManager();
-			const currentSession = getSession();
-			if (currentSession.messages.length === 0) {
+			if (agent.state.messages.length === 0) {
 				const restored = sm.buildSessionContext();
 				if (restored.messages.length > 0) {
 					agent.state.messages = restored.messages;
 				}
 			}
-			const messages = currentSession.messages;
+			const messages = session?.messages ?? agent.state.messages;
 
 			// Find last assistant message with usage data
 			let contextTokens = 0;
@@ -1202,7 +1246,7 @@ function createRunner(
 		async compact(instructions?: string): Promise<CompactResult> {
 			const contextFile = join(awarenessDir, "context.jsonl");
 			// Ensure messages are loaded from context.jsonl before counting
-			const currentSession = getSession();
+			const currentSession = await getSession();
 			if (currentSession.messages.length === 0) {
 				const sm = getSessionManager();
 				const restored = sm.buildSessionContext();
@@ -1221,7 +1265,7 @@ function createRunner(
 
 			// Run compaction — this generates the summary and updates
 			// agent.messages in memory with the compacted view
-			const result = await getSession().compact(instructions);
+			const result = await currentSession.compact(instructions);
 
 			// Capture the compacted messages before we tear down the session
 			const compactedMessages = [...currentSession.messages];
