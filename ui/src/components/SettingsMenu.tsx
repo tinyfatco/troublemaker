@@ -1,24 +1,61 @@
-import { useEffect, useMemo, useState } from 'react';
-import { configureAgentSetting, fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  DEFAULT_REALTIME_VOICE,
+  REALTIME_VOICE_OPTIONS,
+  configureAgentSetting,
+  fetchAgentSettings,
+  fetchRealtimeVoicePreference,
+  previewRealtimeVoice,
+  setRealtimeVoicePreference,
+  type AgentSettingsSnapshot,
+  type RealtimeVoiceOption,
+} from '../console-api';
 import { formatCurrentModel } from '../agentSettingsDisplay';
 import { getModelSuggestions } from '../modelAutocomplete';
+
+type SettingsSection = 'turn' | 'voice';
+type VoiceStatus = 'idle' | 'loading' | 'saving' | 'previewing';
+type VoiceModeSetting = 'realtime' | 'turn';
 
 interface SettingsMenuProps {
   open: boolean;
   onClose: () => void;
+  initialSection?: SettingsSection;
+  focusVersion?: number;
+  voiceMode?: VoiceModeSetting;
+  onVoiceModeChange?: (mode: VoiceModeSetting) => void;
 }
 
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
 const SPONTANEITY_LEVELS = [1, 2, 3, 4, 5];
 
-export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
+export function SettingsMenu({
+  open,
+  onClose,
+  initialSection = 'turn',
+  focusVersion = 0,
+  voiceMode,
+  onVoiceModeChange,
+}: SettingsMenuProps) {
   const [snapshot, setSnapshot] = useState<AgentSettingsSnapshot | null>(null);
   const [modelInput, setModelInput] = useState('');
   const [modelFocused, setModelFocused] = useState(false);
   const [activeModelSuggestion, setActiveModelSuggestion] = useState(0);
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [currentVoice, setCurrentVoice] = useState(DEFAULT_REALTIME_VOICE);
+  const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle');
+  const [previewingVoice, setPreviewingVoice] = useState<string | null>(null);
+  const [savingVoice, setSavingVoice] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (open) setActiveSection(initialSection);
+  }, [focusVersion, initialSection, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -42,6 +79,28 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
       cancelled = true;
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setVoiceStatus('loading');
+    setVoiceError(null);
+    fetchRealtimeVoicePreference()
+      .then((voice) => {
+        if (!cancelled) setCurrentVoice(voice);
+      })
+      .catch((err) => {
+        if (!cancelled) setVoiceError(err instanceof Error ? err.message : 'Failed to load voices');
+      })
+      .finally(() => {
+        if (!cancelled) setVoiceStatus('idle');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  useEffect(() => () => stopVoicePreview(), []);
 
   const modelSuggestions = useMemo(
     () => getModelSuggestions(snapshot?.models ?? [], modelInput, snapshot ? formatCurrentModel(snapshot) : null),
@@ -75,10 +134,69 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
   const spontaneity = snapshot?.spontaneity;
   const currentSpontaneityLevel = Number(spontaneity?.level ?? 3);
   const showModelSuggestions = modelFocused && modelSuggestions.length > 0 && !saving;
+  const busyVoice = voiceStatus === 'loading' || voiceStatus === 'saving';
+  const subtitle = activeSection === 'voice'
+    ? voiceStatus === 'loading'
+      ? 'Loading voice settings...'
+      : `Voice: ${currentVoice}`
+    : snapshot
+      ? formatCurrentModel(snapshot)
+      : 'Loading...';
 
   const chooseModelSuggestion = (value: string) => {
     setModelInput(value);
     setModelFocused(false);
+  };
+
+  const chooseVoice = async (voice: string) => {
+    if (voice === currentVoice || voiceStatus === 'saving') return;
+    stopVoicePreview();
+    setSavingVoice(voice);
+    setVoiceStatus('saving');
+    setVoiceError(null);
+    try {
+      await setRealtimeVoicePreference(voice);
+      setCurrentVoice(voice);
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : 'Failed to save voice');
+    } finally {
+      setSavingVoice(null);
+      setVoiceStatus('idle');
+    }
+  };
+
+  const playPreview = async (voice: string) => {
+    if (voiceStatus === 'previewing' && previewingVoice === voice) {
+      stopVoicePreview();
+      setVoiceStatus('idle');
+      return;
+    }
+
+    stopVoicePreview();
+    setPreviewingVoice(voice);
+    setVoiceStatus('previewing');
+    setVoiceError(null);
+    try {
+      const audio = await previewRealtimeVoice(voice);
+      const url = URL.createObjectURL(audio);
+      audioUrlRef.current = url;
+      const player = new Audio(url);
+      audioRef.current = player;
+      player.onended = () => {
+        stopVoicePreview();
+        setVoiceStatus('idle');
+      };
+      player.onerror = () => {
+        stopVoicePreview();
+        setVoiceStatus('idle');
+        setVoiceError('Voice preview failed to play.');
+      };
+      await player.play();
+    } catch (err) {
+      stopVoicePreview();
+      setVoiceStatus('idle');
+      setVoiceError(err instanceof Error ? err.message : 'Failed to preview voice');
+    }
   };
 
   return (
@@ -86,7 +204,7 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
       <div className="settings-menu-header">
         <div>
           <div className="settings-menu-title">Settings</div>
-          <div className="settings-menu-subtitle">{snapshot ? formatCurrentModel(snapshot) : 'Loading...'}</div>
+          <div className="settings-menu-subtitle">{subtitle}</div>
         </div>
         <button className="settings-icon-button" type="button" onClick={onClose} aria-label="Close settings">
           <svg viewBox="0 0 24 24" fill="none">
@@ -95,11 +213,32 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
         </button>
       </div>
 
-      {loading ? (
+      <div className="settings-menu-tabs" role="tablist" aria-label="Settings sections">
+        <button
+          type="button"
+          className={activeSection === 'turn' ? 'active' : ''}
+          onClick={() => setActiveSection('turn')}
+          role="tab"
+          aria-selected={activeSection === 'turn'}
+        >
+          Turn
+        </button>
+        <button
+          type="button"
+          className={activeSection === 'voice' ? 'active' : ''}
+          onClick={() => setActiveSection('voice')}
+          role="tab"
+          aria-selected={activeSection === 'voice'}
+        >
+          Voice
+        </button>
+      </div>
+
+      {activeSection === 'turn' && loading ? (
         <div className="settings-menu-status">Loading settings...</div>
-      ) : !snapshot ? (
+      ) : activeSection === 'turn' && !snapshot ? (
         <div className="settings-menu-status">Settings unavailable.</div>
-      ) : (
+      ) : activeSection === 'turn' ? (
         <div className="settings-menu-body">
           <form
             className="settings-row model-row"
@@ -208,11 +347,63 @@ export function SettingsMenu({ open, onClose }: SettingsMenuProps) {
             </div>
           </div>
         </div>
+      ) : (
+        <div className="settings-menu-body voice-settings-body">
+          {voiceMode && onVoiceModeChange && (
+            <div className="settings-row">
+              <span>Mode</span>
+              <div className="settings-segmented" role="group" aria-label="Voice mode">
+                <button
+                  type="button"
+                  className={voiceMode === 'realtime' ? 'active' : ''}
+                  onClick={() => onVoiceModeChange('realtime')}
+                >
+                  Realtime
+                </button>
+                <button
+                  type="button"
+                  className={voiceMode === 'turn' ? 'active' : ''}
+                  onClick={() => onVoiceModeChange('turn')}
+                >
+                  Turn
+                </button>
+              </div>
+            </div>
+          )}
+          {voiceStatus === 'loading' ? (
+            <div className="settings-menu-status inline">Loading voices...</div>
+          ) : (
+            <div className="voice-settings-list">
+              {REALTIME_VOICE_OPTIONS.map((voice) => (
+                <VoiceRow
+                  key={voice.name}
+                  voice={voice}
+                  current={voice.name === currentVoice}
+                  previewing={previewingVoice === voice.name && voiceStatus === 'previewing'}
+                  saving={savingVoice === voice.name}
+                  disabled={busyVoice}
+                  onPreview={() => void playPreview(voice.name)}
+                  onSelect={() => void chooseVoice(voice.name)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
-      {error && <div className="settings-menu-error">{error}</div>}
+      {(error || voiceError) && <div className="settings-menu-error">{error || voiceError}</div>}
     </div>
   );
+
+  function stopVoicePreview() {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+    setPreviewingVoice(null);
+  }
 }
 
 function isCurrentSetting(
@@ -261,4 +452,63 @@ function applyLocalSetting(
     };
   }
   return snapshot;
+}
+
+function VoiceRow({
+  voice,
+  current,
+  previewing,
+  saving,
+  disabled,
+  onPreview,
+  onSelect,
+}: {
+  voice: RealtimeVoiceOption;
+  current: boolean;
+  previewing: boolean;
+  saving: boolean;
+  disabled: boolean;
+  onPreview: () => void;
+  onSelect: () => void;
+}) {
+  return (
+    <div className={`voice-settings-row${current ? ' active' : ''}`}>
+      <div className="voice-settings-copy">
+        <div className="voice-settings-name">
+          <span>{voice.name}</span>
+          {current && <span className="voice-settings-current">Current</span>}
+        </div>
+        <div className="voice-settings-description">{voice.description}</div>
+      </div>
+      <div className="voice-settings-actions">
+        <button
+          className={`voice-preview-button${previewing ? ' active' : ''}`}
+          type="button"
+          onClick={onPreview}
+          disabled={disabled && !previewing}
+          aria-label={previewing ? `Stop ${voice.name} preview` : `Preview ${voice.name}`}
+          title={previewing ? 'Stop preview' : 'Preview voice'}
+        >
+          {previewing ? (
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect x="7" y="6" width="3.5" height="12" rx="1" fill="currentColor" />
+              <rect x="13.5" y="6" width="3.5" height="12" rx="1" fill="currentColor" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M8 5v14l11-7L8 5z" fill="currentColor" />
+            </svg>
+          )}
+        </button>
+        <button
+          className="voice-select-button"
+          type="button"
+          onClick={onSelect}
+          disabled={disabled || current}
+        >
+          {saving ? 'Saving' : current ? 'Selected' : 'Select'}
+        </button>
+      </div>
+    </div>
+  );
 }

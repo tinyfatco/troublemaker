@@ -19,7 +19,7 @@ import { FileViewer } from './FileViewer';
 import { TerminalPane } from './TerminalPane';
 import { DesktopPane } from './DesktopPane';
 import { CalendarPane } from './CalendarPane';
-import { DisplayPane, type DisplayProject } from './DisplayPane';
+import { DisplayPane } from './DisplayPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
@@ -292,83 +292,69 @@ export function WorkspaceLayout() {
   };
 
   const CanvasControls = () => (
-    <div className="workspace-controls" aria-label="Canvas controls">
+    <div className="workspace-controls" aria-label="Workspace view controls">
       {hasCanvas && (
         <button
-          className={`workspace-control-btn ${!canvasCollapsed ? 'active' : ''}`}
+          className={`workspace-control-btn workspace-toggle-btn ${!canvasCollapsed ? 'active' : ''}`}
           onClick={toggleCanvas}
           title={canvasCollapsed ? 'Show canvas' : 'Hide canvas'}
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <rect x="1" y="1" width="14" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-            {!canvasCollapsed && (
-              <path d="M5 1v14M5 8h10" stroke="currentColor" strokeWidth="1.5" />
-            )}
-          </svg>
+          Canvas
         </button>
       )}
-      {canvasModes.map((item) => (
-        <button
-          key={item.mode}
-          className={`workspace-control-btn ${canvasMode === item.mode && !canvasCollapsed ? 'active' : ''}`}
-          onClick={() => showCanvasMode(item.mode)}
-          title={item.title}
-          disabled={!item.available}
-        >
-          <CanvasModeIcon mode={item.mode} />
-        </button>
-      ))}
-      {displayProjects.length > 0 && (
-        <div className="display-project-controls" aria-label="Display projects">
-          {displayProjects.map((project) => {
-            const mode = projectCanvasMode(project.id);
-            return (
-              <button
-                key={project.id}
-                className={`workspace-control-btn display-project-btn ${canvasMode === mode && !canvasCollapsed ? 'active' : ''}`}
-                onClick={() => showCanvasMode(mode)}
-                title={project.title}
-                style={{ '--display-project-accent': project.accent || 'var(--accent)' } as CSSProperties}
-              >
-                <DisplayProjectIcon project={project} />
-              </button>
-            );
-          })}
-        </div>
-      )}
-      {!canvasCollapsed && hasCanvas && (
-        <div className="canvas-placement-controls" aria-label="Canvas placement">
-          {CANVAS_PLACEMENTS.map((placement) => (
+      <div className="workspace-mode-switcher" role="group" aria-label="Canvas views">
+        {canvasModes.map((item) => (
+          <button
+            key={item.mode}
+            className={`workspace-control-btn workspace-mode-btn ${canvasMode === item.mode && !canvasCollapsed ? 'active' : ''}`}
+            onClick={() => showCanvasMode(item.mode)}
+            title={item.title}
+            disabled={!item.available}
+          >
+            {canvasModeLabel(item.mode)}
+          </button>
+        ))}
+        {displayProjects.map((project) => {
+          const mode = projectCanvasMode(project.id);
+          return (
             <button
-              key={placement}
-              className={`workspace-control-btn ${canvasPlacement === placement ? 'active' : ''}`}
-              onClick={() => setCanvasPlacement(placement)}
-              title={`Canvas ${placement} of chat`}
+              key={project.id}
+              className={`workspace-control-btn workspace-mode-btn display-project-btn ${canvasMode === mode && !canvasCollapsed ? 'active' : ''}`}
+              onClick={() => showCanvasMode(mode)}
+              title={project.title}
+              style={{ '--display-project-accent': project.accent || 'var(--accent)' } as CSSProperties}
             >
-              <CanvasPlacementIcon placement={placement} />
+              {project.title}
             </button>
-          ))}
-        </div>
+          );
+        })}
+      </div>
+      {!canvasCollapsed && hasCanvas && (
+        <label className="canvas-placement-control">
+          <span>Side</span>
+          <select
+            value={canvasPlacement}
+            onChange={(event) => setCanvasPlacement(event.target.value as CanvasPlacement)}
+            aria-label="Canvas placement"
+          >
+            {CANVAS_PLACEMENTS.map((placement) => (
+              <option key={placement} value={placement}>
+                {placement}
+              </option>
+            ))}
+          </select>
+        </label>
       )}
       <button
-        className={`workspace-control-btn ${!awarenessCollapsed ? 'active' : ''}`}
+        className={`workspace-control-btn workspace-toggle-btn ${!awarenessCollapsed ? 'active' : ''}`}
         onClick={toggleAwareness}
         title={awarenessCollapsed ? 'Show chat' : 'Hide chat'}
       >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <rect x="9" y="1" width="6" height="14" rx="1" stroke="currentColor" strokeWidth="1.5" />
-          <path d="M1 4h5M1 8h5M1 12h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </svg>
+        Chat
       </button>
-      <button className="workspace-control-btn" onClick={toggleTheme} title="Toggle theme">
-        {isDark ? '\u2600' : '\u263D'}
+      <button className="workspace-control-btn workspace-toggle-btn" onClick={toggleTheme} title="Toggle theme">
+        {isDark ? 'Light' : 'Dark'}
       </button>
-    </div>
-  );
-
-  const SidebarControls = () => (
-    <div className="sidebar-controls" aria-label="Workspace controls">
-      <CanvasControls />
     </div>
   );
 
@@ -449,10 +435,12 @@ export function WorkspaceLayout() {
       <header className="workspace-header">
         <div className="header-left">
           {filesAvailable && (
-            <button className="header-btn" onClick={toggleSidebar} title="Toggle files">
-              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                <path d="M3 5h12M3 9h12M3 13h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              </svg>
+            <button
+              className={`header-btn header-text-btn ${!sidebarCollapsed || mobileDrawerOpen ? 'active' : ''}`}
+              onClick={toggleSidebar}
+              title="Toggle files"
+            >
+              Files
             </button>
           )}
           {embedMode ? (
@@ -477,7 +465,6 @@ export function WorkspaceLayout() {
         {filesAvailable && !sidebarCollapsed && (
           <>
             <div className="sidebar-panel" style={{ width: sidebarWidth }}>
-              <SidebarControls />
               <div className="sidebar-header">
                 <span className="sidebar-title">Files</span>
                 <button className="upload-btn" onClick={upload.openFilePicker} title="Upload files" disabled={upload.uploading}>
@@ -531,7 +518,6 @@ export function WorkspaceLayout() {
         <>
           <div className="mobile-overlay" onClick={() => setMobileDrawerOpen(false)} />
           <div className="mobile-drawer">
-            <SidebarControls />
             <div className="sidebar-header">
               <span className="sidebar-title">Files</span>
             </div>
@@ -541,6 +527,20 @@ export function WorkspaceLayout() {
       )}
     </div>
   );
+}
+
+function canvasModeLabel(mode: BuiltInCanvasMode): string {
+  switch (mode) {
+    case 'desktop':
+      return 'Desktop';
+    case 'calendar':
+      return 'Calendar';
+    case 'preview':
+      return 'Display';
+    case 'terminal':
+    default:
+      return 'Terminal';
+  }
 }
 
 function CanvasPlaceholder({ title, subtitle }: { title: string; subtitle: string }) {
@@ -586,71 +586,6 @@ function CanvasModeIcon({ mode }: { mode: BuiltInCanvasMode }) {
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
       <path d="M4 5l3 3-3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M9 11h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function DisplayProjectIcon({ project }: { project: DisplayProject }) {
-  const icon = project.icon.toLowerCase();
-  if (icon === 'briefcase' || icon === 'work') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path d="M5.5 4V3a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v1" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-        <rect x="2" y="4" width="12" height="9.5" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
-        <path d="M2 7.5h12M7 8.5h2" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (icon === 'chart' || icon === 'chart-column' || icon === 'dashboard') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path d="M3 13.5V8.5M8 13.5V4.5M13 13.5V6.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        <path d="M2 13.5h12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (icon === 'sparkles' || icon === 'generated') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path d="M8 1.5l1.1 3.1L12 6 9.1 7.4 8 10.5 6.9 7.4 4 6l2.9-1.4L8 1.5Z" stroke="currentColor" strokeWidth="1.25" strokeLinejoin="round" />
-        <path d="M12.5 9.5l.6 1.6 1.4.7-1.4.7-.6 1.6-.6-1.6-1.4-.7 1.4-.7.6-1.6Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (icon === 'calendar') {
-    return <CanvasModeIcon mode="calendar" />;
-  }
-  if (icon === 'terminal') {
-    return <CanvasModeIcon mode="terminal" />;
-  }
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <rect x="2" y="2.5" width="12" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
-      <path d="M5 6h6M5 9h4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CanvasPlacementIcon({ placement }: { placement: CanvasPlacement }) {
-  const isTop = placement === 'top';
-  const isRight = placement === 'right';
-  const isBottom = placement === 'bottom';
-  const isLeft = placement === 'left';
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-      <rect x="1.5" y="1.5" width="13" height="13" rx="1" stroke="currentColor" strokeWidth="1.2" />
-      {isLeft && <path d="M6 1.5v13" stroke="currentColor" strokeWidth="1.2" />}
-      {isRight && <path d="M10 1.5v13" stroke="currentColor" strokeWidth="1.2" />}
-      {isTop && <path d="M1.5 6h13" stroke="currentColor" strokeWidth="1.2" />}
-      {isBottom && <path d="M1.5 10h13" stroke="currentColor" strokeWidth="1.2" />}
-      <rect
-        x={isRight ? 10 : 1.5}
-        y={isBottom ? 10 : 1.5}
-        width={isLeft || isRight ? 4.5 : 13}
-        height={isTop || isBottom ? 4.5 : 13}
-        fill="currentColor"
-        opacity="0.18"
-      />
     </svg>
   );
 }

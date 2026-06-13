@@ -5,7 +5,6 @@ import { mergeOptimisticEntries } from '../optimisticEntries';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
-import { VoiceSettingsMenu } from './VoiceSettingsMenu';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 
 export function ChatPane() {
@@ -21,7 +20,8 @@ export function ChatPane() {
     clearError,
   } = useWebChat();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');
+  const [settingsFocusVersion, setSettingsFocusVersion] = useState(0);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const error = localError || chatError || streamError;
@@ -41,21 +41,25 @@ export function ChatPane() {
     sendMessage(text);
   }, [sendMessage]);
 
+  const openSettings = useCallback((section: 'turn' | 'voice' = 'turn') => {
+    setSettingsSection(section);
+    setSettingsFocusVersion((version) => version + 1);
+    setSettingsOpen(true);
+  }, []);
+
   const handleSlashCommand = useCallback((text: string) => {
     if (isSettingsCommand(text)) {
       setLocalError(null);
-      setVoiceSettingsOpen(false);
-      setSettingsOpen(true);
+      openSettings('turn');
       return true;
     }
     if (isVoiceCommand(text)) {
       setLocalError(null);
-      setSettingsOpen(false);
-      setVoiceSettingsOpen(true);
+      openSettings('voice');
       return true;
     }
     return false;
-  }, []);
+  }, [openSettings]);
 
   const clearVisibleError = useCallback(() => {
     if (localError) {
@@ -93,8 +97,12 @@ export function ChatPane() {
         </div>
       )}
 
-      <SettingsMenu open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <VoiceSettingsMenu open={voiceSettingsOpen} onClose={() => setVoiceSettingsOpen(false)} />
+      <SettingsMenu
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialSection={settingsSection}
+        focusVersion={settingsFocusVersion}
+      />
 
       <InputBar
         onSend={handleSend}

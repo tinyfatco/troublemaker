@@ -9,6 +9,8 @@ interface InputBarProps {
   onHeightChange?: (height: number) => void;
   /** Optional extra button(s) rendered after the send button */
   extraButtons?: ReactNode;
+  /** Subtle composer metadata rendered below the prompt */
+  status?: ReactNode;
   onSlashCommand?: (text: string) => boolean;
   onInvalidSlashCommand?: (command: string) => void;
   slashCommandsEnabled?: boolean;
@@ -25,6 +27,7 @@ export function InputBar({
   isStreaming,
   onHeightChange,
   extraButtons,
+  status,
   onSlashCommand,
   onInvalidSlashCommand,
   slashCommandsEnabled = true,
@@ -67,7 +70,7 @@ export function InputBar({
     observer.observe(container);
     reportHeight();
     return () => observer.disconnect();
-  }, [reportHeight, isStreaming, disabled, extraButtons]);
+  }, [reportHeight, isStreaming, disabled, extraButtons, status]);
 
   useEffect(() => {
     textareaRef.current?.focus();
@@ -156,15 +159,18 @@ export function InputBar({
         </div>
       )}
       <div className="input-container" ref={containerRef}>
-        <textarea
-          ref={textareaRef}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={isStreaming ? streamingPlaceholder : placeholder}
-          disabled={disabled}
-          rows={1}
-        />
+        <div className="input-main">
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isStreaming ? streamingPlaceholder : placeholder}
+            disabled={disabled}
+            rows={1}
+          />
+          {status && <div className="input-status-row">{status}</div>}
+        </div>
 
         <button
           className="send-button"

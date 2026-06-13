@@ -13,11 +13,12 @@ import { buildContextWindowStatus } from '../contextWindowStatus';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
+import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
+import { fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { ChatTopBar } from './ChatTopBar';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
-import { VoiceSettingsMenu } from './VoiceSettingsMenu';
 
 interface AwarenessPaneProps {
   stream: UseAwarenessStreamReturn;
@@ -60,7 +61,10 @@ export function AwarenessPane({
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsVersion, setSettingsVersion] = useState(0);
-  const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');
+  const [settingsFocusVersion, setSettingsFocusVersion] = useState(0);
+  const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsSnapshot | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
 
   const contextEntriesForVoice = useMemo(
@@ -104,6 +108,22 @@ export function AwarenessPane({
     }),
     [allLoaded, allowVoice, visibleEntries, voice.mode],
   );
+
+  useEffect(() => {
+    if (!allowSettings) return;
+    let cancelled = false;
+    setSettingsError(null);
+    fetchAgentSettings()
+      .then((data) => {
+        if (!cancelled) setSettingsSnapshot(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setSettingsError(err instanceof Error ? err.message : 'Settings unavailable');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allowSettings, settingsVersion]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -288,11 +308,16 @@ export function AwarenessPane({
     sendMessage(text);
   }, [allowCommands, sendMessage]);
 
+  const openSettings = useCallback((section: 'turn' | 'voice' = 'turn') => {
+    setSettingsSection(section);
+    setSettingsFocusVersion((version) => version + 1);
+    setSettingsOpen(true);
+  }, []);
+
   const handleSlashCommand = useCallback((text: string) => {
     if (allowSettings && isSettingsCommand(text)) {
       setLocalError(null);
-      setVoiceSettingsOpen(false);
-      setSettingsOpen(true);
+      openSettings('turn');
       return true;
     }
     if (isVoiceCommand(text)) {
@@ -300,13 +325,12 @@ export function AwarenessPane({
       if (!allowVoice) {
         setLocalError('Voice is not available in this view.');
       } else {
-        setSettingsOpen(false);
-        setVoiceSettingsOpen(true);
+        openSettings('voice');
       }
       return true;
     }
     return false;
-  }, [allowSettings, allowVoice]);
+  }, [allowSettings, allowVoice, openSettings]);
 
   const clearVisibleError = useCallback(() => {
     if (localError) {
@@ -321,6 +345,21 @@ export function AwarenessPane({
     setSettingsVersion((version) => version + 1);
   }, []);
 
+  const promptStatus = (
+    <PromptStatus
+      allowSettings={allowSettings}
+      allowVoice={allowVoice}
+      settingsSnapshot={settingsSnapshot}
+      settingsError={settingsError}
+      contextWindow={contextWindow}
+      voiceMode={voice.mode}
+      voiceState={voice.state}
+      isVoiceActive={isVoiceActive}
+      onOpenTurnSettings={() => openSettings('turn')}
+      onOpenVoiceSettings={() => openSettings('voice')}
+    />
+  );
+
   return (
     <div className="awareness-pane" style={paneStyle}>
       <ChatTopBar
@@ -329,21 +368,6 @@ export function AwarenessPane({
         chatStatus={chatStatus}
         isLoading={isLoading}
         isLoadingMore={isLoadingMore}
-        contextWindow={contextWindow}
-        allowSettings={allowSettings}
-        allowVoice={allowVoice}
-        voiceMode={voice.mode}
-        voiceState={voice.state}
-        isVoiceActive={isVoiceActive}
-        settingsVersion={settingsVersion}
-        onOpenSettings={() => {
-          setVoiceSettingsOpen(false);
-          setSettingsOpen(true);
-        }}
-        onOpenVoiceSettings={() => {
-          setSettingsOpen(false);
-          setVoiceSettingsOpen(true);
-        }}
       />
       <div
         className="awareness-pane-messages"
@@ -407,8 +431,16 @@ export function AwarenessPane({
         </div>
       )}
 
-      {allowSettings && <SettingsMenu open={settingsOpen} onClose={closeSettings} />}
-      {allowVoice && <VoiceSettingsMenu open={voiceSettingsOpen} onClose={() => setVoiceSettingsOpen(false)} />}
+      {allowSettings && (
+        <SettingsMenu
+          open={settingsOpen}
+          onClose={closeSettings}
+          initialSection={settingsSection}
+          focusVersion={settingsFocusVersion}
+          voiceMode={voice.mode}
+          onVoiceModeChange={voice.setMode}
+        />
+      )}
 
       <InputBar
         onSend={handleSend}
@@ -421,27 +453,9 @@ export function AwarenessPane({
         slashCommandsEnabled={allowCommands}
         streamingPlaceholder={allowCommands ? undefined : 'Ask a follow-up...'}
         streamingSendLabel={allowCommands ? undefined : 'Send follow-up'}
+        status={promptStatus}
         extraButtons={allowVoice ? (
           <>
-            {!isVoiceActive && (
-              <button
-                className="mic-button"
-                onClick={voice.toggleMode}
-                disabled={isStreaming}
-                title={voice.mode === 'realtime' ? 'Switch to turn-based voice' : 'Switch to Realtime 2 voice'}
-              >
-                {voice.mode === 'realtime' ? (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M4 5.5h10M4 9h10M4 12.5h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-                    <path d="M3.5 11.5V7.5a5.5 5.5 0 0111 0v4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                    <path d="M6 11.5V8M9 12.5V6M12 11.5V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-                  </svg>
-                )}
-              </button>
-            )}
             <button
               className={`mic-button ${isVoiceActive ? 'active' : ''}`}
               onClick={isVoiceActive ? voice.stop : voice.start}
@@ -464,6 +478,61 @@ export function AwarenessPane({
         ) : null}
       />
     </div>
+  );
+}
+
+function PromptStatus({
+  allowSettings,
+  allowVoice,
+  settingsSnapshot,
+  settingsError,
+  contextWindow,
+  voiceMode,
+  voiceState,
+  isVoiceActive,
+  onOpenTurnSettings,
+  onOpenVoiceSettings,
+}: {
+  allowSettings: boolean;
+  allowVoice: boolean;
+  settingsSnapshot: AgentSettingsSnapshot | null;
+  settingsError: string | null;
+  contextWindow: ReturnType<typeof buildContextWindowStatus>;
+  voiceMode: 'realtime' | 'turn';
+  voiceState: string;
+  isVoiceActive: boolean;
+  onOpenTurnSettings: () => void;
+  onOpenVoiceSettings: () => void;
+}) {
+  const modelLabel = settingsError ? 'settings unavailable' : compactModelLabel(settingsSnapshot);
+  const thinkingLabel = settingsError ? 'settings unavailable' : formatThinkingLevel(settingsSnapshot);
+  const voiceLabel = `${voiceMode === 'turn' ? 'turn voice' : 'realtime voice'}${isVoiceActive ? ` ${voiceState}` : ''}`;
+
+  return (
+    <>
+      {allowSettings && (
+        <>
+          <button className="input-status-button" type="button" onClick={onOpenTurnSettings} title={modelLabel}>
+            {modelLabel}
+          </button>
+          <button className="input-status-button" type="button" onClick={onOpenTurnSettings} title={thinkingLabel}>
+            {thinkingLabel}
+          </button>
+        </>
+      )}
+      <span className="input-status-item" title={contextWindow.title}>{contextWindow.contextLabel}</span>
+      <span className="input-status-item" title={contextWindow.title}>{contextWindow.sourceLabel}</span>
+      {contextWindow.realtime && (
+        <span className={`input-status-item ${contextWindow.realtime.tone === 'attention' ? 'attention' : ''}`} title={contextWindow.realtime.title}>
+          {contextWindow.realtime.label}
+        </span>
+      )}
+      {allowVoice && allowSettings && (
+        <button className={`input-status-button ${isVoiceActive ? 'active' : ''}`} type="button" onClick={onOpenVoiceSettings} title="Voice">
+          {voiceLabel}
+        </button>
+      )}
+    </>
   );
 }
 

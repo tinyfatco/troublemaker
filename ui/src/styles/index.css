@@ -97,6 +97,15 @@ html, body, #root {
   min-width: 0;
 }
 
+.header-left {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.header-right {
+  flex: 0 0 auto;
+}
+
 .header-title {
   font-size: 13px;
   font-weight: 600;
@@ -123,29 +132,59 @@ html, body, #root {
 .header-btn.active,
 .header-btn.display-toggle.active { color: var(--accent); background: var(--accent-muted); }
 
+.header-text-btn {
+  width: auto;
+  min-width: 0;
+  padding: 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
 .workspace-controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 0.35rem;
   min-width: 0;
+  overflow: hidden;
 }
 
-.canvas-placement-controls {
+.workspace-mode-switcher {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 0.25rem;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.workspace-mode-switcher::-webkit-scrollbar {
+  display: none;
+}
+
+.canvas-placement-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
   padding-left: 4px;
   margin-left: 2px;
   border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.68rem;
 }
 
-.display-project-controls {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding-left: 4px;
-  margin-left: 2px;
-  border-left: 1px solid var(--border);
+.canvas-placement-control span {
+  font-weight: 650;
+}
+
+.canvas-placement-control select {
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
 }
 
 .workspace-control-btn {
@@ -187,6 +226,19 @@ html, body, #root {
 .workspace-control-btn:disabled {
   opacity: 0.28;
   cursor: not-allowed;
+}
+
+.workspace-toggle-btn,
+.workspace-mode-btn {
+  width: auto;
+  min-width: 0;
+  max-width: 9rem;
+  padding: 0 0.55rem;
+  overflow: hidden;
+  font-size: 0.72rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .header-status {
@@ -1311,7 +1363,7 @@ html, body, #root {
   gap: 4px;
 }
 
-/* Chat top bar — intentional controls instead of ambient debug readouts. */
+/* Chat top bar — identity and transient run state only. */
 .chat-top-shell {
   position: relative;
   z-index: 8;
@@ -1325,27 +1377,17 @@ html, body, #root {
   align-items: center;
   justify-content: space-between;
   gap: 0.7rem;
-  min-height: 38px;
-  padding: 0.35rem 0.65rem;
+  min-height: 34px;
+  padding: 0.32rem 0.65rem;
   color: var(--text);
 }
 
-.chat-top-identity,
-.chat-top-controls {
+.chat-top-identity {
   display: flex;
   align-items: center;
   min-width: 0;
-}
-
-.chat-top-identity {
   flex: 1 1 auto;
   gap: 0.45rem;
-}
-
-.chat-top-controls {
-  flex: 0 1 auto;
-  justify-content: flex-end;
-  gap: 0.35rem;
 }
 
 .chat-live-dot {
@@ -1368,134 +1410,17 @@ html, body, #root {
   font-weight: 700;
 }
 
-.chat-thread-label {
+.chat-top-status {
   flex: 0 0 auto;
   color: var(--text-muted);
+  font-family: var(--font-mono);
   font-size: 0.72rem;
-}
-
-.chat-mode-chip,
-.chat-chip,
-.chat-icon-button {
-  min-height: 1.65rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 0.72rem;
-}
-
-.chat-mode-chip,
-.chat-chip {
-  display: inline-flex;
-  align-items: center;
-  max-width: 15rem;
-  padding: 0 0.55rem;
   white-space: nowrap;
-}
-
-.chat-mode-chip {
-  color: var(--text);
-  border-color: transparent;
-  background: var(--bg-secondary);
-}
-
-.chat-mode-chip.voice-active {
-  background: var(--accent-muted);
-  color: var(--accent);
-}
-
-.chat-chip {
-  cursor: pointer;
-}
-
-.chat-model-chip {
-  max-width: 19rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.chat-chip:hover,
-.chat-icon-button:hover,
-.chat-icon-button.active {
-  border-color: var(--border-strong);
-  color: var(--text);
-  background: var(--bg-secondary);
-}
-
-.chat-icon-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.75rem;
-  padding: 0;
-  cursor: pointer;
-}
-
-.context-inspector {
-  display: grid;
-  gap: 0.45rem;
-  padding: 0.55rem 0.65rem 0.65rem;
-  border-top: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  background: color-mix(in srgb, var(--surface-raised) 94%, var(--bg-secondary) 6%);
-}
-
-.context-inspector-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-}
-
-.context-inspector-row strong {
-  color: var(--text);
-  font-weight: 650;
-}
-
-.context-inspector-meter {
-  height: 0.25rem;
-  overflow: hidden;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--text-muted) 18%, transparent);
-}
-
-.context-inspector-meter > span {
-  display: block;
-  min-width: 2px;
-  height: 100%;
-  border-radius: inherit;
-  background: var(--accent);
-}
-
-.context-inspector-note {
-  line-height: 1.45;
 }
 
 @media (max-width: 768px) {
   .chat-top-bar {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 0.35rem;
-  }
-
-  .chat-top-controls {
-    width: 100%;
-    justify-content: flex-start;
-    overflow-x: auto;
-    padding-bottom: 0.05rem;
-    scrollbar-width: none;
-  }
-
-  .chat-top-controls::-webkit-scrollbar {
-    display: none;
-  }
-
-  .chat-chip,
-  .chat-mode-chip {
-    max-width: 12rem;
+    min-height: 32px;
   }
 }
 
@@ -2576,6 +2501,14 @@ html, body, #root {
   box-shadow: 0 10px 28px rgba(35, 32, 22, 0.08);
 }
 
+.input-main {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.24rem;
+}
+
 .embed-mode .input-bar {
   padding: 0.5rem 0.65rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
   background: linear-gradient(180deg, rgba(255,255,255,0), #ffffff 34%);
@@ -2618,6 +2551,44 @@ html, body, #root {
 .input-bar textarea:focus { outline: none; }
 .input-bar textarea::placeholder { color: var(--text-muted); }
 .input-bar textarea:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.input-status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.28rem 0.42rem;
+  min-width: 0;
+  flex-wrap: wrap;
+  color: color-mix(in srgb, var(--text-muted) 82%, transparent);
+  font-size: 0.66rem;
+  line-height: 1.35;
+}
+
+.input-status-item,
+.input-status-button {
+  min-width: 0;
+  max-width: 15rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.input-status-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.input-status-button:hover,
+.input-status-button.active {
+  color: var(--text);
+}
+
+.input-status-item.attention {
+  color: var(--warning);
+}
 
 .send-button, .control-button {
   display: flex;
@@ -2698,6 +2669,30 @@ html, body, #root {
 .settings-icon-button svg {
   width: 16px;
   height: 16px;
+}
+
+.settings-menu-tabs {
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.45rem 0.75rem 0;
+}
+
+.settings-menu-tabs button {
+  height: 28px;
+  padding: 0 0.6rem;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.settings-menu-tabs button:hover,
+.settings-menu-tabs button.active {
+  background: var(--accent-muted);
+  color: var(--accent);
 }
 
 .settings-menu-body {
@@ -2858,6 +2853,10 @@ html, body, #root {
   color: var(--text-muted);
 }
 
+.settings-menu-status.inline {
+  padding: 0.2rem 0;
+}
+
 .settings-menu-error {
   border-top: 1px solid color-mix(in srgb, var(--error) 30%, var(--border));
   color: var(--error);
@@ -2869,11 +2868,17 @@ html, body, #root {
   overflow: hidden;
 }
 
+.voice-settings-body {
+  padding-top: 0.6rem;
+}
+
 .voice-settings-list {
   display: flex;
   flex-direction: column;
   max-height: min(470px, calc(100vh - var(--composer-height, 0px) - 205px));
   overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
 }
 
 .voice-settings-row {
@@ -3389,14 +3394,23 @@ html, body, #root {
   .awareness-sidebar { width: 100% !important; border-left: none; }
   .center-panel,
   .canvas-panel { display: none; }
-  .canvas-placement-controls { display: none; }
+  .canvas-placement-control { display: none; }
+
+  .workspace-controls {
+    flex: 1 1 auto;
+  }
+
+  .workspace-toggle-btn,
+  .workspace-mode-btn {
+    max-width: 6.5rem;
+  }
 
   /* Mobile input bar: more breathing room, bigger touch targets.
      No font-size changes — those made it worse last time. */
   .input-container {
     gap: 0.5rem;
     padding: 0.5rem 0.75rem 0.75rem 1rem;
-    align-items: center;
+    align-items: flex-end;
   }
   .input-bar textarea {
     padding: 0.25rem 0;
