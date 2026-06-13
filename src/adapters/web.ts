@@ -1,7 +1,7 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
-import { dirname, join } from "path";
+import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
@@ -12,8 +12,6 @@ import {
 	type MomContext,
 	type MomEvent,
 	type MomHandler,
-	type ProjectChatContext,
-	type ProjectChatTranscriptEntry,
 	type PlatformAdapter,
 	type RunResult,
 	type UserInfo,
@@ -42,23 +40,6 @@ interface WebChatPayload {
 	session_id?: string;
 	sourceEventType?: string;
 	source_event_type?: string;
-	threadId?: string;
-	thread_id?: string;
-	project?: Record<string, unknown>;
-	projectSlug?: string;
-	project_slug?: string;
-	projectDisplayName?: string;
-	project_display_name?: string;
-	siteId?: string;
-	site_id?: string;
-	previewUrl?: string;
-	preview_url?: string;
-	productionUrl?: string;
-	production_url?: string;
-	workspacePath?: string;
-	workspace_path?: string;
-	initialBrief?: string;
-	initial_brief?: string;
 	source?: string;
 	origin?: string;
 	role?: string;
@@ -75,7 +56,6 @@ interface NormalizedWebChatPayload {
 	freshContext: boolean;
 	sessionId?: string;
 	sourceEventType?: string;
-	project?: ProjectChatContext;
 }
 
 interface WebStopPayload {
@@ -139,7 +119,6 @@ Keep responses concise and helpful.`;
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
-	private projectContexts = new Map<string, ProjectChatContext>();
 	private writerScope = new AsyncLocalStorage<WriterScope>();
 
 	constructor(config: WebAdapterConfig) {
@@ -299,7 +278,6 @@ Keep responses concise and helpful.`;
 		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
 		const sourceEventType = this.firstString(payload.sourceEventType, payload.source_event_type).trim();
 		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(source.toLowerCase());
-		const project = this.normalizeProjectPayload(payload);
 
 		return {
 			message,
@@ -313,7 +291,6 @@ Keep responses concise and helpful.`;
 				: isVoiceSource
 					? { sourceEventType: "web_voice" }
 					: {}),
-			...(project ? { project } : {}),
 		};
 	}
 
@@ -322,148 +299,6 @@ Keep responses concise and helpful.`;
 			if (typeof value === "string") return value;
 		}
 		return "";
-	}
-
-	private normalizeProjectPayload(payload: WebChatPayload): ProjectChatContext | undefined {
-		const project = payload.project && typeof payload.project === "object" && !Array.isArray(payload.project)
-			? payload.project
-			: {};
-		const slug = this.cleanProjectSlug(this.firstString(project.slug, payload.projectSlug, payload.project_slug));
-		if (!slug) return undefined;
-
-		const threadId = this.cleanProjectThreadId(this.firstString(project.threadId, project.thread_id, payload.threadId, payload.thread_id));
-		const workspacePath = this.cleanProjectWorkspacePath(
-			slug,
-			this.firstString(project.workspacePath, project.workspace_path, payload.workspacePath, payload.workspace_path),
-		);
-		const transcriptPath = join(workspacePath, "threads", `${threadId}.jsonl`);
-		const summaryPath = join(workspacePath, "threads", `${threadId}.summary.md`);
-		const recentTranscript = this.readProjectTranscript(transcriptPath, 12);
-
-		return {
-			slug,
-			workspacePath,
-			threadId,
-			transcriptPath,
-			summaryPath,
-			recentTranscript,
-			...this.optionalProjectString("siteId", project.siteId, project.site_id, payload.siteId, payload.site_id),
-			...this.optionalProjectString("displayName", project.displayName, project.display_name, payload.projectDisplayName, payload.project_display_name),
-			...this.optionalProjectString("previewUrl", project.previewUrl, project.preview_url, payload.previewUrl, payload.preview_url),
-			...this.optionalProjectNullableString("productionUrl", project.productionUrl, project.production_url, payload.productionUrl, payload.production_url),
-			...this.optionalProjectString("state", project.state),
-			...this.optionalProjectString("initialBrief", project.initialBrief, project.initial_brief, payload.initialBrief, payload.initial_brief),
-			...this.optionalProjectString("latestDeploymentUrl", project.latestDeploymentUrl, project.latest_deployment_url),
-			...this.optionalProjectString("latestDeploymentState", project.latestDeploymentState, project.latest_deployment_state),
-		};
-	}
-
-	private cleanProjectSlug(value: string): string {
-		const slug = value.trim().toLowerCase();
-		return /^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(slug) ? slug : "";
-	}
-
-	private cleanProjectThreadId(value: string): string {
-		const cleaned = (value.trim() || "default")
-			.toLowerCase()
-			.replace(/[^a-z0-9._-]+/g, "-")
-			.replace(/^[._-]+|[._-]+$/g, "")
-			.slice(0, 80);
-		return /^[a-z0-9][a-z0-9._-]{0,79}$/.test(cleaned) ? cleaned : "default";
-	}
-
-	private cleanProjectWorkspacePath(slug: string, value: string): string {
-		const fallback = `/data/projects/${slug}`;
-		const trimmed = value.trim().replace(/\/+$/g, "");
-		if (!trimmed) return fallback;
-		if (trimmed.includes("..")) return fallback;
-		if (trimmed === fallback || trimmed.startsWith(`${fallback}/`)) return trimmed;
-		if (trimmed.endsWith(`/projects/${slug}`) || trimmed.includes(`/projects/${slug}/`)) {
-			return trimmed;
-		}
-		return fallback;
-	}
-
-	private optionalProjectString(key: string, ...values: unknown[]): Record<string, string> {
-		const value = this.firstString(...values).trim();
-		return value ? { [key]: value } : {};
-	}
-
-	private optionalProjectNullableString(key: string, ...values: unknown[]): Record<string, string | null> {
-		for (const value of values) {
-			if (value === null) return { [key]: null };
-			if (typeof value === "string" && value.trim()) return { [key]: value.trim() };
-		}
-		return {};
-	}
-
-	private readProjectTranscript(path: string | undefined, limit: number): ProjectChatTranscriptEntry[] {
-		if (!path || !existsSync(path)) return [];
-		try {
-			const lines = readFileSync(path, "utf-8").split("\n").filter(Boolean).slice(-Math.max(1, limit));
-			return lines.flatMap((line) => {
-				try {
-					const entry = JSON.parse(line) as Record<string, unknown>;
-					const role = entry.role === "assistant" || entry.role === "system" ? entry.role : "user";
-					const text = typeof entry.text === "string" ? entry.text : "";
-					if (!text.trim()) return [];
-					return [{
-						ts: typeof entry.ts === "string" ? entry.ts : new Date().toISOString(),
-						role,
-						text,
-						...(typeof entry.source === "string" ? { source: entry.source } : {}),
-					}];
-				} catch {
-					return [];
-				}
-			});
-		} catch (err) {
-			log.logWarning("[web] Failed to read project transcript", err instanceof Error ? err.message : String(err));
-			return [];
-		}
-	}
-
-	private appendProjectTranscript(
-		project: ProjectChatContext | undefined,
-		role: ProjectChatTranscriptEntry["role"],
-		text: string,
-		metadata: Record<string, unknown> = {},
-	): void {
-		if (!project?.transcriptPath || !text.trim()) return;
-		try {
-			mkdirSync(dirname(project.transcriptPath), { recursive: true });
-			const entry = {
-				ts: new Date().toISOString(),
-				role,
-				text,
-				projectSlug: project.slug,
-				threadId: project.threadId,
-				...metadata,
-			};
-			appendFileSync(project.transcriptPath, `${JSON.stringify(entry)}\n`);
-			this.writeProjectThreadSummary(project);
-		} catch (err) {
-			log.logWarning("[web] Failed to append project transcript", err instanceof Error ? err.message : String(err));
-		}
-	}
-
-	private writeProjectThreadSummary(project: ProjectChatContext): void {
-		if (!project.summaryPath) return;
-		const recent = this.readProjectTranscript(project.transcriptPath, 12);
-		const lines = [
-			`# ${project.displayName || project.slug} Project Thread`,
-			`- Slug: ${project.slug}`,
-			`- Thread: ${project.threadId}`,
-			`- Workspace: ${project.workspacePath}`,
-			`- Preview: ${project.previewUrl || "(not deployed yet)"}`,
-			`- Last updated: ${new Date().toISOString()}`,
-			"",
-			"## Recent Turns",
-			...(recent.length > 0
-				? recent.map((entry) => `- ${entry.ts} ${entry.role}: ${entry.text.replace(/\s+/g, " ").slice(0, 500)}`)
-				: ["- No turns recorded yet."]),
-		];
-		writeFileSync(project.summaryPath, `${lines.join("\n")}\n`, "utf-8");
 	}
 
 	private isAssistantOriginPayload(payload: WebChatPayload): boolean {
@@ -498,11 +333,8 @@ Keep responses concise and helpful.`;
 			freshContext: payload.freshContext,
 			sessionId: payload.sessionId,
 			sourceEventType: payload.sourceEventType,
-			project: payload.project,
 			directlyAddressed: true,
 		};
-
-		if (event.project) this.projectContexts.set(channelId, event.project);
 
 		this.logToFile({
 			date: new Date().toISOString(),
@@ -515,11 +347,9 @@ Keep responses concise and helpful.`;
 			freshContext: payload.freshContext,
 			sessionId: payload.sessionId,
 			sourceEventType: payload.sourceEventType,
-			project: payload.project ? { slug: payload.project.slug, threadId: payload.project.threadId } : undefined,
 			attachments: [],
 			isBot: false,
 		});
-		this.appendProjectTranscript(event.project, "user", event.text, { source: payload.sourceEventType || "web" });
 
 		try {
 			if (this.handler.resolvePendingInput(channelId, event.text)) {
@@ -576,9 +406,6 @@ Keep responses concise and helpful.`;
 			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
 				this.pendingWriters.delete(channelId);
 			}
-			if (event.project && this.projectContexts.get(channelId) === event.project) {
-				this.projectContexts.delete(channelId);
-			}
 			writer?.done();
 		}
 	}
@@ -623,8 +450,6 @@ Keep responses concise and helpful.`;
 		} else {
 			log.logWarning(`[web] No active SSE writer for channel ${channel}; response logged only`);
 		}
-		const project = this.projectContexts.get(channel);
-		this.appendProjectTranscript(project, "assistant", text, { source: "postMessage" });
 		this.logBotResponse(channel, text, ts);
 		return ts;
 	}
@@ -714,7 +539,6 @@ Keep responses concise and helpful.`;
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
 				directlyAddressed: event.directlyAddressed,
-				project: event.project,
 				threadTs: event.threadTs,
 				replyTarget: event.replyTarget,
 				replyTargetDescription: event.replyTargetDescription,
@@ -754,9 +578,6 @@ Keep responses concise and helpful.`;
 
 			emitContentBlock: (block: { type: string; [key: string]: unknown }) => {
 				if (writer) writer.send(block);
-				if (block.type === "text" && typeof block.text === "string") {
-					this.appendProjectTranscript(event.project, "assistant", block.text, { source: "stream" });
-				}
 			},
 		};
 	}

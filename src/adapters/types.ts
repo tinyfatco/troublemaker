@@ -5,37 +5,6 @@ import type { Attachment, ChannelStore } from "../store.js";
 // Platform-agnostic types for mom adapters
 // ============================================================================
 
-export interface ProjectChatTranscriptEntry {
-	ts: string;
-	role: "user" | "assistant" | "system";
-	text: string;
-	source?: string;
-}
-
-export interface ProjectChatContext {
-	/** TinyFat Sites slug, e.g. acme-roofing. */
-	slug: string;
-	/** Internal site id; only passed inside the trusted agent/runtime boundary. */
-	siteId?: string;
-	displayName?: string;
-	previewUrl?: string;
-	productionUrl?: string | null;
-	state?: string;
-	initialBrief?: string;
-	latestDeploymentUrl?: string;
-	latestDeploymentState?: string;
-	/** Container workspace path, normally /data/projects/<slug>. */
-	workspacePath: string;
-	/** Project-room thread id, e.g. default. */
-	threadId: string;
-	/** Plaintext transcript path inside the mounted agent workspace. */
-	transcriptPath?: string;
-	/** Lightweight rolling summary path beside the transcript. */
-	summaryPath?: string;
-	/** Recent prior project-room turns, read before appending the current turn. */
-	recentTranscript?: ProjectChatTranscriptEntry[];
-}
-
 /**
  * An incoming message event from any platform.
  * Adapters translate platform-specific events into this shape.
@@ -56,8 +25,6 @@ export interface MomEvent {
 	threadTs?: string;
 	replyTarget?: string;
 	replyTargetDescription?: string;
-	/** Optional project-room context for TinyFat Website work. */
-	project?: ProjectChatContext;
 	files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
 	/** Processed attachments with local paths (populated after logging) */
 	attachments?: Attachment[];
@@ -136,17 +103,16 @@ export interface MomContext {
 		user: string;
 		userName?: string;
 		channel: string;
-		ts: string;
-		freshContext?: boolean;
-		sessionId?: string;
-		eventType?: MomEvent["type"];
-		sourceEventType?: string;
-		directlyAddressed?: boolean;
-		threadTs?: string;
-		replyTarget?: string;
-		replyTargetDescription?: string;
-		project?: ProjectChatContext;
-		attachments: Array<{ local: string }>;
+			ts: string;
+			freshContext?: boolean;
+			sessionId?: string;
+			eventType?: MomEvent["type"];
+			sourceEventType?: string;
+			directlyAddressed?: boolean;
+			threadTs?: string;
+			replyTarget?: string;
+			replyTargetDescription?: string;
+			attachments: Array<{ local: string }>;
 	};
 	channelName?: string;
 	channels: ChannelInfo[];

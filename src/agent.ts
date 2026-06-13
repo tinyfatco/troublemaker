@@ -794,43 +794,6 @@ function createRunner(
 		return `<delivery_context>\n${lines.join("\n")}\n</delivery_context>`;
 	};
 
-	const formatProjectContext = (ctx: MomContext): string => {
-		const project = ctx.message.project;
-		if (!project) return "";
-
-		const lines = [
-			`Project: ${project.displayName || project.slug}`,
-			`Slug: ${project.slug}`,
-			...(project.siteId ? [`Site id: ${project.siteId}`] : []),
-			`Thread id: ${project.threadId}`,
-			`Workspace path: ${project.workspacePath}`,
-			`Site source path: ${project.workspacePath}/site`,
-			...(project.previewUrl ? [`Canonical preview URL: ${project.previewUrl}`] : []),
-			...(project.productionUrl ? [`Production URL: ${project.productionUrl}`] : []),
-			...(project.state ? [`Project state: ${project.state}`] : []),
-			...(project.initialBrief ? [`Initial user brief: ${project.initialBrief}`] : []),
-			...(project.latestDeploymentUrl ? [`Latest deployment URL: ${project.latestDeploymentUrl}`] : []),
-			...(project.latestDeploymentState ? [`Latest deployment state: ${project.latestDeploymentState}`] : []),
-			"",
-			"Project-room rules:",
-			"- Treat this as a project-scoped TinyFat Website turn.",
-			"- Use the tinyfat-project-builder skill for website build/edit/deploy work.",
-			"- Keep project files under the workspace path; static source lives in site/.",
-			"- Use yeet project use/init for setup and yeet project deploy for the canonical preview.",
-			"- Do not make sales/support/CRM adapter work a prerequisite for website progress.",
-		];
-
-		const recent = project.recentTranscript || [];
-		if (recent.length > 0) {
-			lines.push("", "Recent project transcript:");
-			for (const entry of recent) {
-				lines.push(`- ${entry.ts} ${entry.role}: ${entry.text.replace(/\s+/g, " ").slice(0, 800)}`);
-			}
-		}
-
-		return `<project_context>\n${lines.join("\n")}\n</project_context>`;
-	};
-
 	return {
 		async run(
 			ctx: MomContext,
@@ -984,8 +947,7 @@ function createRunner(
 			// Always tag messages with source channel
 			const channelLabel = ctx.channelName || ctx.message.channel;
 			const deliveryContext = formatDeliveryContext(ctx);
-			const projectContext = formatProjectContext(ctx);
-			const userMessage = `${sessionPreamble}${deliveryContext ? `\n\n${deliveryContext}` : ""}${projectContext ? `\n\n${projectContext}` : ""}\n\n[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
+			const userMessage = `${sessionPreamble}${deliveryContext ? `\n\n${deliveryContext}` : ""}\n\n[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 
 			const imageAttachments: ImageContent[] = [];
 			const nonImagePaths: string[] = [];
