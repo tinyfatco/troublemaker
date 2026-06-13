@@ -29,6 +29,7 @@ import { resolveModel, resolveApiKey } from "./model-config.js";
 import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } from "./model-thinking.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
+import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -530,6 +531,7 @@ function createRunner(
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
 		initialPromptSent: false,
+		liveSnapshot: new LiveAssistantSnapshot(),
 	};
 
 	// Activity callback for external watchdog
@@ -549,6 +551,10 @@ function createRunner(
 		onActivity?.();
 
 		const { ctx, logCtx, queue, pendingTools } = runState;
+		const emitSnapshot = (isStreaming = true) => {
+			const entry = runState.liveSnapshot.current(isStreaming);
+			if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
+		};
 
 		if (event.type === "tool_execution_start") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
@@ -563,6 +569,12 @@ function createRunner(
 			runState.toolsUsed.push(agentEvent.toolName);
 
 			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
+			runState.liveSnapshot.upsertToolCall(
+				agentEvent.toolCallId,
+				agentEvent.toolName,
+				agentEvent.args && typeof agentEvent.args === "object" ? agentEvent.args as Record<string, unknown> : {},
+			);
+			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, arguments: agentEvent.args || {} });
 			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false), "tool label");
 		} else if (event.type === "tool_execution_end") {
@@ -590,6 +602,8 @@ function createRunner(
 			if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
 			threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
 
+			runState.liveSnapshot.upsertToolResult(agentEvent.toolCallId, resultStr, agentEvent.isError || false);
+			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolResult", toolCallId: agentEvent.toolCallId, result: resultStr, isError: agentEvent.isError || false });
 			queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
 
@@ -598,55 +612,14 @@ function createRunner(
 			}
 		} else if (event.type === "message_update") {
 			const agentEvent = event as AgentEvent & { type: "message_update" };
-			const ame = agentEvent.assistantMessageEvent as any;
-			if (ame.type === "text_delta") {
-				ctx.emitContentBlock?.({
-					type: "text_delta",
-					contentIndex: ame.contentIndex,
-					delta: typeof ame.delta === "string" ? ame.delta : "",
-					text: partialText(ame),
-				});
-			} else if (ame.type === "text_start" || ame.type === "text_end") {
-				const text = partialText(ame);
-				if (text !== undefined) {
-					ctx.emitContentBlock?.({
-						type: "text_patch",
-						contentIndex: ame.contentIndex,
-						text,
-					});
-				}
-			} else if (ame.type === "thinking_delta") {
-				ctx.emitContentBlock?.({
-					type: "thinking_delta",
-					contentIndex: ame.contentIndex,
-					delta: typeof ame.delta === "string" ? ame.delta : "",
-					thinking: partialThinking(ame),
-				});
-			} else if (ame.type === "thinking_start" || ame.type === "thinking_end") {
-				const thinking = partialThinking(ame);
-				if (thinking !== undefined) {
-					ctx.emitContentBlock?.({
-						type: "thinking_patch",
-						contentIndex: ame.contentIndex,
-						thinking,
-					});
-				}
-			} else if (ame.type === "toolcall_start" || ame.type === "toolcall_delta" || ame.type === "toolcall_end") {
-				const toolCalls = normalizeStreamingToolCalls(ame);
-				if (toolCalls.length > 0) {
-					ctx.emitContentBlock?.({
-						type: ame.type,
-						contentIndex: ame.contentIndex,
-						delta: ame.delta,
-						toolCall: toolCalls[0],
-						toolCalls,
-					});
-				}
-			}
+			runState.liveSnapshot.updateAssistantMessage(agentEvent.message);
+			emitSnapshot(true);
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
 				log.logResponseStart(logCtx);
+				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
+				emitSnapshot(true);
 			} else if (agentEvent.message.role === "user") {
 				if (runState.initialPromptSent) {
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
@@ -660,6 +633,8 @@ function createRunner(
 		} else if (event.type === "message_end") {
 			const agentEvent = event as AgentEvent & { type: "message_end" };
 			if (agentEvent.message.role === "assistant") {
+				runState.liveSnapshot.endAssistantMessage(agentEvent.message);
+				emitSnapshot(false);
 				const assistantMsg = agentEvent.message as any;
 
 				if (assistantMsg.stopReason) {
@@ -704,7 +679,6 @@ function createRunner(
 
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
-					ctx.emitContentBlock?.({ type: "thinking", thinking });
 					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
 					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
 					queue.enqueueMessage(formatted, "main", "thinking main");
@@ -714,7 +688,6 @@ function createRunner(
 				// Guard: skip text that looks like leaked debug output or serialized objects
 				if (text.trim() && !text.trim().startsWith("(Empty response:") && !text.trim().startsWith("{'content':")) {
 					log.logResponse(logCtx, text);
-					ctx.emitContentBlock?.({ type: "text", text });
 					queue.enqueueMessage(text, "main", "response main");
 					queue.enqueueMessage(text, "thread", "response thread", false);
 				} else if (text.trim()) {
@@ -900,6 +873,7 @@ function createRunner(
 			runState.stopReason = "stop";
 			runState.errorMessage = undefined;
 			runState.initialPromptSent = false;
+			runState.liveSnapshot.reset();
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -998,7 +972,9 @@ function createRunner(
 			const tPrompt = performance.now();
 			try {
 				await withToolOutputStream((event) => {
-					ctx.emitContentBlock?.(event as unknown as { type: string; [key: string]: unknown });
+					runState.liveSnapshot.appendToolOutput(event);
+					const entry = runState.liveSnapshot.current(true);
+					if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
 					onActivity?.();
 				}, async () => {
 					await currentSession.prompt(finalUserMessage, {
@@ -1042,7 +1018,9 @@ function createRunner(
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
 						await withToolOutputStream((event) => {
-							ctx.emitContentBlock?.(event as unknown as { type: string; [key: string]: unknown });
+							runState.liveSnapshot.appendToolOutput(event);
+							const entry = runState.liveSnapshot.current(true);
+							if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
 							onActivity?.();
 						}, async () => {
 							await currentSession.prompt(retryInstruction, {
@@ -1129,6 +1107,7 @@ function createRunner(
 			runState.ctx = null;
 			runState.logCtx = null;
 			runState.queue = null;
+			runState.liveSnapshot.reset();
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };

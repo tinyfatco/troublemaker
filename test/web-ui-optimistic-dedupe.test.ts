@@ -57,16 +57,6 @@ function streamingTool(id: string, timestamp: string): AwarenessEntry {
 	};
 }
 
-function standaloneToolResult(id: string, timestamp: string, toolCallId = 'tool-1'): AwarenessEntry {
-	return {
-		id,
-		type: 'message',
-		timestamp,
-		role: 'toolResult',
-		content: [{ type: 'toolResult', toolCallId, result: 'ok' }],
-	};
-}
-
 const firstUser = user('u1', '2026-05-18T00:01:00.000Z');
 const firstAssistant = assistant('a1', '2026-05-18T00:01:04.000Z');
 const secondOptimisticUser = user('live-u2', '2026-05-18T00:01:07.000Z');
@@ -113,7 +103,16 @@ const visibleAfterSecondResponse = getOptimisticVisibility(
 	secondStreaming,
 );
 
-assert(!visibleAfterSecondResponse.showStreamingEntry, 'assistant response after the matched user hides the streaming entry');
+assert(visibleAfterSecondResponse.showStreamingEntry, 'active streaming entry remains visible until it settles');
+
+const settledSecondStreaming = { ...secondStreaming, isStreaming: false };
+const visibleAfterSettledSecondResponse = getOptimisticVisibility(
+	[firstUser, firstAssistant, secondOptimisticUser, secondAssistant],
+	secondOptimisticUser,
+	settledSecondStreaming,
+);
+
+assert(!visibleAfterSettledSecondResponse.showStreamingEntry, 'assistant response after the matched user hides the settled streaming entry');
 
 const toolFirstUser = user('u-tool', '2026-05-18T00:01:11.000Z', 'check the repo');
 const earlyDurableAssistant = assistant('a-tool-durable', '2026-05-18T00:01:12.000Z', '');
@@ -126,7 +125,20 @@ const visibleDuringToolFirstRun = getOptimisticVisibility(
 
 assert(
 	visibleDuringToolFirstRun.showStreamingEntry,
-	'active tool-call streaming remains visible even if a durable assistant entry appears after the user',
+	'active tool-call streaming is visible according to optimistic visibility',
+);
+
+const mergedDuringToolFirstRun = mergeOptimisticEntries(
+	[toolFirstUser, earlyDurableAssistant],
+	toolFirstUser,
+	toolStreamingEntry,
+);
+
+assert(
+	mergedDuringToolFirstRun.length === 2 &&
+	mergedDuringToolFirstRun[0]?.id === toolFirstUser.id &&
+	mergedDuringToolFirstRun[1]?.id === toolStreamingEntry.id,
+	'active stream replaces durable entries after the matched user while the live snapshot is still streaming',
 );
 
 const settledToolEntry = { ...toolStreamingEntry, isStreaming: false };
@@ -141,56 +153,23 @@ assert(
 	'settled tool-call optimistic entry is hidden once durable assistant content exists',
 );
 
-const durableToolAssistant = {
-	...earlyDurableAssistant,
-	content: [{ type: 'toolCall' as const, id: 'tool-1', name: 'read_file', arguments: { path: 'README.md' } }],
+const completedToolEntry = {
+	...toolStreamingEntry,
+	content: [
+		...toolStreamingEntry.content,
+		{ type: 'toolResult' as const, toolCallId: 'tool-1', result: 'ok' },
+	],
+	isStreaming: false,
 };
-const visibleAfterDurableToolArrives = getOptimisticVisibility(
-	[toolFirstUser, durableToolAssistant],
+const mergedAfterCompletedToolEntry = mergeOptimisticEntries(
+	[toolFirstUser, earlyDurableAssistant],
 	toolFirstUser,
-	toolStreamingEntry,
+	completedToolEntry,
 );
 
 assert(
-	!visibleAfterDurableToolArrives.showStreamingEntry,
-	'active tool-call optimistic entry is hidden once durable awareness has the same tool call',
-);
-
-const durableDifferentToolAssistant = {
-	...earlyDurableAssistant,
-	content: [{ type: 'toolCall' as const, id: 'tool-2', name: 'bash', arguments: { command: 'pwd' } }],
-};
-const visibleWithDifferentDurableTool = getOptimisticVisibility(
-	[toolFirstUser, durableDifferentToolAssistant],
-	toolFirstUser,
-	toolStreamingEntry,
-);
-
-assert(
-	visibleWithDifferentDurableTool.showStreamingEntry,
-	'active tool-call optimistic entry remains visible when durable awareness has a different tool call',
-);
-
-const visibleAfterStandaloneToolResult = getOptimisticVisibility(
-	[toolFirstUser, earlyDurableAssistant, standaloneToolResult('tr-tool-1', '2026-05-18T00:01:13.000Z')],
-	toolFirstUser,
-	toolStreamingEntry,
-);
-
-assert(
-	!visibleAfterStandaloneToolResult.showStreamingEntry,
-	'active tool-call optimistic entry is hidden once durable tool result covers the same tool id',
-);
-
-const visibleAfterDifferentStandaloneToolResult = getOptimisticVisibility(
-	[toolFirstUser, earlyDurableAssistant, standaloneToolResult('tr-tool-2', '2026-05-18T00:01:13.000Z', 'tool-2')],
-	toolFirstUser,
-	toolStreamingEntry,
-);
-
-assert(
-	visibleAfterDifferentStandaloneToolResult.showStreamingEntry,
-	'active tool-call optimistic entry remains visible when durable tool result belongs to a different tool id',
+	!mergedAfterCompletedToolEntry.some((entry) => entry.id === completedToolEntry.id || entry.id === `${completedToolEntry.id}-tool-results`),
+	'completed tool snapshot does not create synthetic tool-result rescue entries after durable assistant content exists',
 );
 
 const recentlyCompletedUser = user('u-recent', '2026-05-18T00:02:05.000Z');

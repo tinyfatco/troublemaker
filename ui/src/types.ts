@@ -63,6 +63,8 @@ export interface AwarenessEntry {
   stopReason?: string;
   /** True while SSE is actively streaming this entry */
   isStreaming?: boolean;
+  /** Live stream protocol that produced this transient entry. */
+  streamProtocol?: 'snapshot';
   /** True if this is an ambient engagement trigger */
   isAmbient?: boolean;
   /** True if this is a system action (/model, /compact, etc.) */

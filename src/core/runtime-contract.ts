@@ -28,6 +28,69 @@ export interface RuntimeErrorEvent {
 	mode?: RuntimeMode;
 }
 
+export interface RuntimeTextContent {
+	type: "text";
+	text: string;
+	contentIndex?: number;
+}
+
+export interface RuntimeThinkingContent {
+	type: "thinking";
+	thinking: string;
+	thinkingSignature?: string;
+	contentIndex?: number;
+}
+
+export interface RuntimeToolCallContent {
+	type: "toolCall";
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+	contentIndex?: number;
+}
+
+export type RuntimeToolOutputStream = "stdout" | "stderr" | "system";
+
+export interface RuntimeToolOutputContent {
+	type: "toolOutput";
+	toolCallId: string;
+	stream: RuntimeToolOutputStream;
+	text: string;
+	pid?: number;
+	sequence?: number;
+}
+
+export interface RuntimeToolResultContent {
+	type: "toolResult";
+	toolCallId: string;
+	result: string;
+	isError?: boolean;
+}
+
+export type RuntimeAssistantSnapshotContent =
+	| RuntimeTextContent
+	| RuntimeThinkingContent
+	| RuntimeToolCallContent
+	| RuntimeToolOutputContent
+	| RuntimeToolResultContent;
+
+export interface RuntimeAssistantSnapshotEntry {
+	id: string;
+	type: "message";
+	timestamp: string;
+	role: "assistant";
+	content: RuntimeAssistantSnapshotContent[];
+	model?: string;
+	stopReason?: string;
+	isStreaming?: boolean;
+}
+
+export interface RuntimeAssistantSnapshotEvent {
+	type: "assistant_snapshot";
+	entry: RuntimeAssistantSnapshotEntry;
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeTextDeltaEvent {
 	type: "text_delta";
 	contentIndex?: number;
@@ -84,8 +147,6 @@ export interface RuntimeToolResultEvent {
 	isError?: boolean;
 }
 
-export type RuntimeToolOutputStream = "stdout" | "stderr" | "system";
-
 export interface RuntimeToolResultDeltaEvent {
 	type: "toolResultDelta";
 	toolCallId: string;
@@ -105,6 +166,7 @@ export interface RuntimeRunCompleteEvent {
 export type RuntimeStreamEvent =
 	| RuntimeStatusEvent
 	| RuntimeErrorEvent
+	| RuntimeAssistantSnapshotEvent
 	| RuntimeTextDeltaEvent
 	| RuntimeTextPatchEvent
 	| RuntimeThinkingDeltaEvent
