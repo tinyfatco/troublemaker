@@ -1,4 +1,4 @@
-import { formatSkillsForPrompt, type Skill } from "@earendil-works/pi-coding-agent";
+import type { Skill } from "@earendil-works/pi-coding-agent";
 import type { ChannelInfo, UserInfo } from "../adapters/types.js";
 import type { VerbosityLevel } from "../context.js";
 import * as log from "../log.js";
@@ -13,6 +13,41 @@ const WORKSPACE_CONTEXT_FILES = [
 	["SOUL.md", "Soul"],
 	["USER.md", "User Profile"],
 ] as const;
+
+function escapeXml(str: string): string {
+	return str
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&apos;");
+}
+
+function formatSkillsForSessionPreamble(skills: Skill[]): string {
+	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
+	if (visibleSkills.length === 0) return "";
+
+	const lines = [
+		"",
+		"",
+		"The following skills provide specialized instructions for specific tasks.",
+		"Use the read tool to load a skill's file when the task matches its description.",
+		"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+		"",
+		"<available_skills>",
+	];
+
+	for (const skill of visibleSkills) {
+		lines.push("  <skill>");
+		lines.push(`    <name>${escapeXml(skill.name)}</name>`);
+		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
+		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
+		lines.push("  </skill>");
+	}
+
+	lines.push("</available_skills>");
+	return lines.join("\n");
+}
 
 function readWorkspaceFile(workspace: WorkspaceStore, filename: string): string {
 	const content = workspace.readText(filename)?.trim();
@@ -172,7 +207,7 @@ export function buildSessionPreamble(
 		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
 	const userMappings =
 		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
-	const skillsSection = skills.length > 0 ? formatSkillsForPrompt(skills) : "(none)";
+	const skillsSection = skills.length > 0 ? formatSkillsForSessionPreamble(skills) || "(none)" : "(none)";
 	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
 
 	const isWebDirectChat = [displayChannelId, displayChannelName]
