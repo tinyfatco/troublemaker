@@ -24,6 +24,7 @@ import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
 import { isEmbedMode } from '../console-api';
+import { hostToolsAllowedFromSearch } from '../workspaceCapabilities';
 
 type BuiltInCanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
 type CanvasMode = BuiltInCanvasMode | `project:${string}`;
@@ -77,9 +78,10 @@ function projectIdFromCanvasMode(mode: CanvasMode | null): string | null {
 
 export function WorkspaceLayout() {
   const embedMode = isEmbedMode();
+  const hostToolsAllowed = hostToolsAllowedFromSearch(window.location.search);
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
-  const displayProjectsQuery = useDisplayProjects(!embedMode);
+  const displayProjectsQuery = useDisplayProjects(!embedMode && hostToolsAllowed);
   const displayProjects = displayProjectsQuery.data?.projects ?? [];
   const [canvasModeOverride, setCanvasModeOverride] = usePersistentState<CanvasMode | null>(
     'troublemaker.ui.canvasMode',
@@ -87,11 +89,11 @@ export function WorkspaceLayout() {
     { parse: parseCanvasModePreference },
   );
   const capabilities = config.capabilities || {};
-  const filesAvailable = !embedMode && capabilities.files !== false;
-  const terminalAvailable = !embedMode && capabilities.terminal !== false;
-  const desktopAvailable = !embedMode && capabilities.desktop === true;
-  const calendarAvailable = !embedMode && capabilities.calendar !== false;
-  const displayAvailable = !embedMode && capabilities.display !== false;
+  const filesAvailable = hostToolsAllowed && !embedMode && capabilities.files !== false;
+  const terminalAvailable = hostToolsAllowed && !embedMode && capabilities.terminal !== false;
+  const desktopAvailable = hostToolsAllowed && !embedMode && capabilities.desktop === true;
+  const calendarAvailable = hostToolsAllowed && !embedMode && capabilities.calendar !== false;
+  const displayAvailable = hostToolsAllowed && !embedMode && capabilities.display !== false;
   const interactiveMode =
     config.display_mode === 'desktop' && desktopAvailable
       ? 'desktop'
@@ -100,12 +102,14 @@ export function WorkspaceLayout() {
         : desktopAvailable
           ? 'desktop'
           : null;
-  const canvasModes = [
-    { mode: 'terminal' as const, available: terminalAvailable, title: 'Terminal canvas' },
-    { mode: 'desktop' as const, available: desktopAvailable, title: 'Desktop canvas' },
-    { mode: 'calendar' as const, available: calendarAvailable, title: 'Calendar canvas' },
-    { mode: 'preview' as const, available: displayAvailable, title: 'Display projects' },
-  ];
+  const canvasModes = hostToolsAllowed
+    ? [
+      { mode: 'terminal' as const, available: terminalAvailable, title: 'Terminal canvas' },
+      { mode: 'desktop' as const, available: desktopAvailable, title: 'Desktop canvas' },
+      { mode: 'calendar' as const, available: calendarAvailable, title: 'Calendar canvas' },
+      { mode: 'preview' as const, available: displayAvailable, title: 'Display projects' },
+    ]
+    : [];
   const isCanvasModeAvailable = (mode: CanvasMode | null): mode is CanvasMode => {
     if (!mode) return false;
     const projectId = projectIdFromCanvasMode(mode);
