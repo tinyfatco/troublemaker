@@ -1,9 +1,13 @@
 import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
+import type { Skill } from "@earendil-works/pi-coding-agent";
+import type { ChannelInfo, UserInfo } from "../../adapters/types.js";
+import type { VerbosityLevel } from "../../context.js";
 import type { RuntimeEventSink, WebTurnInput, WebTurnProjectContext, WebTurnSettings } from "../../core/runtime-contract.js";
 import { normalizeThinkingLevelForModel } from "../../model-thinking.js";
 import type { EdgeManagedProjectBridge, EdgeHostBridge, EdgeWorkspaceBridge } from "./host-bridge.js";
 import { createEdgeAgentSession } from "./pi-session.js";
+import { createTroublemakerEdgeTurn } from "./troublemaker-extension.js";
 import {
 	createEdgeBashTool,
 	createEdgeDeployPreviewTool,
@@ -24,7 +28,11 @@ export interface EdgeWebChatOptions {
 	managedProjectBridge?: EdgeManagedProjectBridge;
 	workspacePath?: string;
 	workspaceContext?: string;
+	channels?: ChannelInfo[];
+	users?: UserInfo[];
+	skills?: Skill[];
 	channelName?: string;
+	verbosity?: VerbosityLevel;
 	surface?: "web" | "email";
 	emitRunComplete?: boolean;
 	emit: RuntimeEventSink;
@@ -94,11 +102,6 @@ function workspacePrompt(options: EdgeWebChatOptions): string {
 			"- Treat BOOTSTRAP.md and AGENTS.md as durable instructions when they are present.",
 		);
 	}
-
-	const context = options.workspaceContext?.trim();
-	if (context) {
-		lines.push("", "Workspace context loaded from encrypted R2:", context);
-	}
 	return lines.join("\n");
 }
 
@@ -144,8 +147,17 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 
 	const model = createFireworksModel(options.settings, options.modelBaseUrl);
 	const tools = createEdgeWebChatTools(options);
-	const agent = createEdgeAgentSession({
+	const turn = createTroublemakerEdgeTurn(options.input, {
 		systemPrompt: systemPromptFor(options),
+		workspaceContext: options.workspaceContext,
+		channels: options.channels,
+		users: options.users,
+		skills: options.skills,
+		channelName: options.channelName,
+		verbosity: options.verbosity,
+	});
+	const agent = createEdgeAgentSession({
+		systemPrompt: turn.systemPrompt,
 		model,
 		apiKey: options.modelApiKey,
 		thinkingLevel: normalizeThinkingLevelForModel(model, options.settings?.thinkingLevel),
@@ -157,7 +169,7 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 	});
 
 	const initialMessageCount = agent.state.messages.length;
-	const promptMessage = options.promptMessage ?? options.input.message;
+	const promptMessage = options.promptMessage ?? turn.promptMessage;
 	await options.emit({ type: "status", status: "connecting", message: "Edge runtime ready", mode: "edge" });
 	if (typeof promptMessage === "string") {
 		await agent.prompt(promptMessage);
