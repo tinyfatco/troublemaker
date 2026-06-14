@@ -70,6 +70,14 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
     return prev;
   }
 
+  if (parsed.type === 'assistant_snapshot' && isRecord(parsed.entry)) {
+    return mergeAssistantSnapshot(prev, parsed.entry as AwarenessEntry);
+  }
+
+  if (prev.streamProtocol === 'snapshot' && isLegacyAssistantDelta(parsed)) {
+    return prev;
+  }
+
   if (parsed.type === 'text_delta' && (parsed.delta || parsed.text)) {
     return appendTextDelta(prev, String(parsed.delta || ''), numberOrUndefined(parsed.contentIndex), stringOrUndefined(parsed.text), normalizeRealtimeOutputPhase(parsed.phase));
   }
@@ -155,6 +163,50 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
   }
 
   return prev;
+}
+
+function mergeAssistantSnapshot(prev: AwarenessEntry, snapshot: AwarenessEntry): AwarenessEntry {
+  const snapshotContent = Array.isArray(snapshot.content) ? [...snapshot.content] : [];
+  const priorOutputs = (prev.content || []).filter((block): block is ToolOutputContent => block.type === 'toolOutput');
+  const content = mergePriorToolOutputs(snapshotContent, priorOutputs);
+  return {
+    ...prev,
+    ...snapshot,
+    type: snapshot.type || 'message',
+    role: snapshot.role || 'assistant',
+    content,
+    streamProtocol: 'snapshot',
+  };
+}
+
+function mergePriorToolOutputs(content: ContentBlock[], outputs: ToolOutputContent[]): ContentBlock[] {
+  const merged = [...content];
+  for (const output of outputs) {
+    const id = getToolOutputId(output);
+    if (!id || merged.some((block) => block.type === 'toolOutput' && getToolOutputId(block) === id)) continue;
+    const insertAt = findToolInsertIndex(merged, id);
+    merged.splice(insertAt, 0, output);
+  }
+  return merged;
+}
+
+function findToolInsertIndex(content: ContentBlock[], toolCallId: string): number {
+  for (let index = content.length - 1; index >= 0; index--) {
+    const block = content[index];
+    if (block.type === 'toolCall' && block.id === toolCallId) return index + 1;
+    if (block.type === 'toolOutput' && getToolOutputId(block) === toolCallId) return index + 1;
+    if (block.type === 'toolResult' && getToolResultId(block) === toolCallId) return index + 1;
+  }
+  return content.length;
+}
+
+function isLegacyAssistantDelta(parsed: any): boolean {
+  return parsed?.type === 'text_delta' ||
+    parsed?.type === 'text_patch' ||
+    parsed?.type === 'thinking_delta' ||
+    parsed?.type === 'thinking_patch' ||
+    parsed?.type === 'text' ||
+    parsed?.type === 'thinking';
 }
 
 function appendTextDelta(entry: AwarenessEntry, delta: string, contentIndex?: number, text?: string, phase?: TextPatch['phase']): AwarenessEntry {

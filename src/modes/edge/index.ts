@@ -1,5 +1,5 @@
 import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { RuntimeEventSink, WebTurnInput, WebTurnProjectContext, WebTurnSettings } from "../../core/runtime-contract.js";
 import { normalizeThinkingLevelForModel } from "../../model-thinking.js";
 import type { EdgeManagedProjectBridge, EdgeHostBridge } from "./host-bridge.js";
@@ -15,6 +15,7 @@ export interface EdgeWebChatOptions {
 	modelBaseUrl?: string;
 	hostBridge?: EdgeHostBridge;
 	managedProjectBridge?: EdgeManagedProjectBridge;
+	emitRunComplete?: boolean;
 	emit: RuntimeEventSink;
 }
 
@@ -76,16 +77,22 @@ function systemPromptFor(options: EdgeWebChatOptions): string {
 	return project ? `${base}\n${project}` : base;
 }
 
-export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeWebChatResult> {
-	await options.emit({ type: "status", status: "accepted", message: "Edge turn accepted", mode: "edge" });
-
-	const model = createFireworksModel(options.settings, options.modelBaseUrl);
-	const tools = [
+export function createEdgeWebChatTools(
+	options: Pick<EdgeWebChatOptions, "hostBridge" | "input" | "managedProjectBridge" | "emit">,
+): AgentTool<any>[] {
+	return [
 		...(options.hostBridge ? [createEdgeBashTool(options.hostBridge, options.emit)] : []),
 		...(options.input.project && options.managedProjectBridge
 			? [createEdgeDeployPreviewTool(options.input.project, options.managedProjectBridge)]
 			: []),
 	];
+}
+
+export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeWebChatResult> {
+	await options.emit({ type: "status", status: "accepted", message: "Edge turn accepted", mode: "edge" });
+
+	const model = createFireworksModel(options.settings, options.modelBaseUrl);
+	const tools = createEdgeWebChatTools(options);
 	const agent = createEdgeAgentSession({
 		systemPrompt: systemPromptFor(options),
 		model,
@@ -107,7 +114,9 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 		await agent.prompt(promptMessage);
 	}
 	await agent.waitForIdle();
-	await options.emit({ type: "run_complete", channelId: options.input.channelId, mode: "edge" });
+	if (options.emitRunComplete !== false) {
+		await options.emit({ type: "run_complete", channelId: options.input.channelId, mode: "edge" });
+	}
 
 	const messages = agent.state.messages.slice();
 	return {
