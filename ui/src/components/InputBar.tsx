@@ -18,6 +18,7 @@ interface InputBarProps {
   streamingPlaceholder?: string;
   sendLabel?: string;
   streamingSendLabel?: string;
+  initialValue?: string;
 }
 
 export function InputBar({
@@ -35,8 +36,9 @@ export function InputBar({
   streamingPlaceholder = 'Type to steer...',
   sendLabel = 'Send',
   streamingSendLabel = 'Send steering message',
+  initialValue = '',
 }: InputBarProps) {
-  const [value, setValue] = useState('');
+  const [value, setValue] = useState(initialValue);
   const [slashSelectedIndex, setSlashSelectedIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -75,6 +77,11 @@ export function InputBar({
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (!initialValue.trim()) return;
+    setValue((current) => current.trim() ? current : initialValue);
+  }, [initialValue]);
 
   const handleSubmit = () => {
     const trimmed = value.trim();

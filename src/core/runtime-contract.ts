@@ -1,7 +1,20 @@
+export interface WebTurnProjectContext {
+	siteId?: string;
+	slug: string;
+	displayName?: string;
+	previewUrl?: string;
+	productionUrl?: string;
+	state?: string;
+	workspacePath?: string;
+	latestDeploymentUrl?: string;
+	latestDeploymentState?: string;
+}
+
 export interface WebTurnInput {
 	message: string;
 	channelId: string;
 	source: string;
+	project?: WebTurnProjectContext;
 }
 
 export interface WebTurnSettings {

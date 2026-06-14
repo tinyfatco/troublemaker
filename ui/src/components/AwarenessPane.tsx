@@ -27,6 +27,12 @@ interface AwarenessPaneProps {
   showChannels?: boolean;
 }
 
+function initialDraftFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const params = new URLSearchParams(window.location.search);
+  return (params.get('tf_draft') || '').slice(0, 4000);
+}
+
 export function AwarenessPane({
   stream,
   allowCommands = true,
@@ -61,6 +67,7 @@ export function AwarenessPane({
   const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsSnapshot | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [initialDraft] = useState(initialDraftFromUrl);
 
   const contextEntriesForVoice = useMemo(
     () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
@@ -434,6 +441,7 @@ export function AwarenessPane({
         onSend={handleSend}
         onStop={abortStream}
         disabled={isVoiceActive}
+        initialValue={initialDraft}
         isStreaming={isStreaming}
         onHeightChange={handleComposerHeightChange}
         onSlashCommand={handleSlashCommand}

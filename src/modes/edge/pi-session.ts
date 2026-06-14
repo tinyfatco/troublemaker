@@ -12,6 +12,7 @@ export interface EdgeAgentSessionOptions {
 	initialMessages?: AgentMessage[];
 	thinkingLevel?: ModelThinkingLevel;
 	sessionId?: string;
+	terminalToolNames?: string[];
 	emit: RuntimeEventSink;
 	fetch?: typeof fetch;
 }
@@ -40,6 +41,7 @@ function toolResultText(result: unknown): string {
 
 export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent {
 	const liveSnapshot = new LiveAssistantSnapshot();
+	const terminalTools = new Set(options.terminalToolNames || []);
 	const emitSnapshot = async (isStreaming = true) => {
 		const entry = liveSnapshot.current(isStreaming);
 		if (entry) await options.emit({ type: "assistant_snapshot", entry, mode: "edge" });
@@ -55,6 +57,10 @@ export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent 
 		},
 		convertToLlm,
 		sessionId: options.sessionId,
+		afterToolCall: async ({ toolCall, isError }) => {
+			if (!isError && terminalTools.has(toolCall.name)) return { terminate: true };
+			return undefined;
+		},
 		streamFn: async (model, context, streamOptions) =>
 			streamSimple(
 				model,

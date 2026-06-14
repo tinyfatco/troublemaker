@@ -7,6 +7,12 @@ import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 
+function initialDraftFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const params = new URLSearchParams(window.location.search);
+  return (params.get('tf_draft') || '').slice(0, 4000);
+}
+
 export function ChatPane() {
   const { entries, isLoading, error: streamError } = useAwarenessStream();
   const {
@@ -23,6 +29,7 @@ export function ChatPane() {
   const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');
   const [settingsFocusVersion, setSettingsFocusVersion] = useState(0);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [initialDraft] = useState(initialDraftFromUrl);
 
   const error = localError || chatError || streamError;
 
@@ -109,6 +116,7 @@ export function ChatPane() {
         onStop={abortStream}
         disabled={isStreaming}
         isStreaming={isStreaming}
+        initialValue={initialDraft}
         onSlashCommand={handleSlashCommand}
         onInvalidSlashCommand={(command) => setLocalError(`Unknown command: ${command}`)}
       />

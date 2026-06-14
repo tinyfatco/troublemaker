@@ -1,10 +1,12 @@
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from './types';
+import { normalizeRealtimeOutputPhase } from './realtimePhases';
 import { debugStream, summarizeEntry, summarizeEvent, summarizeToolCall } from './streamDebug';
 
 export type WebChatStreamEffect = {
   status?: 'waking' | 'connecting' | 'steering' | 'streaming' | 'tool_running' | 'error';
   error?: string | null;
   endedWithError?: boolean;
+  completed?: boolean;
 };
 
 type ToolCallPatch = ToolCallContent & {
@@ -16,6 +18,7 @@ type TextPatch = {
   type: 'text';
   text: string;
   contentIndex?: number;
+  phase?: 'commentary' | 'final_answer';
 };
 
 type ThinkingPatch = {
@@ -25,9 +28,6 @@ type ThinkingPatch = {
 };
 
 export function getWebChatStreamEffect(parsed: any): WebChatStreamEffect {
-  if (parsed.type === 'assistant_snapshot') {
-    return { status: 'streaming' };
-  }
   if (
     parsed.type === 'text_delta' ||
     parsed.type === 'text_patch' ||
@@ -58,6 +58,9 @@ export function getWebChatStreamEffect(parsed: any): WebChatStreamEffect {
   if (parsed.type === 'error') {
     return { status: 'error', error: parsed.message || 'Stream error', endedWithError: true };
   }
+  if (parsed.type === 'run_complete') {
+    return { completed: true };
+  }
   return {};
 }
 
@@ -67,23 +70,15 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
     return prev;
   }
 
-  if (parsed.type === 'assistant_snapshot') {
-    return applyAssistantSnapshot(prev, parsed);
-  }
-
-  if (prev.streamProtocol === 'snapshot' && isLegacyAssistantStreamEvent(parsed)) {
-    debugStream('reducer:snapshot-legacy-event:ignored', { event: summarizeEvent(parsed), prev: summarizeEntry(prev) });
-    return prev;
-  }
-
   if (parsed.type === 'text_delta' && (parsed.delta || parsed.text)) {
-    return appendTextDelta(prev, String(parsed.delta || ''), numberOrUndefined(parsed.contentIndex), stringOrUndefined(parsed.text));
+    return appendTextDelta(prev, String(parsed.delta || ''), numberOrUndefined(parsed.contentIndex), stringOrUndefined(parsed.text), normalizeRealtimeOutputPhase(parsed.phase));
   }
   if (parsed.type === 'text_patch' && typeof parsed.text === 'string') {
     return upsertTextBlock(prev, {
       type: 'text',
       text: parsed.text,
       contentIndex: numberOrUndefined(parsed.contentIndex),
+      phase: normalizeRealtimeOutputPhase(parsed.phase),
     });
   }
   if (parsed.type === 'thinking_delta' && (parsed.delta || parsed.thinking)) {
@@ -98,7 +93,7 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
   }
   if (parsed.type === 'text' && parsed.text) {
     const nonText = (prev.content || []).filter((c) => c.type !== 'text');
-    return { ...prev, content: [...nonText, { type: 'text', text: parsed.text }] };
+    return { ...prev, content: [...nonText, { type: 'text', text: parsed.text, phase: normalizeRealtimeOutputPhase(parsed.phase) }] };
   }
   if (parsed.type === 'thinking' && parsed.thinking) {
     const nonThinking = (prev.content || []).filter((c) => c.type !== 'thinking');
@@ -155,125 +150,14 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
     if (hasContent) return { ...prev, isStreaming: false };
     return { ...prev, content: [{ type: 'text', text: message }], isStreaming: false };
   }
+  if (parsed.type === 'run_complete') {
+    return { ...prev, isStreaming: false };
+  }
 
   return prev;
 }
 
-function applyAssistantSnapshot(prev: AwarenessEntry, parsed: any): AwarenessEntry {
-  const rawEntry = parsed.entry && typeof parsed.entry === 'object' ? parsed.entry : {};
-  const rawContent = Array.isArray(rawEntry.content) ? rawEntry.content : [];
-  const content = mergeSnapshotToolOutputs(
-    prev.content || [],
-    rawContent
-      .map((block: unknown) => normalizeSnapshotContentBlock(block))
-      .filter((block: ContentBlock | null): block is ContentBlock => block !== null),
-  );
-  const next: AwarenessEntry = {
-    ...prev,
-    id: typeof rawEntry.id === 'string' && rawEntry.id ? rawEntry.id : prev.id,
-    type: 'message',
-    timestamp: typeof rawEntry.timestamp === 'string' && rawEntry.timestamp ? rawEntry.timestamp : prev.timestamp,
-    role: 'assistant',
-    content,
-    model: typeof rawEntry.model === 'string' ? rawEntry.model : prev.model,
-    stopReason: typeof rawEntry.stopReason === 'string' ? rawEntry.stopReason : prev.stopReason,
-    isStreaming: rawEntry.isStreaming !== false,
-    streamProtocol: 'snapshot',
-  };
-  debugStream('reducer:assistant-snapshot', {
-    prev: summarizeEntry(prev),
-    next: summarizeEntry(next),
-  });
-  return next;
-}
-
-function normalizeSnapshotContentBlock(block: unknown): ContentBlock | null {
-  if (!block || typeof block !== 'object') return null;
-  const raw = block as Record<string, unknown>;
-  if (raw.type === 'text') {
-    return {
-      type: 'text',
-      text: typeof raw.text === 'string' ? raw.text : '',
-      contentIndex: typeof raw.contentIndex === 'number' ? raw.contentIndex : undefined,
-    };
-  }
-  if (raw.type === 'thinking') {
-    return {
-      type: 'thinking',
-      thinking: typeof raw.thinking === 'string' ? raw.thinking : '',
-      thinkingSignature: typeof raw.thinkingSignature === 'string' ? raw.thinkingSignature : undefined,
-      contentIndex: typeof raw.contentIndex === 'number' ? raw.contentIndex : undefined,
-    };
-  }
-  if (raw.type === 'toolCall') {
-    return {
-      type: 'toolCall',
-      id: String(raw.id || ''),
-      name: String(raw.name || 'tool'),
-      arguments: isRecord(raw.arguments) ? raw.arguments : {},
-      contentIndex: typeof raw.contentIndex === 'number' ? raw.contentIndex : undefined,
-    };
-  }
-  if (raw.type === 'toolOutput') {
-    return {
-      type: 'toolOutput',
-      toolCallId: String(raw.toolCallId || raw.tool_call_id || ''),
-      stream: normalizeToolOutputStream(raw.stream),
-      text: typeof raw.text === 'string' ? raw.text : '',
-      pid: typeof raw.pid === 'number' ? raw.pid : undefined,
-      sequence: typeof raw.sequence === 'number' ? raw.sequence : undefined,
-    };
-  }
-  if (raw.type === 'toolResult') {
-    return {
-      type: 'toolResult',
-      toolCallId: String(raw.toolCallId || raw.tool_call_id || ''),
-      result: typeof raw.result === 'string' ? raw.result : JSON.stringify(raw.result ?? ''),
-      isError: Boolean(raw.isError ?? raw.is_error),
-    };
-  }
-  return null;
-}
-
-function mergeSnapshotToolOutputs(previous: ContentBlock[], next: ContentBlock[]): ContentBlock[] {
-  const merged = [...next];
-  for (const block of previous) {
-    if (block.type !== 'toolOutput' || !block.toolCallId) continue;
-    const alreadyHasOutput = merged.some((candidate) =>
-      candidate.type === 'toolOutput' && candidate.toolCallId === block.toolCallId
-    );
-    if (alreadyHasOutput) continue;
-    const insertAt = findToolInsertIndex(merged, block.toolCallId);
-    merged.splice(insertAt, 0, block);
-  }
-  return merged;
-}
-
-function findToolInsertIndex(content: ContentBlock[], toolCallId: string): number {
-  for (let i = content.length - 1; i >= 0; i--) {
-    const block = content[i];
-    if (block.type === 'toolCall' && block.id === toolCallId) return i + 1;
-    if (block.type === 'toolOutput' && block.toolCallId === toolCallId) return i + 1;
-    if (block.type === 'toolResult' && block.toolCallId === toolCallId) return i + 1;
-  }
-  return content.length;
-}
-
-function isLegacyAssistantStreamEvent(parsed: any): boolean {
-  return parsed.type === 'text_delta' ||
-    parsed.type === 'text_patch' ||
-    parsed.type === 'thinking_delta' ||
-    parsed.type === 'thinking_patch' ||
-    parsed.type === 'text' ||
-    parsed.type === 'thinking' ||
-    parsed.type === 'toolCall' ||
-    parsed.type === 'toolcall_start' ||
-    parsed.type === 'toolcall_delta' ||
-    parsed.type === 'toolcall_end' ||
-    parsed.type === 'toolResult';
-}
-
-function appendTextDelta(entry: AwarenessEntry, delta: string, contentIndex?: number, text?: string): AwarenessEntry {
+function appendTextDelta(entry: AwarenessEntry, delta: string, contentIndex?: number, text?: string, phase?: TextPatch['phase']): AwarenessEntry {
   const content = [...(entry.content || [])];
   const existingIndex = findTextIndex(content, contentIndex);
   if (existingIndex !== -1) {
@@ -282,9 +166,10 @@ function appendTextDelta(entry: AwarenessEntry, delta: string, contentIndex?: nu
       ...existing,
       text: delta ? existing.text + delta : text ?? existing.text,
       contentIndex: contentIndex ?? existing.contentIndex,
+      phase: phase ?? existing.phase,
     };
   } else {
-    content.push({ type: 'text', text: text ?? delta, contentIndex });
+    content.push({ type: 'text', text: text ?? delta, contentIndex, phase });
   }
   debugStream('reducer:text-delta', {
     entryId: entry.id,

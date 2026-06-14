@@ -49,6 +49,40 @@ export interface SendMessageOptions {
   sessionId?: string;
 }
 
+function cleanSearchParam(params: URLSearchParams, key: string, maxLength = 2000): string | undefined {
+  const value = params.get(key)?.trim();
+  return value ? value.slice(0, maxLength) : undefined;
+}
+
+function currentProjectContext(): Record<string, string> | undefined {
+  if (typeof window === 'undefined') return undefined;
+
+  const params = new URLSearchParams(window.location.search);
+  const slug = cleanSearchParam(params, 'tf_project_slug', 80);
+  if (!slug || !/^[a-z0-9](?:[a-z0-9-]{0,63}[a-z0-9])?$/.test(slug)) return undefined;
+
+  const project: Record<string, string> = { slug };
+  const siteId = cleanSearchParam(params, 'tf_project_site_id', 80) || cleanSearchParam(params, 'tf_project_id', 80);
+  const displayName = cleanSearchParam(params, 'tf_project_name', 160);
+  const previewUrl = cleanSearchParam(params, 'tf_project_preview', 600);
+  const productionUrl = cleanSearchParam(params, 'tf_project_production', 600);
+  const state = cleanSearchParam(params, 'tf_project_state', 80);
+  const workspacePath = cleanSearchParam(params, 'tf_project_workspace', 300);
+  const latestDeploymentUrl = cleanSearchParam(params, 'tf_project_deploy', 600);
+  const latestDeploymentState = cleanSearchParam(params, 'tf_project_deploy_state', 80);
+
+  if (siteId) project.siteId = siteId;
+  if (displayName) project.displayName = displayName;
+  if (previewUrl) project.previewUrl = previewUrl;
+  if (productionUrl) project.productionUrl = productionUrl;
+  if (state) project.state = state;
+  if (workspacePath) project.workspacePath = workspacePath;
+  if (latestDeploymentUrl) project.latestDeploymentUrl = latestDeploymentUrl;
+  if (latestDeploymentState) project.latestDeploymentState = latestDeploymentState;
+
+  return project;
+}
+
 export function useWebChat(): UseWebChatReturn {
   const [localEntries, setLocalEntries] = useState<AwarenessEntry[]>([]);
   const [userEntry, setUserEntry] = useState<AwarenessEntry | null>(null);
@@ -371,13 +405,16 @@ export function useWebChat(): UseWebChatReturn {
 }
 
 function createMessagePayload(message: string, options: SendMessageOptions): Record<string, unknown> {
+  const project = currentProjectContext();
+  const channelId = options.channelId || (project?.slug ? `project:${project.slug}:web` : undefined);
   return {
     message,
     ...(options.source ? { source: options.source } : {}),
     ...(options.sourceEventType ? { sourceEventType: options.sourceEventType } : {}),
-    ...(options.channelId ? { channelId: options.channelId } : {}),
+    ...(channelId ? { channelId } : {}),
     ...(options.freshContext ? { fresh_context: true } : {}),
     ...(options.sessionId ? { session_id: options.sessionId } : {}),
+    ...(project ? { project } : {}),
   };
 }
 
@@ -451,7 +488,13 @@ async function readSseResponse(
         continue;
       }
       eventCount += 1;
-      if (processEvent(data, setEntry, setStatus, setError)) endedWithError = true;
+      const result = processEvent(data, setEntry, setStatus, setError);
+      if (result.endedWithError) endedWithError = true;
+      if (result.completed) {
+        await reader.cancel().catch(() => undefined);
+        debugStream('sse:event:completed', { eventCount });
+        return endedWithError;
+      }
     }
   }
 
@@ -460,7 +503,12 @@ async function readSseResponse(
     if (remaining !== '[DONE]') {
       eventCount += 1;
       debugStream('sse:remaining', { eventCount, bytes: remaining.length });
-      if (processEvent(remaining, setEntry, setStatus, setError)) endedWithError = true;
+      const result = processEvent(remaining, setEntry, setStatus, setError);
+      if (result.endedWithError) endedWithError = true;
+      if (result.completed) {
+        debugStream('sse:remaining:completed', { eventCount });
+        return endedWithError;
+      }
     } else {
       debugStream('sse:remaining:done', { eventCount });
     }
@@ -475,7 +523,7 @@ function processEvent(
   setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
   setStatus: (s: StreamStatus) => void,
   setError: (e: string | null) => void,
-): boolean {
+): { endedWithError: boolean; completed: boolean } {
   try {
     const parsed = JSON.parse(data);
     const effect = getWebChatStreamEffect(parsed);
@@ -495,8 +543,7 @@ function processEvent(
       });
       return next;
     });
-    if (effect.endedWithError) return true;
-    // heartbeat and run_complete are ignored
+    return { endedWithError: !!effect.endedWithError, completed: !!effect.completed };
   } catch (err) {
     debugStream('sse:event:parse-error', {
       message: err instanceof Error ? err.message : 'Non-JSON SSE event',
@@ -504,5 +551,5 @@ function processEvent(
     });
     // Non-JSON — skip
   }
-  return false;
+  return { endedWithError: false, completed: false };
 }
