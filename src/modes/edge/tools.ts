@@ -6,7 +6,15 @@ import {
 	type BashToolInput,
 } from "../../core/tool-definitions.js";
 import type { RuntimeEventSink, WebTurnProjectContext } from "../../core/runtime-contract.js";
-import type { EdgeDeployPreviewInput, EdgeManagedProjectBridge, EdgeHostBridge } from "./host-bridge.js";
+import type {
+	EdgeDeployPreviewInput,
+	EdgeManagedProjectBridge,
+	EdgeHostBridge,
+	EdgeWorkspaceBridge,
+	EdgeWorkspaceEditInput,
+	EdgeWorkspaceReadInput,
+	EdgeWorkspaceWriteInput,
+} from "./host-bridge.js";
 
 export const deployPreviewToolSchema = Type.Object({
 	label: Type.Optional(Type.String({
@@ -17,6 +25,39 @@ export const deployPreviewToolSchema = Type.Object({
 	}),
 	deployMessage: Type.Optional(Type.String({
 		description: "Short deployment message for the preview history.",
+	})),
+});
+
+export const readFileToolSchema = Type.Object({
+	path: Type.String({
+		description: "Relative workspace path to read. Use paths like BOOTSTRAP.md, MEMORY.md, projects/site/index.html, or notes/today.md.",
+	}),
+	maxBytes: Type.Optional(Type.Number({
+		description: "Optional maximum plaintext bytes to return, capped by the edge runtime.",
+	})),
+});
+
+export const writeFileToolSchema = Type.Object({
+	path: Type.String({
+		description: "Relative workspace path to write.",
+	}),
+	content: Type.String({
+		description: "Complete file content to write. This replaces the existing file.",
+	}),
+});
+
+export const editFileToolSchema = Type.Object({
+	path: Type.String({
+		description: "Relative workspace path to edit.",
+	}),
+	oldText: Type.String({
+		description: "Exact text currently in the file.",
+	}),
+	newText: Type.String({
+		description: "Replacement text.",
+	}),
+	replaceAll: Type.Optional(Type.Boolean({
+		description: "Replace all occurrences instead of requiring exactly one occurrence.",
 	})),
 });
 
@@ -81,6 +122,83 @@ export function createEdgeDeployPreviewTool(
 				content: [{
 					type: "text",
 					text: `Preview deployed for ${result.project.displayName || result.project.slug}: ${result.url}`,
+				}],
+				details: result,
+			};
+		},
+	};
+}
+
+export function createEdgeReadFileTool(
+	bridge: EdgeWorkspaceBridge,
+): AgentTool<typeof readFileToolSchema> {
+	return {
+		name: "read",
+		label: "read",
+		description: [
+			"Read a UTF-8 text file from the agent's encrypted TinyFat workspace.",
+			"Paths are relative to the workspace root and cannot be absolute or contain .. segments.",
+		].join(" "),
+		parameters: readFileToolSchema,
+		executionMode: "sequential",
+		execute: async (_toolCallId: string, input: EdgeWorkspaceReadInput, signal?: AbortSignal) => {
+			const result = await bridge.readFile(input, signal);
+			return {
+				content: [{
+					type: "text",
+					text: result.truncated
+						? `${result.content}\n\n[read truncated by edge runtime]`
+						: result.content,
+				}],
+				details: result,
+			};
+		},
+	};
+}
+
+export function createEdgeWriteFileTool(
+	bridge: EdgeWorkspaceBridge,
+): AgentTool<typeof writeFileToolSchema> {
+	return {
+		name: "write",
+		label: "write",
+		description: [
+			"Write a UTF-8 text file to the agent's encrypted TinyFat workspace.",
+			"Paths are relative to the workspace root and this replaces the file content.",
+		].join(" "),
+		parameters: writeFileToolSchema,
+		executionMode: "sequential",
+		execute: async (_toolCallId: string, input: EdgeWorkspaceWriteInput, signal?: AbortSignal) => {
+			const result = await bridge.writeFile(input, signal);
+			return {
+				content: [{
+					type: "text",
+					text: `Wrote ${result.bytes} bytes to ${result.path}`,
+				}],
+				details: result,
+			};
+		},
+	};
+}
+
+export function createEdgeEditFileTool(
+	bridge: EdgeWorkspaceBridge,
+): AgentTool<typeof editFileToolSchema> {
+	return {
+		name: "edit",
+		label: "edit",
+		description: [
+			"Edit a UTF-8 text file in the agent's encrypted TinyFat workspace by exact text replacement.",
+			"Use replaceAll only when every occurrence should change.",
+		].join(" "),
+		parameters: editFileToolSchema,
+		executionMode: "sequential",
+		execute: async (_toolCallId: string, input: EdgeWorkspaceEditInput, signal?: AbortSignal) => {
+			const result = await bridge.editFile(input, signal);
+			return {
+				content: [{
+					type: "text",
+					text: `Edited ${result.path}: ${result.replacements} replacement${result.replacements === 1 ? "" : "s"}, ${result.bytes} bytes now`,
 				}],
 				details: result,
 			};

@@ -5,10 +5,24 @@ export type {
 	RuntimeEventSink,
 	RuntimeMode,
 	RuntimeStreamEvent,
+	EdgeTextTurnInput,
+	EmailTurnInput,
 	WebTurnInput,
 	WebTurnSettings,
 } from "./core/runtime-contract.js";
 export { runEdgeWebChat, type EdgeAgentMessage, type EdgeWebChatOptions, type EdgeWebChatResult } from "./modes/edge/index.js";
-export type { EdgeHostBridge } from "./modes/edge/host-bridge.js";
+export type {
+	EdgeDeployPreviewInput,
+	EdgeDeployPreviewResult,
+	EdgeHostBridge,
+	EdgeManagedProjectBridge,
+	EdgeWorkspaceBridge,
+	EdgeWorkspaceEditInput,
+	EdgeWorkspaceEditResult,
+	EdgeWorkspaceReadInput,
+	EdgeWorkspaceReadResult,
+	EdgeWorkspaceWriteInput,
+	EdgeWorkspaceWriteResult,
+} from "./modes/edge/host-bridge.js";
 export { createHostBashRoute } from "./modes/host/index.js";
 export type { HostBashRequest, HostBashResponse, HostToolRequest, HostToolResponse } from "./modes/host/protocol.js";

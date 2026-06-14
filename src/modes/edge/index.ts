@@ -2,9 +2,15 @@ import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { RuntimeEventSink, WebTurnInput, WebTurnProjectContext, WebTurnSettings } from "../../core/runtime-contract.js";
 import { normalizeThinkingLevelForModel } from "../../model-thinking.js";
-import type { EdgeManagedProjectBridge, EdgeHostBridge } from "./host-bridge.js";
+import type { EdgeManagedProjectBridge, EdgeHostBridge, EdgeWorkspaceBridge } from "./host-bridge.js";
 import { createEdgeAgentSession } from "./pi-session.js";
-import { createEdgeBashTool, createEdgeDeployPreviewTool } from "./tools.js";
+import {
+	createEdgeBashTool,
+	createEdgeDeployPreviewTool,
+	createEdgeEditFileTool,
+	createEdgeReadFileTool,
+	createEdgeWriteFileTool,
+} from "./tools.js";
 
 export interface EdgeWebChatOptions {
 	input: WebTurnInput;
@@ -14,7 +20,12 @@ export interface EdgeWebChatOptions {
 	modelApiKey: string;
 	modelBaseUrl?: string;
 	hostBridge?: EdgeHostBridge;
+	workspaceBridge?: EdgeWorkspaceBridge;
 	managedProjectBridge?: EdgeManagedProjectBridge;
+	workspacePath?: string;
+	workspaceContext?: string;
+	channelName?: string;
+	surface?: "web" | "email";
 	emitRunComplete?: boolean;
 	emit: RuntimeEventSink;
 }
@@ -30,7 +41,7 @@ You can answer directly for ordinary conversation. Use the bash tool only when s
 
 const DEFAULT_NO_HOST_SYSTEM_PROMPT = `You are Troublemaker, a practical AI agent running as a TinyFat Tiny Agent.
 
-You can answer directly for ordinary conversation, help the user get oriented, create static website drafts, and deploy managed TinyFat website previews when the deploy_preview tool is available. This plan is edge-backed only: do not claim shell access, container access, email access, arbitrary file access, or command-line tools. If asked to run commands, inspect a repository, read local files, execute bash, or report command output, say you cannot execute hosted/container tools on this plan and offer a command, checklist, managed preview deploy, or upgrade path instead. Never invent command output or imply that a command ran. If the user needs email, public forms, custom domains, or hosted execution, explain that those unlock on paid TinyFat plans.`;
+You can answer directly for ordinary conversation, help the user get oriented, create static website drafts, keep concise notes, and deploy managed TinyFat website previews when the deploy_preview tool is available. This plan is edge-backed only: do not claim shell access, container access, command-line execution, hosted MCP tools, background scheduling, or long-running jobs. You may read, write, and edit files only through the edge-native workspace tools when they are available; those tools operate on the agent's encrypted TinyFat workspace, not a Linux container. If asked to run commands, inspect a repository through shell, execute bash, or report command output, say you cannot execute hosted/container tools on this plan and offer a command, checklist, managed preview deploy, or upgrade path instead. Never invent command output or imply that a command ran. If the user needs hosted execution, browser automation, scheduled work, or arbitrary MCP tools, explain that those unlock on the TinyFat Agent plan.`;
 
 const DEFAULT_EDGE_FIREWORKS_MODEL_ID = "accounts/fireworks/models/minimax-m2p7";
 
@@ -71,17 +82,57 @@ function projectPrompt(project: WebTurnProjectContext | undefined, deployAvailab
 	return lines.join("\n");
 }
 
+function workspacePrompt(options: EdgeWebChatOptions): string {
+	const lines: string[] = [];
+	const workspacePath = options.workspacePath || "/data";
+	if (options.workspaceBridge) {
+		lines.push(
+			"",
+			`Encrypted workspace: ${workspacePath}`,
+			"- Use read, write, and edit for workspace text files when that helps the user.",
+			"- Paths are relative to the workspace root; never use absolute paths or parent-directory traversal.",
+			"- Treat BOOTSTRAP.md and AGENTS.md as durable instructions when they are present.",
+		);
+	}
+
+	const context = options.workspaceContext?.trim();
+	if (context) {
+		lines.push("", "Workspace context loaded from encrypted R2:", context);
+	}
+	return lines.join("\n");
+}
+
+function surfacePrompt(options: EdgeWebChatOptions): string {
+	if (options.surface !== "email") return "";
+	const channel = options.channelName || options.input.channelId;
+	return [
+		"",
+		`Current surface: Email (${channel})`,
+		"Reply in clear, human email prose. Do not mention internal runtime details, tool calls, JSON, or logs unless the user explicitly asks.",
+		"When the sender is asking for setup help or says hello, begin a light onboarding flow using the loaded workspace context.",
+	].join("\n");
+}
+
 function systemPromptFor(options: EdgeWebChatOptions): string {
 	const base = options.settings?.systemPrompt || (options.hostBridge ? DEFAULT_SYSTEM_PROMPT : DEFAULT_NO_HOST_SYSTEM_PROMPT);
 	const project = projectPrompt(options.input.project, !!options.managedProjectBridge);
-	return project ? `${base}\n${project}` : base;
+	const workspace = workspacePrompt(options);
+	const surface = surfacePrompt(options);
+	return `${base}${workspace}${project}${surface}`;
 }
 
 export function createEdgeWebChatTools(
-	options: Pick<EdgeWebChatOptions, "hostBridge" | "input" | "managedProjectBridge" | "emit">,
+	options: Pick<EdgeWebChatOptions, "hostBridge" | "input" | "managedProjectBridge" | "workspaceBridge" | "emit">,
 ): AgentTool<any>[] {
 	return [
 		...(options.hostBridge ? [createEdgeBashTool(options.hostBridge, options.emit)] : []),
+		...(options.workspaceBridge
+			? [
+				createEdgeReadFileTool(options.workspaceBridge),
+				createEdgeWriteFileTool(options.workspaceBridge),
+				createEdgeEditFileTool(options.workspaceBridge),
+			]
+			: []),
 		...(options.input.project && options.managedProjectBridge
 			? [createEdgeDeployPreviewTool(options.input.project, options.managedProjectBridge)]
 			: []),

@@ -30,3 +30,43 @@ export interface EdgeDeployPreviewResult {
 export interface EdgeManagedProjectBridge {
 	deployPreview(input: EdgeDeployPreviewInput, signal?: AbortSignal): Promise<EdgeDeployPreviewResult>;
 }
+
+export interface EdgeWorkspaceReadInput {
+	path: string;
+	maxBytes?: number;
+}
+
+export interface EdgeWorkspaceReadResult {
+	path: string;
+	content: string;
+	truncated?: boolean;
+}
+
+export interface EdgeWorkspaceWriteInput {
+	path: string;
+	content: string;
+}
+
+export interface EdgeWorkspaceWriteResult {
+	path: string;
+	bytes: number;
+}
+
+export interface EdgeWorkspaceEditInput {
+	path: string;
+	oldText: string;
+	newText: string;
+	replaceAll?: boolean;
+}
+
+export interface EdgeWorkspaceEditResult {
+	path: string;
+	replacements: number;
+	bytes: number;
+}
+
+export interface EdgeWorkspaceBridge {
+	readFile(input: EdgeWorkspaceReadInput, signal?: AbortSignal): Promise<EdgeWorkspaceReadResult>;
+	writeFile(input: EdgeWorkspaceWriteInput, signal?: AbortSignal): Promise<EdgeWorkspaceWriteResult>;
+	editFile(input: EdgeWorkspaceEditInput, signal?: AbortSignal): Promise<EdgeWorkspaceEditResult>;
+}

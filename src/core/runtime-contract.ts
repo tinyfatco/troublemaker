@@ -17,6 +17,20 @@ export interface WebTurnInput {
 	project?: WebTurnProjectContext;
 }
 
+export interface EmailTurnInput extends WebTurnInput {
+	source: string;
+	email: {
+		from: string;
+		to: string;
+		subject?: string;
+		messageId?: string;
+		inReplyTo?: string;
+		references?: string;
+	};
+}
+
+export type EdgeTextTurnInput = WebTurnInput | EmailTurnInput;
+
 export interface WebTurnSettings {
 	turnSurface?: string;
 	hostedTurnSurface?: string;
