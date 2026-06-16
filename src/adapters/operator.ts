@@ -68,7 +68,7 @@ const OPERATOR_USER = "operator";
  * they have nested shapes or need a live reschedule. model and
  * thinking_level also get dedicated branches for validation/canonical keys.)
  */
-const SIMPLE_SETTINGS_TARGETS = new Set<string>();
+const SIMPLE_SETTINGS_TARGETS = new Set<string>(["mcpServers"]);
 
 /** Accepted thinking_level values. Matches agent.ts resolveThinkingLevel. */
 const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
