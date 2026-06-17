@@ -90,6 +90,7 @@
 		"test:web-ui-webchat-routing": "npx tsx test/web-ui-webchat-routing.test.ts",
 		"test:web-ui-tool-display": "npx tsx test/web-ui-tool-display.test.ts",
 		"test:web-ui-ambient-display": "npx tsx test/web-ui-ambient-display.test.ts",
+		"test:web-ui-turn-complete-refresh": "npx tsx test/web-ui-turn-complete-refresh.test.ts",
 		"test:web-adapter-writer-scope": "npx tsx test/web-adapter-writer-scope.test.ts",
 		"test:edge-runtime-import": "npx tsx test/edge-runtime-import.test.ts",
 		"test:edge-bootstrap-parity": "npx tsx test/edge-bootstrap-parity.test.ts",

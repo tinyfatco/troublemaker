@@ -13,6 +13,7 @@ import { createStreamRequestGate } from '../streamRequestGate';
 import { debugStream, summarizeEntry, summarizeEvent } from '../streamDebug';
 import type { AwarenessEntry } from '../types';
 import { getWebChatStreamEffect, reduceWebChatStreamEntry } from '../webChatStream';
+import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
 import { shouldSendAsSteering } from '../webChatRouting';
 
 export type StreamStatus =
@@ -92,8 +93,17 @@ export function useWebChat(): UseWebChatReturn {
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeUserEntryRef = useRef<AwarenessEntry | null>(null);
   const activeStreamingEntryRef = useRef<AwarenessEntry | null>(null);
   const requestGateRef = useRef(createStreamRequestGate());
+
+  const setActiveUserEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>> = useCallback((next) => {
+    const value = typeof next === 'function'
+      ? (next as (prev: AwarenessEntry | null) => AwarenessEntry | null)(activeUserEntryRef.current)
+      : next;
+    activeUserEntryRef.current = value;
+    setUserEntry(value);
+  }, []);
 
   const setActiveStreamingEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>> = useCallback((next) => {
     const value = typeof next === 'function'
@@ -145,6 +155,14 @@ export function useWebChat(): UseWebChatReturn {
     };
   }, [setActiveStreamingEntry]);
 
+  const preserveActiveTurnBeforeReplacement = useCallback(() => {
+    const previousUser = activeUserEntryRef.current;
+    const previousAssistant = activeStreamingEntryRef.current;
+    if (!previousUser || !previousAssistant || !hasRenderableContent(previousAssistant)) return;
+    if (previousUser.strippedText?.startsWith('/')) return;
+    setLocalEntries((prev) => appendLocalTurn(prev, previousUser, { ...previousAssistant, isStreaming: false }));
+  }, []);
+
   const sendSteeringMessage = useCallback(async (trimmed: string, options: SendMessageOptions = {}) => {
     const now = new Date().toISOString();
     const user: AwarenessEntry = {
@@ -167,12 +185,14 @@ export function useWebChat(): UseWebChatReturn {
       isStreaming: true,
     };
 
+    preserveActiveTurnBeforeReplacement();
+
     const requestId = activateStreamingEntry('steering', assistant);
     const controls = makeScopedStreamControls(requestId);
     const controller = new AbortController();
     let endedWithError = false;
 
-    setUserEntry(user);
+    setActiveUserEntry(user);
     setError(null);
     setIsStreaming(true);
     setStatus('steering');
@@ -243,7 +263,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, setActiveStreamingEntry]);
+  }, [activateStreamingEntry, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, setActiveStreamingEntry, setActiveUserEntry]);
 
   const sendMessage = useCallback(async (text: string, options: SendMessageOptions = {}) => {
     const trimmed = text.trim();
@@ -277,10 +297,12 @@ export function useWebChat(): UseWebChatReturn {
       isStreaming: true,
     };
 
+    preserveActiveTurnBeforeReplacement();
+
     const requestId = activateStreamingEntry('normal', assistant);
     const controls = makeScopedStreamControls(requestId);
 
-    setUserEntry(user);
+    setActiveUserEntry(user);
     setIsStreaming(true);
     setStatus('connecting');
     setError(null);
@@ -359,10 +381,15 @@ export function useWebChat(): UseWebChatReturn {
         endedWithError,
         finalAssistant: summarizeEntry(finalAssistant),
       });
+      if (!trimmed.startsWith('/') && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(WEB_CHAT_TURN_COMPLETE_EVENT, {
+          detail: { requestId, endedWithError, active },
+        }));
+      }
       if (!active) return;
       if (trimmed.startsWith('/')) {
-        setLocalEntries((prev) => appendLocalSlashTurn(prev, user, finalAssistant));
-        setUserEntry(null);
+        setLocalEntries((prev) => appendLocalTurn(prev, user, finalAssistant));
+        setActiveUserEntry(null);
         setActiveStreamingEntry(null);
       } else {
         // Keep streamingEntry with isStreaming=false — it becomes the rendered
@@ -374,7 +401,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, sendSteeringMessage, setActiveStreamingEntry]);
+  }, [activateStreamingEntry, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, sendSteeringMessage, setActiveStreamingEntry, setActiveUserEntry]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
@@ -418,9 +445,9 @@ function createMessagePayload(message: string, options: SendMessageOptions): Rec
   };
 }
 
-const LOCAL_SLASH_ENTRY_LIMIT = 40;
+const LOCAL_TURN_ENTRY_LIMIT = 40;
 
-function appendLocalSlashTurn(
+function appendLocalTurn(
   entries: AwarenessEntry[],
   user: AwarenessEntry,
   assistant: AwarenessEntry | null,
@@ -429,7 +456,7 @@ function appendLocalSlashTurn(
   if (assistant && hasRenderableContent(assistant)) {
     next.push(assistant);
   }
-  return next.slice(-LOCAL_SLASH_ENTRY_LIMIT);
+  return next.slice(-LOCAL_TURN_ENTRY_LIMIT);
 }
 
 function hasRenderableContent(entry: AwarenessEntry): boolean {

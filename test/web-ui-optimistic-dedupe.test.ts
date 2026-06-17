@@ -219,5 +219,62 @@ assert(
 	'delivery_context durable user entry hides matching optimistic web user entry',
 );
 
+const interruptedUser = user(
+	'local-interrupted-user',
+	'2026-05-18T00:03:00.000Z',
+	'first rapid message',
+);
+const interruptedAssistant = assistant(
+	'local-interrupted-assistant',
+	'2026-05-18T00:03:01.000Z',
+	'first rapid response',
+);
+const nextRapidUser = user(
+	'live-next-rapid-user',
+	'2026-05-18T00:03:02.000Z',
+	'second rapid message',
+);
+const nextRapidAssistant = streaming(
+	'live-next-rapid-assistant',
+	'2026-05-18T00:03:02.000Z',
+);
+const mergedWithInterruptedLocalTurn = mergeOptimisticEntries(
+	[],
+	nextRapidUser,
+	nextRapidAssistant,
+	[interruptedUser, interruptedAssistant],
+);
+
+assert(
+	mergedWithInterruptedLocalTurn.some((entry) => entry.id === interruptedUser.id) &&
+		mergedWithInterruptedLocalTurn.some((entry) => entry.id === interruptedAssistant.id) &&
+		mergedWithInterruptedLocalTurn.some((entry) => entry.id === nextRapidAssistant.id),
+	'interrupted local turn remains visible when the next rapid turn replaces the active slot',
+);
+
+const durableInterruptedUser = user(
+	'durable-interrupted-user',
+	'2026-05-18T00:03:00.300Z',
+	'first rapid message',
+);
+const durableInterruptedAssistant = assistant(
+	'durable-interrupted-assistant',
+	'2026-05-18T00:03:01.300Z',
+	'first rapid response',
+);
+const mergedWithDurableInterruptedTurn = mergeOptimisticEntries(
+	[durableInterruptedUser, durableInterruptedAssistant],
+	nextRapidUser,
+	nextRapidAssistant,
+	[interruptedUser, interruptedAssistant],
+);
+
+assert(
+	!mergedWithDurableInterruptedTurn.some((entry) => entry.id === interruptedUser.id || entry.id === interruptedAssistant.id) &&
+		mergedWithDurableInterruptedTurn.some((entry) => entry.id === durableInterruptedUser.id) &&
+		mergedWithDurableInterruptedTurn.some((entry) => entry.id === durableInterruptedAssistant.id),
+	'durable interrupted turn hides the equivalent local fallback entries',
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

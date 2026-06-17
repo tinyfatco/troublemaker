@@ -9,6 +9,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { awarenessStreamUrl, fetchAwarenessBacklog } from '../console-api';
 import { parseContextLine, type AwarenessEntry } from '../types';
+import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
 
 export interface UseAwarenessStreamReturn {
   entries: AwarenessEntry[];
@@ -129,6 +130,16 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     return () => {
       window.removeEventListener('focus', refreshIfVisible);
       document.removeEventListener('visibilitychange', refreshIfVisible);
+    };
+  }, [refreshRecentBacklog]);
+
+  useEffect(() => {
+    const refreshAfterWebChatTurn = () => {
+      refreshRecentBacklog(false).catch(() => {});
+    };
+    window.addEventListener(WEB_CHAT_TURN_COMPLETE_EVENT, refreshAfterWebChatTurn);
+    return () => {
+      window.removeEventListener(WEB_CHAT_TURN_COMPLETE_EVENT, refreshAfterWebChatTurn);
     };
   }, [refreshRecentBacklog]);
 
