@@ -62,6 +62,24 @@ function createFireworksModel(settings: WebTurnSettings = {}, baseUrl = "https:/
 	return { ...model, baseUrl };
 }
 
+function allowsStaticPreviewDeploy(project: WebTurnProjectContext | undefined): boolean {
+	if (!project) return false;
+	const deployMode = project.deployMode?.toLowerCase();
+	const stack = project.stack?.toLowerCase();
+	const templateFamily = project.templateFamily?.toLowerCase();
+	if (deployMode === "worker") return false;
+	if (stack === "emdash" || stack === "payload") return false;
+	if (templateFamily === "emdash" || templateFamily === "payload") return false;
+	return true;
+}
+
+function isDynamicBlogProject(project: WebTurnProjectContext): boolean {
+	const deployMode = project.deployMode?.toLowerCase();
+	const stack = project.stack?.toLowerCase();
+	const templateFamily = project.templateFamily?.toLowerCase();
+	return deployMode === "worker" || stack === "emdash" || stack === "payload" || templateFamily === "emdash" || templateFamily === "payload";
+}
+
 function projectPrompt(project: WebTurnProjectContext | undefined, deployAvailable: boolean): string {
 	if (!project) return "";
 
@@ -71,6 +89,18 @@ function projectPrompt(project: WebTurnProjectContext | undefined, deployAvailab
 		`- Name: ${project.displayName || project.slug}`,
 		`- Slug: ${project.slug}`,
 	];
+	if (project.templateName || project.templateId) {
+		const templateLabel = project.templateName && project.templateId && project.templateName !== project.templateId
+			? `${project.templateName} (${project.templateId})`
+			: project.templateName || project.templateId;
+		lines.push(`- Template: ${templateLabel}`);
+	}
+	if (project.stack) lines.push(`- Stack: ${project.stack}`);
+	if (project.deployMode) lines.push(`- Deploy mode: ${project.deployMode}`);
+	if (project.editMode) lines.push(`- Edit mode: ${project.editMode}`);
+	if (project.contentSurface) lines.push(`- Content surface: ${project.contentSurface}`);
+	if (project.adminUrl) lines.push(`- Admin URL: ${project.adminUrl}`);
+	if (project.mcpUrl) lines.push(`- MCP URL: ${project.mcpUrl}`);
 	if (project.previewUrl) lines.push(`- Preview URL: ${project.previewUrl}`);
 	if (project.productionUrl) lines.push(`- Production URL: ${project.productionUrl}`);
 	if (project.state) lines.push(`- Project state: ${project.state}`);
@@ -79,6 +109,11 @@ function projectPrompt(project: WebTurnProjectContext | undefined, deployAvailab
 		lines.push(
 			"",
 			"When the user asks to create, update, publish, or deploy this website preview, generate a complete static HTML document and call deploy_preview. The deploy_preview tool publishes index.html to the managed preview URL. After the tool succeeds, give the user the URL and a concise summary of what changed.",
+		);
+	} else if (isDynamicBlogProject(project)) {
+		lines.push(
+			"",
+			"This project is a managed dynamic blog stack. Do not replace it with a static HTML deploy. Use the listed admin, MCP, content, or workspace surfaces when available; otherwise ask a brief clarifying question or explain which stack-specific tool is missing for the requested change.",
 		);
 	} else {
 		lines.push(
@@ -118,7 +153,7 @@ function surfacePrompt(options: EdgeWebChatOptions): string {
 
 function systemPromptFor(options: EdgeWebChatOptions): string {
 	const base = options.settings?.systemPrompt || (options.hostBridge ? DEFAULT_SYSTEM_PROMPT : DEFAULT_NO_HOST_SYSTEM_PROMPT);
-	const project = projectPrompt(options.input.project, !!options.managedProjectBridge);
+	const project = projectPrompt(options.input.project, !!options.managedProjectBridge && allowsStaticPreviewDeploy(options.input.project));
 	const workspace = workspacePrompt(options);
 	const surface = surfacePrompt(options);
 	return `${base}${workspace}${project}${surface}`;
@@ -136,7 +171,7 @@ export function createEdgeWebChatTools(
 				createEdgeEditFileTool(options.workspaceBridge),
 			]
 			: []),
-		...(options.input.project && options.managedProjectBridge
+		...(options.input.project && options.managedProjectBridge && allowsStaticPreviewDeploy(options.input.project)
 			? [createEdgeDeployPreviewTool(options.input.project, options.managedProjectBridge)]
 			: []),
 	];
@@ -164,7 +199,7 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 		sessionId: options.input.channelId,
 		initialMessages: options.history,
 		tools,
-		terminalToolNames: options.input.project && options.managedProjectBridge ? ["deploy_preview"] : [],
+		terminalToolNames: options.input.project && options.managedProjectBridge && allowsStaticPreviewDeploy(options.input.project) ? ["deploy_preview"] : [],
 		emit: options.emit,
 	});
 

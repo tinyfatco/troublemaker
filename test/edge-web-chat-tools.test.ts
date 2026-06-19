@@ -7,6 +7,14 @@ const project = {
 	displayName: "Alice Bakery",
 };
 
+const emdashProject = {
+	...project,
+	templateId: "emdash-blog",
+	templateFamily: "emdash",
+	stack: "emdash",
+	deployMode: "worker",
+};
+
 const managedProjectBridge = {
 	deployPreview: async () => ({
 		url: "https://alice-bakery.preview.tinyfat.dev/",
@@ -56,6 +64,17 @@ assert.deepEqual(
 	}).map((tool) => tool.name),
 	["bash", "read", "write", "edit", "deploy_preview"],
 	"host-backed Agent plan edge chat can expose bash plus edge-native tools",
+);
+
+assert.deepEqual(
+	createEdgeWebChatTools({
+		input: { message: "update the blog", channelId: "project:alice-bakery:web", source: "web", project: emdashProject },
+		managedProjectBridge,
+		workspaceBridge,
+		emit,
+	}).map((tool) => tool.name),
+	["read", "write", "edit"],
+	"dynamic blog stacks do not expose static preview deploy as the update path",
 );
 
 console.log("edge-web-chat-tools ok");

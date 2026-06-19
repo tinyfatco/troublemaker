@@ -2,6 +2,16 @@ export interface WebTurnProjectContext {
 	siteId?: string;
 	slug: string;
 	displayName?: string;
+	templateId?: string;
+	templateFamily?: string;
+	templateVersion?: string;
+	templateName?: string;
+	stack?: string;
+	deployMode?: string;
+	editMode?: string;
+	contentSurface?: string;
+	adminUrl?: string;
+	mcpUrl?: string;
 	previewUrl?: string;
 	productionUrl?: string;
 	state?: string;
