@@ -72,6 +72,7 @@ export interface RuntimeToolCallContent {
 	type: "toolCall";
 	id: string;
 	name: string;
+	label?: string;
 	arguments: Record<string, unknown>;
 	contentIndex?: number;
 }
@@ -155,6 +156,7 @@ export interface RuntimeToolCallEvent {
 		type: "toolCall";
 		id: string;
 		name: string;
+		label?: string;
 		arguments: Record<string, unknown>;
 		contentIndex?: number;
 	};
@@ -162,6 +164,7 @@ export interface RuntimeToolCallEvent {
 		type: "toolCall";
 		id: string;
 		name: string;
+		label?: string;
 		arguments: Record<string, unknown>;
 		contentIndex?: number;
 	}>;

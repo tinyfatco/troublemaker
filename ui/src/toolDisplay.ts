@@ -17,6 +17,7 @@ const CONFIGURE_TOOL_NAMES = new Set([
 ]);
 
 export function getToolTitle(block: ToolCallContent): string {
+  if (typeof block.label === 'string' && block.label.trim()) return block.label.trim();
   const args = block.arguments || {};
   for (const key of TITLE_KEYS) {
     const value = args[key];
@@ -76,9 +77,10 @@ export function humanizeToolName(name: string): string {
 function getSendMessageDetail(args: Record<string, unknown>): string | null {
   const targetValue = typeof args.target === 'string' ? args.target : '';
   const target = targetValue.trim();
-  const text = typeof args.text === 'string' ? args.text.trim() : '';
+  const text = firstString(args, ['text', 'body', 'message', 'content']);
   if (!target && !text) return null;
-  const formattedTarget = target ? formatMessageTarget(target) : 'Target required';
+  if (!target) return truncateOneLine(text, 96);
+  const formattedTarget = formatMessageTarget(target);
   if (!text) return formattedTarget;
   return `${formattedTarget}: ${truncateOneLine(text, 96)}`;
 }
@@ -119,6 +121,7 @@ function isSensitiveConfigureTarget(target: string): boolean {
 }
 
 function formatMessageTarget(target: string): string {
+  if (target.startsWith('email-thread:')) return 'Email thread';
   if (target.startsWith('email-')) return `Email ${target.slice(6) || target}`;
   if (target.startsWith('phone-')) return 'Phone';
   if (/^slack:[CDG][A-Z0-9]+:\d+\.\d+$/i.test(target)) return 'Slack thread';

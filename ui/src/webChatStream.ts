@@ -108,11 +108,14 @@ export function reduceWebChatStreamEntry(prev: AwarenessEntry | null, parsed: an
     return { ...prev, content: [{ type: 'thinking', thinking: parsed.thinking }, ...nonThinking] };
   }
   if (parsed.type === 'toolCall') {
+    const args = isRecord(parsed.arguments) ? parsed.arguments : {};
+    const label = cleanToolCallLabel(parsed.label) || cleanToolCallLabel(args.label);
     return upsertToolCall(prev, {
       type: 'toolCall',
       id: parsed.id || `tool-${Date.now()}`,
       name: parsed.name,
-      arguments: parsed.arguments || {},
+      ...(label ? { label } : {}),
+      arguments: args,
     });
   }
   if (parsed.type === 'toolcall_start' || parsed.type === 'toolcall_delta' || parsed.type === 'toolcall_end') {
@@ -307,6 +310,7 @@ function upsertToolCall(entry: AwarenessEntry, toolCall: ToolCallPatch): Awarene
     ...toolCall,
     id: toolCall.id || existing.id,
     name: toolCall.name || existing.name,
+    label: toolCall.label || existing.label,
     arguments: {
       ...(existing.arguments || {}),
       ...(toolCall.arguments || {}),
@@ -404,6 +408,9 @@ function normalizeToolCallPatches(parsed: any): ToolCallPatch[] {
       type: 'toolCall',
       id: String(raw.id ?? parsed.id ?? ''),
       name: String(raw.name ?? parsed.name ?? 'tool'),
+      ...(cleanToolCallLabel(raw.label) || cleanToolCallLabel(raw.arguments?.label)
+        ? { label: cleanToolCallLabel(raw.label) || cleanToolCallLabel(raw.arguments?.label) }
+        : {}),
       arguments: isRecord(raw.arguments) ? raw.arguments : {},
       contentIndex,
     };
@@ -482,4 +489,8 @@ function numberOrUndefined(value: unknown): number | undefined {
 
 function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+function cleanToolCallLabel(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

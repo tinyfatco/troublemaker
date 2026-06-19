@@ -28,6 +28,7 @@ export interface ToolCallContent {
   type: 'toolCall';
   id: string;
   name: string;
+  label?: string;
   arguments: Record<string, unknown>;
   contentIndex?: number;
 }
@@ -181,11 +182,14 @@ function normalizeContentBlock(block: unknown): ContentBlock | null {
   }
   if (raw.type === 'toolCall' || raw.type === 'tool_call' || raw.type === 'tool_use') {
     const rawArgs = raw.arguments ?? raw.args ?? raw.input;
+    const args = isRecord(rawArgs) ? rawArgs : {};
+    const label = cleanLabel(raw.label) || cleanLabel(args.label);
     return {
       type: 'toolCall',
       id: String(raw.id ?? raw.toolCallId ?? raw.tool_call_id ?? raw.toolUseId ?? raw.tool_use_id ?? ''),
       name: String(raw.name ?? raw.toolName ?? raw.tool_name ?? 'tool'),
-      arguments: isRecord(rawArgs) ? rawArgs : {},
+      ...(label ? { label } : {}),
+      arguments: args,
     };
   }
   if (raw.type === 'toolResult' || raw.type === 'tool_result') {
@@ -221,4 +225,8 @@ function normalizeRealtimeOutputPhase(value: unknown): RealtimeOutputPhase | und
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function cleanLabel(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

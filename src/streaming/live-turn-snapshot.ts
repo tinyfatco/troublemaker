@@ -42,7 +42,7 @@ export class LiveAssistantSnapshot {
 		return next;
 	}
 
-	upsertToolCall(toolCallId: string, name: string, args: Record<string, unknown>): RuntimeAssistantSnapshotEntry | null {
+	upsertToolCall(toolCallId: string, name: string, args: Record<string, unknown>, label?: string): RuntimeAssistantSnapshotEntry | null {
 		this.ensureEntry();
 		if (!this.entry) return null;
 		const content = [...this.entry.content];
@@ -51,6 +51,7 @@ export class LiveAssistantSnapshot {
 			type: "toolCall",
 			id: toolCallId,
 			name,
+			...(cleanLabel(label) ? { label: cleanLabel(label) } : {}),
 			arguments: args,
 		};
 		if (existingIndex === -1) {
@@ -191,16 +192,26 @@ function normalizeAssistantContent(message: AgentMessage): RuntimeAssistantSnaps
 			}];
 		}
 		if (block.type === "toolCall") {
+			const args = block.arguments && typeof block.arguments === "object"
+				? block.arguments as Record<string, unknown>
+				: {};
 			return [{
 				type: "toolCall",
 				id: String(block.id || ""),
 				name: String(block.name || "tool"),
-				arguments: block.arguments && typeof block.arguments === "object" ? block.arguments : {},
+				...(cleanLabel((block as { label?: unknown }).label) || cleanLabel(args.label)
+					? { label: cleanLabel((block as { label?: unknown }).label) || cleanLabel(args.label) }
+					: {}),
+				arguments: args,
 				contentIndex,
 			}];
 		}
 		return [];
 	});
+}
+
+function cleanLabel(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function findToolInsertIndex(content: RuntimeAssistantSnapshotContent[], toolCallId: string): number {

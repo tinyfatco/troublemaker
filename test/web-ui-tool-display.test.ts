@@ -25,6 +25,17 @@ const bashCall: ToolCallContent = {
 	type: "toolCall",
 	id: "tool-1",
 	name: "bash",
+	label: "Inspect account page source",
+	arguments: {
+		label: "Find WorkspaceLayout source",
+		command: "rg -n \"WorkspaceLayout\" ui/src",
+	},
+};
+
+const legacyLabelCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-legacy",
+	name: "bash",
 	arguments: {
 		label: "Find WorkspaceLayout source",
 		command: "rg -n \"WorkspaceLayout\" ui/src",
@@ -76,6 +87,27 @@ const sendEmailCall: ToolCallContent = {
 	},
 };
 
+const sendBodyCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-5b",
+	name: "send_message",
+	label: "Send the QA result",
+	arguments: {
+		target: "email-thread:abc123",
+		body: "Uploaded the attachment and verified the public content URL.",
+	},
+};
+
+const sendMessageOnlyCall: ToolCallContent = {
+	type: "toolCall",
+	id: "tool-5c",
+	name: "send_message",
+	label: "Send the note",
+	arguments: {
+		message: "No target is present in this legacy stream, but the preview should still render.",
+	},
+};
+
 const configureCall: ToolCallContent = {
 	type: "toolCall",
 	id: "tool-6",
@@ -109,12 +141,15 @@ const sensitiveConfigureCall: ToolCallContent = {
 	},
 };
 
-assert(getToolTitle(bashCall) === "Find WorkspaceLayout source", "tool title prefers human label over raw tool name");
+assert(getToolTitle(bashCall) === "Inspect account page source", "tool title prefers explicit top-level label over raw tool name");
+assert(getToolTitle(legacyLabelCall) === "Find WorkspaceLayout source", "tool title still supports legacy arguments.label");
 assert(getToolDetail(bashCall) === "rg -n \"WorkspaceLayout\" ui/src", "tool detail uses command as secondary text");
 assert(getToolDetail(yieldNoActionCall) === "heartbeat only; nothing useful to add", "yield_no_action reason is shown as secondary text");
 assert(getToolDetail(namespacedYieldNoActionCall) === "ambient conversation; no direct address", "namespaced yield_no_action reason is shown as secondary text");
 assert(getToolDetail(sendTelegramCall) === "Telegram: I'll take a look and send the draft shortly.", "send_message shows destination and message preview");
 assert(getToolDetail(sendEmailCall) === "Email alex@tinyfat.com: Line one Line two with a little more detail", "send_message aliases show destination and collapsed message preview");
+assert(getToolDetail(sendBodyCall) === "Email thread: Uploaded the attachment and verified the public content URL.", "send_message body fields show as secondary text");
+assert(getToolDetail(sendMessageOnlyCall) === "No target is present in this legacy stream, but the preview should still render.", "send_message without a target still shows the message preview");
 assert(getToolTitle(configureCall) === "Update heartbeat level", "configure title still uses the description");
 assert(getToolDetail(configureCall) === "spontaneity.level = 4", "configure detail shows target and value as secondary text");
 assert(getToolDetail(selfConfigureCall) === "thinking_level = high", "self_configure detail shows setting and value as secondary text");

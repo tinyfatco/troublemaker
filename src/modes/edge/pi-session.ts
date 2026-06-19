@@ -86,10 +86,12 @@ export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent 
 		}
 
 		if (event.type === "tool_execution_start") {
+			const args = event.args && typeof event.args === "object" ? event.args as Record<string, unknown> : {};
 			liveSnapshot.upsertToolCall(
 				event.toolCallId,
 				event.toolName,
-				event.args && typeof event.args === "object" ? event.args as Record<string, unknown> : {},
+				args,
+				toolCallLabel(args) || event.toolName,
 			);
 			await emitSnapshot(true);
 			return;
@@ -108,4 +110,9 @@ export function createEdgeAgentSession(options: EdgeAgentSessionOptions): Agent 
 	});
 
 	return agent;
+}
+
+function toolCallLabel(args: Record<string, unknown>): string | undefined {
+	const label = args.label;
+	return typeof label === "string" && label.trim() ? label.trim() : undefined;
 }

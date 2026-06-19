@@ -104,6 +104,7 @@ type StreamingToolCall = {
 	type: "toolCall";
 	id: string;
 	name: string;
+	label?: string;
 	arguments: Record<string, unknown>;
 	contentIndex?: number;
 };
@@ -113,13 +114,16 @@ function normalizeStreamingToolCall(raw: unknown, contentIndex?: number): Stream
 	const toolCall = raw as Record<string, unknown>;
 	if (toolCall.type !== "toolCall") return null;
 	const args = toolCall.arguments;
+	const normalizedArgs = args && typeof args === "object" && !Array.isArray(args)
+		? args as Record<string, unknown>
+		: {};
+	const label = cleanToolCallLabel(toolCall.label) || cleanToolCallLabel(normalizedArgs.label);
 	return {
 		type: "toolCall",
 		id: typeof toolCall.id === "string" ? toolCall.id : "",
 		name: typeof toolCall.name === "string" ? toolCall.name : "tool",
-		arguments: args && typeof args === "object" && !Array.isArray(args)
-			? args as Record<string, unknown>
-			: {},
+		...(label ? { label } : {}),
+		arguments: normalizedArgs,
 		...(typeof contentIndex === "number" ? { contentIndex } : {}),
 	};
 }
@@ -149,6 +153,10 @@ function normalizeStreamingToolCalls(event: Record<string, unknown>): StreamingT
 	}
 
 	return calls;
+}
+
+function cleanToolCallLabel(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function partialText(event: Record<string, unknown>): string | undefined {
@@ -558,8 +566,10 @@ function createRunner(
 
 		if (event.type === "tool_execution_start") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
-			const args = agentEvent.args as { label?: string };
-			const label = args.label || agentEvent.toolName;
+			const args = agentEvent.args && typeof agentEvent.args === "object"
+				? agentEvent.args as Record<string, unknown>
+				: {};
+			const label = cleanToolCallLabel(args.label) || agentEvent.toolName;
 
 			pendingTools.set(agentEvent.toolCallId, {
 				toolName: agentEvent.toolName,
@@ -572,10 +582,11 @@ function createRunner(
 			runState.liveSnapshot.upsertToolCall(
 				agentEvent.toolCallId,
 				agentEvent.toolName,
-				agentEvent.args && typeof agentEvent.args === "object" ? agentEvent.args as Record<string, unknown> : {},
+				args,
+				label,
 			);
 			emitSnapshot(true);
-			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, arguments: agentEvent.args || {} });
+			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
 			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false), "tool label");
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };

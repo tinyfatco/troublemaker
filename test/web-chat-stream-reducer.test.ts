@@ -49,11 +49,13 @@ entry = reduceWebChatStreamEntry(entry, {
 	type: 'toolCall',
 	id: 'tool-1',
 	name: 'send_message',
+	label: 'Send a Telegram update',
 	arguments: { target: '123', text: 'hello', label: 'Notify' },
 });
 
 const startedCalls = entry?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];
 assert(startedCalls.length === 1, 'tool execution start does not duplicate a streamed tool call');
+assert(startedCalls[0]?.label === 'Send a Telegram update', 'tool execution start preserves explicit top-level label');
 assert(startedCalls[0]?.arguments.label === 'Notify', 'tool execution start merges final validated args');
 
 entry = reduceWebChatStreamEntry(entry, {
@@ -104,13 +106,14 @@ assert((results[0] as any)?.result === 'sent again', 'latest tool result is reta
 let multi = reduceWebChatStreamEntry(assistant(), {
 	type: 'toolcall_delta',
 	toolCalls: [
-		{ type: 'toolCall', id: 'tool-a', name: 'read_file', arguments: { path: 'README.md' }, contentIndex: 0 },
+		{ type: 'toolCall', id: 'tool-a', name: 'read_file', label: 'Read the README', arguments: { path: 'README.md' }, contentIndex: 0 },
 		{ type: 'toolCall', id: 'tool-b', name: 'bash', arguments: { command: 'pwd' }, contentIndex: 1 },
 	],
 });
 
 let multiCalls = multi?.content?.filter((block) => block.type === 'toolCall') as ToolCallContent[];
 assert(multiCalls.length === 2, 'toolcall_delta can insert multiple live tool call blocks');
+assert(multiCalls[0]?.label === 'Read the README', 'toolcall_delta preserves streamed top-level labels');
 assert(multiCalls[1]?.arguments.command === 'pwd', 'second streamed tool call keeps its arguments');
 
 multi = reduceWebChatStreamEntry(multi, {
