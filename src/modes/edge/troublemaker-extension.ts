@@ -1,8 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import type { Skill } from "@earendil-works/pi-coding-agent";
 import type { ChannelInfo, UserInfo } from "../../adapters/types.js";
 import type { VerbosityLevel } from "../../context.js";
-import { buildSessionPreamble } from "../../core/prompt.js";
+import { buildSessionPreamble, type PromptSkill } from "../../core/prompt.js";
 import type { WebTurnInput } from "../../core/runtime-contract.js";
 
 export interface EdgeTroublemakerExtensionContext {
@@ -10,7 +9,7 @@ export interface EdgeTroublemakerExtensionContext {
 	workspaceContext?: string;
 	channels?: ChannelInfo[];
 	users?: UserInfo[];
-	skills?: Skill[];
+	skills?: PromptSkill[];
 	channelName?: string;
 	verbosity?: VerbosityLevel;
 }

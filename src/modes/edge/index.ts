@@ -1,9 +1,10 @@
-import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
-import type { Skill } from "@earendil-works/pi-coding-agent";
 import type { ChannelInfo, UserInfo } from "../../adapters/types.js";
 import type { VerbosityLevel } from "../../context.js";
+import type { PromptSkill } from "../../core/prompt.js";
 import type { RuntimeEventSink, WebTurnInput, WebTurnProjectContext, WebTurnSettings } from "../../core/runtime-contract.js";
+import { DEFAULT_FIREWORKS_MODEL_ID, getFireworksModel } from "../../fireworks-models.js";
 import { normalizeThinkingLevelForModel } from "../../model-thinking.js";
 import type { EdgeManagedProjectBridge, EdgeHostBridge, EdgeWorkspaceBridge } from "./host-bridge.js";
 import { createEdgeAgentSession } from "./pi-session.js";
@@ -30,7 +31,7 @@ export interface EdgeWebChatOptions {
 	workspaceContext?: string;
 	channels?: ChannelInfo[];
 	users?: UserInfo[];
-	skills?: Skill[];
+	skills?: PromptSkill[];
 	channelName?: string;
 	verbosity?: VerbosityLevel;
 	surface?: "web" | "email";
@@ -51,11 +52,11 @@ const DEFAULT_NO_HOST_SYSTEM_PROMPT = `You are Troublemaker, a practical AI agen
 
 You can answer directly for ordinary conversation, help the user get oriented, create static website drafts, keep concise notes, and deploy managed TinyFat website previews when the deploy_preview tool is available. This plan is edge-backed only: do not claim shell access, container access, command-line execution, hosted MCP tools, background scheduling, or long-running jobs. You may read, write, and edit files only through the edge-native workspace tools when they are available; those tools operate on the agent's encrypted TinyFat workspace, not a Linux container. If asked to run commands, inspect a repository through shell, execute bash, or report command output, say you cannot execute hosted/container tools on this plan and offer a command, checklist, managed preview deploy, or upgrade path instead. Never invent command output or imply that a command ran. If the user needs hosted execution, browser automation, scheduled work, or arbitrary MCP tools, explain that those unlock on the TinyFat Agent plan.`;
 
-const DEFAULT_EDGE_FIREWORKS_MODEL_ID = "accounts/fireworks/models/minimax-m2p7";
+const DEFAULT_EDGE_FIREWORKS_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
 
 function createFireworksModel(settings: WebTurnSettings = {}, baseUrl = "https://tinyfat.com/api/fireworks"): Model<Api> {
 	const modelId = settings.modelId || DEFAULT_EDGE_FIREWORKS_MODEL_ID;
-	const model = getModel("fireworks" as any, modelId as any);
+	const model = getFireworksModel(modelId);
 	if (!model) {
 		throw new Error(`Fireworks model not found: ${modelId}`);
 	}

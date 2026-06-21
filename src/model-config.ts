@@ -7,14 +7,15 @@
  * any workspace models.json entries are available to /model and runtime resolution.
  */
 
-import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import { DEFAULT_FIREWORKS_MODEL_ID, getFireworksModel, GLM_5P2_MODEL_ID, listBuiltinFireworksModels } from "./fireworks-models.js";
 import * as log from "./log.js";
 
 const DEFAULT_PROVIDER = "fireworks";
-const DEFAULT_MODEL_ID = "accounts/fireworks/models/minimax-m2p7";
+const DEFAULT_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
 
 /**
  * Friendly aliases for Anthropic models.
@@ -53,8 +54,11 @@ const FIREWORKS_ALIAS_TO_MODEL_ID: Record<string, string> = {
 	minimax: "accounts/fireworks/models/minimax-m2p7",
 	deepseek: "accounts/fireworks/models/deepseek-v4-pro",
 	kimi: "accounts/fireworks/models/kimi-k2p6",
-	glm: "accounts/fireworks/models/glm-5p1",
-	glm5: "accounts/fireworks/models/glm-5p1",
+	glm: GLM_5P2_MODEL_ID,
+	glm5: GLM_5P2_MODEL_ID,
+	"glm-5p2": GLM_5P2_MODEL_ID,
+	"glm-5.2": GLM_5P2_MODEL_ID,
+	"glm-52": GLM_5P2_MODEL_ID,
 	"glm-5p1": "accounts/fireworks/models/glm-5p1",
 	"glm-5.1": "accounts/fireworks/models/glm-5p1",
 	qwen: "accounts/fireworks/models/qwen3p6-plus",
@@ -103,6 +107,12 @@ const CURATED_MODEL_OPTIONS: Array<{ provider: string; id: string; name: string;
 	},
 	{
 		provider: "fireworks",
+		id: GLM_5P2_MODEL_ID,
+		name: "GLM-5.2",
+		api: "anthropic-messages",
+	},
+	{
+		provider: "fireworks",
 		id: "accounts/fireworks/models/glm-5p1",
 		name: "GLM-5.1",
 		api: "anthropic-messages",
@@ -140,11 +150,21 @@ function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 }
 
 function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
+	let models: Model<Api>[];
 	if (modelRegistry) {
 		modelRegistry.refresh();
-		return modelRegistry.getAll();
+		models = modelRegistry.getAll();
+	} else {
+		models = createWorkspaceModelRegistry(workingDir).getAll();
 	}
-	return createWorkspaceModelRegistry(workingDir).getAll();
+	return mergeBuiltinModels(models);
+}
+
+function mergeBuiltinModels(models: Model<Api>[]): Model<Api>[] {
+	const byKey = new Map<string, Model<Api>>();
+	for (const model of models) byKey.set(modelKey(model.provider, model.id), model);
+	for (const model of listBuiltinFireworksModels()) byKey.set(modelKey(model.provider, model.id), model);
+	return Array.from(byKey.values());
 }
 
 function findExactModel(models: Model<Api>[], provider: string, modelId: string): Model<Api> | undefined {
@@ -175,7 +195,7 @@ function resolveFireworksAliasModel(
  * Priority:
  * 1. MOM_MODEL_PROVIDER + MOM_MODEL_ID env vars (set by platform)
  * 2. settings.json defaultProvider + defaultModel (set by /model command or agent)
- * 3. fireworks / accounts/fireworks/models/minimax-m2p7
+ * 3. fireworks / accounts/fireworks/models/glm-5p2
  */
 export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
 	const { provider, id: modelId } = getCurrentModelSelection(workingDir);
@@ -195,7 +215,7 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 
 		const fallback =
 			findExactModel(models, DEFAULT_PROVIDER, DEFAULT_MODEL_ID) ||
-			getModel(DEFAULT_PROVIDER as any, DEFAULT_MODEL_ID as any);
+			getFireworksModel(DEFAULT_MODEL_ID);
 		if (!fallback) {
 			throw new Error(`Default model ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID} not found`);
 		}
@@ -204,6 +224,31 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 
 	log.logInfo(`Model: ${model.provider}/${model.id} (api: ${model.api})`);
 	return applyBaseUrlOverride(model, model.provider);
+}
+
+export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
+	const model = resolveModel(workingDir, modelRegistry);
+	if (!modelRegistry || modelRegistry.hasConfiguredAuth(model)) return model;
+
+	log.logWarning(
+		`Model auth not configured: ${model.provider}/${model.id}`,
+		`Falling back to ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID}`,
+	);
+
+	const models = getRegistryModels(workingDir, modelRegistry);
+	const fallback =
+		findExactModel(models, DEFAULT_PROVIDER, DEFAULT_MODEL_ID) ||
+		getFireworksModel(DEFAULT_MODEL_ID);
+	if (!fallback) {
+		throw new Error(`Default model ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID} not found`);
+	}
+	if (!modelRegistry.hasConfiguredAuth(fallback)) {
+		log.logWarning(
+			`Fallback model auth not configured: ${fallback.provider}/${fallback.id}`,
+			"Model calls will fail until Fireworks auth is available.",
+		);
+	}
+	return applyBaseUrlOverride(fallback, fallback.provider);
 }
 
 export function getCurrentModelSelection(workingDir?: string): { provider: string; id: string } {

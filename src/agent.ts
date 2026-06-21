@@ -25,7 +25,7 @@ import {
 	resolveThinkingLevel,
 } from "./core/prompt.js";
 import * as log from "./log.js";
-import { resolveModel, resolveApiKey } from "./model-config.js";
+import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } from "./model-thinking.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
@@ -353,7 +353,7 @@ function createRunner(
 	const modelRegistry = ModelRegistry.create(authStorage, join(workspaceDir, "models.json"));
 
 	// Resolve model: env vars > settings.json > defaults
-	const model = resolveModel(workspaceDir, modelRegistry);
+	const model = resolveModelWithAuth(workspaceDir, modelRegistry);
 
 	// FAT-275: read thinking_level from settings.json and clamp it to the
 	// selected provider/model's supported runtime shape.
@@ -826,7 +826,7 @@ function createRunner(
 			const currentSession = await getSession();
 
 			// Re-resolve model each run and keep the session prompt aligned with it.
-			const currentModel = resolveModel(workspaceDir, modelRegistry);
+			const currentModel = resolveModelWithAuth(workspaceDir, modelRegistry);
 			const agentModel = agent.state.model;
 			if (!agentModel || currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider) {
 				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
@@ -1150,7 +1150,7 @@ function createRunner(
 
 		getContextInfo(): ContextInfo {
 			// Re-resolve model to pick up settings.json changes
-			const currentModel = resolveModel(workspaceDir, modelRegistry);
+			const currentModel = resolveModelWithAuth(workspaceDir, modelRegistry);
 			const contextWindow = currentModel?.contextWindow || 200000;
 
 			// Ensure messages are loaded from context.jsonl

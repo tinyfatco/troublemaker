@@ -52,7 +52,7 @@ Defaults:
 UI:        http://127.0.0.1:3002
 Webhook:   http://127.0.0.1:3002/input/webhook
 Workspace: ~/Library/Application Support/Troublemaker/Workspace
-Model:     fireworks/accounts/fireworks/models/glm-5p1
+Model:     fireworks/accounts/fireworks/models/glm-5p2
 ```
 
 `npm run local:mac` loads `FIREWORKS_API_KEY` from macOS Keychain service

@@ -47,7 +47,7 @@ assert.ok(
 );
 assert.ok(
 	curated.some(
-		(model) => model.provider === "fireworks" && model.id === "accounts/fireworks/models/minimax-m2p7",
+		(model) => model.provider === "fireworks" && model.id === "accounts/fireworks/models/glm-5p2",
 	),
 	"includes curated Fireworks models even when getAvailable is empty",
 );
@@ -85,4 +85,3 @@ try {
 } finally {
 	rmSync(tempDir, { recursive: true, force: true });
 }
-

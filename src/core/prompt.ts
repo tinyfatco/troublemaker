@@ -1,4 +1,3 @@
-import type { Skill } from "@earendil-works/pi-coding-agent";
 import type { ChannelInfo, UserInfo } from "../adapters/types.js";
 import type { VerbosityLevel } from "../context.js";
 import * as log from "../log.js";
@@ -14,6 +13,13 @@ const WORKSPACE_CONTEXT_FILES = [
 	["USER.md", "User Profile"],
 ] as const;
 
+export interface PromptSkill {
+	name: string;
+	description: string;
+	filePath: string;
+	disableModelInvocation?: boolean;
+}
+
 function escapeXml(str: string): string {
 	return str
 		.replace(/&/g, "&amp;")
@@ -23,7 +29,7 @@ function escapeXml(str: string): string {
 		.replace(/'/g, "&apos;");
 }
 
-function formatSkillsForSessionPreamble(skills: Skill[]): string {
+function formatSkillsForSessionPreamble(skills: PromptSkill[]): string {
 	const visibleSkills = skills.filter((skill) => !skill.disableModelInvocation);
 	if (visibleSkills.length === 0) return "";
 
@@ -198,7 +204,7 @@ export function buildSessionPreamble(
 	workspaceContext: string,
 	channels: ChannelInfo[],
 	users: UserInfo[],
-	skills: Skill[],
+	skills: PromptSkill[],
 	displayChannelId: string,
 	displayChannelName?: string,
 	verbosity?: VerbosityLevel,
