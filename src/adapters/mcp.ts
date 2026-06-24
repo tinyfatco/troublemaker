@@ -31,6 +31,10 @@ import type {
 	UserInfo,
 } from "./types.js";
 
+interface PhoneGroupMessageAdapter extends PlatformAdapter {
+	postMessageToRecipients(channel: string, text: string, recipients: string[], attachments?: Array<{ filePath: string; filename: string }>): Promise<string>;
+}
+
 export interface McpAdapterConfig {
 	workingDir: string;
 }
@@ -327,9 +331,10 @@ export class McpAdapter implements PlatformAdapter {
 					text: z.string().describe("Message text to send"),
 					subject: z.string().optional().describe("Subject line (email only)"),
 					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
+					recipients: z.array(z.string()).optional().describe("Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group."),
 				},
 			},
-			async ({ target, text, subject, attachments }: { target: string; text: string; subject?: string; attachments?: string[] }) => {
+			async ({ target, text, subject, attachments, recipients }: { target: string; text: string; subject?: string; attachments?: string[]; recipients?: string[] }) => {
 				log.logInfo(`[mcp] send_message: ${target} (${text.length} chars)`);
 
 				if (!target.trim()) {
@@ -353,10 +358,16 @@ export class McpAdapter implements PlatformAdapter {
 						filePath,
 						filename: basename(filePath),
 					}));
+					const phoneRecipients = normalizePhoneRecipients(recipients);
+					if (phoneRecipients.length > 0 && adapter.name !== "phone") {
+						throw new Error("send_message recipients are only supported for phone/SMS/MMS targets.");
+					}
 
 					const ts = resolved.threadTs
 						? await adapter.postInThread(resolved.channel, resolved.threadTs, text)
-						: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
+						: phoneRecipients.length > 0
+							? await phoneGroupAdapter(adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
+							: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
 					adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 					// Append to awareness so the agent sees it on its next run.
@@ -381,9 +392,10 @@ export class McpAdapter implements PlatformAdapter {
 					});
 
 					const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
+					const recipientInfo = phoneRecipients.length ? ` to ${phoneRecipients.length + 1} phone participant(s)` : "";
 					const threadInfo = resolved.threadTs ? ` thread ${resolved.threadTs}` : "";
 					return {
-						content: [{ type: "text" as const, text: `Sent to ${adapter.name}:${resolved.channel}${threadInfo}${attInfo} (ts=${ts})` }],
+						content: [{ type: "text" as const, text: `Sent to ${adapter.name}:${resolved.channel}${threadInfo}${attInfo}${recipientInfo} (ts=${ts})` }],
 					};
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
@@ -540,4 +552,20 @@ export class McpAdapter implements PlatformAdapter {
 			restartWorking: async () => {},
 		};
 	}
+}
+
+function normalizePhoneRecipients(recipients: unknown): string[] {
+	if (!Array.isArray(recipients)) return [];
+	return Array.from(new Set(recipients
+		.filter((recipient): recipient is string => typeof recipient === "string")
+		.map((recipient) => recipient.trim())
+		.filter(Boolean)));
+}
+
+function phoneGroupAdapter(adapter: PlatformAdapter): PhoneGroupMessageAdapter {
+	const maybe = adapter as Partial<PhoneGroupMessageAdapter>;
+	if (typeof maybe.postMessageToRecipients !== "function") {
+		throw new Error("Phone adapter does not support explicit MMS recipients.");
+	}
+	return maybe as PhoneGroupMessageAdapter;
 }

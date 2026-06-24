@@ -152,6 +152,28 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 
 	async postMessage(channel: string, text: string, attachments?: PhoneOutboundAttachment[]): Promise<string> {
 		const record = this.resolveChannel(channel);
+		return this.sendFromRecord(record, text, attachments);
+	}
+
+	async postMessageToRecipients(channel: string, text: string, recipients: string[], attachments?: PhoneOutboundAttachment[]): Promise<string> {
+		const record = this.resolveChannel(channel);
+		const outboundRecipients = outboundRecipientsForGroup(record.from, record.sender, recipients, record.outboundRecipients || []);
+		const groupRecord: PhoneChannelRecord = {
+			...record,
+			transport: outboundRecipients.length > 1 ? "mms" : record.transport,
+			participants: Array.from(new Set([
+				...(record.participants || []),
+				record.sender,
+				...outboundRecipients,
+			].map(normalizeAddress).filter(Boolean))).sort(),
+			outboundRecipients,
+			displayName: outboundRecipients.length > 1 ? `mms/${outboundRecipients.join(",")}` : record.displayName,
+			updatedAt: new Date().toISOString(),
+		};
+		return this.sendFromRecord(groupRecord, text, attachments);
+	}
+
+	private async sendFromRecord(record: PhoneChannelRecord, text: string, attachments?: PhoneOutboundAttachment[]): Promise<string> {
 		const preferred = readPreferredTransport();
 		const provider = this.registry.select(record, preferred);
 		const result = await provider.sendMessage({ channel: record, text, attachments, preferredTransport: preferred });

@@ -9,6 +9,7 @@ import {
 
 type SentMessage = { channel: string; text: string };
 type ThreadMessage = { channel: string; threadTs: string; text: string };
+type GroupMessage = { channel: string; text: string; recipients: string[] };
 
 let passed = 0;
 let failed = 0;
@@ -30,6 +31,7 @@ function assertEqual<T>(actual: T, expected: T, msg: string) {
 function makeAdapter(name: string) {
 	const sent: SentMessage[] = [];
 	const threadSent: ThreadMessage[] = [];
+	const groupSent: GroupMessage[] = [];
 	const adapter = {
 		name,
 		maxMessageLength: 1000,
@@ -46,6 +48,10 @@ function makeAdapter(name: string) {
 			threadSent.push({ channel, threadTs, text });
 			return `${name}-thread-ts`;
 		},
+		postMessageToRecipients: async (channel: string, text: string, recipients: string[]) => {
+			groupSent.push({ channel, text, recipients });
+			return `${name}-group-ts`;
+		},
 		uploadFile: async () => {},
 		logToFile: () => {},
 		logBotResponse: () => {},
@@ -58,7 +64,7 @@ function makeAdapter(name: string) {
 		},
 		enqueueEvent: () => false,
 	} as unknown as PlatformAdapter;
-	return { adapter, sent, threadSent };
+	return { adapter, sent, threadSent, groupSent };
 }
 
 async function run() {
@@ -68,7 +74,8 @@ async function run() {
 	const telegram = makeAdapter("telegram");
 	const slack = makeAdapter("slack");
 	const email = makeAdapter("email");
-	const adapters = [telegram.adapter, discord.adapter, slack.adapter, email.adapter];
+	const phone = makeAdapter("phone");
+	const adapters = [telegram.adapter, discord.adapter, slack.adapter, email.adapter, phone.adapter];
 
 	assertEqual(normalizeDiscordChannel(`discord:${snowflake}`), snowflake, "normalizes discord: snowflake");
 	assertEqual(normalizeDiscordChannel(`discord-${snowflake}`), snowflake, "normalizes discord- snowflake");
@@ -130,6 +137,16 @@ async function run() {
 	});
 	assertEqual(email.sent.length, 1, "tool sends email-thread targets through Email postMessage");
 	assertEqual(email.sent[0]?.channel, "email-thread:0123456789abcdef", "email thread target passes through to Email adapter");
+
+	await (tool.execute as any)("call-phone-group", {
+		label: "phone group test",
+		target: "phone-abc123",
+		text: "hello phone group",
+		recipients: ["+15555550124", "+15555550124", " +15555550125 "],
+	});
+	assertEqual(phone.groupSent.length, 1, "tool sends phone targets with explicit recipients through group-aware phone method");
+	assertEqual(phone.groupSent[0]?.channel, "phone-abc123", "phone group target preserves phone channel");
+	assertEqual(phone.groupSent[0]?.recipients.join(","), "+15555550124,+15555550125", "phone group recipients are trimmed and deduped");
 
 	const silentResult = await (tool.execute as any)("call-2", {
 		label: "legacy silent",

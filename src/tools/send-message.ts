@@ -34,6 +34,10 @@ export interface ResolvedMessageTarget {
 	threadTs?: string;
 }
 
+interface PhoneGroupMessageAdapter extends PlatformAdapter {
+	postMessageToRecipients(channel: string, text: string, recipients: string[], attachments?: Array<{ filePath: string; filename: string }>): Promise<string>;
+}
+
 export function isObsoleteSilentControlMessage(text: string): boolean {
 	return text.trim().toUpperCase() === "[SILENT]";
 }
@@ -96,6 +100,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		text: Type.String({ description: "Message text to send" }),
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
 		subject: Type.Optional(Type.String({ description: "Subject line (email only - ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
+		recipients: Type.Optional(Type.Array(Type.String(), { description: "Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group." })),
 	});
 
 	return {
@@ -110,12 +115,13 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
-			const { target, text, attachments, subject } = params as {
+			const { target, text, attachments, subject, recipients } = params as {
 				label?: string;
 				target?: string;
 				text?: string;
 				attachments?: string[];
 				subject?: string;
+				recipients?: string[];
 			};
 
 			if (signal?.aborted) throw new Error("Operation aborted");
@@ -145,20 +151,27 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 					filePath,
 					filename: basename(filePath),
 				}));
+				const phoneRecipients = normalizePhoneRecipients(recipients);
+				if (phoneRecipients.length > 0 && resolved.adapter.name !== "phone") {
+					throw new Error("send_message recipients are only supported for phone/SMS/MMS targets.");
+				}
 
 				if (signal?.aborted) throw new Error("Operation aborted");
 
 				const ts = resolved.threadTs
 					? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
-					: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
+					: phoneRecipients.length > 0
+						? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
+						: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
 				resolved.adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
+				const recipientInfo = phoneRecipients.length ? ` to ${phoneRecipients.length + 1} phone participant(s)` : "";
 				const threadInfo = resolved.threadTs ? ` thread ${resolved.threadTs}` : "";
-				log.logInfo(`[send_message] Sent to ${resolved.adapter.name}:${resolved.channel}${threadInfo}${attInfo}: ${text.substring(0, 80)}`);
+				log.logInfo(`[send_message] Sent to ${resolved.adapter.name}:${resolved.channel}${threadInfo}${attInfo}${recipientInfo}: ${text.substring(0, 80)}`);
 
 				return {
-					content: [{ type: "text" as const, text: `Message sent to ${resolved.adapter.name} target ${target}${attInfo} (ts=${ts})` }],
+					content: [{ type: "text" as const, text: `Message sent to ${resolved.adapter.name} target ${target}${attInfo}${recipientInfo} (ts=${ts})` }],
 					details: undefined,
 				};
 			} catch (err) {
@@ -171,4 +184,20 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			}
 		},
 	};
+}
+
+function normalizePhoneRecipients(recipients: unknown): string[] {
+	if (!Array.isArray(recipients)) return [];
+	return Array.from(new Set(recipients
+		.filter((recipient): recipient is string => typeof recipient === "string")
+		.map((recipient) => recipient.trim())
+		.filter(Boolean)));
+}
+
+function phoneGroupAdapter(adapter: PlatformAdapter): PhoneGroupMessageAdapter {
+	const maybe = adapter as Partial<PhoneGroupMessageAdapter>;
+	if (typeof maybe.postMessageToRecipients !== "function") {
+		throw new Error("Phone adapter does not support explicit MMS recipients.");
+	}
+	return maybe as PhoneGroupMessageAdapter;
 }
