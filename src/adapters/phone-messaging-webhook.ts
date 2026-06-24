@@ -99,6 +99,9 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			.join("\n");
 		const text = attachmentLines ? `${payload.text}\n\nAttachments:\n${attachmentLines}` : payload.text;
 
+		const recipientDescription = record.outboundRecipients && record.outboundRecipients.length > 1
+			? `group with ${record.outboundRecipients.join(", ")}`
+			: `conversation with ${record.displayName}`;
 		const event: MomEvent = {
 			type: "dm",
 			channel: record.channelId,
@@ -109,7 +112,7 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			sourceEventType: "phone_message",
 			directlyAddressed: true,
 			replyTarget: record.channelId,
-			replyTargetDescription: `${(record.transport || "phone").toUpperCase()} conversation with ${record.displayName}`,
+			replyTargetDescription: `${(record.transport || "phone").toUpperCase()} ${recipientDescription}`,
 		};
 
 		this.logToFile({
@@ -306,8 +309,10 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 		const channelId = `phone-${createHash("sha256").update(`${payload.provider}:${sender}:${conversationId}`).digest("hex").slice(0, 20)}`;
 		const transport = payload.transport || "unknown";
 		const displayName = `${transport}/${from}`;
+		const existing = this.channels.get(channelId);
+		const outboundRecipients = outboundRecipientsForGroup(from, sender, payload.recipients || [], existing?.outboundRecipients || []);
 		const record: PhoneChannelRecord = {
-			...(this.channels.get(channelId) || {} as PhoneChannelRecord),
+			...(existing || {} as PhoneChannelRecord),
 			channelId,
 			provider: payload.provider,
 			transport,
@@ -315,6 +320,7 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 			from,
 			sender,
 			participants,
+			outboundRecipients,
 			displayName,
 			lastMessageId: payload.messageId,
 			updatedAt: new Date().toISOString(),
@@ -368,6 +374,18 @@ function validatePayload(payload: PhoneInboundPayload): string | null {
 
 function normalizeAddress(value: string): string {
 	return value.trim().toLowerCase();
+}
+
+function outboundRecipientsForGroup(from: string, sender: string, recipients: string[], existing: string[] = []): string[] {
+	const normalizedSender = normalizeAddress(sender);
+	const candidates = [
+		from,
+		...recipients,
+		...existing,
+	].map(normalizeAddress).filter(Boolean);
+
+	return Array.from(new Set(candidates))
+		.filter((recipient) => recipient !== normalizedSender);
 }
 
 function toIsoDate(value: string): string {

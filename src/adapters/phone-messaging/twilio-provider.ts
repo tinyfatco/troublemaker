@@ -27,12 +27,16 @@ export class TwilioProvider implements PhoneMessagingProvider {
 		}
 
 		const params = new URLSearchParams();
-		params.set("To", request.channel.from);
 		params.set("Body", request.text);
 
 		const providerData = request.channel.providerData || {};
 		const from = typeof providerData.twilioFrom === "string" ? providerData.twilioFrom : (request.channel.sender || this.fromNumber);
 		const serviceSid = typeof providerData.messagingServiceSid === "string" ? providerData.messagingServiceSid : this.messagingServiceSid;
+		const recipients = outboundRecipientsFor(request.channel, from);
+		params.set("To", recipients[0]);
+		recipients.slice(1).forEach((recipient, index) => {
+			params.set(`OtherRecipients${index}`, recipient);
+		});
 
 		if (serviceSid) {
 			params.set("MessagingServiceSid", serviceSid);
@@ -59,8 +63,25 @@ export class TwilioProvider implements PhoneMessagingProvider {
 
 		return {
 			providerMessageId: payload.sid || String(Date.now()),
-			transport: "sms",
+			transport: recipients.length > 1 || request.channel.transport === "mms" ? "mms" : "sms",
 			status: payload.status || "accepted",
 		};
 	}
+}
+
+function outboundRecipientsFor(channel: PhoneSendRequest["channel"], fromAddress: string | undefined): string[] {
+	const ownAddresses = new Set([channel.sender, fromAddress].filter((value): value is string => Boolean(value)).map(normalizePhoneAddress));
+	const candidates = channel.outboundRecipients?.length
+		? channel.outboundRecipients
+		: [channel.from];
+	const recipients = Array.from(new Set(candidates.map(normalizePhoneAddress).filter(Boolean)))
+		.filter((recipient) => !ownAddresses.has(recipient));
+	if (recipients.length === 0) {
+		throw new Error("Twilio send requires at least one non-sender recipient");
+	}
+	return recipients;
+}
+
+function normalizePhoneAddress(value: string): string {
+	return value.trim().toLowerCase();
 }

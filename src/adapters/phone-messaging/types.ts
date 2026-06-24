@@ -35,6 +35,7 @@ export interface PhoneChannelRecord {
 	from: string;
 	sender: string;
 	participants: string[];
+	outboundRecipients?: string[];
 	displayName: string;
 	lastMessageId?: string;
 	updatedAt: string;
