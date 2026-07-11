@@ -49,7 +49,8 @@ rollback() {
 	while [ "$attempt" -lt 20 ]; do
 		if systemctl is-active --quiet "$SERVICE" && curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
 			rm -rf "$FAILED"
-			echo "zip-update: rollback healthy on $(git -C "$REPO" rev-parse --short HEAD)" >&2
+			ROLLBACK_REVISION=$(runuser -u zip-builder -- git -C "$REPO" rev-parse --short HEAD)
+			echo "zip-update: rollback healthy on $ROLLBACK_REVISION" >&2
 			return 0
 		fi
 		attempt=$((attempt + 1))
@@ -74,7 +75,7 @@ runuser -u zip-builder -- env HOME="$BUILD_HOME" sh -c "
 	NODE_OPTIONS=--max-old-space-size=700 npm run build
 "
 
-REVISION=$(git -C "$CANDIDATE" rev-parse HEAD)
+REVISION=$(runuser -u zip-builder -- git -C "$CANDIDATE" rev-parse HEAD)
 SHORT_REVISION=$(printf '%s' "$REVISION" | cut -c1-7)
 echo "zip-update: candidate $SHORT_REVISION built from origin/$REF"
 

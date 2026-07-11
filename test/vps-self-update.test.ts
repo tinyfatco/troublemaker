@@ -37,6 +37,7 @@ assert.match(serviceUnit, /ExecStart=\/usr\/local\/lib\/zip-updater\/update-runt
 const updater = await readFile(updateScript, "utf8");
 assert.match(updater, /install -d -m 0755 -o zip-builder -g zip-builder "\$CANDIDATE"/);
 assert.match(updater, /npm ci --no-audit --no-fund/);
+assert.match(updater, /runuser -u zip-builder -- git -C "\$CANDIDATE" rev-parse HEAD/);
 assert.match(updater, /mv "\$REPO" "\$PREVIOUS"/);
 assert.match(updater, /curl -fsS "\$HEALTH_URL"/);
 assert.match(updater, /mv "\$PREVIOUS" "\$REPO"/);
