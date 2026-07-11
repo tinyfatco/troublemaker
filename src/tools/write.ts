@@ -4,6 +4,7 @@ import type { Executor } from "../sandbox.js";
 
 const writeSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're writing (shown to user)" }),
+	show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 	path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
 	content: Type.String({ description: "Content to write to the file" }),
 });

@@ -409,6 +409,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
 				verbose: settings.getVerbose(event.channel, "slack"),
+				toolStreaming: settings.getSlackToolStreaming(),
 			},
 			{
 				onWorkingUpdate: (id) => {

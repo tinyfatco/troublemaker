@@ -11,6 +11,7 @@ export function setUploadFunction(fn: (filePath: string, title?: string) => Prom
 
 const attachSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're sharing (shown to user)" }),
+	show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 	path: Type.String({ description: "Path to the file to attach" }),
 	title: Type.Optional(Type.String({ description: "Title for the file (defaults to filename)" })),
 });

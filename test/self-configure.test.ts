@@ -59,6 +59,19 @@ try {
 	assert(channelPlacement.newValue === "channel", "Slack placement alias normalizes new-channel-message");
 	assert((settings.slack as any).responsePlacement === "channel", "Slack placement alias updates the durable setting");
 
+	const selectiveStreaming = applySelfConfiguration(workingDir, "slack.tool_streaming", "selected");
+	settings = readSettings(workingDir);
+	assert(selectiveStreaming.newValue === "important", "Slack tool streaming normalizes selected to important");
+	assert((settings.slack as any).toolStreaming === "important", "Slack tool streaming writes its durable settings block");
+	const quietStreaming = applySelfConfiguration(workingDir, "tool_streaming", "quiet");
+	settings = readSettings(workingDir);
+	assert(quietStreaming.newValue === "off", "natural tool-streaming alias normalizes quiet to off");
+	assert((settings.slack as any).toolStreaming === "off", "tool-streaming alias updates the Slack setting");
+	const allStreaming = applySelfConfiguration(workingDir, "slack.toolStreaming", "everything");
+	settings = readSettings(workingDir);
+	assert(allStreaming.newValue === "all", "camelCase tool-streaming alias normalizes everything to all");
+	assert((settings.slack as any).toolStreaming === "all", "camelCase tool-streaming alias persists all mode");
+
 	const spontaneity = applySelfConfiguration(workingDir, "spontaneity.level", 5);
 	settings = readSettings(workingDir);
 	assert((settings.spontaneity as any).level === 5, "spontaneity level writes settings");
@@ -94,6 +107,13 @@ try {
 		assert(false, "invalid Slack placement throws");
 	} catch (err) {
 		assert(err instanceof Error && err.message.includes("thread"), "invalid Slack placement explains accepted values");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "slack.tool_streaming", "maximum-jazz");
+		assert(false, "invalid Slack tool-streaming mode throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("important"), "invalid Slack tool-streaming mode explains accepted values");
 	}
 
 	try {

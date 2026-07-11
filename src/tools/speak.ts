@@ -21,6 +21,7 @@ const DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128";
 
 const speakToolSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're saying" }),
+	show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 	text: Type.String({ description: "Short text to speak aloud through the configured local TTS backend" }),
 	interrupt: Type.Optional(Type.Boolean({ description: "Stop any in-progress speech before speaking this text" })),
 });

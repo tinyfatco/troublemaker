@@ -88,6 +88,22 @@ try {
 	assert.equal(posted[0]?.thread_ts, undefined, "Slack DMs remain top-level when no inbound thread exists");
 	assert.equal(posted[2]?.thread_ts, undefined, "Slack DM final output remains top-level");
 
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { responsePlacement: "thread", toolStreaming: "important" },
+	}));
+	const selective = new TestSlackAdapter(workingDir);
+	const selectiveContext = selective.createContext(event(), {} as ChannelStore);
+	await selectiveContext.setTyping(true);
+	await selectiveContext.respond("_→ Routine read_", false, { show: false });
+	await selectiveContext.respond("_→ Checking the deployed revision_", false, { show: true });
+	await selectiveContext.respondInThread("raw tool arguments and result");
+	await selectiveContext.sendFinalResponse("ordinary harness final");
+	assert.equal(selective.posted.length, 1, "messages-only Slack emits only the selected safe tool label");
+	assert.equal(selective.posted[0]?.thread_ts, "1710000000.000001", "selected label enters the inbound Slack thread");
+	assert.match(selective.posted[0]?.text || "", /Checking the deployed revision/, "selected label text is visible");
+	assert.doesNotMatch(selective.posted[0]?.text || "", /raw tool arguments/, "raw tool detail remains suppressed");
+
 	console.log("slack-response-placement ok");
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });

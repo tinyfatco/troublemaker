@@ -15,6 +15,7 @@ try {
 	assert.equal(defaults.getVerbose("phone-abc123", "phone"), "messages-only", "Phone keeps its safe default without config");
 	assert.equal(defaults.getVerbose("form-abc123", "form"), true, "Form ingress keeps direct harness output by default");
 	assert.equal(defaults.getVerbose("web", "web"), true, "Web chat keeps direct harness streaming by default");
+	assert.equal(defaults.getSlackToolStreaming(), "important", "Slack defaults to selected show:true tool labels");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: {
@@ -47,6 +48,8 @@ try {
 	const globallyVerbose = new MomSettingsManager(workingDir);
 	assert.equal(globallyVerbose.getVerbose("C1234567890", "slack"), true, "explicit verbose default overrides Slack messages-only");
 	assert.equal(globallyVerbose.getVerbose("8389147137", "telegram"), true, "explicit verbose default overrides Telegram messages-only");
+	globallyVerbose.setSlackToolStreaming("off");
+	assert.equal(globallyVerbose.getSlackToolStreaming(), "off", "Slack tool-streaming mode can be turned off durably");
 
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids retain the send_message-only default policy");
 	assert.equal(isSendMessageOnlyPlatform("form-abc123"), false, "Form channels do not infer send_message-only policy");

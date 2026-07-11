@@ -51,6 +51,11 @@ export interface SendFinalResponseOptions {
 	force?: boolean;
 }
 
+export interface RespondOptions {
+	/** The agent explicitly judged this safe tool label useful to surface. */
+	show?: boolean;
+}
+
 export interface ThreadTranscriptMessage {
 	date?: string;
 	ts: string;
@@ -117,7 +122,7 @@ export interface MomContext {
 	channelName?: string;
 	channels: ChannelInfo[];
 	users: UserInfo[];
-	respond: (text: string, shouldLog?: boolean) => Promise<void>;
+	respond: (text: string, shouldLog?: boolean, options?: RespondOptions) => Promise<void>;
 	sendFinalResponse: (text: string, options?: SendFinalResponseOptions) => Promise<void>;
 	respondInThread: (text: string) => Promise<void>;
 	setTyping: (isTyping: boolean) => Promise<void>;

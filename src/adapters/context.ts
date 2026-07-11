@@ -1,5 +1,5 @@
-import type { VerbosityLevel } from "../context.js";
-import type { MomContext, MomEvent, UserInfo, ChannelInfo } from "./types.js";
+import type { ToolStreamingMode, VerbosityLevel } from "../context.js";
+import type { MomContext, MomEvent, RespondOptions, UserInfo, ChannelInfo } from "./types.js";
 
 // ============================================================================
 // Shared two-message context for chat adapters (Telegram, Slack)
@@ -42,8 +42,10 @@ export interface TwoMessageConfig {
 	channelName?: string;
 	/** Whether this is a scheduled event */
 	isEvent?: boolean;
-	/** Verbosity: true (full), false (no working msg), "messages-only" (no harness output at all) */
+	/** Verbosity: true (full), false (no working msg), "messages-only" (no ordinary harness output) */
 	verbose?: VerbosityLevel;
+	/** In quiet modes, surface no tool labels, selected show:true labels, or all labels. */
+	toolStreaming?: ToolStreamingMode;
 }
 
 /**
@@ -74,6 +76,7 @@ export function createTwoMessageContext(
 	let workingMessageId: string | null = null;
 	let finalMessageId: string | null = null;
 	let isWorking = true;
+	let hasSurfacedToolLabel = false;
 	let updatePromise = Promise.resolve();
 
 	// Chronological entries for the working message
@@ -106,10 +109,11 @@ export function createTwoMessageContext(
 
 	const verbose = config.verbose !== false && config.verbose !== "messages-only"; // default true
 	const messagesOnly = config.verbose === "messages-only";
+	const toolStreaming = config.toolStreaming ?? "off";
 
 	// Send or edit the working message (Message 1)
 	const flushWorkingMessage = async () => {
-		if (!verbose) return; // silent/messages-only mode — skip working message entirely
+		if (!verbose && !hasSurfacedToolLabel) return; // quiet mode stays closed until a safe label is selected
 		const display = buildWorkingDisplay();
 		if (workingMessageId) {
 			await ops.update(event.channel, workingMessageId, display);
@@ -176,23 +180,35 @@ export function createTwoMessageContext(
 		channels: channels.map((c) => ({ id: c.id, name: c.name })),
 		users: users.map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
 
-		respond: async (text: string, shouldLog = true) => {
+		respond: async (text: string, shouldLog = true, options: RespondOptions = {}) => {
 			updatePromise = updatePromise.then(async () => {
-				// Tool labels (shouldLog=false, starts with _→) — append to working message
+				// Tool labels (shouldLog=false, starts with _→) — append to working message.
+				// In quiet modes, only safe labels admitted by the tool-streaming policy
+				// may open a working message. Raw arguments/results stay suppressed.
 				if (!shouldLog && text.startsWith("_→")) {
-					await flushPendingText();
+					const surface = verbose
+						|| toolStreaming === "all"
+						|| (toolStreaming === "important" && options.show === true);
+					if (!surface) return;
+					if (!messagesOnly) await flushPendingText();
+					hasSurfacedToolLabel = true;
 					const label = text.replace(/^_/, "").replace(/_$/, "");
 					workingEntries.push(ops.formatStatus(label));
 					await scheduleWorkingUpdate();
 					return;
 				}
 
-				// Status messages (shouldLog=false) — flush pending, refresh working message
+				// Status messages (shouldLog=false) — flush pending, refresh working message.
+				// They never open quiet output on their own.
 				if (!shouldLog) {
-					await flushPendingText();
-					await scheduleWorkingUpdate();
+					if (!messagesOnly) await flushPendingText();
+					if (verbose) await scheduleWorkingUpdate();
 					return;
 				}
+
+				// Ordinary assistant text is never buffered in messages-only mode; this
+				// prevents a later selected label from accidentally exposing it.
+				if (messagesOnly) return;
 
 				// Real content (shouldLog=true) — buffer it. If something else arrives
 				// before sendFinalResponse, flushPendingText proves it was interim.
@@ -237,6 +253,7 @@ export function createTwoMessageContext(
 
 		respondInThread: callbacks?.respondInThread
 			? async (text: string) => {
+					if (!verbose) return;
 					updatePromise = updatePromise.then(async () => {
 						await callbacks.respondInThread!(text);
 					});
@@ -320,6 +337,7 @@ export function createTwoMessageContext(
 				finalMessageId = null;
 				workingEntries.length = 0;
 				pendingText = null;
+				hasSurfacedToolLabel = false;
 				isWorking = true;
 				lastEditTime = 0;
 				editDirty = false;

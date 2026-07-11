@@ -26,6 +26,7 @@ function isImageFile(filePath: string): string | null {
 
 const readSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're reading and why (shown to user)" }),
+	show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),

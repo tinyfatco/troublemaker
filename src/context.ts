@@ -52,10 +52,13 @@ export interface MomVerboseSettings {
 }
 
 export type SlackResponsePlacement = "thread" | "channel";
+export type ToolStreamingMode = "off" | "important" | "all";
 
 export interface MomSlackSettings {
 	/** Place normal harness output under the inbound Slack message/thread or at channel top level. */
 	responsePlacement?: SlackResponsePlacement;
+	/** Surface safe tool labels while ordinary harness output remains quiet. */
+	toolStreaming?: ToolStreamingMode;
 }
 
 export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "noop" | "disabled";
@@ -433,6 +436,17 @@ export class MomSettingsManager {
 
 	setSlackResponsePlacement(value: SlackResponsePlacement): void {
 		this.settings.slack = { ...this.settings.slack, responsePlacement: value };
+		this.save();
+	}
+
+	getSlackToolStreaming(): ToolStreamingMode {
+		// Selective labels are useful in Slack by default while remaining
+		// fail-closed: the model must explicitly mark each label show: true.
+		return this.settings.slack?.toolStreaming ?? "important";
+	}
+
+	setSlackToolStreaming(value: ToolStreamingMode): void {
+		this.settings.slack = { ...this.settings.slack, toolStreaming: value };
 		this.save();
 	}
 

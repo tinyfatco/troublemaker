@@ -94,6 +94,7 @@ export function resolveMessageTarget(target: string, adapters: PlatformAdapter[]
 export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
+		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		target: Type.String({
 			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, discord:<channel id>, email-thread:<id>, email-user@example.com, phone-...",
 		}),

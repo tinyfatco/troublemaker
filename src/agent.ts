@@ -588,7 +588,7 @@ function createRunner(
 			);
 			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
-			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false), "tool label");
+			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false, { show: args.show === true }), "tool label");
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
 			const resultStr = extractToolResultText(agentEvent.result);

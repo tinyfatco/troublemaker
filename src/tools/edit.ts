@@ -88,6 +88,7 @@ function generateDiffString(oldContent: string, newContent: string, contextLines
 
 const editSchema = Type.Object({
 	label: Type.String({ description: "Brief description of the edit you're making (shown to user)" }),
+	show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 	path: Type.String({ description: "Path to the file to edit (relative or absolute)" }),
 	oldText: Type.String({ description: "Exact text to find and replace (must match exactly)" }),
 	newText: Type.String({ description: "New text to replace the old text with" }),

@@ -15,6 +15,7 @@ import {
 	MomSettingsManager,
 	type MomSpontaneitySettings,
 	type SlackResponsePlacement,
+	type ToolStreamingMode,
 	type VerbosityLevel,
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
@@ -34,6 +35,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"verbosity",
 	"slack.verbosity",
 	"slack.response_placement",
+	"slack.tool_streaming",
 	"spontaneity.enabled",
 	"spontaneity.level",
 	"spontaneity.intervalMinutes",
@@ -56,6 +58,9 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"slack.verbose": "slack.verbosity",
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
+	"slack.toolStreaming": "slack.tool_streaming",
+	"tool_streaming": "slack.tool_streaming",
+	"toolStreaming": "slack.tool_streaming",
 };
 
 interface SelfConfigureResult {
@@ -215,6 +220,32 @@ function configureSlackResponsePlacement(workingDir: string, value: unknown): Se
 	};
 }
 
+function parseToolStreamingMode(value: unknown): ToolStreamingMode {
+	const normalized = parseString(value, "slack.tool_streaming").trim().toLowerCase().replace(/_/g, "-");
+	if (["off", "none", "quiet", "false"].includes(normalized)) return "off";
+	if (["important", "selected", "selective", "on", "true"].includes(normalized)) return "important";
+	if (["all", "everything"].includes(normalized)) return "all";
+	throw new Error('slack.tool_streaming must be "off", "important", or "all".');
+}
+
+function configureSlackToolStreaming(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getSlackToolStreaming();
+	const newValue = parseToolStreamingMode(value);
+	manager.setSlackToolStreaming(newValue);
+	return {
+		changed: true,
+		setting: "slack.tool_streaming",
+		previousValue,
+		newValue,
+		note: newValue === "off"
+			? "Slack tool labels are quiet on the next turn."
+			: newValue === "important"
+				? "On the next Slack turn, only safe tool labels explicitly marked show: true will surface."
+				: "On the next Slack turn, every safe tool label will surface; raw arguments and results still follow the verbosity boundary.",
+	};
+}
+
 function configureSpontaneity(workingDir: string, setting: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previous = manager.getSpontaneitySettings();
@@ -329,6 +360,7 @@ export function applySelfConfiguration(
 	if (target === "verbosity") return configureVerbosity(workingDir, value);
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
+	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
@@ -351,9 +383,10 @@ function formatResult(result: SelfConfigureResult): string {
 export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of the setting change" }),
+		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
 				"heartbeat.checklist, voice/realtime_voice.",
@@ -365,7 +398,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, selective Slack tool streaming, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
