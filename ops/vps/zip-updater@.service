@@ -1,0 +1,10 @@
+[Unit]
+Description=Build and activate Zip from origin/%i with automatic rollback
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=1800
+ExecStartPre=/usr/bin/rm -f /run/zip-updater/%i.request
+ExecStart=/usr/local/lib/zip-updater/update-runtime %i

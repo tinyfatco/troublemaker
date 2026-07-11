@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a Zip update request to origin/%i
+
+[Path]
+PathExists=/run/zip-updater/%i.request
+Unit=zip-updater@%i.service
+
+[Install]
+WantedBy=multi-user.target

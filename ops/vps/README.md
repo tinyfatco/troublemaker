@@ -28,3 +28,23 @@ The R2 credentials are limited by Cloudflare to the agent's object prefix. The a
 runs as an unprivileged user with a 320 MB systemd memory ceiling and cannot
 read the other applications' environment files. Credential renewal briefly
 restarts Zip's mount chain and runtime.
+
+## Zip self-updates
+
+Zip can request deployment of the fixed `main` or `staging` channels without
+receiving general root access. Install `scripts/vps/request-update.sh` as
+`/usr/local/bin/zip-request-update`, install `scripts/vps/update-runtime.sh` as
+`/usr/local/lib/zip-updater/update-runtime`, and install the updater path,
+service, and tmpfiles definitions from this directory. Enable both watchers:
+
+```sh
+systemd-tmpfiles --create /etc/tmpfiles.d/zip-updater.conf
+systemctl enable --now zip-updater@main.path zip-updater@staging.path
+```
+
+The agent requests an update with `zip-request-update staging` or
+`zip-request-update main`. A root path unit consumes the fixed request file,
+then builds a fresh clone as `zip-builder`. The running checkout is untouched
+until the candidate passes installation and compilation. Activation swaps the
+directories, restarts Zip, checks both systemd and the localhost HTTP health
+endpoint, and restores the complete previous checkout if health does not return.
