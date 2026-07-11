@@ -1,4 +1,5 @@
-import { getModel, type Api, type Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
 
 export const GLM_5P2_MODEL_ID = "accounts/fireworks/models/glm-5p2";
 export const DEFAULT_FIREWORKS_MODEL_ID = GLM_5P2_MODEL_ID;

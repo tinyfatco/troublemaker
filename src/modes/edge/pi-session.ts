@@ -1,5 +1,6 @@
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
-import { streamSimple, type Api, type Message, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import type { RuntimeEventSink } from "../../core/runtime-contract.js";
 import { normalizeSimpleStreamOptionsForModel } from "../../model-thinking.js";
 import { LiveAssistantSnapshot } from "../../streaming/live-turn-snapshot.js";
