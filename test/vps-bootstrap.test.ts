@@ -52,12 +52,15 @@ const result = spawnSync(process.execPath, [
 	responsePath,
 	privateKeyPath,
 	outputPath,
+	"gus",
 ], { encoding: "utf8" });
 assert.equal(result.status, 0, result.stderr);
 assert.equal(await readFile(join(outputPath, "workspace.key"), "utf8"), `${bundle.workspace_key_hex}\n`);
 assert.equal(await readFile(join(outputPath, "tools-token"), "utf8"), "tools-secret\n");
 assert.match(await readFile(join(outputPath, "agent.env"), "utf8"), /MOM_MODEL_ID="gpt-5\.6-sol"/);
+assert.match(await readFile(join(outputPath, "agent.env"), "utf8"), /HOME="\/srv\/gus\/workspace"/);
 assert.match(await readFile(join(outputPath, "rclone.conf"), "utf8"), /session_token = session-test/);
+assert.match(await readFile(join(outputPath, "rclone.conf"), "utf8"), /^\[gus-r2\]/);
 assert.deepEqual(JSON.parse(await readFile(join(outputPath, "codex-auth.json"), "utf8")), {
 	"openai-codex": {
 		type: "oauth",
@@ -65,3 +68,17 @@ assert.deepEqual(JSON.parse(await readFile(join(outputPath, "codex-auth.json"), 
 		refresh: "refresh-test",
 	},
 });
+
+const unitPath = join(directory, "units");
+const renderResult = spawnSync(process.execPath, [
+	join(process.cwd(), "scripts/vps/render-systemd.mjs"),
+	"gus",
+	"11111111-2222-4333-8444-555555555555",
+	unitPath,
+], { encoding: "utf8" });
+assert.equal(renderResult.status, 0, renderResult.stderr);
+const agentUnit = await readFile(join(unitPath, "gus-agent.service"), "utf8");
+assert.match(agentUnit, /--adapter=email:webhook,mcp --host=127\.0\.0\.1 --port=3002/);
+assert.match(agentUnit, /User=gus-agent/);
+const r2Unit = await readFile(join(unitPath, "gus-r2.service"), "utf8");
+assert.match(r2Unit, /gus-r2:fat-agents-data\/agents\/11111111-2222-4333-8444-555555555555/);

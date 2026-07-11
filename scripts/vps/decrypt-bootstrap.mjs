@@ -4,13 +4,18 @@ import { constants, createDecipheriv, privateDecrypt } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-const [responsePath, privateKeyPath, outputDirArg] = process.argv.slice(2);
+const [responsePath, privateKeyPath, outputDirArg, runtimeSlugArg = "zip"] = process.argv.slice(2);
 if (!responsePath || !privateKeyPath || !outputDirArg) {
-	console.error("Usage: decrypt-bootstrap.mjs <response.json> <private-key.pem> <output-dir>");
+	console.error("Usage: decrypt-bootstrap.mjs <response.json> <private-key.pem> <output-dir> [runtime-slug]");
 	process.exit(2);
 }
 
+if (!/^[a-z][a-z0-9-]{0,31}$/.test(runtimeSlugArg)) {
+	throw new Error("Runtime slug must start with a letter and contain only lowercase letters, numbers, and hyphens");
+}
+
 const outputDir = resolve(outputDirArg);
+const runtimeSlug = runtimeSlugArg;
 const response = JSON.parse(await readFile(responsePath, "utf8"));
 const sealed = response.encrypted_bundle;
 const storage = response.storage;
@@ -51,8 +56,8 @@ console.log(`Bootstrap material written to ${outputDir}`);
 function buildEnv(bundle) {
 	const secrets = bundle.secrets || {};
 	const values = {
-		HOME: "/srv/zip/workspace",
-		PI_CODING_AGENT_DIR: "/srv/zip/workspace/.pi/agent",
+		HOME: `/srv/${runtimeSlug}/workspace`,
+		PI_CODING_AGENT_DIR: `/srv/${runtimeSlug}/workspace/.pi/agent`,
 		MOM_AGENT_ID: bundle.agent_id,
 		MOM_MODEL_PROVIDER: "openai-codex",
 		MOM_MODEL_ID: "gpt-5.6-sol",
@@ -77,7 +82,7 @@ function buildRclone(storage) {
 		if (typeof storage[key] !== "string" || !storage[key]) throw new Error(`Storage response is missing ${key}`);
 	}
 	return [
-		"[zip-r2]",
+		`[${runtimeSlug}-r2]`,
 		"type = s3",
 		"provider = Cloudflare",
 		`endpoint = ${storage.endpoint}`,

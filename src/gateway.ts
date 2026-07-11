@@ -529,7 +529,7 @@ export class Gateway {
 	}
 
 	/** Start listening on the given port */
-	async start(port: number): Promise<void> {
+	async start(port: number, host?: string): Promise<void> {
 		this.server = createServer((req, res) => {
 			const rawUrl = req.url || "/";
 			const urlPath = rawUrl.split("?")[0];
@@ -741,8 +741,8 @@ export class Gateway {
 		});
 
 		await new Promise<void>((resolve) => {
-			this.server!.listen(port, () => {
-				log.logInfo(`[gateway] listening on port ${port} (${this.routes.size} POST + ${this.getRoutes.size} GET + ${this.upgradeRoutes.size} UPGRADE routes${this.uiDir ? " + UI" : ""})`);
+			this.server!.listen(port, host, () => {
+				log.logInfo(`[gateway] listening on ${host || "all interfaces"}:${port} (${this.routes.size} POST + ${this.getRoutes.size} GET + ${this.upgradeRoutes.size} UPGRADE routes${this.uiDir ? " + UI" : ""})`);
 				resolve();
 			});
 		});

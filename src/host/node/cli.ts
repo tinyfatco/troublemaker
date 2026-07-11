@@ -117,6 +117,7 @@ interface ParsedArgs {
 	downloadChannel?: string;
 	adapters: string[];
 	port: number;
+	host?: string;
 	skillsDirs: string[];
 	uiDir?: string;
 }
@@ -128,6 +129,7 @@ function parseArgs(): ParsedArgs {
 	let downloadChannelId: string | undefined;
 	let adapterArg: string | undefined;
 	let port: number | undefined;
+	let host: string | undefined;
 	let uiDir: string | undefined;
 	const skillsDirs: string[] = [];
 
@@ -149,6 +151,10 @@ function parseArgs(): ParsedArgs {
 			port = parseInt(arg.slice("--port=".length), 10);
 		} else if (arg === "--port") {
 			port = parseInt(args[++i] || "", 10);
+		} else if (arg.startsWith("--host=")) {
+			host = arg.slice("--host=".length);
+		} else if (arg === "--host") {
+			host = args[++i] || undefined;
 		} else if (arg.startsWith("--skills=")) {
 			skillsDirs.push(resolve(arg.slice("--skills=".length)));
 		} else if (arg === "--skills") {
@@ -225,6 +231,7 @@ function parseArgs(): ParsedArgs {
 		downloadChannel: downloadChannelId,
 		adapters,
 		port: resolvedPort,
+		host,
 		skillsDirs,
 		uiDir,
 	};
@@ -1042,7 +1049,7 @@ for (const path of ["/operator/message", "/operator/assign", "/operator/configur
 	gateway.markReady(path);
 }
 
-await gateway.start(parsedArgs.port);
+await gateway.start(parsedArgs.port, parsedArgs.host);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start voice WebSocket server early (port 8765) so it's ready before adapters init.

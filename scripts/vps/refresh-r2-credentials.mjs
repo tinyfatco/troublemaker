@@ -3,11 +3,12 @@
 import { chmod, chown, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const [agentId, tokenPath, configPathArg] = process.argv.slice(2);
+const [agentId, tokenPath, configPathArg, remoteName = "zip-r2"] = process.argv.slice(2);
 if (!agentId || !tokenPath || !configPathArg) {
-	console.error("Usage: refresh-r2-credentials.mjs <agent-id> <tools-token-file> <rclone.conf>");
+	console.error("Usage: refresh-r2-credentials.mjs <agent-id> <tools-token-file> <rclone.conf> [rclone-remote]");
 	process.exit(2);
 }
+if (!/^[a-z][a-z0-9-]{0,35}$/.test(remoteName)) throw new Error("Invalid rclone remote name");
 
 const token = (await readFile(tokenPath, "utf8")).trim();
 const response = await fetch(`https://crawdad.tinyfat.com/agents/${encodeURIComponent(agentId)}/vps/storage-credentials`, {
@@ -21,7 +22,7 @@ if (!response.ok || !payload.storage) {
 
 const storage = payload.storage;
 const config = [
-	"[zip-r2]",
+	`[${remoteName}]`,
 	"type = s3",
 	"provider = Cloudflare",
 	`endpoint = ${storage.endpoint}`,
