@@ -10,7 +10,7 @@ Group=zip-agent
 WorkingDirectory=/opt/troublemaker
 EnvironmentFile=/etc/zip-agent/agent.env
 ExecStartPre=/usr/bin/install -d -m 0700 -o zip-agent -g zip-agent /srv/zip/workspace/.pi/agent
-ExecStartPre=+/bin/sh -c 'test ! -f /etc/zip-agent/codex-auth.json || /usr/bin/install -m 0600 -o zip-agent -g zip-agent /etc/zip-agent/codex-auth.json /srv/zip/workspace/.pi/agent/auth.json'
+ExecStartPre=/bin/sh -c 'test ! -f /etc/zip-agent/codex-auth.json || /usr/bin/install -m 0600 /etc/zip-agent/codex-auth.json /srv/zip/workspace/.pi/agent/auth.json'
 ExecStart=/usr/bin/node /opt/troublemaker/dist/main.js --sandbox=host --adapter=slack:socket,telegram:polling,email:webhook,mcp --port=3002 /srv/zip/workspace
 Restart=on-failure
 RestartSec=10

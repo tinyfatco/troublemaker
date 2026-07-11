@@ -9,7 +9,8 @@ only `/email/inbound`; the gateway itself remains bound to localhost.
 3. Obtain an operator-authenticated `/api/v2/agents/<id>/bootstrap` response
    encrypted to a server-generated RSA public key.
 4. Run `scripts/vps/decrypt-bootstrap.mjs` into `/etc/zip-agent`, then delete the
-   bootstrap response and RSA private key. Keep `tools-token` root-only; set
+   bootstrap response and RSA private key. Set `/etc/zip-agent` to
+   `root:zip-agent` mode `0750`. Keep `tools-token` root-only; set
    `rclone.conf` and `workspace.key` to `root:zip-agent` mode `0640`.
 5. Install this repository at `/opt/troublemaker`, build it, and copy the units
    into `/etc/systemd/system`.
