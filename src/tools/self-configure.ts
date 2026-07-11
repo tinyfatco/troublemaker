@@ -3,14 +3,20 @@
  *
  * This is intentionally narrower than arbitrary file editing. It exposes the
  * semantic settings users naturally ask an agent to change: model, thinking,
- * heartbeat/spontaneity cadence, and the heartbeat checklist prompt.
+ * verbosity, Slack response placement, heartbeat/spontaneity cadence, and the
+ * heartbeat checklist prompt.
  */
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { MomSettingsManager, type MomSpontaneitySettings } from "../context.js";
+import {
+	MomSettingsManager,
+	type MomSpontaneitySettings,
+	type SlackResponsePlacement,
+	type VerbosityLevel,
+} from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { findModel } from "../model-config.js";
 import {
@@ -25,6 +31,9 @@ const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh
 const SELF_CONFIGURE_SETTINGS = new Set([
 	"model",
 	"thinking_level",
+	"verbosity",
+	"slack.verbosity",
+	"slack.response_placement",
 	"spontaneity.enabled",
 	"spontaneity.level",
 	"spontaneity.intervalMinutes",
@@ -42,6 +51,11 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"voice": "realtime_voice",
 	"realtimeVoice": "realtime_voice",
 	"realtime.voice": "realtime_voice",
+	"verbose": "verbosity",
+	"verbose.default": "verbosity",
+	"slack.verbose": "slack.verbosity",
+	"slack.responsePlacement": "slack.response_placement",
+	"slack.response_placement": "slack.response_placement",
 };
 
 interface SelfConfigureResult {
@@ -136,6 +150,68 @@ function configureThinkingLevel(workingDir: string, value: unknown): SelfConfigu
 		previousValue,
 		newValue: level,
 		note: "Thinking level takes effect on the next model turn.",
+	};
+}
+
+function parseVerbosity(value: unknown): VerbosityLevel {
+	if (typeof value === "boolean") return value;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase().replace(/_/g, "-");
+		if (["true", "on", "yes", "verbose", "full"].includes(normalized)) return true;
+		if (["false", "off", "no", "final-only", "quiet"].includes(normalized)) return false;
+		if (["messages-only", "messages only"].includes(normalized)) return "messages-only";
+	}
+	throw new Error('verbosity must be true, false, or "messages-only".');
+}
+
+function configureVerbosity(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getVerboseDefault();
+	const newValue = parseVerbosity(value);
+	manager.setVerboseDefault(newValue);
+	return {
+		changed: true,
+		setting: "verbosity",
+		previousValue,
+		newValue,
+		note: "Verbosity takes effect on the next turn. false keeps final responses but suppresses working output.",
+	};
+}
+
+function configureSlackVerbosity(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getPlatformVerboseOverride("slack") ?? manager.getVerboseDefault();
+	const newValue = parseVerbosity(value);
+	manager.setPlatformVerbose("slack", newValue);
+	return {
+		changed: true,
+		setting: "slack.verbosity",
+		previousValue,
+		newValue,
+		note: "Slack verbosity takes effect on the next Slack turn without changing other platforms.",
+	};
+}
+
+function parseSlackResponsePlacement(value: unknown): SlackResponsePlacement {
+	const normalized = parseString(value, "slack.response_placement").trim().toLowerCase().replace(/_/g, "-");
+	if (["thread", "inbound-thread", "subthread", "reply"].includes(normalized)) return "thread";
+	if (["channel", "new-channel-message", "new-message", "top-level"].includes(normalized)) return "channel";
+	throw new Error('slack.response_placement must be "thread" or "channel".');
+}
+
+function configureSlackResponsePlacement(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getSlackResponsePlacement();
+	const newValue = parseSlackResponsePlacement(value);
+	manager.setSlackResponsePlacement(newValue);
+	return {
+		changed: true,
+		setting: "slack.response_placement",
+		previousValue,
+		newValue,
+		note: newValue === "thread"
+			? "Slack working and final responses will enter the inbound message thread on the next turn."
+			: "Slack working and final responses will post as new top-level channel messages on the next turn.",
 	};
 }
 
@@ -250,6 +326,9 @@ export function applySelfConfiguration(
 	}
 	if (target === "model") return configureModel(workingDir, value);
 	if (target === "thinking_level") return configureThinkingLevel(workingDir, value);
+	if (target === "verbosity") return configureVerbosity(workingDir, value);
+	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
+	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
@@ -274,9 +353,10 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		label: Type.String({ description: "Brief description of the setting change" }),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, spontaneity.enabled, spontaneity.level, " +
-				"spontaneity.intervalMinutes, spontaneity.spontaneity, spontaneity.quietHours.start, " +
-				"spontaneity.quietHours.end, spontaneity.timezone, heartbeat.checklist, voice/realtime_voice.",
+				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, " +
+				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
+				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
+				"heartbeat.checklist, voice/realtime_voice.",
 		}),
 		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
 	});
@@ -285,7 +365,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

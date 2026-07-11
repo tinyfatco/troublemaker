@@ -35,6 +35,30 @@ try {
 	assert(settings.thinking_level === "low", "thinking_level writes canonical key");
 	assert(settings.defaultThinkingLevel === "low", "thinking_level keeps legacy key in sync");
 
+	const verbosity = applySelfConfiguration(workingDir, "verbosity", true);
+	settings = readSettings(workingDir);
+	assert(verbosity.newValue === true, "verbosity result reports full output");
+	assert((settings.verbose as any).default === true, "verbosity writes the durable verbose default");
+	const messagesOnly = applySelfConfiguration(workingDir, "verbose", "messages_only");
+	settings = readSettings(workingDir);
+	assert(messagesOnly.newValue === "messages-only", "verbose alias normalizes messages-only");
+	assert((settings.verbose as any).default === "messages-only", "verbose alias updates the durable default");
+	applySelfConfiguration(workingDir, "verbosity", "messages-only");
+	const slackVerbosity = applySelfConfiguration(workingDir, "slack.verbosity", true);
+	settings = readSettings(workingDir);
+	assert(slackVerbosity.newValue === true, "Slack verbosity reports full output");
+	assert((settings.verbose as any).default === "messages-only", "Slack verbosity preserves the global default");
+	assert((settings.verbose as any).slack === true, "Slack verbosity writes a platform-wide override");
+
+	const placement = applySelfConfiguration(workingDir, "slack.response_placement", "inbound_thread");
+	settings = readSettings(workingDir);
+	assert(placement.newValue === "thread", "Slack placement normalizes inbound-thread alias");
+	assert((settings.slack as any).responsePlacement === "thread", "Slack placement writes its durable settings block");
+	const channelPlacement = applySelfConfiguration(workingDir, "slack.responsePlacement", "new_channel_message");
+	settings = readSettings(workingDir);
+	assert(channelPlacement.newValue === "channel", "Slack placement alias normalizes new-channel-message");
+	assert((settings.slack as any).responsePlacement === "channel", "Slack placement alias updates the durable setting");
+
 	const spontaneity = applySelfConfiguration(workingDir, "spontaneity.level", 5);
 	settings = readSettings(workingDir);
 	assert((settings.spontaneity as any).level === 5, "spontaneity level writes settings");
@@ -66,7 +90,14 @@ try {
 	assert((result.content?.[0]?.text || "").includes("Configured thinking_level"), "tool result summarizes setting");
 
 	try {
-		applySelfConfiguration(workingDir, "verbose", true);
+		applySelfConfiguration(workingDir, "slack.response_placement", "somewhere");
+		assert(false, "invalid Slack placement throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("thread"), "invalid Slack placement explains accepted values");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "not_a_real_setting", true);
 		assert(false, "unsupported setting throws");
 	} catch (err) {
 		assert(err instanceof Error && err.message.includes("Unknown self_configure setting"), "unsupported setting fails closed");

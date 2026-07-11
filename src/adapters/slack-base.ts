@@ -382,10 +382,18 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		// Track thread messages and working message ID for respondInThread + deleteMessage
 		const threadMessageTs: string[] = [];
 		let workingMessageId: string | null = null;
+		const settings = new MomSettingsManager(this.workingDir);
+		const responseThreadTs = settings.getSlackResponsePlacement() === "thread"
+			? event.threadTs
+			: undefined;
+		const postResponse = (channel: string, text: string) =>
+			responseThreadTs && channel === event.channel
+				? this.postInThread(channel, responseThreadTs, text)
+				: this.postMessage(channel, text);
 
 		return createTwoMessageContext(
 			{
-				post: (ch, text) => this.postMessage(ch, text),
+				post: postResponse,
 				update: (ch, id, text) => this.updateMessage(ch, id, text),
 				delete: (ch, id) => this.deleteMessage(ch, id),
 				formatStatus: (text) => `_${text}_`,
@@ -400,16 +408,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: new MomSettingsManager(this.workingDir).getVerbose(event.channel, "slack"),
+				verbose: settings.getVerbose(event.channel, "slack"),
 			},
 			{
 				onWorkingUpdate: (id) => {
 					workingMessageId = id;
 				},
-				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
+				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts, { threadTs: responseThreadTs }),
 				respondInThread: async (text) => {
-					if (workingMessageId) {
-						const ts = await this.postInThread(event.channel, workingMessageId, text);
+					const threadTs = responseThreadTs ?? workingMessageId;
+					if (threadTs) {
+						const ts = await this.postInThread(event.channel, threadTs, text);
 						threadMessageTs.push(ts);
 					}
 				},

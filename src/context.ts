@@ -51,6 +51,13 @@ export interface MomVerboseSettings {
 	[platform: string]: VerbosityLevel | Record<string, VerbosityLevel> | undefined;
 }
 
+export type SlackResponsePlacement = "thread" | "channel";
+
+export interface MomSlackSettings {
+	/** Place normal harness output under the inbound Slack message/thread or at channel top level. */
+	responsePlacement?: SlackResponsePlacement;
+}
+
 export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "noop" | "disabled";
 
 export interface MomSpeakSettings {
@@ -82,6 +89,7 @@ export interface MomSettings {
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
 	realtimeVoice?: string;
 	verbose?: VerbosityLevel | MomVerboseSettings;
+	slack?: MomSlackSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
@@ -357,24 +365,26 @@ export class MomSettingsManager {
 	}
 
 	getVerbose(channelId: string, platform?: string): VerbosityLevel {
-		if (isSendMessageOnlyPlatform(channelId, platform)) {
-			return "messages-only";
-		}
-
+		const platformDefault: VerbosityLevel = isSendMessageOnlyPlatform(channelId, platform)
+			? "messages-only"
+			: true;
 		const v = this.settings.verbose;
 		// Legacy bare boolean or "messages-only"
 		if (typeof v === "boolean" || v === "messages-only") return v;
-		// No verbose config at all
-		if (!v) return true;
-		// Check platform bucket for channel override
+		// No explicit config: preserve the safe platform default.
+		if (!v) return platformDefault;
+		// Check a platform-wide value or a platform bucket with a channel override.
 		if (platform) {
 			const bucket = v[platform];
-			if (bucket && typeof bucket === "object" && channelId in bucket) {
-				return (bucket as Record<string, VerbosityLevel>)[channelId];
+			if (typeof bucket === "boolean" || bucket === "messages-only") return bucket;
+			if (bucket && typeof bucket === "object") {
+				const overrides = bucket as Record<string, VerbosityLevel>;
+				if (channelId in overrides) return overrides[channelId];
+				if ("default" in overrides) return overrides.default;
 			}
 		}
-		// Fall back to default
-		return v.default ?? true; // default true
+		// Explicit global default overrides the platform default; otherwise preserve it.
+		return v.default ?? platformDefault;
 	}
 
 	setChannelVerbose(channelId: string, platform: string, value: VerbosityLevel | null): void {
@@ -385,7 +395,10 @@ export class MomSettingsManager {
 			this.settings.verbose = v;
 		}
 		if (!v[platform] || typeof v[platform] !== "object") {
-			(v as any)[platform] = {};
+			const previousPlatformValue = v[platform];
+			(v as any)[platform] = typeof previousPlatformValue === "boolean" || previousPlatformValue === "messages-only"
+				? { default: previousPlatformValue }
+				: {};
 		}
 		const bucket = v[platform] as Record<string, VerbosityLevel>;
 		if (value === null) {
@@ -412,6 +425,39 @@ export class MomSettingsManager {
 		if (typeof v === "boolean" || v === "messages-only") return v;
 		if (!v) return "messages-only";
 		return v.default ?? "messages-only";
+	}
+
+	getSlackResponsePlacement(): SlackResponsePlacement {
+		return this.settings.slack?.responsePlacement ?? "channel";
+	}
+
+	setSlackResponsePlacement(value: SlackResponsePlacement): void {
+		this.settings.slack = { ...this.settings.slack, responsePlacement: value };
+		this.save();
+	}
+
+	getPlatformVerboseOverride(platform: string): VerbosityLevel | null {
+		const v = this.settings.verbose;
+		if (typeof v !== "object" || !v) return null;
+		const value = v[platform];
+		if (typeof value === "boolean" || value === "messages-only") return value;
+		if (value && typeof value === "object") return value.default ?? null;
+		return null;
+	}
+
+	setPlatformVerbose(platform: string, value: VerbosityLevel): void {
+		let v = this.settings.verbose;
+		if (typeof v !== "object" || !v) {
+			v = { default: typeof v === "boolean" ? v : (v === "messages-only" ? v : "messages-only") };
+			this.settings.verbose = v;
+		}
+		const platformValue = v[platform];
+		if (platformValue && typeof platformValue === "object") {
+			platformValue.default = value;
+		} else {
+			v[platform] = value;
+		}
+		this.save();
 	}
 
 	getChannelVerboseOverride(channelId: string, platform: string): VerbosityLevel | null {

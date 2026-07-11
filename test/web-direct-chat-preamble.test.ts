@@ -47,5 +47,16 @@ const telegramPreamble = buildSessionPreamble(
 assert(telegramPreamble.includes("Channel delivery policy"), "non-web messages-only channels show the channel delivery policy");
 assert(telegramPreamble.includes("Use send_message with an explicit target"), "non-web messages-only channels keep the send_message reminder");
 
+const verboseSlackPreamble = buildSessionPreamble(
+	workspaceContext,
+	[],
+	[],
+	[],
+	"C1234567890",
+	"tinyfat",
+	true,
+);
+assert(!verboseSlackPreamble.includes("Channel delivery policy"), "verbose Slack does not claim harness output is undeliverable");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
