@@ -448,7 +448,8 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
-			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl });
+			const inboundToken = process.env.MOM_EMAIL_INBOUND_TOKEN;
+			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl, inboundToken });
 		}
 		case "phone-messaging:webhook":
 		case "phone:webhook": {

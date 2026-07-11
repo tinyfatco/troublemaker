@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew Zip prefix-scoped R2 credentials
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/node /opt/troublemaker/scripts/vps/refresh-r2-credentials.mjs 6884e994-60f4-4395-8008-38f73989c34d /etc/zip-agent/tools-token /etc/zip-agent/rclone.conf
+ExecStart=/bin/systemctl stop zip-agent.service zip-workspace.service zip-r2.service
+ExecStart=/bin/systemctl start zip-r2.service zip-workspace.service zip-agent.service

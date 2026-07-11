@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { timingSafeEqual } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
@@ -51,6 +52,8 @@ export interface EmailWebhookAdapterConfig {
 	toolsToken: string;
 	/** URL for sending email replies (e.g., https://tinyfat.com/api/email/send) */
 	sendUrl: string;
+	/** Optional bearer token required for trusted upstream webhook delivery. */
+	inboundToken?: string;
 }
 
 interface ActiveEmailReplyContext {
@@ -80,6 +83,12 @@ interface EmailThreadTurn {
 	sentAt?: string;
 }
 
+export function matchesBearerToken(header: string | undefined, expected: string): boolean {
+	const actualBytes = Buffer.from(header?.replace(/^Bearer\s+/i, "") || "");
+	const expectedBytes = Buffer.from(expected);
+	return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
 export class EmailWebhookAdapter implements PlatformAdapter {
 	readonly name = "email";
 	readonly maxMessageLength = 100000; // Email has no real limit
@@ -91,6 +100,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	private workingDir: string;
 	private toolsToken: string;
 	private sendUrl: string;
+	private inboundToken?: string;
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
@@ -101,6 +111,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		this.workingDir = config.workingDir;
 		this.toolsToken = config.toolsToken;
 		this.sendUrl = config.sendUrl;
+		this.inboundToken = config.inboundToken;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -122,6 +133,11 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		if (this.inboundToken && !matchesBearerToken(req.headers.authorization, this.inboundToken)) {
+			res.writeHead(401, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "unauthorized" }));
+			return;
+		}
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", async () => {

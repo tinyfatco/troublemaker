@@ -13,6 +13,11 @@ export class TelegramPollingAdapter extends TelegramBase {
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("TelegramPollingAdapter: handler not set. Call setHandler() before start().");
 
+		if (process.env.MOM_TELEGRAM_TAKEOVER === "true") {
+			await this.bot.deleteWebHook();
+			log.logInfo("Telegram webhook removed for polling takeover");
+		}
+
 		// Start polling
 		this.bot.startPolling();
 

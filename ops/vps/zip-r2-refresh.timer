@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew Zip R2 credentials every five days
+
+[Timer]
+OnBootSec=4d
+OnUnitActiveSec=5d
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

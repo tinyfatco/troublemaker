@@ -1,0 +1,15 @@
+[Unit]
+Description=Zip decrypted workspace mount
+Requires=zip-r2.service
+After=zip-r2.service
+
+[Service]
+Type=forking
+User=zip-agent
+Group=zip-agent
+ExecStart=/usr/bin/gocryptfs -passfile /etc/zip-agent/workspace.key -plaintextnames /srv/zip/r2-raw /srv/zip/workspace
+ExecStop=/bin/fusermount3 -u /srv/zip/workspace
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

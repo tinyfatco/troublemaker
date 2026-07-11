@@ -48,6 +48,8 @@
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
 		"test:events-initial-scan-delay": "npx tsx test/events-initial-scan-delay.test.ts",
 		"test:email-thread-headers": "npx tsx test/email-thread-headers.test.ts",
+		"test:email-webhook-auth": "npx tsx test/email-webhook-auth.test.ts",
+		"test:vps-bootstrap": "npx tsx test/vps-bootstrap.test.ts",
 		"test:email-busy-interrupt": "npx tsx test/email-busy-interrupt.test.ts",
 		"test:email-messages-only-boundary": "npx tsx test/email-messages-only-boundary.test.ts",
 		"test:phone-messages-only-boundary": "npx tsx test/phone-messages-only-boundary.test.ts",
