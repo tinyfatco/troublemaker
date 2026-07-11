@@ -62,6 +62,7 @@ rollback() {
 
 install -d -m 0755 -o zip-builder -g zip-builder "$BUILD_HOME"
 rm -rf "$CANDIDATE"
+install -d -m 0755 -o zip-builder -g zip-builder "$CANDIDATE"
 runuser -u zip-builder -- env HOME="$BUILD_HOME" git clone \
 	--branch "$REF" --single-branch "$REMOTE" "$CANDIDATE"
 
