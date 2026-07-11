@@ -144,6 +144,7 @@ export function buildSystemPrompt(
 
 	const overlay = resolveOpenAIOverlay(model);
 	const overlaySuffix = overlay ? `\n\n${overlay}` : "";
+	const activeModel = model?.provider && model?.id ? `${model.provider}/${model.id}` : "unknown";
 
 	return `## Context
 - For current date/time, use: date
@@ -168,6 +169,7 @@ When a cross-channel message arrives mid-run, use \`send_message\` to acknowledg
 
 ## Environment
 ${envDescription}
+- Active runtime model: ${activeModel}. When asked, report this exact value rather than inferring it from memory or prior sessions.
 
 ## Workspace
 ${workspacePath}/

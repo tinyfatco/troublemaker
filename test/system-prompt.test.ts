@@ -25,6 +25,7 @@ assert(prompt.includes("previews are not enough to choose"), "system prompt tell
 assert(prompt.includes("email-thread:<id>"), "system prompt names email thread targets");
 assert(prompt.includes("self_configure"), "system prompt names self_configure");
 assert(prompt.includes("yield_no_action"), "system prompt names yield_no_action");
+assert(prompt.includes("Active runtime model: test-provider/test-model"), "system prompt includes the exact active model identity");
 assert(!prompt.includes("Use `ping`"), "system prompt no longer instructs the ping tool");
 assert(!prompt.includes("ping (cross-channel messaging)"), "system prompt no longer lists ping as cross-channel messaging");
 assert(!prompt.includes("## Calendar Events"), "calendar event details moved out of the system prompt");
