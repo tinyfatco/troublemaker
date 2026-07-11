@@ -30,7 +30,7 @@ import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
 import { MomSettingsManager } from "../../context.js";
 import { downloadChannel } from "../../download.js";
-import { markAmbientMessagesIncluded, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
+import { markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
@@ -368,6 +368,7 @@ function fireAmbientEvaluation(channelId: string): void {
 	}).join("\n");
 
 	const channelLabel = getChannelLabel(channelId, adapters);
+	const deliveryContext = resolveAmbientDeliveryContext(unseenMessages);
 
 	const ambientEvent: MomEvent = {
 		type: "mention",
@@ -375,6 +376,11 @@ function fireAmbientEvaluation(channelId: string): void {
 		ts: String(Date.now() / 1000),
 		user: "system",
 		text: `[AMBIENT] A conversation is happening in ${channelLabel}. New unseen messages since your last ambient wake:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. You were not directly addressed. If you choose to respond to a specific Slack thread, use that message's exact Reply target with send_message. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
+		sourceEventType: "ambient_evaluation",
+		directlyAddressed: false,
+		threadTs: deliveryContext?.threadTs,
+		replyTarget: deliveryContext?.replyTarget,
+		replyTargetDescription: deliveryContext?.replyTargetDescription,
 	};
 
 	if (!ambientAdapter.enqueueEvent(ambientEvent)) {

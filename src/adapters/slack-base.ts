@@ -386,6 +386,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const responseThreadTs = settings.getSlackResponsePlacement() === "thread"
 			? event.threadTs
 			: undefined;
+		// An ambient batch may span multiple Slack threads. In that case the
+		// synthetic event has no threadTs, so fail closed instead of opening a
+		// top-level harness stream in an unrelated conversation.
+		const suppressAmbiguousAmbientHarness = event.sourceEventType === "ambient_evaluation" && !event.threadTs;
 		const postResponse = (channel: string, text: string) =>
 			responseThreadTs && channel === event.channel
 				? this.postInThread(channel, responseThreadTs, text)
@@ -408,8 +412,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: settings.getVerbose(event.channel, "slack"),
-				toolStreaming: settings.getSlackToolStreaming(),
+				verbose: suppressAmbiguousAmbientHarness ? "messages-only" : settings.getVerbose(event.channel, "slack"),
+				toolStreaming: suppressAmbiguousAmbientHarness ? "off" : settings.getSlackToolStreaming(),
 			},
 			{
 				onWorkingUpdate: (id) => {

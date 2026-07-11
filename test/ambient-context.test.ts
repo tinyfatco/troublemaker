@@ -1,4 +1,4 @@
-import { markAmbientMessagesIncluded, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
+import { markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
 import { ChannelPulse } from "../src/engagement/channel-pulse.js";
 
 let passed = 0;
@@ -66,6 +66,21 @@ pulse.record(channelId, "UZIP", "zip after wake".length, "zip after wake", {
 const thirdWake = selectUnseenAmbientMessages(pulse, channelId, includedKeys);
 assert(thirdWake.length === 1, "later ambient wake includes only newly unseen passive messages");
 assert(thirdWake[0]?.text === "passive third", "later wake excludes old passive messages and fresh Zip self echo");
+
+const singleThread = resolveAmbientDeliveryContext([firstWake[0]!]);
+assert(singleThread?.threadTs === "1779780002.000001", "single-message ambient wake inherits its Slack thread");
+assert(singleThread?.replyTarget === "slack:C0AN1GL51K7:1779780002.000001", "single-message ambient wake inherits its exact reply target");
+
+const sharedThreadEntry = {
+	...firstWake[0]!,
+	messageId: "1779780002.000002",
+	text: "passive follow-up",
+};
+const sharedThread = resolveAmbientDeliveryContext([firstWake[0]!, sharedThreadEntry]);
+assert(sharedThread?.threadTs === "1779780002.000001", "multi-message ambient wake inherits one shared Slack thread");
+
+assert(resolveAmbientDeliveryContext(firstWake) === undefined, "ambient wake spanning multiple Slack threads has no delivery locus");
+assert(resolveAmbientDeliveryContext([{ ...firstWake[0]!, threadTs: undefined }]) === undefined, "ambient wake with missing thread metadata has no delivery locus");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

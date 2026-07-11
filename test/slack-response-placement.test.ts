@@ -104,6 +104,33 @@ try {
 	assert.match(selective.posted[0]?.text || "", /Checking the deployed revision/, "selected label text is visible");
 	assert.doesNotMatch(selective.posted[0]?.text || "", /raw tool arguments/, "raw tool detail remains suppressed");
 
+	for (const toolStreaming of ["important", "all"] as const) {
+		writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+			verbose: { slack: "messages-only" },
+			slack: { responsePlacement: "thread", toolStreaming },
+		}));
+		const ambient = new TestSlackAdapter(workingDir);
+		const ambientContext = ambient.createContext(event({ sourceEventType: "ambient_evaluation" }), {} as ChannelStore);
+		await ambientContext.respond(`_→ Ambient ${toolStreaming} label_`, false, { show: toolStreaming === "important" });
+		assert.equal(ambient.posted.length, 1, `${toolStreaming} ambient tool stream emits one working message`);
+		assert.equal(ambient.posted[0]?.thread_ts, "1710000000.000001", `${toolStreaming} ambient tool stream stays inline in the resolved thread`);
+	}
+
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: true },
+		slack: { responsePlacement: "thread", toolStreaming: "all" },
+	}));
+	const ambiguousAmbient = new TestSlackAdapter(workingDir);
+	const ambiguousContext = ambiguousAmbient.createContext(event({
+		sourceEventType: "ambient_evaluation",
+		threadTs: undefined,
+		replyTarget: undefined,
+	}), {} as ChannelStore);
+	await ambiguousContext.setTyping(true);
+	await ambiguousContext.respond("_→ Must not leak to channel top level_", false, { show: true });
+	await ambiguousContext.sendFinalResponse("ordinary ambiguous harness final");
+	assert.equal(ambiguousAmbient.posted.length, 0, "ambiguous ambient wake suppresses all automatic top-level harness output");
+
 	console.log("slack-response-placement ok");
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });
