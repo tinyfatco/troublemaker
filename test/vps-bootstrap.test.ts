@@ -15,7 +15,7 @@ const bundle = {
 		slack_bot_token: "xoxb-test",
 		slack_app_token: "xapp-test",
 		telegram_bot_token: "telegram-test",
-		codex_credentials: JSON.stringify({ access: "codex-test" }),
+		codex_credentials: JSON.stringify({ access: "codex-test", refresh: "refresh-test" }),
 	},
 };
 const contentKey = randomBytes(32);
@@ -58,4 +58,10 @@ assert.equal(await readFile(join(outputPath, "workspace.key"), "utf8"), `${bundl
 assert.equal(await readFile(join(outputPath, "tools-token"), "utf8"), "tools-secret\n");
 assert.match(await readFile(join(outputPath, "agent.env"), "utf8"), /MOM_MODEL_ID="gpt-5\.6-sol"/);
 assert.match(await readFile(join(outputPath, "rclone.conf"), "utf8"), /session_token = session-test/);
-assert.deepEqual(JSON.parse(await readFile(join(outputPath, "codex-auth.json"), "utf8")), { access: "codex-test" });
+assert.deepEqual(JSON.parse(await readFile(join(outputPath, "codex-auth.json"), "utf8")), {
+	"openai-codex": {
+		type: "oauth",
+		access: "codex-test",
+		refresh: "refresh-test",
+	},
+});

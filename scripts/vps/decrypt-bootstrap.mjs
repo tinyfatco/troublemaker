@@ -40,7 +40,7 @@ await atomicSecret("agent.env", buildEnv(bundle));
 await atomicSecret("rclone.conf", buildRclone(storage));
 
 if (bundle.secrets?.codex_credentials) {
-	await atomicSecret("codex-auth.json", `${bundle.secrets.codex_credentials.trim()}\n`);
+	await atomicSecret("codex-auth.json", buildCodexAuth(bundle.secrets.codex_credentials));
 }
 if (bundle.secrets?.gog_credentials) {
 	await atomicSecret("gog-credentials.json", `${bundle.secrets.gog_credentials.trim()}\n`);
@@ -87,6 +87,20 @@ function buildRclone(storage) {
 		"no_check_bucket = true",
 		"",
 	].join("\n");
+}
+
+function buildCodexAuth(raw) {
+	const parsed = JSON.parse(raw);
+	const existing = parsed["openai-codex"];
+	const credential = existing || {
+		type: "oauth",
+		access: parsed.access,
+		refresh: parsed.refresh,
+		expires: parsed.expires,
+		accountId: parsed.accountId,
+	};
+	if (!credential.access || !credential.refresh) throw new Error("Codex OAuth credential is incomplete");
+	return `${JSON.stringify({ "openai-codex": { type: "oauth", ...credential } }, null, 2)}\n`;
 }
 
 function systemdEscape(value) {

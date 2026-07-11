@@ -14,7 +14,9 @@ only `/email/inbound`; the gateway itself remains bound to localhost.
    `rclone.conf` and `workspace.key` to `root:zip-agent` mode `0640`.
 5. Install this repository at `/opt/troublemaker`, build it, and copy the units
    into `/etc/systemd/system`.
-6. Start `zip-r2`, `zip-workspace`, and `zip-agent` in that order. Enable the
+6. Route `zip-host.tinyfat.com` through the managed Cloudflare Tunnel to
+   `http://localhost:3002`, restricted to `^/email/inbound$`.
+7. Start `zip-r2`, `zip-workspace`, and `zip-agent` in that order. Enable the
    `zip-r2-refresh.timer`; credentials last seven days and renew every five.
 
 The R2 credentials are limited by Cloudflare to Zip's object prefix. The agent
