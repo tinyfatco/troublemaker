@@ -6,6 +6,7 @@ import {
 	resolveAdapter,
 	resolveMessageTarget,
 } from "../src/tools/send-message.js";
+import { registerToolDisplayBarrier } from "../src/streaming/tool-delivery-barrier.js";
 
 type SentMessage = { channel: string; text: string };
 type ThreadMessage = { channel: string; threadTs: string; text: string };
@@ -100,6 +101,31 @@ async function run() {
 	assert(!isObsoleteSilentControlMessage("[SILENT] please log this"), "does not suppress normal text that merely mentions silent marker");
 
 	const tool = createSendMessageTool(adapters);
+	const deliveryOrder: string[] = [];
+	let releaseDisplay!: () => void;
+	const displayBarrier = new Promise<void>((resolve) => {
+		releaseDisplay = () => {
+			deliveryOrder.push("label");
+			resolve();
+		};
+	});
+	registerToolDisplayBarrier("call-ordered", displayBarrier);
+	const originalPost = slack.adapter.postMessage;
+	slack.adapter.postMessage = async (channel, text, attachments, subject) => {
+		deliveryOrder.push("message");
+		return originalPost.call(slack.adapter, channel, text, attachments, subject);
+	};
+	const orderedSend = (tool.execute as any)("call-ordered", {
+		label: "announce deploy",
+		target: "C1234567890",
+		text: "deploy complete",
+	});
+	await Promise.resolve();
+	assertEqual(deliveryOrder.length, 0, "send_message waits while its visible tool label is pending");
+	releaseDisplay();
+	await orderedSend;
+	assertEqual(deliveryOrder.join(","), "label,message", "visible tool label completes before external message delivery");
+
 	const result = await (tool.execute as any)("call-1", {
 		label: "discord test",
 		target: `discord:${snowflake}`,

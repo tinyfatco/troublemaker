@@ -21,6 +21,7 @@ import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import * as log from "../log.js";
+import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
 
 const DISCORD_TARGET_RE = /^discord[:-](\d{17,20})$/;
 const DISCORD_SNOWFLAKE_RE = /^\d{17,20}$/;
@@ -115,7 +116,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			"If you send to an email-thread target, the adapter preserves native Gmail/Outlook threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
-		execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
+			execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
 			const { target, text, attachments, subject, recipients } = params as {
 				label?: string;
 				target?: string;
@@ -158,6 +159,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				}
 
 				if (signal?.aborted) throw new Error("Operation aborted");
+				await waitForToolDisplay(_toolCallId);
 
 				const ts = resolved.threadTs
 					? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)

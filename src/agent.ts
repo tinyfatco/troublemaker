@@ -32,6 +32,7 @@ import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
+import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -526,7 +527,7 @@ function createRunner(
 		ctx: null as MomContext | null,
 		logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
 		queue: null as {
-			enqueue(fn: () => Promise<void>, errorContext: string): void;
+			enqueue(fn: () => Promise<void>, errorContext: string): Promise<void>;
 			enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog?: boolean): void;
 		} | null,
 		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
@@ -589,7 +590,13 @@ function createRunner(
 			);
 			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
-			queue.enqueue(() => ctx.respond(`_→ ${label}_`, false, { show: args.show === true }), "tool label");
+			const displayBarrier = queue.enqueue(
+				() => ctx.respond(`_→ ${label}_`, false, {
+					show: args.show === true || agentEvent.toolName === "send_message",
+				}),
+				"tool label",
+			);
+			registerToolDisplayBarrier(agentEvent.toolCallId, displayBarrier);
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
 			const resultStr = extractToolResultText(agentEvent.result);
@@ -902,8 +909,8 @@ function createRunner(
 			// Create queue for this run
 			let queueChain = Promise.resolve();
 			runState.queue = {
-				enqueue(fn: () => Promise<void>, errorContext: string): void {
-					queueChain = queueChain.then(async () => {
+					enqueue(fn: () => Promise<void>, errorContext: string): Promise<void> {
+						queueChain = queueChain.then(async () => {
 						try {
 							await fn();
 						} catch (err) {
@@ -914,9 +921,10 @@ function createRunner(
 							} catch {
 								// Ignore
 							}
-						}
-					});
-				},
+							}
+						});
+						return queueChain;
+					},
 				enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog = true): void {
 					const parts = splitMessage(text);
 					for (const part of parts) {
