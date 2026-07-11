@@ -110,6 +110,7 @@ async function run() {
 	assertEqual(discord.sent[0]?.channel, snowflake, "tool passes raw snowflake to Discord postMessage");
 	assertEqual(telegram.sent.length, 0, "tool does not fall through to Telegram for Discord snowflake");
 	assert((result.content?.[0]?.text || "").includes(`discord target discord:${snowflake}`), "tool result names the requested target");
+	assertEqual(result.details?.delivered, true, "successful tool result exposes a stable delivered marker");
 
 	try {
 		await (tool.execute as any)("call-missing-target", {
@@ -156,6 +157,7 @@ async function run() {
 
 	assertEqual(telegram.sent.length, 0, "tool suppresses obsolete silent marker before Telegram send");
 	assert((silentResult.content?.[0]?.text || "").includes("Suppressed obsolete [SILENT]"), "tool result explains silent suppression");
+	assertEqual(silentResult.details?.delivered, false, "suppressed control messages are not marked delivered");
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 	process.exit(failed > 0 ? 1 : 0);

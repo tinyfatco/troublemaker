@@ -31,6 +31,7 @@ import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } 
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
+import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
@@ -621,6 +622,16 @@ function createRunner(
 
 			if (agentEvent.isError) {
 				queue.enqueue(() => ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false), "tool error");
+			}
+
+			if (shouldRolloverWorkingAfterToolCompletion({
+				toolName: agentEvent.toolName,
+				isError: agentEvent.isError || false,
+				args: pending?.args,
+				result: agentEvent.result,
+				activeReplyTarget: ctx.message.replyTarget,
+			})) {
+				queue.enqueue(() => ctx.restartWorking(), "restart working after inline send");
 			}
 		} else if (event.type === "message_update") {
 			const agentEvent = event as AgentEvent & { type: "message_update" };

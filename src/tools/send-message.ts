@@ -138,7 +138,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				log.logWarning(`[send_message] Suppressed obsolete [SILENT] message to ${target}`);
 				return {
 					content: [{ type: "text" as const, text: "Suppressed obsolete [SILENT] control marker; no user-visible message was sent. Use yield_no_action when no outbound message is needed." }],
-					details: undefined,
+					details: { delivered: false },
 				};
 			}
 
@@ -173,14 +173,14 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 
 				return {
 					content: [{ type: "text" as const, text: `Message sent to ${resolved.adapter.name} target ${target}${attInfo}${recipientInfo} (ts=${ts})` }],
-					details: undefined,
+					details: { delivered: true },
 				};
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
 				log.logWarning(`[send_message] Failed to send to ${resolved.adapter.name}:${resolved.channel}`, errMsg);
 				return {
 					content: [{ type: "text" as const, text: `Failed to send message: ${errMsg}` }],
-					details: undefined,
+					details: { delivered: false },
 				};
 			}
 		},

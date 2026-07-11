@@ -131,6 +131,23 @@ try {
 	await ambiguousContext.sendFinalResponse("ordinary ambiguous harness final");
 	assert.equal(ambiguousAmbient.posted.length, 0, "ambiguous ambient wake suppresses all automatic top-level harness output");
 
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { responsePlacement: "thread", toolStreaming: "all" },
+	}));
+	const chronological = new TestSlackAdapter(workingDir);
+	const chronologicalContext = chronological.createContext(event(), {} as ChannelStore);
+	await chronologicalContext.respond("_→ Work before milestone_", false);
+	await chronological.postInThread("C123", "1710000000.000001", "milestone");
+	await chronologicalContext.restartWorking();
+	await chronologicalContext.respond("_→ Work after milestone_", false);
+	assert.equal(chronological.posted.length, 3, "working rollover creates a new segment after the user-visible milestone");
+	assert.match(chronological.posted[0]?.text || "", /Work before milestone/, "first working segment stays before the milestone");
+	assert.equal(chronological.posted[1]?.text, "milestone", "user-visible milestone remains in chronological position");
+	assert.match(chronological.posted[2]?.text || "", /Work after milestone/, "later work opens a new segment after the milestone");
+	assert.doesNotMatch(chronological.posted[0]?.text || "", /Work after milestone/, "later labels never mutate the earlier working segment");
+	assert(chronological.posted.every((message) => message.thread_ts === "1710000000.000001"), "every chronological segment stays in the active thread");
+
 	console.log("slack-response-placement ok");
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });
