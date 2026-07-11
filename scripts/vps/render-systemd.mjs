@@ -3,14 +3,16 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const [slug, agentId, outputDirArg, adapters = "email:webhook,mcp"] = process.argv.slice(2);
+const [slug, agentId, outputDirArg, adapters = "email:webhook,mcp", reverseTunnelArg] = process.argv.slice(2);
 if (!slug || !agentId || !outputDirArg) {
-	console.error("Usage: render-systemd.mjs <runtime-slug> <agent-id> <output-dir> [adapters]");
+	console.error("Usage: render-systemd.mjs <runtime-slug> <agent-id> <output-dir> [adapters] [user@host:remote-port]");
 	process.exit(2);
 }
 if (!/^[a-z][a-z0-9-]{0,31}$/.test(slug)) throw new Error("Invalid runtime slug");
 if (!/^[0-9a-f-]{36}$/.test(agentId)) throw new Error("Invalid agent id");
 if (!/^[a-z0-9:,.-]+$/.test(adapters)) throw new Error("Invalid adapter list");
+const reverseTunnel = reverseTunnelArg?.match(/^([a-z][a-z0-9-]{0,31})@([a-zA-Z0-9.-]+):([0-9]{2,5})$/);
+if (reverseTunnelArg && !reverseTunnel) throw new Error("Invalid reverse tunnel; expected user@host:remote-port");
 
 const user = `${slug}-agent`;
 const configDir = `/etc/${user}`;
@@ -101,6 +103,30 @@ Persistent=true
 WantedBy=timers.target
 `,
 };
+
+if (reverseTunnel) {
+	const [, tunnelUser, tunnelHost, remotePort] = reverseTunnel;
+	units[`${slug}-tunnel.service`] = `[Unit]
+Description=${slug} reverse ingress tunnel
+After=network-online.target ${slug}-agent.service
+Wants=network-online.target ${slug}-agent.service
+
+[Service]
+Type=simple
+User=${user}
+Group=${user}
+ExecStart=/usr/bin/ssh -NT -i ${configDir}/tunnel-key -o UserKnownHostsFile=${configDir}/tunnel-known-hosts -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -R 127.0.0.1:${remotePort}:127.0.0.1:3002 ${tunnelUser}@${tunnelHost}
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+`;
+}
 
 for (const [name, contents] of Object.entries(units)) {
 	await writeFile(resolve(outputDir, name), contents, { mode: 0o644 });

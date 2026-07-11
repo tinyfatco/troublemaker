@@ -19,6 +19,11 @@ only `/email/inbound`; the gateway itself remains bound to localhost.
 7. Start `<slug>-r2`, `<slug>-workspace`, and `<slug>-agent` in that order. Enable
    the `<slug>-r2-refresh.timer`; credentials last seven days and renew every five.
 
+For reverse-SSH ingress through a hardened router, pass a final
+`user@host:remote-port` argument when rendering. Install `tunnel-key` and
+`tunnel-known-hosts` in the agent config directory, then expose only the required
+webhook path from the router's loopback remote port.
+
 The R2 credentials are limited by Cloudflare to the agent's object prefix. The agent
 runs as an unprivileged user with a 320 MB systemd memory ceiling and cannot
 read the other applications' environment files. Credential renewal briefly

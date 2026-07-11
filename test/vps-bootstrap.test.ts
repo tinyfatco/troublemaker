@@ -75,6 +75,8 @@ const renderResult = spawnSync(process.execPath, [
 	"gus",
 	"11111111-2222-4333-8444-555555555555",
 	unitPath,
+	"email:webhook,mcp",
+	"gus-tunnel@203.0.113.10:63002",
 ], { encoding: "utf8" });
 assert.equal(renderResult.status, 0, renderResult.stderr);
 const agentUnit = await readFile(join(unitPath, "gus-agent.service"), "utf8");
@@ -82,3 +84,5 @@ assert.match(agentUnit, /--adapter=email:webhook,mcp --host=127\.0\.0\.1 --port=
 assert.match(agentUnit, /User=gus-agent/);
 const r2Unit = await readFile(join(unitPath, "gus-r2.service"), "utf8");
 assert.match(r2Unit, /gus-r2:fat-agents-data\/agents\/11111111-2222-4333-8444-555555555555/);
+const tunnelUnit = await readFile(join(unitPath, "gus-tunnel.service"), "utf8");
+assert.match(tunnelUnit, /-R 127\.0\.0\.1:63002:127\.0\.0\.1:3002 gus-tunnel@203\.0\.113\.10/);
