@@ -44,8 +44,11 @@ else
 	PORT="3002"
 fi
 HOST="${TROUBLEMAKER_HOST:-127.0.0.1}"
-PEEKABOO_MCP_COMMAND="${PEEKABOO_MCP_COMMAND:-$(command -v peekaboo || true)}"
-PEEKABOO_MCP_ARGS="${PEEKABOO_MCP_ARGS:-mcp --no-remote}"
+COMPUTER_USE_PLUGIN_DIR="${COMPUTER_USE_PLUGIN_DIR:-/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use}"
+COMPUTER_USE_MCP_COMMAND="${COMPUTER_USE_MCP_COMMAND:-$COMPUTER_USE_PLUGIN_DIR/Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient}"
+CODEX_CLI_COMMAND="${CODEX_CLI_COMMAND:-$HOME/.local/bin/codex}"
+CODEX_CUA_PROFILE="${CODEX_CUA_PROFILE:-ghost-cua}"
+CODEX_CUA_PROFILE_FILE="$HOME/.codex/$CODEX_CUA_PROFILE.config.toml"
 KEYCHAIN_SERVICE="${TROUBLEMAKER_KEYCHAIN_SERVICE:-com.tinyfatco.troublemaker.local}"
 ADAPTERS="${TROUBLEMAKER_ADAPTERS:-web,mcp}"
 BUILD=1
@@ -98,6 +101,12 @@ fi
 
 mkdir -p "$WORKSPACE_DIR"
 
+if [ ! -f "$CODEX_CUA_PROFILE_FILE" ]; then
+	mkdir -p "$(dirname "$CODEX_CUA_PROFILE_FILE")"
+	printf 'default_permissions = ":danger-full-access"\n\n[permissions]\n' > "$CODEX_CUA_PROFILE_FILE"
+	chmod 600 "$CODEX_CUA_PROFILE_FILE"
+fi
+
 load_keychain_secret() {
 	local var_name="$1"
 	shift
@@ -135,14 +144,16 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 
 echo "Configuring local MCP providers..."
-node --input-type=module - "$WORKSPACE_DIR" "$PEEKABOO_MCP_COMMAND" "$PEEKABOO_MCP_ARGS" "$AGENT_PROFILE" "$AGENT_NAME" "$LOCAL_AGENT_ID" "$CLOUD_AGENT_ID" "$TENANT_ID" "$CLOUD_BASE_URL" "$APP_OWNED_RUNTIME" <<'NODE'
+node --input-type=module - "$WORKSPACE_DIR" "$COMPUTER_USE_MCP_COMMAND" "$COMPUTER_USE_PLUGIN_DIR" "$CODEX_CLI_COMMAND" "$CODEX_CUA_PROFILE" "$AGENT_PROFILE" "$AGENT_NAME" "$LOCAL_AGENT_ID" "$CLOUD_AGENT_ID" "$TENANT_ID" "$CLOUD_BASE_URL" "$APP_OWNED_RUNTIME" <<'NODE'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const [
 	workspaceDir,
-	peekabooCommand,
-	peekabooArgsRaw,
+	computerUseCommand,
+	computerUseCwd,
+	codexCommand,
+	codexCuaProfile,
 	agentProfile,
 	agentName,
 	localAgentId,
@@ -151,7 +162,6 @@ const [
 	cloudBaseUrl,
 	appOwnedRuntime,
 ] = process.argv.slice(2);
-const peekabooArgs = (peekabooArgsRaw || "mcp --no-remote").trim().split(/\s+/).filter(Boolean);
 mkdirSync(workspaceDir, { recursive: true });
 
 const settingsPath = join(workspaceDir, "settings.json");
@@ -165,7 +175,7 @@ if (existsSync(settingsPath)) {
 }
 
 const servers = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
-settings.mcpServers = servers.filter((server) => server?.alias !== "peekaboo");
+settings.mcpServers = servers.filter((server) => !["peekaboo", "computer-use"].includes(server?.alias));
 settings.defaultProvider = settings.defaultProvider || "fireworks";
 settings.defaultModel = settings.defaultModel || "accounts/fireworks/models/glm-5p1";
 if (agentProfile || cloudAgentId || tenantId || appOwnedRuntime === "1" || appOwnedRuntime === "true") {
@@ -179,31 +189,35 @@ if (agentProfile || cloudAgentId || tenantId || appOwnedRuntime === "1" || appOw
 	settings.appOwnedRuntime = true;
 }
 
-if (peekabooCommand) {
+if (computerUseCommand && codexCommand && existsSync(computerUseCommand) && existsSync(computerUseCwd) && existsSync(codexCommand)) {
 	settings.mcpServers.push({
-		alias: "peekaboo",
+		alias: "computer-use",
 		transport: "stdio",
-		command: peekabooCommand,
-		args: peekabooArgs,
-		env: {
-			PEEKABOO_NO_REMOTE: "1",
-		},
-		scopes: ["computer:use", "screen:record", "accessibility:read", "accessibility:write"],
+		command: codexCommand,
+		args: [
+			"sandbox",
+			"-p", codexCuaProfile,
+			"-P", ":danger-full-access",
+			"-C", computerUseCwd,
+			"--", computerUseCommand, "mcp",
+		],
+		cwd: computerUseCwd,
+		scopes: ["computer:use", "accessibility:read", "accessibility:write"],
 		addedBy: "scripts/run-local-mac.sh",
 	});
 } else {
-	console.warn("  peekaboo command not found; install with: brew install steipete/tap/peekaboo");
+	console.warn("  Codex Computer Use MCP or signed Codex CLI not found; install or update Codex.app");
 }
 
 writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 console.log(`  ${settingsPath}`);
 NODE
 
-if [ -z "$PEEKABOO_MCP_COMMAND" ]; then
+if [ ! -x "$COMPUTER_USE_MCP_COMMAND" ] || [ ! -x "$CODEX_CLI_COMMAND" ]; then
 	echo ""
-	echo "Note: Peekaboo is not installed."
-	echo "Run: brew install steipete/tap/peekaboo"
-	echo "Then rerun this script."
+	echo "Note: Codex Computer Use MCP is unavailable."
+	echo "Expected: $COMPUTER_USE_MCP_COMMAND"
+	echo "Install or update Codex.app, then rerun this script."
 	echo ""
 fi
 

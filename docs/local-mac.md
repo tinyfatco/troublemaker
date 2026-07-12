@@ -10,24 +10,22 @@ Local voice tool
   POST /input/webhook
 Troublemaker
   web adapter, memory, tools, web UI
-Peekaboo
-  stdio MCP child process via `peekaboo mcp --no-remote`
-Troublemaker.app
-  macOS TCC owner for Screen Recording and Accessibility
+Codex Computer Use
+  bundled `SkyComputerUseClient mcp` stdio child process
+SkyComputerUseService
+  macOS accessibility and application-control backend
 ```
 
-## Install Peekaboo
+## Install Computer Use
 
-```bash
-brew install steipete/tap/peekaboo
-```
+Computer Use is bundled with Codex.app. Troublemaker starts the bundled
+`SkyComputerUseClient` through the signed Codex sandbox launcher as a stdio MCP
+child process with the plugin directory as its working directory. The signed
+parent authenticates the client to `SkyComputerUseService`; launching the client
+directly exposes its tool catalog but causes live calls to fail with sender
+authentication errors. Computer Use replaces Peekaboo for Mac host agents.
 
-Peekaboo is the local Mac automation provider. Troublemaker starts it as a
-stdio MCP child process in `--no-remote` mode, so Screen Recording and
-Accessibility belong to the app that launches Troublemaker instead of a
-separate Peekaboo daemon.
-
-For real computer use, macOS must grant `Troublemaker.app` access to:
+For real computer use, macOS must grant the Codex Computer Use service access to:
 
 ```text
 System Settings -> Privacy & Security -> Accessibility
@@ -40,8 +38,8 @@ The old LaunchAgent path is useful for server-only testing, but the Mac
 automation path should launch through `Troublemaker.app` so TCC grants stick to
 the stable app bundle.
 
-For an always-on host agent whose shell already has the required Peekaboo TCC
-grants, `scripts/install-ghost-mac.sh` installs two user LaunchAgents: the Ghost
+For an always-on host agent with a healthy Codex Computer Use service,
+`scripts/install-ghost-mac.sh` installs two user LaunchAgents: the Ghost
 runtime and a loopback-only reverse SSH relay to tiny-bat. Ghost listens only on
 the Mac loopback interface and uses Slack Socket Mode plus Telegram polling;
 tiny-bat terminates the authenticated `ghost.tinyfat.com` route.
@@ -70,8 +68,8 @@ Override with:
 ```bash
 TROUBLEMAKER_PORT=3003 ./run-dev.sh
 TROUBLEMAKER_WORKSPACE="$HOME/Troublemaker" ./run-dev.sh
-PEEKABOO_MCP_COMMAND=/opt/homebrew/bin/peekaboo ./run-dev.sh
-PEEKABOO_MCP_ARGS="mcp --no-remote" ./run-dev.sh
+COMPUTER_USE_PLUGIN_DIR="/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use" ./run-dev.sh
+COMPUTER_USE_MCP_COMMAND="/absolute/path/to/SkyComputerUseClient" ./run-dev.sh
 ```
 
 ## Doctor
