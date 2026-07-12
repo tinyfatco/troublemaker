@@ -6,6 +6,7 @@ import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pu
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
+import { SlackNativeProgress } from "./slack-native-progress.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
@@ -390,12 +391,14 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		// synthetic event has no threadTs, so fail closed instead of opening a
 		// top-level harness stream in an unrelated conversation.
 		const suppressAmbiguousAmbientHarness = event.sourceEventType === "ambient_evaluation" && !event.threadTs;
+		const verbosity = suppressAmbiguousAmbientHarness ? "messages-only" : settings.getVerbose(event.channel, "slack");
+		const toolStreaming = suppressAmbiguousAmbientHarness ? "off" : settings.getSlackToolStreaming();
 		const postResponse = (channel: string, text: string) =>
 			responseThreadTs && channel === event.channel
 				? this.postInThread(channel, responseThreadTs, text)
 				: this.postMessage(channel, text);
 
-		return createTwoMessageContext(
+		const context = createTwoMessageContext(
 			{
 				post: postResponse,
 				update: (ch, id, text) => this.updateMessage(ch, id, text),
@@ -412,8 +415,8 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: suppressAmbiguousAmbientHarness ? "messages-only" : settings.getVerbose(event.channel, "slack"),
-				toolStreaming: suppressAmbiguousAmbientHarness ? "off" : settings.getSlackToolStreaming(),
+				verbose: verbosity,
+				toolStreaming,
 			},
 			{
 				onWorkingUpdate: (id) => {
@@ -442,6 +445,53 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				},
 			},
 		);
+
+		const nativeThreadTs = event.channel.startsWith("D") ? event.ts : responseThreadTs;
+		const isPersonInvocation = /^[UW][A-Z0-9]+$/i.test(event.user);
+		const canUseNativeProgress = settings.getSlackNativeProgress()
+			&& !isEvent
+			&& event.directlyAddressed === true
+			&& Boolean(nativeThreadTs)
+			&& (event.channel.startsWith("D") || (isPersonInvocation && Boolean(event.teamId)));
+
+		if (!canUseNativeProgress || !nativeThreadTs) return context;
+
+		const nativeProgress = new SlackNativeProgress({
+			api: {
+				startStream: (args) => this.webClient.chat.startStream(args),
+				appendStream: (args) => this.webClient.chat.appendStream(args),
+				stopStream: (args) => this.webClient.chat.stopStream(args),
+				deleteMessage: (args) => this.webClient.chat.delete(args),
+			},
+			channel: event.channel,
+			threadTs: nativeThreadTs,
+			mode: toolStreaming,
+			verbose: verbosity === true,
+			...(event.channel.startsWith("D")
+				? {}
+				: { recipientTeamId: event.teamId, recipientUserId: event.user }),
+			fallback: (label, show) => context.respond(`_→ ${label}_`, false, { show }),
+			warn: (message, error) => {
+				log.logWarning(message, error instanceof Error ? error.message : String(error));
+			},
+		});
+
+		return {
+			...context,
+			updateToolProgress: (update) => nativeProgress.update(update),
+			restartWorking: async (nextHeaderLine?: string) => {
+				await nativeProgress.finalizeSegment();
+				await context.restartWorking(nextHeaderLine);
+			},
+			setWorking: async (working: boolean) => {
+				if (!working) await nativeProgress.finalizeSegment();
+				await context.setWorking(working);
+			},
+			deleteMessage: async () => {
+				await nativeProgress.deleteAll();
+				await context.deleteMessage();
+			},
+		};
 	}
 
 	// ==========================================================================

@@ -39,7 +39,7 @@ export class SlackSocketAdapter extends SlackBase {
 
 	private setupEventHandlers(): void {
 		// Channel @mentions
-		this.socketClient.on("app_mention", async ({ event, ack }) => {
+		this.socketClient.on("app_mention", async ({ event, ack, body }) => {
 			const e = event as {
 				text: string;
 				channel: string;
@@ -74,6 +74,7 @@ export class SlackSocketAdapter extends SlackBase {
 				channel: e.channel,
 				ts: e.ts,
 				user: userId,
+				teamId: (body as { team_id?: string }).team_id,
 				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 				rawText: e.text || "",
 				sourceEventType: "slack_app_mention",
@@ -124,7 +125,7 @@ export class SlackSocketAdapter extends SlackBase {
 		});
 
 		// All messages (for logging) + DMs (for triggering) + ambient engagement
-		this.socketClient.on("message", async ({ event, ack }) => {
+		this.socketClient.on("message", async ({ event, ack, body }) => {
 			const e = event as {
 				text?: string;
 				channel: string;
@@ -178,6 +179,7 @@ export class SlackSocketAdapter extends SlackBase {
 				channel: e.channel,
 				ts: e.ts,
 				user: userId,
+				teamId: (body as { team_id?: string }).team_id,
 				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 				rawText: e.text || "",
 				sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",

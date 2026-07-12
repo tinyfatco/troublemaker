@@ -530,7 +530,7 @@ function createRunner(
 			enqueue(fn: () => Promise<void>, errorContext: string): Promise<void>;
 			enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog?: boolean): void;
 		} | null,
-		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number; label: string; show: boolean }>(),
 		toolsUsed: [] as string[],
 		totalUsage: {
 			input: 0,
@@ -574,11 +574,14 @@ function createRunner(
 				? agentEvent.args as Record<string, unknown>
 				: {};
 			const label = cleanToolCallLabel(args.label) || agentEvent.toolName;
+			const show = args.show === true || agentEvent.toolName === "send_message";
 
 			pendingTools.set(agentEvent.toolCallId, {
 				toolName: agentEvent.toolName,
 				args: agentEvent.args,
 				startTime: Date.now(),
+				label,
+				show,
 			});
 			runState.toolsUsed.push(agentEvent.toolName);
 
@@ -593,9 +596,9 @@ function createRunner(
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
 			if (!silentChannelTool) {
 				const displayBarrier = queue.enqueue(
-					() => ctx.respond(`_→ ${label}_`, false, {
-						show: args.show === true || agentEvent.toolName === "send_message",
-					}),
+					() => ctx.updateToolProgress
+						? ctx.updateToolProgress({ id: agentEvent.toolCallId, label, status: "in_progress", show })
+						: ctx.respond(`_→ ${label}_`, false, { show }),
 					"tool label",
 				);
 				registerToolDisplayBarrier(agentEvent.toolCallId, displayBarrier);
@@ -614,13 +617,13 @@ function createRunner(
 				log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
 			}
 
-			const label = pending?.args ? (pending.args as { label?: string }).label : undefined;
+			const label = pending?.label;
 			const argsFormatted = pending
 				? formatToolArgs(agentEvent.toolName, pending.args as Record<string, unknown>)
 				: "(args not found)";
 			const duration = (durationMs / 1000).toFixed(1);
 			let threadMessage = `*${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
-			if (label) threadMessage += `: ${label}`;
+			if (label && label !== agentEvent.toolName) threadMessage += `: ${label}`;
 			threadMessage += ` (${duration}s)\n`;
 			if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
 			threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
@@ -629,6 +632,17 @@ function createRunner(
 			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolResult", toolCallId: agentEvent.toolCallId, result: resultStr, isError: agentEvent.isError || false });
 			if (!isYieldNoActionToolName(agentEvent.toolName)) {
+				if (ctx.updateToolProgress && pending) {
+					queue.enqueue(
+						() => ctx.updateToolProgress!({
+							id: agentEvent.toolCallId,
+							label: pending.label,
+							status: agentEvent.isError ? "error" : "complete",
+							show: pending.show,
+						}),
+						"tool progress completion",
+					);
+				}
 				queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
 			}
 

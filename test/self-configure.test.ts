@@ -71,6 +71,10 @@ try {
 	settings = readSettings(workingDir);
 	assert(allStreaming.newValue === "all", "camelCase tool-streaming alias normalizes everything to all");
 	assert((settings.slack as any).toolStreaming === "all", "camelCase tool-streaming alias persists all mode");
+	const nativeProgress = applySelfConfiguration(workingDir, "slack.nativeProgress", "on");
+	settings = readSettings(workingDir);
+	assert(nativeProgress.newValue === true, "native progress alias accepts natural booleans");
+	assert((settings.slack as any).nativeProgress === true, "native progress persists inside the Slack settings block");
 
 	const spontaneity = applySelfConfiguration(workingDir, "spontaneity.level", 5);
 	settings = readSettings(workingDir);

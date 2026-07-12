@@ -36,6 +36,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"slack.verbosity",
 	"slack.response_placement",
 	"slack.tool_streaming",
+	"slack.native_progress",
 	"spontaneity.enabled",
 	"spontaneity.level",
 	"spontaneity.intervalMinutes",
@@ -59,6 +60,8 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
 	"slack.toolStreaming": "slack.tool_streaming",
+	"slack.nativeProgress": "slack.native_progress",
+	"native_progress": "slack.native_progress",
 	"tool_streaming": "slack.tool_streaming",
 	"toolStreaming": "slack.tool_streaming",
 };
@@ -246,6 +249,22 @@ function configureSlackToolStreaming(workingDir: string, value: unknown): SelfCo
 	};
 }
 
+function configureSlackNativeProgress(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getSlackNativeProgress();
+	const newValue = parseBoolean(value, "slack.native_progress");
+	manager.setSlackNativeProgress(newValue);
+	return {
+		changed: true,
+		setting: "slack.native_progress",
+		previousValue,
+		newValue,
+		note: newValue
+			? "Slack will use native streaming task cards for selected tool progress on eligible direct turns, with message fallback."
+			: "Slack will use the existing edited-message progress renderer.",
+	};
+}
+
 function configureSpontaneity(workingDir: string, setting: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previous = manager.getSpontaneitySettings();
@@ -361,6 +380,7 @@ export function applySelfConfiguration(
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
+	if (target === "slack.native_progress") return configureSlackNativeProgress(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
@@ -386,7 +406,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.native_progress, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
 				"heartbeat.checklist, voice/realtime_voice.",
@@ -398,7 +418,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, selective Slack tool streaming, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, selective Slack tool streaming, native Slack progress cards, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, and slack.native_progress to enable or disable native task cards. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

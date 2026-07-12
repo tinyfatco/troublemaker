@@ -14,6 +14,8 @@ export interface MomEvent {
 	channel: string;
 	ts: string;
 	user: string;
+	/** Slack workspace associated with the invoking user, when supplied by Slack. */
+	teamId?: string;
 	text: string;
 	rawText?: string;
 	/** Start this event from a freshly archived Pi session context. */
@@ -53,6 +55,14 @@ export interface SendFinalResponseOptions {
 
 export interface RespondOptions {
 	/** The agent explicitly judged this safe tool label useful to surface. */
+	show?: boolean;
+}
+
+export interface ToolProgressUpdate {
+	id: string;
+	label: string;
+	status: "in_progress" | "complete" | "error";
+	/** Whether the tool explicitly opted into the selective important stream. */
 	show?: boolean;
 }
 
@@ -131,6 +141,8 @@ export interface MomContext {
 	deleteMessage: () => Promise<void>;
 	/** Finalize the current working message and start a fresh one (used by steering) */
 	restartWorking: (headerLine?: string) => Promise<void>;
+	/** Emit sanitized tool lifecycle to a platform-native progress surface. */
+	updateToolProgress?: (update: ToolProgressUpdate) => Promise<void>;
 	/** Emit a structured content block via SSE (web adapter only, others no-op) */
 	emitContentBlock?: (block: { type: string; [key: string]: unknown }) => void;
 }

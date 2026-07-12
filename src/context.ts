@@ -59,6 +59,8 @@ export interface MomSlackSettings {
 	responsePlacement?: SlackResponsePlacement;
 	/** Surface safe tool labels while ordinary harness output remains quiet. */
 	toolStreaming?: ToolStreamingMode;
+	/** Render selected tool lifecycle with Slack's native streaming task UI. */
+	nativeProgress?: boolean;
 }
 
 export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "noop" | "disabled";
@@ -447,6 +449,15 @@ export class MomSettingsManager {
 
 	setSlackToolStreaming(value: ToolStreamingMode): void {
 		this.settings.slack = { ...this.settings.slack, toolStreaming: value };
+		this.save();
+	}
+
+	getSlackNativeProgress(): boolean {
+		return this.settings.slack?.nativeProgress === true;
+	}
+
+	setSlackNativeProgress(value: boolean): void {
+		this.settings.slack = { ...this.settings.slack, nativeProgress: value };
 		this.save();
 	}
 

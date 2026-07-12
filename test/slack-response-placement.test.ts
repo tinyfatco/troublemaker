@@ -14,6 +14,9 @@ type PostedMessage = {
 
 class TestSlackAdapter extends SlackBase {
 	posted: PostedMessage[] = [];
+	nativeStarts: any[] = [];
+	nativeAppends: any[] = [];
+	nativeStops: any[] = [];
 
 	constructor(workingDir: string) {
 		const store = { processAttachments: () => [] } as unknown as ChannelStore;
@@ -27,6 +30,12 @@ class TestSlackAdapter extends SlackBase {
 				},
 				update: async () => {},
 				delete: async () => {},
+				startStream: async (payload: any) => {
+					this.nativeStarts.push(payload);
+					return { ts: `native-${this.nativeStarts.length}` };
+				},
+				appendStream: async (payload: any) => { this.nativeAppends.push(payload); },
+				stopStream: async (payload: any) => { this.nativeStops.push(payload); },
 			},
 			files: { uploadV2: async () => {} },
 		} as any;
@@ -108,6 +117,23 @@ try {
 	assert.match(selective.posted[0]?.text || "", /Checking the deployed revision/, "selected label text is visible");
 	assert.doesNotMatch(selective.posted[0]?.text || "", /Thinking/, "Slack working stream needs no Thinking header");
 	assert.doesNotMatch(selective.posted[0]?.text || "", /raw tool arguments/, "raw tool detail remains suppressed");
+
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { responsePlacement: "thread", toolStreaming: "important", nativeProgress: true },
+	}));
+	const native = new TestSlackAdapter(workingDir);
+	const nativeContext = native.createContext(event({ directlyAddressed: true, teamId: "T123" }), {} as ChannelStore);
+	assert(nativeContext.updateToolProgress, "eligible direct Slack turn exposes native progress lifecycle");
+	await nativeContext.updateToolProgress?.({ id: "tool-1", label: "Checking deployment health", status: "in_progress", show: true });
+	await nativeContext.updateToolProgress?.({ id: "tool-1", label: "Checking deployment health", status: "complete", show: true });
+	await nativeContext.setWorking(false);
+	assert.equal(native.posted.length, 0, "native task lifecycle does not duplicate the edited-message renderer");
+	assert.equal(native.nativeStarts[0]?.thread_ts, "1710000000.000001", "native task stream uses the inbound thread");
+	assert.equal(native.nativeStarts[0]?.recipient_team_id, "T123", "native task stream binds the invoking workspace");
+	assert.equal(native.nativeStarts[0]?.recipient_user_id, "U123", "native task stream binds the invoking user");
+	assert.equal(native.nativeAppends[0]?.chunks?.[0]?.status, "complete", "native task completion updates the card");
+	assert.deepEqual(native.nativeStops, [{ channel: "C123", ts: "native-1" }], "turn completion finalizes the native stream");
 
 	for (const toolStreaming of ["important", "all"] as const) {
 		writeFileSync(join(workingDir, "settings.json"), JSON.stringify({

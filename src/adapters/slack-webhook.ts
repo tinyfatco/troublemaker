@@ -151,14 +151,14 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		if (event.type === "app_mention") {
-			await this.handleAppMention(event);
+			await this.handleAppMention(event, payload.team_id);
 		} else if (event.type === "message") {
-			await this.handleMessage(event);
+			await this.handleMessage(event, payload.team_id);
 		}
 
 	}
 
-	private async handleAppMention(event: SlackEventInner): Promise<void> {
+	private async handleAppMention(event: SlackEventInner, teamId?: string): Promise<void> {
 		if (event.channel.startsWith("D")) return;
 
 		const threadTs = event.thread_ts ?? event.ts;
@@ -168,6 +168,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			channel: event.channel,
 			ts: event.ts,
 			user: event.user || event.bot_id || "unknown",
+			teamId,
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 			rawText: event.text || "",
 			sourceEventType: "slack_app_mention",
@@ -204,7 +205,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 	}
 
-	private async handleMessage(event: SlackEventInner): Promise<void> {
+	private async handleMessage(event: SlackEventInner, teamId?: string): Promise<void> {
 		if (!event.text && (!event.files || event.files.length === 0)) return;
 
 		const isDM = event.channel_type === "im";
@@ -221,6 +222,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			channel: event.channel,
 			ts: event.ts,
 			user: userId,
+			teamId,
 			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
 			rawText: event.text || "",
 			sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
@@ -277,6 +279,7 @@ interface SlackEventPayload {
 	type: "url_verification" | "event_callback";
 	challenge?: string;
 	token?: string;
+	team_id?: string;
 	event?: SlackEventInner;
 }
 
