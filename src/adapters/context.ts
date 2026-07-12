@@ -94,17 +94,17 @@ export function createTwoMessageContext(
 
 	// Build the working message display from all accumulated entries
 	const buildWorkingDisplay = (): string => {
-		const lines = [config.headerLine, ...workingEntries];
+		const lines = [config.headerLine, ...workingEntries].filter((line) => line.trim());
 		let display = lines.join("\n");
 
 		// Trim oldest entries if message exceeds platform limit
 		const limit = ops.maxLength - 100;
 		while (display.length > limit && workingEntries.length > 1) {
 			workingEntries.shift();
-			display = `${ops.formatStatus("... trimmed")}\n${[config.headerLine, ...workingEntries].join("\n")}`;
+			display = `${ops.formatStatus("... trimmed")}\n${[config.headerLine, ...workingEntries].filter((line) => line.trim()).join("\n")}`;
 		}
 
-		return isWorking ? display + " ..." : display;
+		return display && isWorking ? display + " ..." : display;
 	};
 
 	const verbose = config.verbose !== false && config.verbose !== "messages-only"; // default true
@@ -115,6 +115,7 @@ export function createTwoMessageContext(
 	const flushWorkingMessage = async () => {
 		if (!verbose && !hasSurfacedToolLabel) return; // quiet mode stays closed until a safe label is selected
 		const display = buildWorkingDisplay();
+		if (!display) return;
 		if (workingMessageId) {
 			await ops.update(event.channel, workingMessageId, display);
 		} else {

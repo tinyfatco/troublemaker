@@ -377,7 +377,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[(?:EVENT|ATTENTION):([^:]+):/)?.[1] : undefined;
 
-		const headerLine = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
+		const headerLine = eventFilename ? `_Starting event: ${eventFilename}_` : "";
 
 		// Track thread messages and working message ID for respondInThread + deleteMessage
 		const threadMessageTs: string[] = [];

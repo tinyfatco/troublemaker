@@ -51,6 +51,7 @@ function event(overrides: Partial<MomEvent> = {}): MomEvent {
 async function exerciseContext(adapter: TestSlackAdapter, incoming: MomEvent): Promise<PostedMessage[]> {
 	const ctx = adapter.createContext(incoming, {} as ChannelStore);
 	await ctx.setTyping(true);
+	await ctx.respond("_→ Test operation_", false, { show: true });
 	await ctx.respondInThread("tool detail");
 	await ctx.sendFinalResponse("final answer");
 	return adapter.posted;
@@ -67,6 +68,7 @@ try {
 	const threaded = new TestSlackAdapter(workingDir);
 	let posted = await exerciseContext(threaded, event());
 	assert.equal(posted.length, 3);
+	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "threaded working output starts with the operation arrow");
 	assert.equal(posted[0]?.thread_ts, "1710000000.000001", "working output enters the inbound Slack thread");
 	assert.equal(posted[1]?.thread_ts, "1710000000.000001", "detail output stays in the inbound Slack thread");
 	assert.equal(posted[2]?.thread_ts, "1710000000.000001", "final output stays in the inbound Slack thread");
@@ -79,6 +81,7 @@ try {
 	const channel = new TestSlackAdapter(workingDir);
 	posted = await exerciseContext(channel, event());
 	assert.equal(posted.length, 3);
+	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "channel working output starts with the operation arrow");
 	assert.equal(posted[0]?.thread_ts, undefined, "working output is a new top-level channel message");
 	assert.equal(posted[1]?.thread_ts, "posted-1", "detail output keeps the legacy working-message subthread");
 	assert.equal(posted[2]?.thread_ts, undefined, "final output is a new top-level channel message");
@@ -95,6 +98,7 @@ try {
 	const selective = new TestSlackAdapter(workingDir);
 	const selectiveContext = selective.createContext(event(), {} as ChannelStore);
 	await selectiveContext.setTyping(true);
+	assert.equal(selective.posted.length, 0, "headerless Slack does not post a blank thinking placeholder");
 	await selectiveContext.respond("_→ Routine read_", false, { show: false });
 	await selectiveContext.respond("_→ Checking the deployed revision_", false, { show: true });
 	await selectiveContext.respondInThread("raw tool arguments and result");
@@ -102,6 +106,7 @@ try {
 	assert.equal(selective.posted.length, 1, "messages-only Slack emits only the selected safe tool label");
 	assert.equal(selective.posted[0]?.thread_ts, "1710000000.000001", "selected label enters the inbound Slack thread");
 	assert.match(selective.posted[0]?.text || "", /Checking the deployed revision/, "selected label text is visible");
+	assert.doesNotMatch(selective.posted[0]?.text || "", /Thinking/, "Slack working stream needs no Thinking header");
 	assert.doesNotMatch(selective.posted[0]?.text || "", /raw tool arguments/, "raw tool detail remains suppressed");
 
 	for (const toolStreaming of ["important", "all"] as const) {
