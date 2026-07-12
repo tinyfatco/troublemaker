@@ -25,6 +25,13 @@ parent authenticates the client to `SkyComputerUseService`; launching the client
 directly exposes its tool catalog but causes live calls to fail with sender
 authentication errors. Computer Use replaces Peekaboo for Mac host agents.
 
+The Computer Use MCP server uses MCP form elicitation for its per-app approval
+gate. Troublemaker advertises that capability only to the local stdio server
+configured as `computer-use`, and auto-accepts only the server's empty
+`Allow ChatGPT to use ...?` form with persistent-app metadata. Other MCP
+elicitations fail closed. `doctor-local-mac.sh` verifies the complete path by
+reading Finder's accessibility tree and screenshot, not merely listing tools.
+
 For real computer use, macOS must grant the Codex Computer Use service access to:
 
 ```text

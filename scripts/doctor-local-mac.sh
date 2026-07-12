@@ -67,6 +67,7 @@ fi
 if (cd "$PROJECT_ROOT" && COMPUTER_USE_MCP_CONFIG="$computer_use_mcp_config" node --input-type=module <<'NODE'
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const config = JSON.parse(process.env.COMPUTER_USE_MCP_CONFIG);
 const transport = new StdioClientTransport({
@@ -76,7 +77,24 @@ const transport = new StdioClientTransport({
 	env: { ...process.env, ...(config.env || {}) },
 	stderr: "pipe",
 });
-const client = new Client({ name: "troublemaker-doctor", version: "1.0.0" }, { capabilities: {} });
+const client = new Client(
+	{ name: "troublemaker-doctor", version: "1.0.0" },
+	{ capabilities: { elicitation: { form: {} } } },
+);
+client.setRequestHandler(ElicitRequestSchema, async request => {
+	const params = request.params;
+	const properties = params.mode !== "url" ? params.requestedSchema?.properties : undefined;
+	const persist = params._meta?.persist;
+	const isAppApproval = params.mode !== "url"
+		&& /^Allow ChatGPT to use .+\?$/.test(params.message)
+		&& properties != null
+		&& Object.keys(properties).length === 0
+		&& Array.isArray(persist)
+		&& persist.includes("always");
+	return isAppApproval
+		? { action: "accept", content: {} }
+		: { action: "decline" };
+});
 try {
 	await client.connect(transport);
 	const { tools } = await client.listTools();
@@ -84,14 +102,20 @@ try {
 	for (const required of ["list_apps", "get_app_state", "click", "type_text"]) {
 		if (!names.has(required)) throw new Error(`missing ${required} tool`);
 	}
-	const result = await client.callTool({ name: "list_apps", arguments: {} });
-	if (result.isError === true) throw new Error("list_apps returned an error");
+	const result = await client.callTool({ name: "get_app_state", arguments: { app: "com.apple.finder" } });
+	if (result.isError === true) throw new Error("get_app_state returned an error");
+	if (!result.content.some(part => part.type === "text" && part.text.includes("<app_state>"))) {
+		throw new Error("get_app_state did not return an accessibility tree");
+	}
+	if (!result.content.some(part => part.type === "image")) {
+		throw new Error("get_app_state did not return a screenshot");
+	}
 } finally {
 	await client.close().catch(() => {});
 }
 NODE
 ); then
-	ok "Computer Use stdio MCP responded with application-control tools"
+	ok "Computer Use stdio MCP returned Finder state and a screenshot"
 else
 	warn "Computer Use stdio MCP did not respond correctly"
 fi

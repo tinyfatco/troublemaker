@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import * as log from "../log.js";
 import { loadMcpConfigs, type ResolvedMcpServer } from "./config.js";
 import { wrapMcpTool } from "./wrap-tool.js";
@@ -12,6 +13,32 @@ interface ConnectedServer {
 	client: Client;
 	transport: Transport;
 	tools: AgentTool<any>[];
+}
+
+function isLocalComputerUseServer(config: ResolvedMcpServer): boolean {
+	return config.alias === "computer-use"
+		&& config.transport === "stdio"
+		&& config.scopes.includes("computer:use");
+}
+
+export function isComputerUseAppApproval(params: unknown): boolean {
+	if (!params || typeof params !== "object" || Array.isArray(params)) return false;
+	const request = params as Record<string, unknown>;
+	if (request.mode !== undefined && request.mode !== "form") return false;
+	if (typeof request.message !== "string" || !/^Allow ChatGPT to use .+\?$/.test(request.message)) return false;
+
+	const schema = request.requestedSchema;
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+	const schemaRecord = schema as Record<string, unknown>;
+	if (schemaRecord.type !== "object") return false;
+	const properties = schemaRecord.properties;
+	if (!properties || typeof properties !== "object" || Array.isArray(properties)) return false;
+	if (Object.keys(properties as Record<string, unknown>).length !== 0) return false;
+
+	const meta = request._meta;
+	if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
+	const persist = (meta as Record<string, unknown>).persist;
+	return Array.isArray(persist) && persist.includes("always");
 }
 
 export class McpBridge {
@@ -98,10 +125,30 @@ export class McpBridge {
 			});
 		}
 
+		const allowsComputerUseAppApproval = isLocalComputerUseServer(config);
 		const client = new Client(
 			{ name: "tinyfat-agent", version: "1.0.0" },
-			{ capabilities: {} },
+			{
+				capabilities: allowsComputerUseAppApproval
+					? { elicitation: { form: {} } }
+					: {},
+			},
 		);
+
+		if (allowsComputerUseAppApproval) {
+			client.setRequestHandler(ElicitRequestSchema, async (request) => {
+				if (!isComputerUseAppApproval(request.params)) {
+					log.logWarning(
+						"[mcp-client] Rejected unexpected Computer Use elicitation",
+						JSON.stringify(request.params).substring(0, 500),
+					);
+					return { action: "decline" as const };
+				}
+
+				log.logInfo(`[mcp-client] Approved local ${request.params.message}`);
+				return { action: "accept" as const, content: {} };
+			});
+		}
 
 		await client.connect(transport);
 
