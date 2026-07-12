@@ -38,7 +38,7 @@ import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream } from "./tools/tool-output-stream.js";
-import { wasYielded, resetYield } from "./tools/yield-no-action.js";
+import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
 
@@ -569,6 +569,7 @@ function createRunner(
 
 		if (event.type === "tool_execution_start") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
+			const silentChannelTool = isYieldNoActionToolName(agentEvent.toolName);
 			const args = agentEvent.args && typeof agentEvent.args === "object"
 				? agentEvent.args as Record<string, unknown>
 				: {};
@@ -590,13 +591,15 @@ function createRunner(
 			);
 			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
-			const displayBarrier = queue.enqueue(
-				() => ctx.respond(`_→ ${label}_`, false, {
-					show: args.show === true || agentEvent.toolName === "send_message",
-				}),
-				"tool label",
-			);
-			registerToolDisplayBarrier(agentEvent.toolCallId, displayBarrier);
+			if (!silentChannelTool) {
+				const displayBarrier = queue.enqueue(
+					() => ctx.respond(`_→ ${label}_`, false, {
+						show: args.show === true || agentEvent.toolName === "send_message",
+					}),
+					"tool label",
+				);
+				registerToolDisplayBarrier(agentEvent.toolCallId, displayBarrier);
+			}
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
 			const resultStr = extractToolResultText(agentEvent.result);
@@ -625,7 +628,9 @@ function createRunner(
 			runState.liveSnapshot.upsertToolResult(agentEvent.toolCallId, resultStr, agentEvent.isError || false);
 			emitSnapshot(true);
 			ctx.emitContentBlock?.({ type: "toolResult", toolCallId: agentEvent.toolCallId, result: resultStr, isError: agentEvent.isError || false });
-			queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
+			if (!isYieldNoActionToolName(agentEvent.toolName)) {
+				queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
+			}
 
 			if (agentEvent.isError) {
 				queue.enqueue(() => ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false), "tool error");

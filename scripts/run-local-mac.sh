@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ENV_FILE="${TROUBLEMAKER_ENV_FILE:-}"
+if [ -n "$ENV_FILE" ]; then
+	if [ ! -f "$ENV_FILE" ] || [ ! -r "$ENV_FILE" ]; then
+		echo "Troublemaker environment file is unavailable: $ENV_FILE" >&2
+		exit 1
+	fi
+	set -a
+	# shellcheck disable=SC1090
+	source "$ENV_FILE"
+	set +a
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENT_PROFILE="${TROUBLEMAKER_AGENT_PROFILE:-}"
@@ -31,9 +43,11 @@ elif [ "$PROFILE_ACTIVE" -eq 1 ]; then
 else
 	PORT="3002"
 fi
+HOST="${TROUBLEMAKER_HOST:-127.0.0.1}"
 PEEKABOO_MCP_COMMAND="${PEEKABOO_MCP_COMMAND:-$(command -v peekaboo || true)}"
 PEEKABOO_MCP_ARGS="${PEEKABOO_MCP_ARGS:-mcp --no-remote}"
 KEYCHAIN_SERVICE="${TROUBLEMAKER_KEYCHAIN_SERVICE:-com.tinyfatco.troublemaker.local}"
+ADAPTERS="${TROUBLEMAKER_ADAPTERS:-web,mcp}"
 BUILD=1
 
 truthy() {
@@ -193,9 +207,10 @@ if [ -z "$PEEKABOO_MCP_COMMAND" ]; then
 	echo ""
 fi
 
-echo "Starting Troublemaker local on http://127.0.0.1:$PORT"
+echo "Starting Troublemaker local on http://$HOST:$PORT"
 exec node "$PROJECT_ROOT/dist/main.js" \
-	--adapter=web,mcp \
+	--adapter="$ADAPTERS" \
+	--host="$HOST" \
 	--port="$PORT" \
 	--ui="$PROJECT_ROOT/ui/dist" \
 	--sandbox=host \

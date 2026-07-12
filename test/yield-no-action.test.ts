@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createYieldNoActionTool, resetYield, wasYielded } from "../src/tools/yield-no-action.js";
+import { createYieldNoActionTool, isYieldNoActionToolName, resetYield, wasYielded } from "../src/tools/yield-no-action.js";
 
 resetYield();
 
@@ -12,5 +12,8 @@ assert.equal((result as any).details, undefined, "yield reason should stay inter
 
 resetYield();
 assert.equal(wasYielded(), false, "resetYield should clear the yielded flag");
+assert.equal(isYieldNoActionToolName("yield_no_action"), true, "plain yield tool is channel-silent");
+assert.equal(isYieldNoActionToolName("functions.yield_no_action"), true, "namespaced yield tool is channel-silent");
+assert.equal(isYieldNoActionToolName("send_message"), false, "other tools can still stream to channels");
 
 console.log("yield_no_action terminates successfully");

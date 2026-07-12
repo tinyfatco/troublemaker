@@ -24,6 +24,11 @@ export function resetYield(): void {
 	yielded = false;
 }
 
+/** Yield is an internal control action and must never surface in a channel. */
+export function isYieldNoActionToolName(toolName: string): boolean {
+	return toolName.split(".").pop() === "yield_no_action";
+}
+
 export function createYieldNoActionTool(): AgentTool<any> {
 	const schema = Type.Object({
 		reason: Type.String({

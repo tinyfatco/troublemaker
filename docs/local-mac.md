@@ -40,6 +40,12 @@ The old LaunchAgent path is useful for server-only testing, but the Mac
 automation path should launch through `Troublemaker.app` so TCC grants stick to
 the stable app bundle.
 
+For an always-on host agent whose shell already has the required Peekaboo TCC
+grants, `scripts/install-ghost-mac.sh` installs two user LaunchAgents: the Ghost
+runtime and a loopback-only reverse SSH relay to tiny-bat. Ghost listens only on
+the Mac loopback interface and uses Slack Socket Mode plus Telegram polling;
+tiny-bat terminates the authenticated `ghost.tinyfat.com` route.
+
 ## Start Troublemaker
 
 ```bash

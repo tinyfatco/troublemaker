@@ -1075,7 +1075,7 @@ if (parsedArgs.adapters.includes("voice")) {
 	});
 
 	await new Promise<void>((resolve) => {
-		earlyWsServer.listen(8765, () => {
+		earlyWsServer.listen(8765, parsedArgs.host, () => {
 			log.logInfo("[voice-early] Port 8765 bound (pre-adapter)");
 			resolve();
 		});
@@ -1106,7 +1106,7 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 	});
 
 	await new Promise<void>((resolve) => {
-		webVoiceServer.listen(8766, async () => {
+		webVoiceServer.listen(8766, parsedArgs.host, async () => {
 			await webVoiceAdapter.start();
 			log.logInfo("[web-voice] WebSocket server listening on port 8766");
 			resolve();
