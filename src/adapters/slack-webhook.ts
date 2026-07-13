@@ -127,6 +127,11 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		const event = payload.event;
+		const eventUserId = event.user || event.bot_id || "unknown";
+		if (event.type === "message" && event.channel_type === "im" && !this.acceptsDmFrom(eventUserId)) {
+			log.logInfo(`[${event.channel}] Ignoring Slack DM from non-allowlisted user ${eventUserId}`);
+			return;
+		}
 
 		const isDirectlyAddressed = event.type === "app_mention"
 			|| event.channel_type === "im"
@@ -208,15 +213,19 @@ export class SlackWebhookAdapter extends SlackBase {
 
 	private async handleMessage(event: SlackEventInner, teamId?: string): Promise<void> {
 		if (!event.text && (!event.files || event.files.length === 0)) return;
-		this.observeChannel(event.channel);
-
 		const isDM = event.channel_type === "im";
 		const isBotMention = event.text?.includes(`<@${this.botUserId}>`);
+		const userId = event.user || event.bot_id || "unknown";
+		if (isDM && !this.acceptsDmFrom(userId)) {
+			log.logInfo(`[${event.channel}] Ignoring Slack DM from non-allowlisted user ${userId}`);
+			return;
+		}
+
+		this.observeChannel(event.channel);
 
 		// Skip channel messages that are @mentions (handled by app_mention)
 		if (!isDM && isBotMention) return;
 
-		const userId = event.user || event.bot_id || "unknown";
 		const threadTs = isDM ? undefined : event.thread_ts ?? event.ts;
 
 		const momEvent: MomEvent = {

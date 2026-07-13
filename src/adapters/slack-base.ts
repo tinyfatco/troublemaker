@@ -71,6 +71,12 @@ export interface SlackBaseConfig {
 	workingDir: string;
 	store: ChannelStore;
 	pulse?: ChannelPulse;
+	/**
+	 * Optional Slack user-id allowlist for direct messages. When omitted, DMs
+	 * retain the legacy allow-all behavior. An explicitly empty set denies every
+	 * DM while leaving channel mentions and ambient observation untouched.
+	 */
+	allowedDmUserIds?: Iterable<string>;
 	/** Called when a non-self message arrives and the agent might want to engage. */
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
@@ -92,6 +98,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected startupTs: string | null = null;
 	protected pulse?: ChannelPulse;
 	protected onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	private allowedDmUserIds?: ReadonlySet<string>;
 
 	protected users = new Map<string, SlackUser>();
 	protected channels = new Map<string, SlackChannel>();
@@ -104,6 +111,14 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		this.webClient = new WebClient(config.botToken);
 		this.pulse = config.pulse;
 		this.onAmbientMessage = config.onAmbientMessage;
+		this.allowedDmUserIds = config.allowedDmUserIds === undefined
+			? undefined
+			: new Set(Array.from(config.allowedDmUserIds, (id) => id.trim()).filter(Boolean));
+	}
+
+	/** Whether this Slack identity may start or steer the agent through a DM. */
+	protected acceptsDmFrom(userId: string): boolean {
+		return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(userId);
 	}
 
 	setHandler(handler: MomHandler): void {

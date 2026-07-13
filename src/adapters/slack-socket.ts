@@ -138,10 +138,20 @@ export class SlackSocketAdapter extends SlackBase {
 				thread_ts?: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
-			this.observeChannel(e.channel);
-
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
+			const userId = e.user || e.bot_id || "unknown";
+
+			// A resident host-mode agent may be intentionally reachable by only one
+			// Slack identity in DMs. Reject before pulse/logging so unauthorized DM
+			// content never enters the agent workspace or awareness stream.
+			if (isDM && !this.acceptsDmFrom(userId)) {
+				log.logInfo(`[${e.channel}] Ignoring Slack DM from non-allowlisted user ${userId}`);
+				ack();
+				return;
+			}
+
+			this.observeChannel(e.channel);
 
 			// Feed pulse before any filtering — pulse needs to see everything
 			if (this.pulse && (e.user || e.bot_id)) {
@@ -168,7 +178,6 @@ export class SlackSocketAdapter extends SlackBase {
 				return;
 			}
 
-			const userId = e.user || e.bot_id || "unknown";
 			const threadTs = isDM ? undefined : e.thread_ts ?? e.ts;
 
 			if (!isDM && isBotMention) {

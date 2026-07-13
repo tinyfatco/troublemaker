@@ -104,6 +104,19 @@ SLACK_BOT_TOKEN=xoxb-your-bot-token-here
 SLACK_APP_TOKEN=xapp-your-app-token-here
 ```
 
+Troublemaker also supports an optional DM ingress allowlist using native Slack
+user IDs. When this variable is present, only the listed users can trigger or
+steer the agent through a direct message; channel mentions and ambient channel
+observation are unchanged. Unauthorized DM content is rejected before it is
+logged or added to awareness.
+
+```bash
+MOM_SLACK_ALLOWED_DM_USERS=U0123456789
+```
+
+Separate multiple IDs with commas. Leaving the variable unset preserves the
+legacy allow-all behavior; setting it to an empty value denies all Slack DMs.
+
 Add to `.gitignore`:
 
 ```bash

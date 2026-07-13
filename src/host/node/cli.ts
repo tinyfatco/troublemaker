@@ -405,6 +405,10 @@ function fireAmbientEvaluation(
 }
 
 function createAdapter(name: string): AdapterWithHandler {
+	const allowedDmUserIds = process.env.MOM_SLACK_ALLOWED_DM_USERS === undefined
+		? undefined
+		: process.env.MOM_SLACK_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+
 	switch (name) {
 		case "slack":
 		case "slack:socket": {
@@ -415,7 +419,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackSocketAdapter({ appToken, botToken, workingDir, store, pulse, onAmbientMessage: handleAmbientMessage });
+			return new SlackSocketAdapter({ appToken, botToken, workingDir, store, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
 		}
 		case "slack:webhook": {
 			const botToken = process.env.MOM_SLACK_BOT_TOKEN;
@@ -426,7 +430,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			// signing secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
 			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET || "";
 			const store = new ChannelStore({ workingDir, botToken });
-				return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, onAmbientMessage: handleAmbientMessage });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
 		}
 		case "telegram":
 		case "telegram:polling": {
