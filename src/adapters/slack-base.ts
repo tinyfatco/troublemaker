@@ -72,7 +72,7 @@ export interface SlackBaseConfig {
 	store: ChannelStore;
 	pulse?: ChannelPulse;
 	/** Called when a non-self message arrives and the agent might want to engage. */
-	onAmbientMessage?: (channelId: string, event: MomEvent) => void;
+	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
 
 export abstract class SlackBase implements PlatformAdapter {
@@ -91,11 +91,12 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected botUserId: string | null = null;
 	protected startupTs: string | null = null;
 	protected pulse?: ChannelPulse;
-	protected onAmbientMessage?: (channelId: string, event: MomEvent) => void;
+	protected onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 
 	protected users = new Map<string, SlackUser>();
 	protected channels = new Map<string, SlackChannel>();
 	protected queues = new Map<string, ChannelQueue>();
+	private channelRefreshes = new Set<string>();
 
 	constructor(config: SlackBaseConfig) {
 		this.workingDir = config.workingDir;
@@ -162,6 +163,36 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 	getAllChannels(): ChannelInfo[] {
 		return Array.from(this.channels.values());
+	}
+
+	/**
+	 * Learn channels from live traffic so a post-start invitation works without
+	 * restarting the adapter. The synchronous placeholder establishes ownership;
+	 * the background lookup replaces it with Slack's display name.
+	 */
+	protected observeChannel(channelId: string): void {
+		const existing = this.channels.get(channelId);
+		if (existing && (channelId.startsWith("D") || existing.name !== channelId)) return;
+		if (!existing) {
+			this.channels.set(channelId, {
+				id: channelId,
+				name: channelId.startsWith("D") ? `DM:${channelId}` : channelId,
+			});
+		}
+
+		if (channelId.startsWith("D") || this.channelRefreshes.has(channelId)) return;
+		this.channelRefreshes.add(channelId);
+		void this.webClient.conversations.info({ channel: channelId })
+			.then((result) => {
+				const channel = result.channel as { id?: string; name?: string } | undefined;
+				if (channel?.name) {
+					this.channels.set(channelId, { id: channel.id || channelId, name: channel.name });
+				}
+			})
+			.catch((err) => {
+				log.logWarning(`Failed to refresh Slack channel ${channelId}`, err instanceof Error ? err.message : String(err));
+			})
+			.finally(() => this.channelRefreshes.delete(channelId));
 	}
 
 	async postMessage(channel: string, text: string): Promise<string> {
@@ -384,9 +415,20 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const threadMessageTs: string[] = [];
 		let workingMessageId: string | null = null;
 		const settings = new MomSettingsManager(this.workingDir);
-		const responseThreadTs = settings.getSlackResponsePlacement() === "thread"
-			? event.threadTs
-			: undefined;
+		const responsePlacement = settings.getSlackResponsePlacement();
+		const useChannelPlacement = !event.channel.startsWith("D") && responsePlacement === "channel";
+		const responseThreadTs = useChannelPlacement || event.channel.startsWith("D") ? undefined : event.threadTs;
+		// Working UI and agent delivery share one locus. Thread placement is the
+		// default; an explicit channel override also changes the suggested
+		// send_message target so the old top-level/thread split cannot recur.
+		const contextEvent: MomEvent = useChannelPlacement
+			? {
+				...event,
+				threadTs: undefined,
+				replyTarget: event.channel,
+				replyTargetDescription: "Slack channel where this message arrived (top-level delivery configured)",
+			}
+			: event;
 		// An ambient batch may span multiple Slack threads. In that case the
 		// synthetic event has no threadTs, so fail closed instead of opening a
 		// top-level harness stream in an unrelated conversation.
@@ -409,7 +451,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			},
 			{
 				headerLine,
-				event,
+				event: contextEvent,
 				user,
 				channels: this.getAllChannels(),
 				users: this.getAllUsers(),

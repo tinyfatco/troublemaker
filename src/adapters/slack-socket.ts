@@ -49,6 +49,7 @@ export class SlackSocketAdapter extends SlackBase {
 				thread_ts?: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
+			this.observeChannel(e.channel);
 
 			// Feed pulse before any filtering
 			if (this.pulse && (e.user || e.bot_id)) {
@@ -137,6 +138,7 @@ export class SlackSocketAdapter extends SlackBase {
 				thread_ts?: string;
 				files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
 			};
+			this.observeChannel(e.channel);
 
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
@@ -232,7 +234,7 @@ export class SlackSocketAdapter extends SlackBase {
 				}
 			} else {
 				// Ambient engagement: non-DM, non-mention message
-				this.onAmbientMessage?.(e.channel, momEvent);
+				this.onAmbientMessage?.(e.channel, momEvent, this);
 			}
 
 			ack();

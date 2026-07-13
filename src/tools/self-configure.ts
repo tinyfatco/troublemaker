@@ -3,7 +3,7 @@
  *
  * This is intentionally narrower than arbitrary file editing. It exposes the
  * semantic settings users naturally ask an agent to change: model, thinking,
- * verbosity, Slack response placement, heartbeat/spontaneity cadence, and the
+ * verbosity, Slack delivery/tool display, heartbeat/spontaneity cadence, and the
  * heartbeat checklist prompt.
  */
 
@@ -218,8 +218,8 @@ function configureSlackResponsePlacement(workingDir: string, value: unknown): Se
 		previousValue,
 		newValue,
 		note: newValue === "thread"
-			? "Slack working and final responses will enter the inbound message thread on the next turn."
-			: "Slack working and final responses will post as new top-level channel messages on the next turn.",
+			? "Slack working state and reply delivery will use the inbound thread on the next turn."
+			: "Slack working state and reply delivery will both use new top-level channel messages on the next turn.",
 	};
 }
 
@@ -418,7 +418,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, Slack response placement, selective Slack tool streaming, native Slack progress cards, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, and slack.native_progress to enable or disable native task cards. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack tool streaming, native Slack progress cards, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, and slack.native_progress to enable or disable native task cards. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

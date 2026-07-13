@@ -160,6 +160,7 @@ export class SlackWebhookAdapter extends SlackBase {
 
 	private async handleAppMention(event: SlackEventInner, teamId?: string): Promise<void> {
 		if (event.channel.startsWith("D")) return;
+		this.observeChannel(event.channel);
 
 		const threadTs = event.thread_ts ?? event.ts;
 
@@ -207,6 +208,7 @@ export class SlackWebhookAdapter extends SlackBase {
 
 	private async handleMessage(event: SlackEventInner, teamId?: string): Promise<void> {
 		if (!event.text && (!event.files || event.files.length === 0)) return;
+		this.observeChannel(event.channel);
 
 		const isDM = event.channel_type === "im";
 		const isBotMention = event.text?.includes(`<@${this.botUserId}>`);
@@ -266,7 +268,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			}
 		} else {
 			// Ambient engagement: non-DM, non-mention message — let the engagement system decide
-			this.onAmbientMessage?.(event.channel, momEvent);
+			this.onAmbientMessage?.(event.channel, momEvent, this);
 		}
 	}
 }

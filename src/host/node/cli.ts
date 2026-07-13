@@ -296,18 +296,30 @@ const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
 const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const ambientLastFired = new Map<string, number>();
 const ambientIncludedKeys = new Map<string, Set<string>>();
+const ambientAdapterIds = new WeakMap<PlatformAdapter, number>();
+let nextAmbientAdapterId = 1;
+
+function ambientScopeKey(adapter: PlatformAdapter, channelId: string, teamId?: string): string {
+	let adapterId = ambientAdapterIds.get(adapter);
+	if (!adapterId) {
+		adapterId = nextAmbientAdapterId++;
+		ambientAdapterIds.set(adapter, adapterId);
+	}
+	return `${adapterId}:${teamId || "default"}:${channelId}`;
+}
 
 /** Schedule (or re-schedule) an ambient evaluation for a channel. */
-function handleAmbientMessage(channelId: string, _event: MomEvent): void {
+function handleAmbientMessage(channelId: string, event: MomEvent, ambientAdapter: PlatformAdapter): void {
 	// Don't ambient-engage in DMs — those are handled directly
 	if (channelId.startsWith("D")) return;
+	const scopeKey = ambientScopeKey(ambientAdapter, channelId, event.teamId);
 
-	// If a timer is already pending for this channel, we're good — it will
-	// pick up all recent messages from the pulse when it fires.
-	if (ambientTimers.has(channelId)) return;
+	// If a timer is already pending for this adapter/workspace/channel, we're
+	// good — it will pick up all recent messages from the pulse when it fires.
+	if (ambientTimers.has(scopeKey)) return;
 
 	// Calculate delay: either fire after debounce (no cooldown) or defer to cooldown end
-	const lastFired = ambientLastFired.get(channelId) ?? 0;
+	const lastFired = ambientLastFired.get(scopeKey) ?? 0;
 	const timeSinceLast = Date.now() - lastFired;
 	const cooldownRemaining = Math.max(0, AMBIENT_COOLDOWN_MS - timeSinceLast);
 
@@ -319,30 +331,35 @@ function handleAmbientMessage(channelId: string, _event: MomEvent): void {
 	log.logInfo(`[ambient:${channelId}] Scheduling engagement in ${(delayMs / 1000).toFixed(0)}s (temp=${pulseSummary.temperature}, sinceMyLast=${Math.round(pulseSummary.timeSinceMyLastMs / 1000)}s, participants=${pulseSummary.recentParticipants})`);
 
 	const timerId = setTimeout(() => {
-		ambientTimers.delete(channelId);
-		ambientLastFired.set(channelId, Date.now());
-		fireAmbientEvaluation(channelId);
+		ambientTimers.delete(scopeKey);
+		ambientLastFired.set(scopeKey, Date.now());
+		fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, event.teamId);
 	}, delayMs);
 
-	ambientTimers.set(channelId, timerId);
+	ambientTimers.set(scopeKey, timerId);
 }
 
-function fireAmbientEvaluation(channelId: string): void {
+function fireAmbientEvaluation(
+	ambientAdapter: PlatformAdapter,
+	channelId: string,
+	scopeKey: string,
+	teamId?: string,
+): void {
 	// Check if agent is currently running — if so, re-defer
 	if (awareness?.running) {
 		log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
 		const timerId = setTimeout(() => {
-			ambientTimers.delete(channelId);
-			fireAmbientEvaluation(channelId);
+			ambientTimers.delete(scopeKey);
+			fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, teamId);
 		}, 10_000);
-		ambientTimers.set(channelId, timerId);
+		ambientTimers.set(scopeKey, timerId);
 		return;
 	}
 
-	let includedKeys = ambientIncludedKeys.get(channelId);
+	let includedKeys = ambientIncludedKeys.get(scopeKey);
 	if (!includedKeys) {
 		includedKeys = new Set();
-		ambientIncludedKeys.set(channelId, includedKeys);
+		ambientIncludedKeys.set(scopeKey, includedKeys);
 	}
 	const unseenMessages = selectUnseenAmbientMessages(pulse, channelId, includedKeys);
 	if (unseenMessages.length === 0) {
@@ -352,14 +369,9 @@ function fireAmbientEvaluation(channelId: string): void {
 
 	const refreshedSummary = pulse.summary(channelId);
 
-	// Find the chat adapter that owns this channel.
-	const ambientAdapter = adapters.find((a) => a.getChannel(channelId));
-	if (!ambientAdapter) {
-		log.logInfo(`[ambient:${channelId}] No adapter owns this channel, skipping`);
-		return;
-	}
-
-	// Format unseen messages — resolve platform user IDs to display names.
+	// The receiving adapter is the delivery authority. Do not rediscover it from
+	// a startup-time channel cache: new joins and multiple Slack workspaces must
+	// retain the exact origin that observed the message.
 	const messageLines = unseenMessages.map((m) => {
 		const user = ambientAdapter.getUser(m.participantId);
 		const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
@@ -367,7 +379,7 @@ function fireAmbientEvaluation(channelId: string): void {
 		return `${who}${target}: ${m.text}`;
 	}).join("\n");
 
-	const channelLabel = getChannelLabel(channelId, adapters);
+	const channelLabel = getChannelLabel(channelId, [ambientAdapter]);
 	const deliveryContext = resolveAmbientDeliveryContext(unseenMessages);
 
 	const ambientEvent: MomEvent = {
@@ -375,6 +387,7 @@ function fireAmbientEvaluation(channelId: string): void {
 		channel: channelId,
 		ts: String(Date.now() / 1000),
 		user: "system",
+		teamId,
 		text: `[AMBIENT] A conversation is happening in ${channelLabel}. New unseen messages since your last ambient wake:\n\n${messageLines}\n\nChannel pulse: ${refreshedSummary.temperature} messages in last 15min, ${refreshedSummary.recentParticipants} participants, you last spoke ${refreshedSummary.timeSinceMyLastMs === Infinity ? "never" : Math.round(refreshedSummary.timeSinceMyLastMs / 1000) + "s ago"}.\n\nYou're observing this conversation naturally. You were not directly addressed. If you choose to respond to a specific Slack thread, use that message's exact Reply target with send_message. Keep it brief and conversational. If you have nothing to add, use the yield_no_action tool.`,
 		sourceEventType: "ambient_evaluation",
 		directlyAddressed: false,

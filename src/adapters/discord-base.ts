@@ -24,7 +24,7 @@ export interface DiscordBaseConfig {
 	workingDir: string;
 	pulse?: ChannelPulse;
 	/** Called when a non-DM, non-mention message arrives and the agent might want to engage. */
-	onAmbientMessage?: (channelId: string, event: MomEvent) => void;
+	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
 
 type QueuedWork = () => Promise<void>;
@@ -42,7 +42,7 @@ When mentioning users, use <@userId> format.`;
 	protected workingDir: string;
 	protected botUserId: string | null = null;
 	protected pulse?: ChannelPulse;
-	protected onAmbientMessage?: (channelId: string, event: MomEvent) => void;
+	protected onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 
 	// Track users/channels we've seen
 	protected users = new Map<string, UserInfo>();

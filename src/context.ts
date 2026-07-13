@@ -55,7 +55,7 @@ export type SlackResponsePlacement = "thread" | "channel";
 export type ToolStreamingMode = "off" | "important" | "all";
 
 export interface MomSlackSettings {
-	/** Place normal harness output under the inbound Slack message/thread or at channel top level. */
+	/** Place the whole inbound Slack turn in its thread or at channel top level. */
 	responsePlacement?: SlackResponsePlacement;
 	/** Surface safe tool labels while ordinary harness output remains quiet. */
 	toolStreaming?: ToolStreamingMode;
@@ -433,7 +433,7 @@ export class MomSettingsManager {
 	}
 
 	getSlackResponsePlacement(): SlackResponsePlacement {
-		return this.settings.slack?.responsePlacement ?? "channel";
+		return this.settings.slack?.responsePlacement ?? "thread";
 	}
 
 	setSlackResponsePlacement(value: SlackResponsePlacement): void {

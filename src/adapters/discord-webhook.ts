@@ -182,7 +182,7 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		});
 
 		if (!isDM && trigger === "ambient") {
-			this.onAmbientMessage?.(channelId, momEvent);
+			this.onAmbientMessage?.(channelId, momEvent, this);
 			return;
 		}
 

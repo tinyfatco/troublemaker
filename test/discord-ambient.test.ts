@@ -42,6 +42,7 @@ async function run() {
 	try {
 		const pulse = new ChannelPulse("pending");
 		const ambientEvents: MomEvent[] = [];
+		let ambientOrigin: unknown;
 		const { handler, handled } = makeHandler();
 		const adapter = new DiscordWebhookAdapter({
 			botToken: "test-token",
@@ -49,7 +50,10 @@ async function run() {
 			publicKey: "00".repeat(32),
 			workingDir,
 			pulse,
-			onAmbientMessage: (_channelId, event) => ambientEvents.push(event),
+			onAmbientMessage: (_channelId, event, origin) => {
+				ambientOrigin = origin;
+				ambientEvents.push(event);
+			},
 		});
 		adapter.setHandler(handler);
 
@@ -70,6 +74,7 @@ async function run() {
 		});
 
 		assert(ambientEvents.length === 1, "ambient Discord message schedules ambient engagement");
+		assert(ambientOrigin === adapter, "ambient Discord message preserves its receiving adapter");
 		assert(handled.length === 0, "ambient Discord message does not start a direct run");
 		assert(pulse.recentMessages("1443881334165733493").length === 1, "ambient Discord message records channel pulse");
 		assert(adapter.getChannel("1443881334165733493")?.name === "general", "ambient Discord message tracks channel metadata");

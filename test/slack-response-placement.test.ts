@@ -51,6 +51,9 @@ function event(overrides: Partial<MomEvent> = {}): MomEvent {
 		channel: "C123",
 		ts: "1710000000.000100",
 		threadTs: "1710000000.000001",
+		replyTarget: "slack:C123:1710000000.000001",
+		replyTargetDescription: "Slack thread under this direct mention",
+		directlyAddressed: true,
 		user: "U123",
 		text: "hello",
 		...overrides,
@@ -71,38 +74,53 @@ const workingDir = mkdtempSync(join(tmpdir(), "tm-slack-placement-"));
 try {
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { default: true },
-		slack: { responsePlacement: "thread" },
 	}));
 
 	const threaded = new TestSlackAdapter(workingDir);
 	let posted = await exerciseContext(threaded, event());
 	assert.equal(posted.length, 3);
-	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "threaded working output starts with the operation arrow");
-	assert.equal(posted[0]?.thread_ts, "1710000000.000001", "working output enters the inbound Slack thread");
-	assert.equal(posted[1]?.thread_ts, "1710000000.000001", "detail output stays in the inbound Slack thread");
-	assert.equal(posted[2]?.thread_ts, "1710000000.000001", "final output stays in the inbound Slack thread");
+	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "default working output starts with the operation arrow");
+	assert.equal(posted[0]?.thread_ts, "1710000000.000001", "default working output enters the inbound Slack thread");
+	assert.equal(posted[1]?.thread_ts, "1710000000.000001", "default detail output stays in the inbound Slack thread");
+	assert.equal(posted[2]?.thread_ts, "1710000000.000001", "default final output stays in the inbound Slack thread");
 
+	// An explicit channel override moves the whole delivery locus. It must not
+	// leave the agent targeting the inbound thread while harness UI goes top-level.
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { default: true },
 		slack: { responsePlacement: "channel" },
 	}));
 
+	const channelTargetContext = new TestSlackAdapter(workingDir).createContext(event(), {} as ChannelStore);
+	assert.equal(channelTargetContext.message.replyTarget, "C123", "channel override changes the suggested send_message target to channel top level");
+	assert.equal(channelTargetContext.message.threadTs, undefined, "channel override does not advertise a competing delivery thread");
+
 	const channel = new TestSlackAdapter(workingDir);
 	posted = await exerciseContext(channel, event());
 	assert.equal(posted.length, 3);
-	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "channel working output starts with the operation arrow");
-	assert.equal(posted[0]?.thread_ts, undefined, "working output is a new top-level channel message");
-	assert.equal(posted[1]?.thread_ts, "posted-1", "detail output keeps the legacy working-message subthread");
-	assert.equal(posted[2]?.thread_ts, undefined, "final output is a new top-level channel message");
+	assert.equal(posted[0]?.thread_ts, undefined, "channel override moves working output to channel top level");
+	assert.equal(posted[1]?.thread_ts, "posted-1", "channel override keeps tool detail under its working message");
+	assert.equal(posted[2]?.thread_ts, undefined, "channel override moves harness final output to channel top level");
 
 	const dm = new TestSlackAdapter(workingDir);
 	posted = await exerciseContext(dm, event({ type: "dm", channel: "D123", threadTs: undefined }));
 	assert.equal(posted[0]?.thread_ts, undefined, "Slack DMs remain top-level when no inbound thread exists");
 	assert.equal(posted[2]?.thread_ts, undefined, "Slack DM final output remains top-level");
 
+	rmSync(join(workingDir, "settings.json"), { force: true });
+	const defaults = new TestSlackAdapter(workingDir);
+	const defaultContext = defaults.createContext(event(), {} as ChannelStore);
+	assert.equal(defaultContext.message.replyTarget, "slack:C123:1710000000.000001", "setting-free turn suggests its inbound thread for send_message");
+	await defaultContext.setTyping(true);
+	await defaultContext.respond("_→ Default selected label_", false, { show: true });
+	await defaultContext.respondInThread("default raw tool detail");
+	await defaultContext.sendFinalResponse("default ordinary harness final");
+	assert.equal(defaults.posted.length, 1, "setting-free messages-only Slack emits only its selected safe label");
+	assert.equal(defaults.posted[0]?.thread_ts, "1710000000.000001", "setting-free selected label stays in the inbound thread");
+
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
-		slack: { responsePlacement: "thread", toolStreaming: "important" },
+		slack: { toolStreaming: "important" },
 	}));
 	const selective = new TestSlackAdapter(workingDir);
 	const selectiveContext = selective.createContext(event(), {} as ChannelStore);
@@ -120,7 +138,7 @@ try {
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
-		slack: { responsePlacement: "thread", toolStreaming: "important", nativeProgress: true },
+		slack: { toolStreaming: "important", nativeProgress: true },
 	}));
 	const native = new TestSlackAdapter(workingDir);
 	const nativeContext = native.createContext(event({ directlyAddressed: true, teamId: "T123" }), {} as ChannelStore);
@@ -138,10 +156,10 @@ try {
 	for (const toolStreaming of ["important", "all"] as const) {
 		writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 			verbose: { slack: "messages-only" },
-			slack: { responsePlacement: "thread", toolStreaming },
+			slack: { toolStreaming },
 		}));
 		const ambient = new TestSlackAdapter(workingDir);
-		const ambientContext = ambient.createContext(event({ sourceEventType: "ambient_evaluation" }), {} as ChannelStore);
+		const ambientContext = ambient.createContext(event({ sourceEventType: "ambient_evaluation", directlyAddressed: false }), {} as ChannelStore);
 		await ambientContext.respond(`_→ Ambient ${toolStreaming} label_`, false, { show: toolStreaming === "important" });
 		assert.equal(ambient.posted.length, 1, `${toolStreaming} ambient tool stream emits one working message`);
 		assert.equal(ambient.posted[0]?.thread_ts, "1710000000.000001", `${toolStreaming} ambient tool stream stays inline in the resolved thread`);
@@ -149,11 +167,12 @@ try {
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: true },
-		slack: { responsePlacement: "thread", toolStreaming: "all" },
+		slack: { toolStreaming: "all" },
 	}));
 	const ambiguousAmbient = new TestSlackAdapter(workingDir);
 	const ambiguousContext = ambiguousAmbient.createContext(event({
 		sourceEventType: "ambient_evaluation",
+		directlyAddressed: false,
 		threadTs: undefined,
 		replyTarget: undefined,
 	}), {} as ChannelStore);
@@ -164,7 +183,7 @@ try {
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
-		slack: { responsePlacement: "thread", toolStreaming: "all" },
+		slack: { toolStreaming: "all" },
 	}));
 	const chronological = new TestSlackAdapter(workingDir);
 	const chronologicalContext = chronological.createContext(event(), {} as ChannelStore);
