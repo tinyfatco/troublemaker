@@ -107,12 +107,10 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			if (momEvent.text.toLowerCase().trim() === "stop") {
-				if (this.handler.isRunning(e.channel)) {
-					this.handler.handleStop(e.channel, this);
-				} else {
-					this.postMessage(e.channel, "_Nothing running_");
-				}
 				ack();
+				void this.handler.handleStop(e.channel, this, momEvent).catch((err) => {
+					log.logWarning("Slack stop response failed", err instanceof Error ? err.message : String(err));
+				});
 				return;
 			}
 
@@ -227,12 +225,10 @@ export class SlackSocketAdapter extends SlackBase {
 				}
 
 				if (momEvent.text.toLowerCase().trim() === "stop") {
-					if (this.handler.isRunning(e.channel)) {
-						this.handler.handleStop(e.channel, this);
-					} else {
-						this.postMessage(e.channel, "_Nothing running_");
-					}
 					ack();
+					void this.handler.handleStop(e.channel, this, momEvent).catch((err) => {
+						log.logWarning("Slack stop response failed", err instanceof Error ? err.message : String(err));
+					});
 					return;
 				}
 

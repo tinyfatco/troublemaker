@@ -196,11 +196,7 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		if (momEvent.text.toLowerCase().trim() === "stop") {
-			if (this.handler.isRunning(event.channel)) {
-				this.handler.handleStop(event.channel, this);
-			} else {
-				this.postMessage(event.channel, "_Nothing running_");
-			}
+			await this.handler.handleStop(event.channel, this, momEvent);
 			return;
 		}
 
@@ -262,11 +258,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			}
 
 			if (momEvent.text.toLowerCase().trim() === "stop") {
-				if (this.handler.isRunning(event.channel)) {
-					this.handler.handleStop(event.channel, this);
-				} else {
-					this.postMessage(event.channel, "_Nothing running_");
-				}
+				await this.handler.handleStop(event.channel, this, momEvent);
 				return;
 			}
 

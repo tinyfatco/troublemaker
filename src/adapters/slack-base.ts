@@ -228,6 +228,27 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return result.ts as string;
 	}
 
+	private resolveResponsePlacement(event: MomEvent, settings: MomSettingsManager): {
+		useChannelPlacement: boolean;
+		responseThreadTs?: string;
+	} {
+		const responsePlacement = settings.getSlackResponsePlacement();
+		const useChannelPlacement = !event.channel.startsWith("D") && responsePlacement === "channel";
+		return {
+			useChannelPlacement,
+			responseThreadTs: useChannelPlacement || event.channel.startsWith("D") ? undefined : event.threadTs,
+		};
+	}
+
+	/** Route control/status UI through the same Slack locus as working output. */
+	async postResponseMessage(event: MomEvent, text: string): Promise<string> {
+		const settings = new MomSettingsManager(this.workingDir);
+		const { responseThreadTs } = this.resolveResponsePlacement(event, settings);
+		return responseThreadTs
+			? this.postInThread(event.channel, responseThreadTs, text)
+			: this.postMessage(event.channel, text);
+	}
+
 	async readThread(channel: string, threadTs: string, limit = 40): Promise<ThreadTranscriptMessage[]> {
 		const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
 		const rawMessages: Array<{ ts?: string; user?: string; bot_id?: string; username?: string; subtype?: string; text?: string }> = [];
@@ -367,15 +388,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		};
 	}
 
-	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
+	async uploadFile(channel: string, filePath: string, title?: string, threadTs?: string): Promise<void> {
 		const fileName = title || basename(filePath);
 		const fileContent = readFileSync(filePath);
-		await this.webClient.files.uploadV2({
-			channel_id: channel,
+		const upload = {
 			file: fileContent,
 			filename: fileName,
 			title: fileName,
-		});
+		};
+		await this.webClient.files.uploadV2(threadTs
+			? { ...upload, channel_id: channel, thread_ts: threadTs }
+			: { ...upload, channel_id: channel });
 	}
 
 	logToFile(entry: object): void {
@@ -430,9 +453,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		const threadMessageTs: string[] = [];
 		let workingMessageId: string | null = null;
 		const settings = new MomSettingsManager(this.workingDir);
-		const responsePlacement = settings.getSlackResponsePlacement();
-		const useChannelPlacement = !event.channel.startsWith("D") && responsePlacement === "channel";
-		const responseThreadTs = useChannelPlacement || event.channel.startsWith("D") ? undefined : event.threadTs;
+		const { useChannelPlacement, responseThreadTs } = this.resolveResponsePlacement(event, settings);
 		// Working UI and agent delivery share one locus. Thread placement is the
 		// default; an explicit channel override also changes the suggested
 		// send_message target so the old top-level/thread split cannot recur.
@@ -487,7 +508,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 						threadMessageTs.push(ts);
 					}
 				},
-				uploadFile: (filePath, title) => this.uploadFile(event.channel, filePath, title),
+				uploadFile: (filePath, title) => this.uploadFile(event.channel, filePath, title, responseThreadTs),
 				deleteMessages: async (wId, fId) => {
 					for (let i = threadMessageTs.length - 1; i >= 0; i--) {
 						try {

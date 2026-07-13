@@ -566,6 +566,13 @@ const mcpBridge = new McpBridge(workingDir);
 	});
 }
 
+interface StopResponse {
+	channelId: string;
+	adapter: PlatformAdapter;
+	event?: MomEvent;
+	messageTs: Promise<string>;
+}
+
 interface Awareness {
 	running: boolean;
 	/** Timestamp of last substantive activity during a run (LLM token, tool call, etc.) */
@@ -575,11 +582,22 @@ interface Awareness {
 	stopRequested: boolean;
 	/** Set when a newer inbound message supersedes the current generation. */
 	interruptRequested: boolean;
-	stopMessageTs?: string;
+	stopResponse?: StopResponse;
 	/** The display channel where output is currently routed (real channel ID) */
 	displayChannelId: string;
 	/** The adapter currently handling display output */
 	displayAdapter: PlatformAdapter;
+}
+
+function postResponseMessage(platform: PlatformAdapter, channelId: string, text: string, event?: MomEvent): Promise<string> {
+	if (event && platform.postResponseMessage) {
+		return platform.postResponseMessage(event, text);
+	}
+	return platform.postMessage(channelId, text);
+}
+
+function clearStopResponse(state: Awareness): void {
+	state.stopResponse = undefined;
 }
 
 let awareness: Awareness | null = null;
@@ -822,6 +840,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	state.running = true;
 	state.lastActivity = Date.now();
 	state.stopRequested = false;
+	clearStopResponse(state);
 	state.interruptRequested = false;
 
 	const channelLabel = getChannelLabel(event.channel, adapters);
@@ -849,11 +868,18 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		await ctx.setWorking(false);
 
 		if (result.stopReason === "aborted" && state.stopRequested) {
-			if (state.stopMessageTs) {
-				await platform.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
-				state.stopMessageTs = undefined;
+			const stopResponse = state.stopResponse;
+			if (stopResponse) {
+				try {
+					const stopMessageTs = await stopResponse.messageTs;
+					await stopResponse.adapter.updateMessage(stopResponse.channelId, stopMessageTs, "_Stopped_");
+				} catch {
+					await postResponseMessage(stopResponse.adapter, stopResponse.channelId, "_Stopped_", stopResponse.event);
+				} finally {
+					if (state.stopResponse === stopResponse) state.stopResponse = undefined;
+				}
 			} else {
-				await platform.postMessage(event.channel, "_Stopped_");
+				await postResponseMessage(platform, event.channel, "_Stopped_", event);
 			}
 		}
 
@@ -911,14 +937,15 @@ const handler: MomHandler = {
 		enqueueHardInterrupt(event, adapter);
 	},
 
-	async handleStop(channelId: string, platform: PlatformAdapter): Promise<void> {
+	async handleStop(channelId: string, platform: PlatformAdapter, event?: MomEvent): Promise<void> {
 		if (awareness?.running) {
 			awareness.stopRequested = true;
+			const messageTs = postResponseMessage(platform, channelId, "_Stopping..._", event);
+			awareness.stopResponse = { channelId, adapter: platform, event, messageTs };
 			awareness.runner.abort();
-			const ts = await platform.postMessage(channelId, "_Stopping..._");
-			awareness.stopMessageTs = ts;
+			await messageTs;
 		} else {
-			await platform.postMessage(channelId, "_Nothing running_");
+			await postResponseMessage(platform, channelId, "_Nothing running_", event);
 		}
 	},
 

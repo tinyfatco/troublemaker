@@ -442,9 +442,9 @@ export class MomSettingsManager {
 	}
 
 	getSlackToolStreaming(): ToolStreamingMode {
-		// Selective labels are useful in Slack by default while remaining
-		// fail-closed: the model must explicitly mark each label show: true.
-		return this.settings.slack?.toolStreaming ?? "important";
+		// Slack exposes the complete tool-label stream by default. Agents can
+		// still explicitly select important-only or disable it altogether.
+		return this.settings.slack?.toolStreaming ?? "all";
 	}
 
 	setSlackToolStreaming(value: ToolStreamingMode): void {

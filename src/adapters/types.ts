@@ -180,7 +180,7 @@ export interface MomHandler {
 	 * Handle stop command (ASYNC)
 	 * Called when user says "stop" while mom is running
 	 */
-	handleStop(channelId: string, adapter: PlatformAdapter): Promise<void>;
+	handleStop(channelId: string, adapter: PlatformAdapter, event?: MomEvent): Promise<void>;
 
 	/**
 	 * Check if a channel has pending input (e.g. /login waiting for pasted URL).
@@ -216,6 +216,8 @@ export interface PlatformAdapter {
 	// -- Message operations --
 
 	postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string>;
+	/** Post harness-authored response UI using the same placement as a normal turn. */
+	postResponseMessage?(event: MomEvent, text: string): Promise<string>;
 	updateMessage(channel: string, ts: string, text: string): Promise<void>;
 	deleteMessage(channel: string, ts: string): Promise<void>;
 	postInThread(channel: string, threadTs: string, text: string): Promise<string>;

@@ -15,7 +15,7 @@ try {
 	assert.equal(defaults.getVerbose("phone-abc123", "phone"), "messages-only", "Phone keeps its safe default without config");
 	assert.equal(defaults.getVerbose("form-abc123", "form"), true, "Form ingress keeps direct harness output by default");
 	assert.equal(defaults.getVerbose("web", "web"), true, "Web chat keeps direct harness streaming by default");
-	assert.equal(defaults.getSlackToolStreaming(), "important", "Slack defaults to selected show:true tool labels");
+	assert.equal(defaults.getSlackToolStreaming(), "all", "Slack defaults to the complete tool-label stream");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: {

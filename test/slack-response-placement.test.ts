@@ -14,6 +14,7 @@ type PostedMessage = {
 
 class TestSlackAdapter extends SlackBase {
 	posted: PostedMessage[] = [];
+	fileUploads: any[] = [];
 	nativeStarts: any[] = [];
 	nativeAppends: any[] = [];
 	nativeStops: any[] = [];
@@ -37,7 +38,7 @@ class TestSlackAdapter extends SlackBase {
 				appendStream: async (payload: any) => { this.nativeAppends.push(payload); },
 				stopStream: async (payload: any) => { this.nativeStops.push(payload); },
 			},
-			files: { uploadV2: async () => {} },
+			files: { uploadV2: async (payload: any) => { this.fileUploads.push(payload); } },
 		} as any;
 	}
 
@@ -75,8 +76,15 @@ try {
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { default: true },
 	}));
+	const attachmentPath = join(workingDir, "test-attachment.zip");
+	writeFileSync(attachmentPath, "test attachment");
 
 	const threaded = new TestSlackAdapter(workingDir);
+	await threaded.postResponseMessage(event(), "_Stopping..._");
+	assert.equal(threaded.posted[0]?.thread_ts, "1710000000.000001", "default control output enters the inbound Slack thread");
+	threaded.posted.length = 0;
+	await threaded.createContext(event(), {} as ChannelStore).uploadFile(attachmentPath, "threaded.zip");
+	assert.equal(threaded.fileUploads[0]?.thread_ts, "1710000000.000001", "default attachment upload enters the inbound Slack thread");
 	let posted = await exerciseContext(threaded, event());
 	assert.equal(posted.length, 3);
 	assert.doesNotMatch(posted[0]?.text || "", /Thinking/, "default working output starts with the operation arrow");
@@ -96,6 +104,11 @@ try {
 	assert.equal(channelTargetContext.message.threadTs, undefined, "channel override does not advertise a competing delivery thread");
 
 	const channel = new TestSlackAdapter(workingDir);
+	await channel.postResponseMessage(event(), "_Stopping..._");
+	assert.equal(channel.posted[0]?.thread_ts, undefined, "channel override also moves control output to channel top level");
+	channel.posted.length = 0;
+	await channel.createContext(event(), {} as ChannelStore).uploadFile(attachmentPath, "channel.zip");
+	assert.equal(channel.fileUploads[0]?.thread_ts, undefined, "channel override also moves attachment uploads to channel top level");
 	posted = await exerciseContext(channel, event());
 	assert.equal(posted.length, 3);
 	assert.equal(posted[0]?.thread_ts, undefined, "channel override moves working output to channel top level");
@@ -103,6 +116,11 @@ try {
 	assert.equal(posted[2]?.thread_ts, undefined, "channel override moves harness final output to channel top level");
 
 	const dm = new TestSlackAdapter(workingDir);
+	await dm.postResponseMessage(event({ type: "dm", channel: "D123", threadTs: undefined }), "_Nothing running_");
+	assert.equal(dm.posted[0]?.thread_ts, undefined, "Slack DM control output remains top-level");
+	dm.posted.length = 0;
+	await dm.createContext(event({ type: "dm", channel: "D123", threadTs: undefined }), {} as ChannelStore).uploadFile(attachmentPath, "dm.zip");
+	assert.equal(dm.fileUploads[0]?.thread_ts, undefined, "Slack DM attachment upload remains top-level");
 	posted = await exerciseContext(dm, event({ type: "dm", channel: "D123", threadTs: undefined }));
 	assert.equal(posted[0]?.thread_ts, undefined, "Slack DMs remain top-level when no inbound thread exists");
 	assert.equal(posted[2]?.thread_ts, undefined, "Slack DM final output remains top-level");
@@ -112,11 +130,11 @@ try {
 	const defaultContext = defaults.createContext(event(), {} as ChannelStore);
 	assert.equal(defaultContext.message.replyTarget, "slack:C123:1710000000.000001", "setting-free turn suggests its inbound thread for send_message");
 	await defaultContext.setTyping(true);
-	await defaultContext.respond("_→ Default selected label_", false, { show: true });
+	await defaultContext.respond("_→ Default routine label_", false, { show: false });
 	await defaultContext.respondInThread("default raw tool detail");
 	await defaultContext.sendFinalResponse("default ordinary harness final");
-	assert.equal(defaults.posted.length, 1, "setting-free messages-only Slack emits only its selected safe label");
-	assert.equal(defaults.posted[0]?.thread_ts, "1710000000.000001", "setting-free selected label stays in the inbound thread");
+	assert.equal(defaults.posted.length, 1, "setting-free messages-only Slack emits routine labels in default all mode");
+	assert.equal(defaults.posted[0]?.thread_ts, "1710000000.000001", "setting-free routine label stays in the inbound thread");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
