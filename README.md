@@ -99,7 +99,7 @@ troublemaker-tui install demo-agent \
 demo-agent
 ```
 
-The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, shows only agent-supplied tool labels, and supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`.
+The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, follows the resident's live awareness stream, shows only agent-supplied tool labels, and supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`.
 
 ## Environment Variables
 

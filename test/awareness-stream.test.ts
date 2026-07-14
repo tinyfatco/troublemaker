@@ -56,6 +56,9 @@ async function run() {
 
   console.log("\nTest 2: Live update delivery");
 
+  const headersReady = await waitForStreamHeaders(1000);
+  assert(headersReady, "stream handshake completes before the first awareness event");
+
   const livePromise = collectEvents(1, 5000);
   await sleep(200); // Let connection establish before appending new content
   appendFileSync(CONTEXT_FILE, line3 + "\n");
@@ -69,6 +72,24 @@ async function run() {
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed > 0 ? 1 : 0);
+}
+
+function waitForStreamHeaders(timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      req.destroy();
+      resolve(value);
+    };
+    const req = http.get(`http://localhost:${PORT}/awareness/stream`, (res) => {
+      finish(res.statusCode === 200 && res.headers["content-type"] === "text/event-stream");
+    });
+    req.on("error", () => finish(false));
+    const timer = setTimeout(() => finish(false), timeoutMs);
+  });
 }
 
 function fetchBacklog(): Promise<{ lines: string[]; total: number; offset: number }> {

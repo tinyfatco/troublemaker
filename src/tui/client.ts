@@ -1,6 +1,6 @@
 import type { RuntimeStreamEvent } from "../core/runtime-contract.js";
 import type { TuiAgentProfile } from "./config.js";
-import { readRuntimeSse } from "./protocol.js";
+import { readRuntimeSse, readSseData } from "./protocol.js";
 
 export interface TuiAgentStatus {
 	agentName: string;
@@ -62,6 +62,27 @@ export class TroublemakerTuiClient {
 		});
 		for await (const event of readRuntimeSse(response)) {
 			await onEvent(event);
+		}
+	}
+
+	async streamAwareness(
+		onLine: (line: string) => void | Promise<void>,
+		signal?: AbortSignal,
+		onConnected?: () => void | Promise<void>,
+	): Promise<void> {
+		const response = await fetch(this.url("/awareness/stream"), {
+			headers: { Accept: "text/event-stream" },
+			signal,
+		});
+		if (!response.ok || !response.body) {
+			for await (const _data of readSseData(response)) {
+				// readSseData supplies the canonical status/body error.
+			}
+			return;
+		}
+		await onConnected?.();
+		for await (const line of readSseData(response)) {
+			await onLine(line);
 		}
 	}
 

@@ -28,6 +28,11 @@ import { parseContextLine, safeToolLabel, toAssistantSnapshot, type TuiHistoryEn
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
+const SEEN_AWARENESS_LIMIT = 5_000;
+const LOCAL_ECHO_TTL_MS = 30_000;
+const ASSISTANT_ECHO_TTL_MS = 30_000;
+
+type AwarenessState = "connecting" | "live" | "reconnecting";
 
 export async function runTroublemakerTui(profile: TuiAgentProfile): Promise<void> {
 	const client = new TroublemakerTuiClient(profile);
@@ -54,6 +59,13 @@ class TroublemakerTuiApp {
 	private stopped = false;
 	private resolveDone: (() => void) | null = null;
 	private readonly signalHandlers: Array<() => void> = [];
+	private readonly awarenessAbort = new AbortController();
+	private awarenessTask: Promise<void> | null = null;
+	private awarenessState: AwarenessState = "connecting";
+	private readonly seenAwarenessIds = new Set<string>();
+	private readonly seenAwarenessOrder: string[] = [];
+	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
+	private readonly pendingAssistantEchoes: Array<{ fingerprint: string; expiresAt: number }> = [];
 
 	constructor(
 		private readonly profile: TuiAgentProfile,
@@ -98,9 +110,11 @@ class TroublemakerTuiApp {
 		this.ui.start();
 		this.ui.requestRender(true);
 
-		await new Promise<void>((resolve) => {
+		const done = new Promise<void>((resolve) => {
 			this.resolveDone = resolve;
 		});
+		this.awarenessTask = this.runAwarenessLoop(this.awarenessAbort.signal);
+		await done;
 	}
 
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
@@ -128,6 +142,7 @@ class TroublemakerTuiApp {
 
 		if (text.startsWith("/") && await this.handleLocalCommand(text)) return;
 
+		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
@@ -209,27 +224,45 @@ class TroublemakerTuiApp {
 	private renderHistory(lines: string[]): void {
 		const entries = lines
 			.map((line) => parseContextLine(line))
-			.filter((entry): entry is TuiHistoryEntry => entry !== null)
-			.filter((entry) => entry.role !== "toolResult")
-			.slice(-HISTORY_RENDER_LIMIT);
-		for (const entry of entries) {
-			if (entry.role === "user" && entry.text) {
-				this.addUserMessage(entry.channel || "awareness", entry.userName || "user", entry.text);
-			} else if (entry.role === "assistant") {
-				const target = new Container();
-				this.chat.addChild(target);
-				this.renderAssistant(target, {
-					id: entry.id,
-					type: "message",
-					timestamp: entry.timestamp,
-					role: "assistant",
-					content: entry.content,
-					model: entry.model,
-					stopReason: entry.stopReason,
-					isStreaming: false,
-				}, true);
-			}
+			.filter((entry): entry is TuiHistoryEntry => entry !== null);
+		const newIds = new Set(entries
+			.filter((entry) => this.rememberAwarenessId(entry.id))
+			.map((entry) => entry.id));
+		for (const entry of entries.filter((entry) => entry.role !== "toolResult").slice(-HISTORY_RENDER_LIMIT)) {
+			if (!newIds.has(entry.id)) continue;
+			this.renderAwarenessEntry(entry, true);
 		}
+	}
+
+	private renderLiveAwarenessLine(line: string): void {
+		const entry = parseContextLine(line);
+		if (!entry || !this.rememberAwarenessId(entry.id)) return;
+		if (entry.role === "user" && entry.text && this.consumeLocalEcho(entry.channel || "awareness", entry.text)) return;
+		if (entry.role === "assistant") {
+			const fingerprint = assistantFingerprint(entry.content);
+			if (this.consumeAssistantEcho(fingerprint) || this.activeAbort) return;
+		}
+		this.renderAwarenessEntry(entry, true);
+	}
+
+	private renderAwarenessEntry(entry: TuiHistoryEntry, complete: boolean): void {
+		if (entry.role === "user" && entry.text) {
+			this.addUserMessage(entry.channel || "awareness", entry.userName || "user", entry.text);
+			return;
+		}
+		if (entry.role !== "assistant") return;
+		const target = new Container();
+		this.chat.addChild(target);
+		this.renderAssistant(target, {
+			id: entry.id,
+			type: "message",
+			timestamp: entry.timestamp,
+			role: "assistant",
+			content: entry.content,
+			model: entry.model,
+			stopReason: entry.stopReason,
+			isStreaming: !complete,
+		}, complete);
 	}
 
 	private renderAssistant(target: Container, snapshot: RuntimeAssistantSnapshotEntry, historical: boolean): void {
@@ -264,6 +297,7 @@ class TroublemakerTuiApp {
 			target.addChild(createToolLabel(label, state));
 		}
 		flushText();
+		if (!historical && !snapshot.isStreaming) this.rememberAssistantEcho(snapshot.content);
 	}
 
 	private addUserMessage(channel: string, user: string, text: string): void {
@@ -294,6 +328,92 @@ class TroublemakerTuiApp {
 			if (block?.type === "toolCall" && !completed.has(block.id)) return safeToolLabel(block);
 		}
 		return undefined;
+	}
+
+	private async runAwarenessLoop(signal: AbortSignal): Promise<void> {
+		while (!signal.aborted) {
+			this.setAwarenessState(this.awarenessState === "connecting" ? "connecting" : "reconnecting");
+			try {
+				await this.client.streamAwareness(
+					(line) => this.renderLiveAwarenessLine(line),
+					signal,
+					() => {
+						this.setAwarenessState("live");
+						void this.catchUpAwareness();
+					},
+				);
+			} catch (error) {
+				if (signal.aborted || isAbortError(error)) return;
+			}
+			if (signal.aborted) return;
+			this.setAwarenessState("reconnecting");
+			await abortableDelay(1_000, signal).catch(() => {});
+		}
+	}
+
+	private async catchUpAwareness(): Promise<void> {
+		try {
+			const backlog = await this.client.getBacklog(HISTORY_LIMIT, this.awarenessAbort.signal);
+			for (const line of backlog.lines) this.renderLiveAwarenessLine(line);
+		} catch {
+			// The SSE stream remains authoritative; the catch-up read only closes races.
+		}
+	}
+
+	private setAwarenessState(state: AwarenessState): void {
+		if (this.awarenessState === state) return;
+		this.awarenessState = state;
+		this.rebuildHeader();
+	}
+
+	private rememberAwarenessId(id: string): boolean {
+		if (this.seenAwarenessIds.has(id)) return false;
+		this.seenAwarenessIds.add(id);
+		this.seenAwarenessOrder.push(id);
+		while (this.seenAwarenessOrder.length > SEEN_AWARENESS_LIMIT) {
+			const oldest = this.seenAwarenessOrder.shift();
+			if (oldest) this.seenAwarenessIds.delete(oldest);
+		}
+		return true;
+	}
+
+	private rememberLocalEcho(channel: string, text: string): void {
+		this.prunePendingEchoes();
+		this.pendingLocalEchoes.push({ channel, text, expiresAt: Date.now() + LOCAL_ECHO_TTL_MS });
+	}
+
+	private consumeLocalEcho(channel: string, text: string): boolean {
+		this.prunePendingEchoes();
+		const index = this.pendingLocalEchoes.findIndex((entry) => entry.channel === channel && entry.text === text);
+		if (index < 0) return false;
+		this.pendingLocalEchoes.splice(index, 1);
+		return true;
+	}
+
+	private rememberAssistantEcho(content: RuntimeAssistantSnapshotContent[]): void {
+		const fingerprint = assistantFingerprint(content);
+		if (!fingerprint) return;
+		this.prunePendingEchoes();
+		this.pendingAssistantEchoes.push({ fingerprint, expiresAt: Date.now() + ASSISTANT_ECHO_TTL_MS });
+	}
+
+	private consumeAssistantEcho(fingerprint: string): boolean {
+		if (!fingerprint) return false;
+		this.prunePendingEchoes();
+		const index = this.pendingAssistantEchoes.findIndex((entry) => entry.fingerprint === fingerprint);
+		if (index < 0) return false;
+		this.pendingAssistantEchoes.splice(index, 1);
+		return true;
+	}
+
+	private prunePendingEchoes(): void {
+		const now = Date.now();
+		for (let index = this.pendingLocalEchoes.length - 1; index >= 0; index--) {
+			if (this.pendingLocalEchoes[index]!.expiresAt <= now) this.pendingLocalEchoes.splice(index, 1);
+		}
+		for (let index = this.pendingAssistantEchoes.length - 1; index >= 0; index--) {
+			if (this.pendingAssistantEchoes[index]!.expiresAt <= now) this.pendingAssistantEchoes.splice(index, 1);
+		}
 	}
 
 	private showLoader(message: string): void {
@@ -340,6 +460,8 @@ class TroublemakerTuiApp {
 		try {
 			const backlog = await this.client.getBacklog(HISTORY_LIMIT);
 			this.chat.clear();
+			this.seenAwarenessIds.clear();
+			this.seenAwarenessOrder.length = 0;
 			this.renderHistory(backlog.lines);
 		} catch (error) {
 			this.addError(error instanceof Error ? error.message : String(error), this.chat);
@@ -365,7 +487,8 @@ class TroublemakerTuiApp {
 		this.header.clear();
 		this.header.addChild(new Spacer(1));
 		this.header.addChild(new Text(`${chalk.bold(this.status.agentName)}  ${chalk.dim("Troublemaker")}`, 1, 0));
-		this.header.addChild(new Text(chalk.dim(`${this.profile.channelId} · ${this.status.runtime} · ${this.status.mode}`), 1, 0));
+		const awareness = this.awarenessState === "live" ? chalk.green("awareness live") : chalk.yellow(`awareness ${this.awarenessState}`);
+		this.header.addChild(new Text(chalk.dim(`${this.profile.channelId} · ${this.status.runtime} · ${this.status.mode} · ${awareness}`), 1, 0));
 		this.header.addChild(new DynamicBorder((value) => chalk.dim(value)));
 		this.ui.requestRender();
 	}
@@ -388,6 +511,7 @@ class TroublemakerTuiApp {
 	private async shutdown(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.awarenessAbort.abort();
 		if (this.activeAbort) {
 			await this.requestStop();
 		}
@@ -395,6 +519,7 @@ class TroublemakerTuiApp {
 		for (const cleanup of this.signalHandlers.splice(0)) cleanup();
 		this.ui.stop();
 		await this.terminal.drainInput(250, 25).catch(() => {});
+		void this.awarenessTask?.catch(() => {});
 		this.resolveDone?.();
 		this.resolveDone = null;
 	}
@@ -429,6 +554,41 @@ function toPiAssistantMessage(snapshot: RuntimeAssistantSnapshotEntry, content: 
 		stopReason,
 		timestamp: Date.parse(snapshot.timestamp) || Date.now(),
 	};
+}
+
+function assistantFingerprint(content: RuntimeAssistantSnapshotContent[]): string {
+	return content
+		.map((block) => {
+			if (block.type === "text") return `text:${block.text.trim()}`;
+			if (block.type === "toolCall") return `tool:${safeToolLabel(block) || ""}`;
+			return "";
+		})
+		.filter(Boolean)
+		.join("\u0000");
+}
+
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+	return new Promise((resolve, reject) => {
+		if (signal.aborted) {
+			reject(abortError());
+			return;
+		}
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", onAbort);
+			resolve();
+		}, ms);
+		const onAbort = () => {
+			clearTimeout(timer);
+			reject(abortError());
+		};
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+}
+
+function abortError(): Error {
+	const error = new Error("Aborted");
+	error.name = "AbortError";
+	return error;
 }
 
 function isAbortError(error: unknown): boolean {

@@ -460,6 +460,7 @@ export class Gateway {
 			"Connection": "keep-alive",
 			"X-Accel-Buffering": "no",
 		});
+		res.flushHeaders?.();
 
 		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
 		// Just record the current file size so the watcher only sends new lines.

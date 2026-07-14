@@ -104,6 +104,11 @@ try {
 			res.end(JSON.stringify({ lines: [historyLine], total: 1, offset: 0 }));
 			return;
 		}
+		if (req.url === "/awareness/stream") {
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.end(`id: message-1\ndata: ${historyLine}\n\n`);
+			return;
+		}
 		if (req.url === "/api/v2/agents/current/messages") {
 			receivedMessage = await readJson(req);
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -135,6 +140,15 @@ try {
 		assert.equal(statusResponse.agentName, "Example Agent");
 		assert.equal(statusResponse.workspaceReady, true);
 		assert.equal((await client.getBacklog()).lines.length, 1);
+		let awarenessConnected = false;
+		const awarenessLines: string[] = [];
+		await client.streamAwareness(
+			(line) => awarenessLines.push(line),
+			undefined,
+			() => { awarenessConnected = true; },
+		);
+		assert.equal(awarenessConnected, true);
+		assert.deepEqual(awarenessLines, [historyLine]);
 
 		const events: string[] = [];
 		await client.streamMessage("hello", (event) => events.push(event.type));

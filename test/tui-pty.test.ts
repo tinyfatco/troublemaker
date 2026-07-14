@@ -9,6 +9,15 @@ import { installTuiProfile } from "../src/tui/config.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-pty-"));
 let terminal: ChildProcessWithoutNullStreams | undefined;
+const ambientLine = JSON.stringify({
+	type: "message",
+	id: "ambient-1",
+	timestamp: "2026-01-02T03:04:05Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "[2026-01-02 03:04:05+00:00] [#general] [Taylor]: ambient update" }],
+	},
+});
 
 const server = createServer(async (req, res) => {
 	if (req.url === "/health") {
@@ -24,6 +33,18 @@ const server = createServer(async (req, res) => {
 	if (req.url?.startsWith("/api/v2/agents/current/events")) {
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+		return;
+	}
+	if (req.url === "/awareness/stream") {
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		});
+		const timer = setTimeout(() => {
+			res.write(`id: ambient-1\ndata: ${ambientLine}\n\n`);
+		}, 100);
+		req.on("close", () => clearTimeout(timer));
 		return;
 	}
 	if (req.url === "/api/v2/agents/current/messages") {
@@ -64,6 +85,11 @@ expect {
   timeout { puts stderr "TUI prompt timeout"; exit 2 }
   eof { puts stderr "TUI exited before prompt"; exit 3 }
 }
+expect {
+  {ambient update} {}
+  timeout { puts stderr "Ambient update timeout"; exit 6 }
+  eof { puts stderr "TUI exited before ambient update"; exit 7 }
+}
 send -- "run a check\\r"
 expect {
   {All done.} {}
@@ -99,6 +125,9 @@ expect eof
 	const rendered = visibleOutput(output);
 	assert.match(rendered, /Checking the workspace/);
 	assert.match(rendered, /All done\./);
+	assert.match(rendered, /ambient update/);
+	assert.match(rendered, /\[slack:#general\] Taylor/);
+	assert.match(rendered, /awareness live/);
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
 	console.log("troublemaker TUI PTY smoke test passed");

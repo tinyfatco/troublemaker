@@ -20,6 +20,14 @@ const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 
 export async function* readRuntimeSse(response: Response): AsyncGenerator<RuntimeStreamEvent> {
+	for await (const data of readSseData(response)) {
+		if (data === "[DONE]") return;
+		const event = parseRuntimeEvent(data);
+		if (event) yield event;
+	}
+}
+
+export async function* readSseData(response: Response): AsyncGenerator<string> {
 	if (!response.ok) {
 		const detail = (await response.text()).replace(/\s+/g, " ").trim();
 		throw new Error(`Agent request failed (${response.status})${detail ? `: ${detail.substring(0, 400)}` : ""}`);
@@ -36,9 +44,7 @@ export async function* readRuntimeSse(response: Response): AsyncGenerator<Runtim
 			const parsed = drainSseBuffer(buffer, done);
 			buffer = parsed.remainder;
 			for (const data of parsed.data) {
-				if (data === "[DONE]") return;
-				const event = parseRuntimeEvent(data);
-				if (event) yield event;
+				yield data;
 			}
 			if (done) return;
 		}
