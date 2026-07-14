@@ -49,6 +49,7 @@ class TroublemakerTuiApp {
 	private readonly header = new Container();
 	private readonly chat = new Container();
 	private readonly statusContainer = new Container();
+	private readonly inputMargin = new Spacer(1);
 	private readonly editorContainer = new Container();
 	private readonly footer = new Container();
 	private readonly editor: Editor;
@@ -107,6 +108,7 @@ class TroublemakerTuiApp {
 		this.ui.addChild(this.header);
 		this.ui.addChild(this.chat);
 		this.ui.addChild(this.statusContainer);
+		this.ui.addChild(this.inputMargin);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
