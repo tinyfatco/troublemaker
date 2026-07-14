@@ -33,6 +33,7 @@ const LOCAL_ECHO_TTL_MS = 30_000;
 const ASSISTANT_ECHO_TTL_MS = 30_000;
 
 type AwarenessState = "connecting" | "live" | "reconnecting";
+type TranscriptContentKind = "user" | "text" | "tool";
 
 export async function runTroublemakerTui(profile: TuiAgentProfile): Promise<void> {
 	const client = new TroublemakerTuiClient(profile);
@@ -56,6 +57,8 @@ class TroublemakerTuiApp {
 	private activeTurn: Container | null = null;
 	private latestAssistantSnapshot: RuntimeAssistantSnapshotEntry | null = null;
 	private activeSegmentBaseline: RuntimeAssistantSnapshotContent[] = [];
+	private activeSegmentPrecedingContent: TranscriptContentKind | null = null;
+	private lastTranscriptContent: TranscriptContentKind | null = null;
 	private activeLoader: Loader | null = null;
 	private stopRequested = false;
 	private stopped = false;
@@ -155,6 +158,7 @@ class TroublemakerTuiApp {
 		this.chat.addChild(this.activeTurn);
 		this.latestAssistantSnapshot = null;
 		this.activeSegmentBaseline = [];
+		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
 		this.activeAbort = new AbortController();
 		this.stopRequested = false;
 		this.editor.borderColor = (value) => chalk.yellow(value);
@@ -173,6 +177,7 @@ class TroublemakerTuiApp {
 			this.activeTurn = null;
 			this.latestAssistantSnapshot = null;
 			this.activeSegmentBaseline = [];
+			this.activeSegmentPrecedingContent = null;
 			this.editor.borderColor = (value) => this.stopRequested ? chalk.yellow(value) : chalk.cyan(value);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
@@ -187,6 +192,7 @@ class TroublemakerTuiApp {
 		}
 		if (command === "/clear") {
 			this.chat.clear();
+			this.lastTranscriptContent = null;
 			this.ui.requestRender(true);
 			return true;
 		}
@@ -219,10 +225,11 @@ class TroublemakerTuiApp {
 		const snapshot = toAssistantSnapshot(event);
 		if (snapshot && this.activeTurn) {
 			this.latestAssistantSnapshot = { ...snapshot, content: [...snapshot.content] };
-			this.renderAssistant(this.activeTurn, {
+			const renderedKind = this.renderAssistant(this.activeTurn, {
 				...snapshot,
 				content: assistantContentDelta(snapshot.content, this.activeSegmentBaseline),
-			}, false);
+			}, false, this.activeSegmentPrecedingContent);
+			if (renderedKind) this.lastTranscriptContent = renderedKind;
 			if (snapshot.isStreaming === false) this.rememberAssistantEcho(snapshot.content);
 			const pendingTool = this.pendingToolLabel(snapshot);
 			if (snapshot.isStreaming === false && !pendingTool && !isToolUseStopReason(snapshot.stopReason)) {
@@ -247,6 +254,7 @@ class TroublemakerTuiApp {
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
+		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
 		this.showLoader("Steering...");
 		const controller = new AbortController();
 		this.steeringAborts.add(controller);
@@ -297,7 +305,7 @@ class TroublemakerTuiApp {
 		if (entry.role !== "assistant") return;
 		const target = new Container();
 		this.chat.addChild(target);
-		this.renderAssistant(target, {
+		const renderedKind = this.renderAssistant(target, {
 			id: entry.id,
 			type: "message",
 			timestamp: entry.timestamp,
@@ -306,16 +314,23 @@ class TroublemakerTuiApp {
 			model: entry.model,
 			stopReason: entry.stopReason,
 			isStreaming: !complete,
-		}, complete);
+		}, complete, this.lastTranscriptContent);
+		if (renderedKind) this.lastTranscriptContent = renderedKind;
 	}
 
-	private renderAssistant(target: Container, snapshot: RuntimeAssistantSnapshotEntry, historical: boolean): void {
+	private renderAssistant(
+		target: Container,
+		snapshot: RuntimeAssistantSnapshotEntry,
+		historical: boolean,
+		precedingContent: TranscriptContentKind | null = null,
+	): TranscriptContentKind | null {
 		target.clear();
 		const results = new Map(snapshot.content
 			.filter((block) => block.type === "toolResult")
 			.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
 		let textGroup: TextContent[] = [];
-		let renderedFirstTool = false;
+		let previousKind = precedingContent;
+		let renderedKind: TranscriptContentKind | null = null;
 		const flushText = () => {
 			if (textGroup.length === 0) return;
 			target.addChild(new AssistantMessageComponent(
@@ -326,6 +341,8 @@ class TroublemakerTuiApp {
 				1,
 			));
 			textGroup = [];
+			previousKind = "text";
+			renderedKind = "text";
 		};
 
 		for (const block of snapshot.content) {
@@ -337,27 +354,29 @@ class TroublemakerTuiApp {
 			flushText();
 			const label = safeToolLabel(block);
 			if (!label) continue;
-			if (!renderedFirstTool) {
-				target.addChild(new Spacer(1));
-				renderedFirstTool = true;
-			}
+			if (previousKind !== "tool") target.addChild(new Spacer(1));
 			const result = results.get(block.id);
 			const state = result ? (result.isError ? "error" : "success") : historical ? "success" : "pending";
 			target.addChild(createToolLabel(label, state));
+			previousKind = "tool";
+			renderedKind = "tool";
 		}
 		flushText();
+		return renderedKind;
 	}
 
 	private addUserMessage(channel: string, user: string, text: string): void {
 		this.chat.addChild(new Spacer(1));
 		this.chat.addChild(new Text(chalk.dim(`[${channel}] ${user}`), 1, 0));
 		this.chat.addChild(new UserMessageComponent(text, getMarkdownTheme(), 1));
+		this.lastTranscriptContent = "user";
 		this.ui.requestRender();
 	}
 
 	private addNotice(message: string): void {
 		this.chat.addChild(new Spacer(1));
 		this.chat.addChild(new Text(chalk.dim(message), 1, 0));
+		this.lastTranscriptContent = "text";
 		this.ui.requestRender();
 	}
 
@@ -507,6 +526,7 @@ class TroublemakerTuiApp {
 		try {
 			const backlog = await this.client.getBacklog(HISTORY_LIMIT);
 			this.chat.clear();
+			this.lastTranscriptContent = null;
 			this.seenAwarenessIds.clear();
 			this.seenAwarenessOrder.length = 0;
 			this.renderHistory(backlog.lines);
