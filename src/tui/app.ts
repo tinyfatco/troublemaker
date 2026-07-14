@@ -24,7 +24,7 @@ import chalk from "chalk";
 import type { RuntimeAssistantSnapshotContent, RuntimeAssistantSnapshotEntry, RuntimeStreamEvent } from "../core/runtime-contract.js";
 import { TroublemakerTuiClient, type TuiAgentStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
-import { parseContextLine, safeToolLabel, toAssistantSnapshot, type TuiHistoryEntry } from "./protocol.js";
+import { assistantContentDelta, parseContextLine, safeToolLabel, toAssistantSnapshot, type TuiHistoryEntry } from "./protocol.js";
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
@@ -54,6 +54,8 @@ class TroublemakerTuiApp {
 	private status: TuiAgentStatus;
 	private activeAbort: AbortController | null = null;
 	private activeTurn: Container | null = null;
+	private latestAssistantSnapshot: RuntimeAssistantSnapshotEntry | null = null;
+	private activeSegmentBaseline: RuntimeAssistantSnapshotContent[] = [];
 	private activeLoader: Loader | null = null;
 	private stopRequested = false;
 	private stopped = false;
@@ -151,6 +153,8 @@ class TroublemakerTuiApp {
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
+		this.latestAssistantSnapshot = null;
+		this.activeSegmentBaseline = [];
 		this.activeAbort = new AbortController();
 		this.stopRequested = false;
 		this.editor.borderColor = (value) => chalk.yellow(value);
@@ -167,6 +171,8 @@ class TroublemakerTuiApp {
 			this.clearLoader();
 			this.activeAbort = null;
 			this.activeTurn = null;
+			this.latestAssistantSnapshot = null;
+			this.activeSegmentBaseline = [];
 			this.editor.borderColor = (value) => this.stopRequested ? chalk.yellow(value) : chalk.cyan(value);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
@@ -212,7 +218,12 @@ class TroublemakerTuiApp {
 		}
 		const snapshot = toAssistantSnapshot(event);
 		if (snapshot && this.activeTurn) {
-			this.renderAssistant(this.activeTurn, snapshot, false);
+			this.latestAssistantSnapshot = { ...snapshot, content: [...snapshot.content] };
+			this.renderAssistant(this.activeTurn, {
+				...snapshot,
+				content: assistantContentDelta(snapshot.content, this.activeSegmentBaseline),
+			}, false);
+			if (snapshot.isStreaming === false) this.rememberAssistantEcho(snapshot.content);
 			const pendingTool = this.pendingToolLabel(snapshot);
 			if (snapshot.isStreaming === false && !pendingTool && !isToolUseStopReason(snapshot.stopReason)) {
 				this.clearLoader();
@@ -231,8 +242,11 @@ class TroublemakerTuiApp {
 	}
 
 	private async submitSteer(text: string): Promise<void> {
+		this.activeSegmentBaseline = [...(this.latestAssistantSnapshot?.content || [])];
 		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
+		this.activeTurn = new Container();
+		this.chat.addChild(this.activeTurn);
 		this.showLoader("Steering...");
 		const controller = new AbortController();
 		this.steeringAborts.add(controller);
@@ -301,6 +315,7 @@ class TroublemakerTuiApp {
 			.filter((block) => block.type === "toolResult")
 			.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
 		let textGroup: TextContent[] = [];
+		let renderedFirstTool = false;
 		const flushText = () => {
 			if (textGroup.length === 0) return;
 			target.addChild(new AssistantMessageComponent(
@@ -322,12 +337,15 @@ class TroublemakerTuiApp {
 			flushText();
 			const label = safeToolLabel(block);
 			if (!label) continue;
+			if (!renderedFirstTool) {
+				target.addChild(new Spacer(1));
+				renderedFirstTool = true;
+			}
 			const result = results.get(block.id);
 			const state = result ? (result.isError ? "error" : "success") : historical ? "success" : "pending";
 			target.addChild(createToolLabel(label, state));
 		}
 		flushText();
-		if (!historical && !snapshot.isStreaming) this.rememberAssistantEcho(snapshot.content);
 	}
 
 	private addUserMessage(channel: string, user: string, text: string): void {

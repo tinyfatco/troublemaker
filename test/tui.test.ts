@@ -11,7 +11,7 @@ import {
 	normalizeTuiCommand,
 	resolveInvokedAgent,
 } from "../src/tui/config.js";
-import { normalizeChannelLabel, parseContextLine, readRuntimeSse, safeToolLabel } from "../src/tui/protocol.js";
+import { assistantContentDelta, normalizeChannelLabel, parseContextLine, readRuntimeSse, safeToolLabel } from "../src/tui/protocol.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -80,6 +80,34 @@ try {
 		label: "Checking the workspace",
 		arguments: { command: "sensitive raw arguments" },
 	}), "Checking the workspace");
+	const baselineContent = [
+		{ type: "thinking" as const, thinking: "private thought" },
+		{ type: "toolCall" as const, id: "tool-1", name: "bash", label: "Checking", arguments: { command: "private" } },
+		{ type: "toolOutput" as const, toolCallId: "tool-1", stream: "stdout" as const, text: "private partial output" },
+		{ type: "text" as const, text: "Before" },
+	];
+	assert.deepEqual(assistantContentDelta([
+		{ type: "thinking", thinking: "more private thought" },
+		{ type: "toolCall", id: "tool-1", name: "bash", label: "Checking", arguments: { command: "private" } },
+		{ type: "toolOutput", toolCallId: "tool-1", stream: "stdout", text: "private completed output" },
+		{ type: "toolResult", toolCallId: "tool-1", result: "private result", isError: false },
+		{ type: "text", text: "Before and after" },
+		{ type: "toolCall", id: "tool-2", name: "bash", label: "Following up", arguments: { command: "also private" } },
+		{ type: "text", text: "New block" },
+	], baselineContent), [
+		{ type: "toolCall", id: "tool-1", name: "bash", label: "Checking", arguments: { command: "private" } },
+		{ type: "toolResult", toolCallId: "tool-1", result: "private result", isError: false },
+		{ type: "text", text: " and after" },
+		{ type: "toolCall", id: "tool-2", name: "bash", label: "Following up", arguments: { command: "also private" } },
+		{ type: "text", text: "New block" },
+	]);
+	assert.deepEqual(assistantContentDelta([
+		{ type: "toolCall", id: "done", name: "bash", label: "Already done", arguments: {} },
+		{ type: "toolResult", toolCallId: "done", result: "same", isError: false },
+	], [
+		{ type: "toolCall", id: "done", name: "bash", label: "Already done", arguments: {} },
+		{ type: "toolResult", toolCallId: "done", result: "same" },
+	]), []);
 	const finalSseEvents = [];
 	for await (const event of readRuntimeSse(new Response('data: {"type":"status","status":"accepted"}'))) {
 		finalSseEvents.push(event.type);

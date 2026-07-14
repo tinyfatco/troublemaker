@@ -116,6 +116,64 @@ export function safeToolLabel(block: RuntimeAssistantSnapshotContent): string | 
 	return label || undefined;
 }
 
+/**
+ * Projects a cumulative assistant snapshot onto the visible content that
+ * arrived after a transcript boundary. Thinking and raw tool output remain
+ * intentionally absent from the terminal transcript.
+ */
+export function assistantContentDelta(
+	current: RuntimeAssistantSnapshotContent[],
+	baseline: RuntimeAssistantSnapshotContent[],
+): RuntimeAssistantSnapshotContent[] {
+	const baselineText = baseline.filter((block) => block.type === "text");
+	const baselineToolCalls = new Set(baseline
+		.filter((block) => block.type === "toolCall")
+		.map((block) => block.type === "toolCall" ? block.id : ""));
+	const baselineToolResults = new Map(baseline
+		.filter((block) => block.type === "toolResult")
+		.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
+	const currentToolResults = new Map(current
+		.filter((block) => block.type === "toolResult")
+		.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
+	const completedAfterBoundary = new Set<string>();
+	for (const [toolCallId, result] of currentToolResults) {
+		if (!result) continue;
+		const previous = baselineToolResults.get(toolCallId);
+		if (!previous || previous.result !== result.result || Boolean(previous.isError) !== Boolean(result.isError)) {
+			completedAfterBoundary.add(toolCallId);
+		}
+	}
+
+	const includedToolCalls = new Set<string>();
+	const delta: RuntimeAssistantSnapshotContent[] = [];
+	let textIndex = 0;
+	for (const block of current) {
+		if (block.type === "text") {
+			const previous = baselineText[textIndex++];
+			if (!previous) {
+				delta.push(block);
+			} else if (block.text.startsWith(previous.text)) {
+				const suffix = block.text.slice(previous.text.length);
+				if (suffix) delta.push({ ...block, text: suffix });
+			} else if (block.text !== previous.text) {
+				delta.push(block);
+			}
+			continue;
+		}
+		if (block.type === "toolCall") {
+			if (!baselineToolCalls.has(block.id) || completedAfterBoundary.has(block.id)) {
+				delta.push(block);
+				includedToolCalls.add(block.id);
+			}
+			continue;
+		}
+		if (block.type === "toolResult" && includedToolCalls.has(block.toolCallId)) {
+			delta.push(block);
+		}
+	}
+	return delta;
+}
+
 export function toAssistantSnapshot(event: RuntimeStreamEvent): RuntimeAssistantSnapshotEntry | null {
 	if (event.type !== "assistant_snapshot") return null;
 	return event.entry;
