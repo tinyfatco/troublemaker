@@ -96,6 +96,48 @@ const RETRY_BASE_MS = 100;
 /** Grace window for past-due one-shot events (10 minutes). Covers cold-start delay. */
 const COLD_WAKE_GRACE_MS = 10 * 60 * 1000;
 
+export interface JitteredPeriodicPlan {
+	/** The canonical cron slot this timer belongs to. */
+	baseRunMs: number;
+	/** Delay from now until the jittered fire time. */
+	delayMs: number;
+}
+
+/**
+ * Plan one jittered periodic fire while preserving the canonical cron slot.
+ *
+ * `afterCronMs` is the slot consumed by the previous fire. Advancing from that
+ * slot prevents an early (negative-jitter) fire from repeatedly scheduling the
+ * same upcoming cron boundary.
+ */
+export function planNextJitteredPeriodicRun(
+	event: PeriodicEvent,
+	nowMs: number = Date.now(),
+	randomValue: number = Math.random(),
+	afterCronMs?: number,
+): JitteredPeriodicPlan | null {
+	const cron = new Cron(event.schedule, { timezone: event.timezone });
+	const cursorMs = Math.max(nowMs, afterCronMs ?? nowMs);
+	const nextCron = cron.nextRun(new Date(cursorMs));
+	cron.stop();
+	if (!nextCron) return null;
+
+	const baseRunMs = nextCron.getTime();
+	const baseDelayMs = baseRunMs - nowMs;
+	const jitterMs = (randomValue * 2 - 1) * (event.spontaneity ?? 0) * baseDelayMs;
+	let delayMs = Math.max(baseDelayMs + jitterMs, 90_000);
+
+	if (event.quietHours) {
+		const fireMs = nowMs + delayMs;
+		const pushed = pushPastQuietHours(fireMs, event.quietHours, event.timezone);
+		if (pushed !== fireMs) {
+			delayMs = pushed - nowMs;
+		}
+	}
+
+	return { baseRunMs, delayMs };
+}
+
 export class EventsWatcher {
 	private timers: Map<string, NodeJS.Timeout> = new Map();
 	private crons: Map<string, Cron> = new Map();
@@ -430,38 +472,22 @@ export class EventsWatcher {
 	 * next-fire time, then adds random jitter scaled by spontaneity.
 	 * After each fire, reschedules with fresh jitter.
 	 */
-	private scheduleJitteredPeriodic(filename: string, event: PeriodicEvent): void {
+	private scheduleJitteredPeriodic(filename: string, event: PeriodicEvent, afterCronMs?: number): void {
 		try {
-			const cron = new Cron(event.schedule, { timezone: event.timezone });
-			const nextCron = cron.nextRun();
-			if (!nextCron) return;
-
 			const now = Date.now();
-			const baseDelayMs = nextCron.getTime() - now;
+			const plan = planNextJitteredPeriodicRun(event, now, Math.random(), afterCronMs);
+			if (!plan) return;
 
-			// Jitter: ± spontaneity * baseDelay
-			const jitterMs = (Math.random() * 2 - 1) * (event.spontaneity ?? 0) * baseDelayMs;
-			let delayMs = Math.max(baseDelayMs + jitterMs, 90_000); // floor 90s
-
-			// Quiet hours: if the jittered time lands in quiet hours, push to end
-			if (event.quietHours) {
-				const fireMs = now + delayMs;
-				const pushed = pushPastQuietHours(fireMs, event.quietHours, event.timezone);
-				if (pushed !== fireMs) {
-					delayMs = pushed - now;
-				}
-			}
-
-			const fireTime = new Date(now + delayMs).toISOString();
-			log.logInfo(`Scheduled jittered periodic prompt: ${filename}, next fire: ${fireTime} (${Math.round(delayMs / 1000)}s, spontaneity=${event.spontaneity})`);
+			const fireTime = new Date(now + plan.delayMs).toISOString();
+			log.logInfo(`Scheduled jittered periodic prompt: ${filename}, next fire: ${fireTime} (${Math.round(plan.delayMs / 1000)}s, spontaneity=${event.spontaneity})`);
 
 			const timer = setTimeout(() => {
 				this.timers.delete(filename);
 				log.logInfo(`Executing jittered periodic scheduled prompt: ${filename}`);
 				this.execute(filename, event, false);
-				// Reschedule with fresh jitter
-				this.scheduleJitteredPeriodic(filename, event);
-			}, delayMs);
+				// Advance from the consumed cron slot, even when negative jitter fired early.
+				this.scheduleJitteredPeriodic(filename, event, plan.baseRunMs);
+			}, plan.delayMs);
 
 			this.timers.set(filename, timer);
 		} catch (err) {
