@@ -87,6 +87,20 @@ Options:
   --download <channel-id>     Download Slack channel history and exit
 ```
 
+### Terminal UI
+
+The optional terminal UI connects to an already-running Troublemaker gateway, so the resident agent remains the sole owner of its context, tools, and active run. Install a short command for each agent, then invoke the agent by name:
+
+```bash
+troublemaker-tui install demo-agent \
+  --url http://127.0.0.1:3002 \
+  --name "Demo Agent"
+
+demo-agent
+```
+
+The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, shows only agent-supplied tool labels, and supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`.
+
 ## Environment Variables
 
 | Variable | Required For | Description |
