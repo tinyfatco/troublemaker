@@ -1,4 +1,4 @@
-import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
+import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
 import { ChannelPulse } from "../src/engagement/channel-pulse.js";
 
 let passed = 0;
@@ -78,6 +78,15 @@ const sharedThreadEntry = {
 };
 const sharedThread = resolveAmbientDeliveryContext([firstWake[0]!, sharedThreadEntry]);
 assert(sharedThread?.threadTs === "1779780002.000001", "multi-message ambient wake inherits one shared Slack thread");
+
+const mixedThreadPartition = partitionAmbientMessagesForThread(
+	[firstWake[0]!, firstWake[1]!, sharedThreadEntry],
+	"1779780002.000001",
+);
+assert(mixedThreadPartition.sameThread.map((entry) => entry.text).join("|") === "passive first|passive follow-up", "same-thread ambient messages preserve order for soft steering");
+assert(mixedThreadPartition.deferred.map((entry) => entry.text).join("|") === "passive second", "other-thread ambient messages remain deferred");
+const missingThreadPartition = partitionAmbientMessagesForThread(firstWake, undefined);
+assert(missingThreadPartition.sameThread.length === 0 && missingThreadPartition.deferred.length === firstWake.length, "missing active thread keeps the whole ambient batch deferred");
 
 assert(resolveAmbientDeliveryContext(firstWake) === undefined, "ambient wake spanning multiple Slack threads has no delivery locus");
 assert(resolveAmbientDeliveryContext([{ ...firstWake[0]!, threadTs: undefined }]) === undefined, "ambient wake with missing thread metadata has no delivery locus");

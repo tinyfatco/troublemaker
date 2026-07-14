@@ -22,6 +22,11 @@ export interface AmbientCancellationResult {
 	discardedMessages: number;
 }
 
+export interface AmbientThreadPartition {
+	sameThread: PulseEntry[];
+	deferred: PulseEntry[];
+}
+
 /**
  * Frame ambient entries as completed platform messages. This matters when a
  * message contains an earlier pause phrase (for example, "gimme one sec") but
@@ -78,6 +83,26 @@ export function selectUnseenAmbientMessages(
 	return pulse.recentMessages(channelId).filter((entry) =>
 		pulse.isAmbientCandidate(entry) && !includedKeys.has(pulseEntryAmbientKey(entry)),
 	);
+}
+
+/**
+ * Split an ambient batch around the thread that currently owns the active run.
+ * Only exact, non-empty thread matches are eligible for soft steering; every
+ * other message stays deferred for a later standalone ambient evaluation.
+ */
+export function partitionAmbientMessagesForThread(
+	entries: PulseEntry[],
+	activeThreadTs?: string,
+): AmbientThreadPartition {
+	if (!activeThreadTs) return { sameThread: [], deferred: [...entries] };
+
+	const sameThread: PulseEntry[] = [];
+	const deferred: PulseEntry[] = [];
+	for (const entry of entries) {
+		if (entry.threadTs === activeThreadTs) sameThread.push(entry);
+		else deferred.push(entry);
+	}
+	return { sameThread, deferred };
 }
 
 export function markAmbientMessagesIncluded(entries: PulseEntry[], includedKeys: Set<string>): void {

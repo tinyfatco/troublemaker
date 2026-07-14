@@ -30,8 +30,8 @@ import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
 import { MomSettingsManager } from "../../context.js";
 import { downloadChannel } from "../../download.js";
-import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
-import { ChannelPulse } from "../../engagement/channel-pulse.js";
+import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
+import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import { Gateway } from "../../gateway.js";
@@ -298,6 +298,7 @@ const ambientLastFired = new Map<string, number>();
 const ambientIncludedKeys = new Map<string, Set<string>>();
 const ambientAdapterIds = new WeakMap<PlatformAdapter, number>();
 let nextAmbientAdapterId = 1;
+const AMBIENT_BUSY_RETRY_MS = 10_000;
 
 function ambientScopeKey(adapter: PlatformAdapter, channelId: string, teamId?: string): string {
 	let adapterId = ambientAdapterIds.get(adapter);
@@ -339,23 +340,47 @@ function handleAmbientMessage(channelId: string, event: MomEvent, ambientAdapter
 	ambientTimers.set(scopeKey, { channelId, timer: timerId });
 }
 
+function deferAmbientEvaluation(
+	ambientAdapter: PlatformAdapter,
+	channelId: string,
+	scopeKey: string,
+	teamId?: string,
+): void {
+	const timerId = setTimeout(() => {
+		ambientTimers.delete(scopeKey);
+		fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, teamId);
+	}, AMBIENT_BUSY_RETRY_MS);
+	ambientTimers.set(scopeKey, { channelId, timer: timerId });
+}
+
+function buildAmbientPrompt(
+	ambientAdapter: PlatformAdapter,
+	channelId: string,
+	messages: PulseEntry[],
+): string {
+	// The receiving adapter is the delivery authority. Do not rediscover it from
+	// a startup-time channel cache: new joins and multiple Slack workspaces must
+	// retain the exact origin that observed the message.
+	const messageLines = messages.map((message) => {
+		const user = ambientAdapter.getUser(message.participantId);
+		const who = user ? `${user.displayName} (${message.participantId})` : message.participantId;
+		const target = message.replyTarget ? ` [Reply target: ${message.replyTarget}${message.messageId ? `; message_ts: ${message.messageId}` : ""}${message.threadTs ? `; thread_ts: ${message.threadTs}` : ""}]` : "";
+		return `${who}${target}: ${message.text}`;
+	}).join("\n");
+
+	return buildAmbientEvaluationText(
+		getChannelLabel(channelId, [ambientAdapter]),
+		messageLines,
+		pulse.summary(channelId),
+	);
+}
+
 function fireAmbientEvaluation(
 	ambientAdapter: PlatformAdapter,
 	channelId: string,
 	scopeKey: string,
 	teamId?: string,
 ): void {
-	// Check if agent is currently running — if so, re-defer
-	if (awareness?.running) {
-		log.logInfo(`[ambient:${channelId}] Agent busy, re-deferring`);
-		const timerId = setTimeout(() => {
-			ambientTimers.delete(scopeKey);
-			fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, teamId);
-		}, 10_000);
-		ambientTimers.set(scopeKey, { channelId, timer: timerId });
-		return;
-	}
-
 	let includedKeys = ambientIncludedKeys.get(scopeKey);
 	if (!includedKeys) {
 		includedKeys = new Set();
@@ -367,19 +392,30 @@ function fireAmbientEvaluation(
 		return;
 	}
 
-	const refreshedSummary = pulse.summary(channelId);
+	if (awareness?.running) {
+		const activeScope = activeDeliveryScope;
+		const sameOrigin = activeScope?.adapter === ambientAdapter
+			&& activeScope.channelId === channelId
+			&& activeScope.teamId === teamId;
+		const { sameThread, deferred } = partitionAmbientMessagesForThread(
+			unseenMessages,
+			sameOrigin ? activeScope.threadTs : undefined,
+		);
 
-	// The receiving adapter is the delivery authority. Do not rediscover it from
-	// a startup-time channel cache: new joins and multiple Slack workspaces must
-	// retain the exact origin that observed the message.
-	const messageLines = unseenMessages.map((m) => {
-		const user = ambientAdapter.getUser(m.participantId);
-		const who = user ? `${user.displayName} (${m.participantId})` : m.participantId;
-		const target = m.replyTarget ? ` [Reply target: ${m.replyTarget}${m.messageId ? `; message_ts: ${m.messageId}` : ""}${m.threadTs ? `; thread_ts: ${m.threadTs}` : ""}]` : "";
-		return `${who}${target}: ${m.text}`;
-	}).join("\n");
+		let remainingMessages = unseenMessages;
+		if (sameThread.length > 0 && awareness.runner.steer(buildAmbientPrompt(ambientAdapter, channelId, sameThread))) {
+			markAmbientMessagesIncluded(sameThread, includedKeys);
+			remainingMessages = deferred;
+			log.logInfo(`[ambient:${channelId}] Soft-steered ${sameThread.length} same-thread message(s) into the active run`);
+		}
 
-	const channelLabel = getChannelLabel(channelId, [ambientAdapter]);
+		if (remainingMessages.length > 0) {
+			log.logInfo(`[ambient:${channelId}] Agent busy; re-deferring ${remainingMessages.length} ambient message(s)`);
+			deferAmbientEvaluation(ambientAdapter, channelId, scopeKey, teamId);
+		}
+		return;
+	}
+
 	const deliveryContext = resolveAmbientDeliveryContext(unseenMessages);
 
 	const ambientEvent: MomEvent = {
@@ -388,7 +424,7 @@ function fireAmbientEvaluation(
 		ts: String(Date.now() / 1000),
 		user: "system",
 		teamId,
-		text: buildAmbientEvaluationText(channelLabel, messageLines, refreshedSummary),
+		text: buildAmbientPrompt(ambientAdapter, channelId, unseenMessages),
 		sourceEventType: "ambient_evaluation",
 		directlyAddressed: false,
 		threadTs: deliveryContext?.threadTs,
@@ -608,7 +644,15 @@ interface ActiveRun {
 	startedAt: number;
 }
 
+interface ActiveDeliveryScope {
+	adapter: PlatformAdapter;
+	channelId: string;
+	teamId?: string;
+	threadTs?: string;
+}
+
 let activeRun: ActiveRun | null = null;
+let activeDeliveryScope: ActiveDeliveryScope | null = null;
 let queuedRunCount = 0;
 let runQueueTail: Promise<void> = Promise.resolve();
 
@@ -842,6 +886,13 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	state.stopRequested = false;
 	clearStopResponse(state);
 	state.interruptRequested = false;
+	const deliveryScope: ActiveDeliveryScope = {
+		adapter: platform,
+		channelId: event.channel,
+		teamId: event.teamId,
+		threadTs: event.threadTs,
+	};
+	activeDeliveryScope = deliveryScope;
 
 	const channelLabel = getChannelLabel(event.channel, adapters);
 	log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
@@ -897,6 +948,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			return { stopReason: "error", errorMessage: errMsg };
 		}
 	} finally {
+		if (activeDeliveryScope === deliveryScope) activeDeliveryScope = null;
 		state.running = false;
 		state.interruptRequested = false;
 	}

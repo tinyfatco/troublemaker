@@ -78,8 +78,8 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 	): Promise<RunResult>;
 	abort(): void;
-	/** Steer a message into the active run (mid-run injection via pi-agent) */
-	steer(text: string): void;
+	/** Queue a message at the active run's next safe turn boundary. */
+	steer(text: string): boolean;
 	/** Get current context diagnostics */
 	getContextInfo(): ContextInfo;
 	/** Compact context — summarize old messages, keep recent */
@@ -433,6 +433,7 @@ function createRunner(
 
 	// Session created lazily on first run
 	let session: AgentSession | null = null;
+	let acceptsSteering = false;
 	let unsubscribeSession: (() => void) | null = null;
 	let resourceLoaderReady = false;
 	const getSession = async () => {
@@ -1021,6 +1022,7 @@ function createRunner(
 
 			const tPrompt = performance.now();
 			try {
+				acceptsSteering = true;
 				await withToolOutputStream((event) => {
 					runState.liveSnapshot.appendToolOutput(event);
 					const entry = runState.liveSnapshot.current(true);
@@ -1037,6 +1039,8 @@ function createRunner(
 				runState.stopReason = "error";
 				runState.errorMessage = errMsg;
 				log.logWarning("Model prompt failed", errMsg);
+			} finally {
+				acceptsSteering = false;
 			}
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
@@ -1067,6 +1071,7 @@ function createRunner(
 					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
+						acceptsSteering = true;
 						await withToolOutputStream((event) => {
 							runState.liveSnapshot.appendToolOutput(event);
 							const entry = runState.liveSnapshot.current(true);
@@ -1082,6 +1087,8 @@ function createRunner(
 						runState.stopReason = "error";
 						runState.errorMessage = errMsg;
 						log.logWarning("Model retry prompt failed", errMsg);
+					} finally {
+						acceptsSteering = false;
 					}
 					log.logInfo(`[gpt-steering] Retry prompt completed`);
 				}
@@ -1164,27 +1171,21 @@ function createRunner(
 		},
 
 		abort(): void {
-			if (session) session.abort();
+			acceptsSteering = false;
+			if (!session) return;
+			const cleared = session.clearQueue();
+			if (cleared.steering.length > 0 || cleared.followUp.length > 0) {
+				log.logInfo(`[awareness] Cleared ${cleared.steering.length} steering and ${cleared.followUp.length} follow-up message(s) during abort`);
+			}
+			void session.abort();
 		},
 
-		steer(text: string): void {
-			void getSession().then((s) => {
-				if (s.isStreaming) {
-					s.steer(text).catch((err: Error) => {
-						log.logWarning(`[awareness] steer failed`, err.message);
-					});
-				} else {
-					// A platform message can arrive after the global run gate is held but
-					// before pi has entered its streaming phase. Preserve the message as a
-					// follow-up instead of dropping it or starting a competing prompt.
-					log.logInfo(`[awareness] steer called before streaming; queueing as follow-up`);
-					s.followUp(text).catch((err: Error) => {
-						log.logWarning(`[awareness] follow-up queue failed`, err.message);
-					});
-				}
-			}).catch((err: Error) => {
-				log.logWarning(`[awareness] steer session init failed`, err.message);
+		steer(text: string): boolean {
+			if (!session || !acceptsSteering) return false;
+			void session.steer(text).catch((err: Error) => {
+				log.logWarning(`[awareness] steer failed`, err.message);
 			});
+			return true;
 		},
 
 		getContextInfo(): ContextInfo {
