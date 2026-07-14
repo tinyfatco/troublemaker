@@ -196,6 +196,7 @@ async function maybePreMovePeekabooCursor(
 	toolArgs: Record<string, unknown>,
 	client: Client,
 	namespacedName: string,
+	signal?: AbortSignal,
 ): Promise<void> {
 	if (alias !== "peekaboo") return;
 
@@ -204,12 +205,13 @@ async function maybePreMovePeekabooCursor(
 
 	try {
 		log.logInfo(`[mcp-client] ${namespacedName}: pre-moving cursor ${JSON.stringify(moveArgs).substring(0, 200)}`);
-		const result = await client.callTool({ name: "move", arguments: moveArgs });
+		const result = await client.callTool({ name: "move", arguments: moveArgs }, undefined, { signal });
 		if ("isError" in result && result.isError === true) {
 			log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move returned error`);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 120));
 	} catch (err) {
+		if (signal?.aborted) throw err;
 		const errMsg = err instanceof Error ? err.message : String(err);
 		log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move failed`, errMsg);
 	}
@@ -276,7 +278,7 @@ export function wrapMcpTool(
 		execute: async (
 			_toolCallId: string,
 			params: unknown,
-			_signal?: AbortSignal,
+			signal?: AbortSignal,
 			_onUpdate?: unknown,
 		): Promise<{ content: TextContent[]; details: undefined }> => {
 			const { label: _label, show: _show, ...toolArgs } = (params as Record<string, unknown>);
@@ -284,8 +286,9 @@ export function wrapMcpTool(
 			log.logInfo(`[mcp-client] ${namespacedName}: ${JSON.stringify(normalizedArgs).substring(0, 200)}`);
 
 			try {
-				await maybePreMovePeekabooCursor(alias, tool.name, normalizedArgs, client, namespacedName);
-				const result = await client.callTool({ name: tool.name, arguments: normalizedArgs });
+				if (signal?.aborted) throw signal.reason ?? new Error("Operation aborted");
+				await maybePreMovePeekabooCursor(alias, tool.name, normalizedArgs, client, namespacedName, signal);
+				const result = await client.callTool({ name: tool.name, arguments: normalizedArgs }, undefined, { signal });
 
 				const textParts: string[] = [];
 				if ("content" in result && Array.isArray(result.content)) {
@@ -309,6 +312,7 @@ export function wrapMcpTool(
 					details: undefined,
 				};
 			} catch (err) {
+				if (signal?.aborted) throw err;
 				const errMsg = err instanceof Error ? err.message : String(err);
 				log.logWarning(`[mcp-client] ${namespacedName} failed`, errMsg);
 				return {

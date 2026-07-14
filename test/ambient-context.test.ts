@@ -1,4 +1,4 @@
-import { buildAmbientEvaluationText, markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
+import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
 import { ChannelPulse } from "../src/engagement/channel-pulse.js";
 
 let passed = 0;
@@ -91,6 +91,23 @@ assert(completedAfterPause.includes("<ambient_messages>"), "ambient prompt marks
 assert(completedAfterPause.includes("gimme one sec. Shipping the resident agent offer"), "ambient prompt preserves substantive content after a pause phrase");
 assert(completedAfterPause.includes("Do not yield merely because of an earlier pause phrase"), "ambient prompt forbids pause-phrase-only yields");
 assert(completedAfterPause.includes("Only treat a request to wait as current when it concludes the final message"), "ambient prompt still permits a genuine final request to wait");
+
+const stopPulse = new ChannelPulse("USTOPBOT");
+stopPulse.record("CSTOP", "UALEX", "resume old work".length, "resume old work", { messageId: "1779781000.000001" });
+const stopIncludedKeys = new Map<string, Set<string>>();
+let cancelledTimerFired = false;
+const pendingAmbient = new Map([
+	["1:TSTOP:CSTOP", {
+		channelId: "CSTOP",
+		timer: setTimeout(() => { cancelledTimerFired = true; }, 10),
+	}],
+]);
+const cancellation = cancelPendingAmbientEvaluations(pendingAmbient, stopIncludedKeys, stopPulse);
+await new Promise((resolve) => setTimeout(resolve, 20));
+assert(cancellation.cancelledTimers === 1, "stop cancellation reports the deferred ambient wake");
+assert(cancellation.discardedMessages === 1, "stop cancellation consumes the deferred ambient backlog");
+assert(pendingAmbient.size === 0 && !cancelledTimerFired, "stop cancellation prevents the ambient timer from firing");
+assert(selectUnseenAmbientMessages(stopPulse, "CSTOP", stopIncludedKeys.get("1:TSTOP:CSTOP")!).length === 0, "discarded ambient work does not replay after stop");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

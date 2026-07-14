@@ -185,13 +185,14 @@ export function createTwoMessageContext(
 			updatePromise = updatePromise.then(async () => {
 				// Tool labels (shouldLog=false, starts with _→) — append to working message.
 				// In quiet modes, only safe labels admitted by the tool-streaming policy
-				// may open a working message. Raw arguments/results stay suppressed.
+				// may open a working message. Raw arguments/results and buffered model
+				// output stay suppressed.
 				if (!shouldLog && text.startsWith("_→")) {
 					const surface = verbose
 						|| toolStreaming === "all"
 						|| (toolStreaming === "important" && options.show === true);
 					if (!surface) return;
-					if (!messagesOnly) await flushPendingText();
+					if (verbose) await flushPendingText();
 					hasSurfacedToolLabel = true;
 					const label = text.replace(/^_/, "").replace(/_$/, "");
 					workingEntries.push(ops.formatStatus(label));
@@ -202,14 +203,17 @@ export function createTwoMessageContext(
 				// Status messages (shouldLog=false) — flush pending, refresh working message.
 				// They never open quiet output on their own.
 				if (!shouldLog) {
-					if (!messagesOnly) await flushPendingText();
-					if (verbose) await scheduleWorkingUpdate();
+					if (verbose) {
+						await flushPendingText();
+						await scheduleWorkingUpdate();
+					}
 					return;
 				}
 
-				// Ordinary assistant text is never buffered in messages-only mode; this
-				// prevents a later selected label from accidentally exposing it.
-				if (messagesOnly) return;
+				// Ordinary assistant text is never buffered in either quiet mode. This
+				// prevents a later selected label from accidentally exposing reasoning
+				// or interim prose while false still permits a fallback final response.
+				if (!verbose) return;
 
 				// Real content (shouldLog=true) — buffer it. If something else arrives
 				// before sendFinalResponse, flushPendingText proves it was interim.
@@ -265,7 +269,7 @@ export function createTwoMessageContext(
 				},
 
 		setTyping: async (isTyping: boolean) => {
-			if (messagesOnly) return; // no harness-driven UI in messages-only
+			if (!verbose) return; // no harness-driven UI in either quiet mode
 			if (isTyping && !workingMessageId) {
 				updatePromise = updatePromise.then(async () => {
 					if (!workingMessageId) {

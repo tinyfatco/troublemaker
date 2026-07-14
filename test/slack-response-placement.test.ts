@@ -155,6 +155,20 @@ try {
 	assert.doesNotMatch(selective.posted[0]?.text || "", /raw tool arguments/, "raw tool detail remains suppressed");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: false },
+		slack: { toolStreaming: "important" },
+	}));
+	const quietWithFallback = new TestSlackAdapter(workingDir);
+	const quietWithFallbackContext = quietWithFallback.createContext(event(), {} as ChannelStore);
+	await quietWithFallbackContext.respond(":thought_balloon: _private reasoning_", true);
+	await quietWithFallbackContext.respond("_→ Checking the deployed revision_", false, { show: true });
+	await quietWithFallbackContext.sendFinalResponse("fallback final answer");
+	assert.equal(quietWithFallback.posted.length, 2, "false Slack verbosity permits a selected label and fallback final answer");
+	assert.match(quietWithFallback.posted[0]?.text || "", /Checking the deployed revision/, "selected safe label remains visible in false mode");
+	assert.doesNotMatch(quietWithFallback.posted[0]?.text || "", /private reasoning/, "selected label cannot flush hidden reasoning in false mode");
+	assert.equal(quietWithFallback.posted[1]?.text, "fallback final answer", "false mode preserves the fallback harness final");
+
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
 		slack: { toolStreaming: "important", nativeProgress: true },
 	}));

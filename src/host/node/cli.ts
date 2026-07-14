@@ -30,7 +30,7 @@ import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
 import { MomSettingsManager } from "../../context.js";
 import { downloadChannel } from "../../download.js";
-import { buildAmbientEvaluationText, markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
+import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
@@ -293,7 +293,7 @@ const pulse = new ChannelPulse("pending");
 // for when the cooldown expires. The pulse already has all the messages, so we just
 // need to ensure a timer is scheduled.
 const AMBIENT_COOLDOWN_MS = 45_000; // 45 seconds
-const ambientTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const ambientTimers = new Map<string, PendingAmbientEvaluation>();
 const ambientLastFired = new Map<string, number>();
 const ambientIncludedKeys = new Map<string, Set<string>>();
 const ambientAdapterIds = new WeakMap<PlatformAdapter, number>();
@@ -336,7 +336,7 @@ function handleAmbientMessage(channelId: string, event: MomEvent, ambientAdapter
 		fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, event.teamId);
 	}, delayMs);
 
-	ambientTimers.set(scopeKey, timerId);
+	ambientTimers.set(scopeKey, { channelId, timer: timerId });
 }
 
 function fireAmbientEvaluation(
@@ -352,7 +352,7 @@ function fireAmbientEvaluation(
 			ambientTimers.delete(scopeKey);
 			fireAmbientEvaluation(ambientAdapter, channelId, scopeKey, teamId);
 		}, 10_000);
-		ambientTimers.set(scopeKey, timerId);
+		ambientTimers.set(scopeKey, { channelId, timer: timerId });
 		return;
 	}
 
@@ -938,12 +938,22 @@ const handler: MomHandler = {
 	},
 
 	async handleStop(channelId: string, platform: PlatformAdapter, event?: MomEvent): Promise<void> {
+		const ambientCancellation = cancelPendingAmbientEvaluations(ambientTimers, ambientIncludedKeys, pulse);
+		const cancelledInterrupts = pendingInterrupts.splice(0).length;
+		if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0) {
+			log.logInfo(
+				`[stop] Cancelled ${ambientCancellation.cancelledTimers} ambient wake(s), discarded ${ambientCancellation.discardedMessages} ambient message(s), and cleared ${cancelledInterrupts} queued interrupt(s)`,
+			);
+		}
+
 		if (awareness?.running) {
 			awareness.stopRequested = true;
 			const messageTs = postResponseMessage(platform, channelId, "_Stopping..._", event);
 			awareness.stopResponse = { channelId, adapter: platform, event, messageTs };
 			awareness.runner.abort();
 			await messageTs;
+		} else if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0) {
+			await postResponseMessage(platform, channelId, "_Stopped_", event);
 		} else {
 			await postResponseMessage(platform, channelId, "_Nothing running_", event);
 		}

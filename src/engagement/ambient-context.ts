@@ -12,6 +12,16 @@ export interface AmbientPromptSummary {
 	timeSinceMyLastMs: number;
 }
 
+export interface PendingAmbientEvaluation {
+	channelId: string;
+	timer: ReturnType<typeof setTimeout>;
+}
+
+export interface AmbientCancellationResult {
+	cancelledTimers: number;
+	discardedMessages: number;
+}
+
 /**
  * Frame ambient entries as completed platform messages. This matters when a
  * message contains an earlier pause phrase (for example, "gimme one sec") but
@@ -74,4 +84,33 @@ export function markAmbientMessagesIncluded(entries: PulseEntry[], includedKeys:
 	for (const entry of entries) {
 		includedKeys.add(pulseEntryAmbientKey(entry));
 	}
+}
+
+/**
+ * Cancel deferred ambient wakes and consume the backlog they represented.
+ * A user stop must not let an already-armed timer resurrect completed work,
+ * nor should the discarded backlog replay when later channel activity arrives.
+ */
+export function cancelPendingAmbientEvaluations(
+	pending: Map<string, PendingAmbientEvaluation>,
+	includedKeysByScope: Map<string, Set<string>>,
+	pulse: ChannelPulse,
+): AmbientCancellationResult {
+	let discardedMessages = 0;
+
+	for (const [scopeKey, evaluation] of pending) {
+		clearTimeout(evaluation.timer);
+		let includedKeys = includedKeysByScope.get(scopeKey);
+		if (!includedKeys) {
+			includedKeys = new Set();
+			includedKeysByScope.set(scopeKey, includedKeys);
+		}
+		const unseenMessages = selectUnseenAmbientMessages(pulse, evaluation.channelId, includedKeys);
+		discardedMessages += unseenMessages.length;
+		markAmbientMessagesIncluded(unseenMessages, includedKeys);
+	}
+
+	const cancelledTimers = pending.size;
+	pending.clear();
+	return { cancelledTimers, discardedMessages };
 }

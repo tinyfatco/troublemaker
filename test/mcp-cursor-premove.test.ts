@@ -183,4 +183,30 @@ UI Elements:
 	assert.deepEqual(calls.map((call) => call.name), ["move", "click"]);
 }
 
+{
+	let receivedSignal: AbortSignal | undefined;
+	const client = {
+		async callTool(
+			_input: { name: string; arguments?: Record<string, unknown> },
+			_schema?: unknown,
+			options?: { signal?: AbortSignal },
+		) {
+			receivedSignal = options?.signal;
+			return await new Promise((_resolve, reject) => {
+				options?.signal?.addEventListener("abort", () => reject(new Error("MCP request aborted")), { once: true });
+			});
+		},
+	} as unknown as Client;
+	const wrapped = wrapMcpTool("computer-use", {
+		name: "click",
+		inputSchema: { type: "object", properties: {} },
+	}, client);
+	const controller = new AbortController();
+	const execution = wrapped.execute("tool-abort", { label: "Click target", element_index: 4 }, controller.signal);
+	await Promise.resolve();
+	controller.abort();
+	await assert.rejects(execution, /MCP request aborted/);
+	assert.equal(receivedSignal, controller.signal, "wrapped MCP tools receive the active run abort signal");
+}
+
 console.log("mcp cursor pre-move tests passed");
