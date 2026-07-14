@@ -72,19 +72,19 @@ try {
 	assert.equal(parsedHistory?.channel, "slack:#general");
 	assert.equal(parsedHistory?.userName, "Taylor");
 	assert.equal(parsedHistory?.text, "hello there");
-	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nAlex (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix\nBatman (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
-	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Alex: ship the fix", "Batman: on it"]);
+	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nAlex (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nBatman (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
+	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Alex: ship the fix <@U456>", "Batman: on it"]);
 	const parsedAmbient = parseContextLine(JSON.stringify({
 		type: "message",
 		id: "ambient-current",
 		parentId: "ambient-parent",
 		timestamp: "2026-01-02T03:04:05Z",
-		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [biz] [unknown]: ${ambientPrompt}` }] },
+		message: { role: "user", content: [{ type: "text", text: `<session_context>\nUsers:\nU123\t@alex\tAlex\nU456\t@batman\tBatman\nSkills:\n(none)\n</session_context>\n\n[2026-01-02 03:04:05+00:00] [biz] [unknown]: ${ambientPrompt}` }] },
 	}));
 	assert.equal(parsedAmbient?.channel, "slack:#biz");
 	assert.equal(parsedAmbient?.parentId, "ambient-parent");
 	assert.equal(parsedAmbient?.userName, "ambient");
-	assert.equal(parsedAmbient?.text, "Alex: ship the fix\nBatman: on it");
+	assert.equal(parsedAmbient?.text, "Alex: ship the fix @batman\nBatman: on it");
 	assert.equal(parsedAmbient?.isAmbient, true);
 	assert.equal(normalizeChannelLabel("123456"), "telegram:123456");
 	assert.equal(safeToolLabel({

@@ -31,7 +31,7 @@ const activeAmbientLine = JSON.stringify({
 		role: "user",
 		content: [{
 			type: "text",
-			text: "[2026-01-02 03:04:07+00:00] [general] [unknown]: [AMBIENT] A conversation is happening in slack:#general. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nRobin (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ambient during active turn\n</ambient_messages>\n\nChannel pulse: 1 messages in last 15min.\n\nYou're observing this conversation naturally.",
+			text: "<session_context>\nUsers:\nU123\t@robin\tRobin\nU456\t@batman\tBatman\nSkills:\n(none)\n</session_context>\n\n[2026-01-02 03:04:07+00:00] [general] [unknown]: [AMBIENT] A conversation is happening in slack:#general. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nRobin (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ambient during active turn <@U456>\n</ambient_messages>\n\nChannel pulse: 1 messages in last 15min.\n\nYou're observing this conversation naturally.",
 		}],
 	},
 });
@@ -220,7 +220,8 @@ expect eof
 	assert.match(rendered, /Steering(?: active run)?\.\.\./);
 	assert.match(rendered, /Steered answer\./);
 	assert.match(rendered, /ambient update/);
-	assert.match(rendered, /Robin: ambient during active turn/);
+	assert.match(rendered, /Robin: ambient during active turn @batman/);
+	assert.doesNotMatch(rendered, /<@U456>/);
 	assert.match(rendered, /yield_no_action/);
 	assert.doesNotMatch(rendered, /Channel pulse:/);
 	assert.doesNotMatch(rendered, /Reply target:/);

@@ -80,6 +80,7 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 	if (role === "user") {
 		const text = content.find((block) => block.type === "text");
 		if (text?.type === "text") {
+			const slackUsers = extractSlackUsers(text.text);
 			const visibleText = stripModelContextBlocks(text.text).trim();
 			const match = visibleText.match(USER_PREFIX_RE);
 			if (match) {
@@ -88,7 +89,9 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 					entry.isAmbient = true;
 					entry.channel = ambientChannelLabel(messageText) || normalizeChannelLabel(match[2]);
 					entry.userName = "ambient";
-					entry.text = getAmbientDisplayLines(messageText).join("\n");
+					entry.text = getAmbientDisplayLines(messageText)
+						.map((displayLine) => resolveSlackUserMentions(displayLine, slackUsers))
+						.join("\n");
 				} else {
 					entry.channel = normalizeChannelLabel(match[2]);
 					entry.userName = match[3];
@@ -134,6 +137,15 @@ export function cleanAmbientLineForDisplay(line: string): string {
 		.replace(/\s+\[Reply target:[^\]]+\]/g, "")
 		.replace(/^([^:\n]+?)\s+\([A-Z0-9._-]+\)(?=:)/, "$1")
 		.trim();
+}
+
+export function resolveSlackUserMentions(text: string, users: ReadonlyMap<string, string>): string {
+	return text.replace(/<@([A-Z0-9]+)(?:\|([^>]+))?>/g, (token, userId: string, fallback: string | undefined) => {
+		const known = users.get(userId);
+		if (known) return known;
+		if (fallback?.trim()) return `@${fallback.trim().replace(/^@/, "")}`;
+		return token;
+	});
 }
 
 export function safeToolLabel(block: RuntimeAssistantSnapshotContent): string | undefined {
@@ -285,6 +297,26 @@ function normalizeContent(value: unknown): RuntimeAssistantSnapshotContent[] {
 
 function stripModelContextBlocks(text: string): string {
 	return text.replace(MODEL_CONTEXT_BLOCK_RE, "");
+}
+
+function extractSlackUsers(text: string): Map<string, string> {
+	const users = new Map<string, string>();
+	const sessionContext = text.match(/<session_context>([\s\S]*?)<\/session_context>/)?.[1];
+	if (!sessionContext) return users;
+
+	let readingUsers = false;
+	for (const rawLine of sessionContext.split("\n")) {
+		const line = rawLine.trim();
+		if (line === "Users:") {
+			readingUsers = true;
+			continue;
+		}
+		if (!readingUsers) continue;
+		if (/^[A-Za-z][^:]*:$/.test(line)) break;
+		const [userId, handle] = line.split(/\s+/);
+		if (/^U[A-Z0-9]+$/.test(userId || "") && handle?.startsWith("@")) users.set(userId, handle);
+	}
+	return users;
 }
 
 function extractAmbientMessageBlock(rawText: string): string {
