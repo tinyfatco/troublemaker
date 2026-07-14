@@ -50,6 +50,7 @@ import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
+import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -983,8 +984,14 @@ const handler: MomHandler = {
 			log.logWarning(`[interrupt] handleSteer called but awareness not running`);
 			return;
 		}
+		const sameTerminalRun = activeDeliveryScope?.adapter === adapter
+			&& activeDeliveryScope.channelId === event.channel;
+		if (sameTerminalRun && tryTerminalTuiSoftSteer(event, awareness.runner)) {
+			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
+			return;
+		}
 
-		// Busy inbound messages now preempt stale generation instead of being
+		// Other busy inbound messages preempt stale generation instead of being
 		// appended as soft steering after the current assistant turn completes.
 		enqueueHardInterrupt(event, adapter);
 	},

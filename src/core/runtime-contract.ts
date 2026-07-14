@@ -54,7 +54,7 @@ export type RuntimeMode = "edge" | "host";
 
 export interface RuntimeStatusEvent {
 	type: "status";
-	status: "accepted" | "waking" | "connecting" | "container" | "steering" | "streaming";
+	status: "accepted" | "waking" | "connecting" | "container" | "steering" | "streaming" | "compacting";
 	message?: string;
 	mode?: RuntimeMode;
 }

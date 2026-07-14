@@ -66,6 +66,7 @@ class TroublemakerTuiApp {
 	private readonly seenAwarenessOrder: string[] = [];
 	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
 	private readonly pendingAssistantEchoes: Array<{ fingerprint: string; expiresAt: number }> = [];
+	private readonly steeringAborts = new Set<AbortController>();
 
 	constructor(
 		private readonly profile: TuiAgentProfile,
@@ -136,11 +137,15 @@ class TroublemakerTuiApp {
 
 	private async handleSubmit(rawText: string): Promise<void> {
 		const text = rawText.trim();
-		if (!text || this.activeAbort) return;
+		if (!text || this.stopRequested) return;
 		this.editor.addToHistory(text);
 		this.editor.setText("");
 
 		if (text.startsWith("/") && await this.handleLocalCommand(text)) return;
+		if (this.activeAbort) {
+			void this.submitSteer(text);
+			return;
+		}
 
 		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
@@ -148,7 +153,6 @@ class TroublemakerTuiApp {
 		this.chat.addChild(this.activeTurn);
 		this.activeAbort = new AbortController();
 		this.stopRequested = false;
-		this.editor.disableSubmit = true;
 		this.editor.borderColor = (value) => chalk.yellow(value);
 		this.showLoader("Thinking...");
 		this.ui.requestRender();
@@ -163,7 +167,6 @@ class TroublemakerTuiApp {
 			this.clearLoader();
 			this.activeAbort = null;
 			this.activeTurn = null;
-			this.editor.disableSubmit = this.stopRequested;
 			this.editor.borderColor = (value) => this.stopRequested ? chalk.yellow(value) : chalk.cyan(value);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
@@ -194,7 +197,8 @@ class TroublemakerTuiApp {
 			return true;
 		}
 		if (command === "/stop") {
-			this.addNotice("Nothing is running.");
+			if (this.activeAbort) await this.requestStop();
+			else this.addNotice("Nothing is running.");
 			return true;
 		}
 		return false;
@@ -209,7 +213,12 @@ class TroublemakerTuiApp {
 		const snapshot = toAssistantSnapshot(event);
 		if (snapshot && this.activeTurn) {
 			this.renderAssistant(this.activeTurn, snapshot, false);
-			this.showLoader(this.pendingToolLabel(snapshot) || "Thinking...");
+			const pendingTool = this.pendingToolLabel(snapshot);
+			if (snapshot.isStreaming === false && !pendingTool && !isToolUseStopReason(snapshot.stopReason)) {
+				this.clearLoader();
+			} else {
+				this.showLoader(pendingTool || "Thinking...");
+			}
 			this.ui.requestRender();
 			return;
 		}
@@ -218,6 +227,27 @@ class TroublemakerTuiApp {
 			this.clearLoader();
 		} else if (event.type === "run_complete") {
 			this.clearLoader();
+		}
+	}
+
+	private async submitSteer(text: string): Promise<void> {
+		this.rememberLocalEcho(this.profile.channelId, text);
+		this.addUserMessage(this.profile.channelId, "you", text);
+		this.showLoader("Steering...");
+		const controller = new AbortController();
+		this.steeringAborts.add(controller);
+		try {
+			await this.client.streamMessage(text, (event) => {
+				if (event.type === "status" && event.status === "steering") {
+					this.showLoader(event.message || "Steering...");
+				} else if (event.type === "error") {
+					this.addError(event.message, this.activeTurn || this.chat);
+				}
+			}, controller.signal);
+		} catch (error) {
+			if (!isAbortError(error)) this.addError(error instanceof Error ? error.message : String(error), this.activeTurn || this.chat);
+		} finally {
+			this.steeringAborts.delete(controller);
 		}
 	}
 
@@ -447,7 +477,6 @@ class TroublemakerTuiApp {
 		} finally {
 			this.stopRequested = false;
 			if (!this.activeAbort) {
-				this.editor.disableSubmit = false;
 				this.editor.borderColor = (value) => chalk.cyan(value);
 				this.ui.setFocus(this.editor);
 				this.ui.requestRender();
@@ -512,6 +541,8 @@ class TroublemakerTuiApp {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.awarenessAbort.abort();
+		for (const controller of this.steeringAborts) controller.abort();
+		this.steeringAborts.clear();
 		if (this.activeAbort) {
 			await this.requestStop();
 		}
@@ -565,6 +596,10 @@ function assistantFingerprint(content: RuntimeAssistantSnapshotContent[]): strin
 		})
 		.filter(Boolean)
 		.join("\u0000");
+}
+
+function isToolUseStopReason(stopReason: string | undefined): boolean {
+	return typeof stopReason === "string" && stopReason.replace(/[-_\s]/g, "").toLowerCase() === "tooluse";
 }
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {

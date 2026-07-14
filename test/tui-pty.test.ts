@@ -9,6 +9,11 @@ import { installTuiProfile } from "../src/tui/config.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-pty-"));
 let terminal: ChildProcessWithoutNullStreams | undefined;
+const receivedMessages: string[] = [];
+let resolveSteer!: () => void;
+const steerReceived = new Promise<void>((resolvePromise) => {
+	resolveSteer = resolvePromise;
+});
 const ambientLine = JSON.stringify({
 	type: "message",
 	id: "ambient-1",
@@ -50,7 +55,17 @@ const server = createServer(async (req, res) => {
 	if (req.url === "/api/v2/agents/current/messages") {
 		const body = await readJson(req);
 		assert.equal(body.channelId, "terminal:demo-agent");
-		writeTurn(res);
+		assert.equal(typeof body.message, "string");
+		receivedMessages.push(body.message as string);
+		if (receivedMessages.length === 1) {
+			await writeTurn(res, steerReceived);
+		} else {
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
+			res.write(`data: ${JSON.stringify({ type: "status", status: "steering", message: "Steering active run..." })}\n\n`);
+			res.end("data: [DONE]\n\n");
+			resolveSteer();
+		}
 		return;
 	}
 	if (req.url === "/api/v2/agents/current/messages/stop") {
@@ -96,6 +111,17 @@ expect {
   timeout { puts stderr "TUI response timeout"; exit 4 }
   eof { puts stderr "TUI exited before response"; exit 5 }
 }
+expect {
+  {Compacting context...} {}
+  timeout { puts stderr "Compaction status timeout"; exit 8 }
+  eof { puts stderr "TUI exited before compaction status"; exit 9 }
+}
+send -- "look at the newer results instead\\r"
+expect {
+  {Steered answer.} {}
+  timeout { puts stderr "Steering response timeout"; exit 10 }
+  eof { puts stderr "TUI exited before steering response"; exit 11 }
+}
 send -- "\\003"
 expect eof
 `;
@@ -125,19 +151,24 @@ expect eof
 	const rendered = visibleOutput(output);
 	assert.match(rendered, /Checking the workspace/);
 	assert.match(rendered, /All done\./);
+	assert.match(rendered, /Compacting context\.\.\./);
+	assert.match(rendered, /Steering active run\.\.\./);
+	assert.match(rendered, /Steered answer\./);
 	assert.match(rendered, /ambient update/);
 	assert.match(rendered, /\[slack:#general\] Taylor/);
 	assert.match(rendered, /awareness live/);
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
+	assert.deepEqual(receivedMessages, ["run a check", "look at the newer results instead"]);
 	console.log("troublemaker TUI PTY smoke test passed");
 } finally {
+	resolveSteer();
 	if (terminal && !terminal.killed) terminal.kill();
 	await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
 	await rm(tempRoot, { recursive: true, force: true });
 }
 
-function writeTurn(res: ServerResponse): void {
+async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>): Promise<void> {
 	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 	res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
 	res.write(`data: ${JSON.stringify({
@@ -157,8 +188,8 @@ function writeTurn(res: ServerResponse): void {
 			isStreaming: true,
 		},
 	})}\n\n`);
-	setTimeout(() => {
-		res.write(`data: ${JSON.stringify({
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
+	res.write(`data: ${JSON.stringify({
 			type: "assistant_snapshot",
 			entry: {
 				id: "live",
@@ -170,12 +201,32 @@ function writeTurn(res: ServerResponse): void {
 					{ type: "toolResult", toolCallId: "tool-1", result: "private output", isError: false },
 					{ type: "text", text: "All done." },
 				],
+				stopReason: "stop",
 				isStreaming: false,
 			},
 		})}\n\n`);
-		res.write(`data: ${JSON.stringify({ type: "run_complete", channelId: "terminal:demo-agent" })}\n\n`);
-		res.end("data: [DONE]\n\n");
-	}, 80);
+	res.write(`data: ${JSON.stringify({ type: "status", status: "compacting", message: "Compacting context..." })}\n\n`);
+	await waitForSteer;
+	res.write(`data: ${JSON.stringify({ type: "status", status: "streaming", message: "Context compacted; resuming..." })}\n\n`);
+	res.write(`data: ${JSON.stringify({
+		type: "assistant_snapshot",
+		entry: {
+			id: "live",
+			type: "message",
+			timestamp: "2026-01-02T03:04:06Z",
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "tool-1", name: "bash", label: "Checking the workspace", arguments: { command: "TOP_SECRET_COMMAND" } },
+				{ type: "toolResult", toolCallId: "tool-1", result: "private output", isError: false },
+				{ type: "text", text: "All done." },
+				{ type: "text", text: "Steered answer." },
+			],
+			stopReason: "stop",
+			isStreaming: false,
+		},
+	})}\n\n`);
+	res.write(`data: ${JSON.stringify({ type: "run_complete", channelId: "terminal:demo-agent" })}\n\n`);
+	res.end("data: [DONE]\n\n");
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {

@@ -746,6 +746,7 @@ function createRunner(
 			}
 		} else if (event.type === "compaction_start") {
 			log.logInfo(`Compaction started (reason: ${(event as any).reason})`);
+			ctx.emitContentBlock?.({ type: "status", status: "compacting", message: "Compacting context..." });
 			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
 		} else if (event.type === "compaction_end") {
 			const compEvent = event as any;
@@ -759,6 +760,7 @@ function createRunner(
 				// (nothing to summarize) or model/apiKey was missing.
 				log.logInfo(`Compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
 			}
+			ctx.emitContentBlock?.({ type: "status", status: "streaming", message: "Context compacted; resuming..." });
 		} else if (event.type === "auto_retry_start") {
 			const retryEvent = event as any;
 			log.logWarning(`Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`, retryEvent.errorMessage);
