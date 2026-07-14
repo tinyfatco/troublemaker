@@ -1,4 +1,4 @@
-import { markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
+import { buildAmbientEvaluationText, markAmbientMessagesIncluded, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../src/engagement/ambient-context.js";
 import { ChannelPulse } from "../src/engagement/channel-pulse.js";
 
 let passed = 0;
@@ -81,6 +81,16 @@ assert(sharedThread?.threadTs === "1779780002.000001", "multi-message ambient wa
 
 assert(resolveAmbientDeliveryContext(firstWake) === undefined, "ambient wake spanning multiple Slack threads has no delivery locus");
 assert(resolveAmbientDeliveryContext([{ ...firstWake[0]!, threadTs: undefined }]) === undefined, "ambient wake with missing thread metadata has no delivery locus");
+
+const completedAfterPause = buildAmbientEvaluationText(
+	"slack:#biz",
+	"Alex (UALEX): Here is the idea, gimme one sec. Shipping the resident agent offer is the next move.",
+	{ temperature: 4, recentParticipants: 2, timeSinceMyLastMs: 12_000 },
+);
+assert(completedAfterPause.includes("<ambient_messages>"), "ambient prompt marks explicit complete-message boundaries");
+assert(completedAfterPause.includes("gimme one sec. Shipping the resident agent offer"), "ambient prompt preserves substantive content after a pause phrase");
+assert(completedAfterPause.includes("Do not yield merely because of an earlier pause phrase"), "ambient prompt forbids pause-phrase-only yields");
+assert(completedAfterPause.includes("Only treat a request to wait as current when it concludes the final message"), "ambient prompt still permits a genuine final request to wait");
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);
