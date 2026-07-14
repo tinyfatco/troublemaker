@@ -6,6 +6,7 @@ import type {
 
 export interface TuiHistoryEntry {
 	id: string;
+	parentId?: string;
 	timestamp: string;
 	role: "user" | "assistant" | "toolResult";
 	content: RuntimeAssistantSnapshotContent[];
@@ -14,6 +15,7 @@ export interface TuiHistoryEntry {
 	text?: string;
 	model?: string;
 	stopReason?: string;
+	isAmbient?: boolean;
 }
 
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
@@ -67,6 +69,7 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 	const content = normalizeContent(raw.message.content);
 	const entry: TuiHistoryEntry = {
 		id: stringValue(raw.id) || `message-${stringValue(raw.timestamp) || Date.now()}`,
+		parentId: stringValue(raw.parentId) || undefined,
 		timestamp: stringValue(raw.timestamp) || new Date().toISOString(),
 		role,
 		content,
@@ -80,9 +83,17 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 			const visibleText = stripModelContextBlocks(text.text).trim();
 			const match = visibleText.match(USER_PREFIX_RE);
 			if (match) {
-				entry.channel = normalizeChannelLabel(match[2]);
-				entry.userName = match[3];
-				entry.text = match[4];
+				const messageText = match[4];
+				if (messageText.startsWith("[AMBIENT]")) {
+					entry.isAmbient = true;
+					entry.channel = ambientChannelLabel(messageText) || normalizeChannelLabel(match[2]);
+					entry.userName = "ambient";
+					entry.text = getAmbientDisplayLines(messageText).join("\n");
+				} else {
+					entry.channel = normalizeChannelLabel(match[2]);
+					entry.userName = match[3];
+					entry.text = messageText;
+				}
 			} else {
 				entry.text = visibleText;
 			}
@@ -107,6 +118,22 @@ export function normalizeChannelLabel(channel: string): string {
 	if (value.startsWith("email-")) return "email";
 	if (value.startsWith("phone-")) return "phone";
 	return value;
+}
+
+export function getAmbientDisplayLines(rawText: string): string[] {
+	const messageBlock = extractAmbientMessageBlock(rawText);
+	if (!messageBlock) return [];
+	return messageBlock
+		.split("\n")
+		.map((line) => cleanAmbientLineForDisplay(line))
+		.filter(Boolean);
+}
+
+export function cleanAmbientLineForDisplay(line: string): string {
+	return line
+		.replace(/\s+\[Reply target:[^\]]+\]/g, "")
+		.replace(/^([^:\n]+?)\s+\([A-Z0-9._-]+\)(?=:)/, "$1")
+		.trim();
 }
 
 export function safeToolLabel(block: RuntimeAssistantSnapshotContent): string | undefined {
@@ -258,6 +285,27 @@ function normalizeContent(value: unknown): RuntimeAssistantSnapshotContent[] {
 
 function stripModelContextBlocks(text: string): string {
 	return text.replace(MODEL_CONTEXT_BLOCK_RE, "");
+}
+
+function extractAmbientMessageBlock(rawText: string): string {
+	const tagged = rawText.match(/<ambient_messages>\s*([\s\S]*?)\s*<\/ambient_messages>/);
+	if (tagged?.[1]) return tagged[1].trim();
+
+	const ambientText = rawText.replace(/^\[AMBIENT\]\s*/, "").trim();
+	const patterns = [
+		/New unseen(?:, complete)? messages since your last ambient wake:\s*\n\n([\s\S]*?)(?:\n\nChannel pulse:|\n\nYou're observing|$)/,
+		/Recent messages:\s*\n\n([\s\S]*?)(?:\n\nChannel pulse:|\n\nYou're observing|$)/,
+	];
+	for (const pattern of patterns) {
+		const match = ambientText.match(pattern);
+		if (match?.[1]) return match[1].trim();
+	}
+	return "";
+}
+
+function ambientChannelLabel(rawText: string): string | undefined {
+	const match = rawText.match(/^\[AMBIENT\]\s+A conversation is happening in ([^.\n]+)\./);
+	return match?.[1] ? normalizeChannelLabel(match[1]) : undefined;
 }
 
 function stringValue(value: unknown): string {

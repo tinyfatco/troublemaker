@@ -70,8 +70,11 @@ class TroublemakerTuiApp {
 	private awarenessState: AwarenessState = "connecting";
 	private readonly seenAwarenessIds = new Set<string>();
 	private readonly seenAwarenessOrder: string[] = [];
+	private readonly awarenessChannelsById = new Map<string, string>();
 	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
 	private readonly pendingAssistantEchoes: Array<{ fingerprint: string; expiresAt: number }> = [];
+	private readonly deferredAwarenessAssistantLines = new Map<string, string>();
+	private terminalEchoGraceUntil = 0;
 	private readonly steeringAborts = new Set<AbortController>();
 
 	constructor(
@@ -180,6 +183,8 @@ class TroublemakerTuiApp {
 			this.latestAssistantSnapshot = null;
 			this.activeSegmentBaseline = [];
 			this.activeSegmentPrecedingContent = null;
+			this.terminalEchoGraceUntil = Date.now() + 2_000;
+			this.flushDeferredAwarenessAssistantLines();
 			this.editor.borderColor = (value) => this.stopRequested ? chalk.yellow(value) : chalk.cyan(value);
 			this.ui.setFocus(this.editor);
 			this.ui.requestRender();
@@ -279,9 +284,11 @@ class TroublemakerTuiApp {
 		const entries = lines
 			.map((line) => parseContextLine(line))
 			.filter((entry): entry is TuiHistoryEntry => entry !== null);
-		const newIds = new Set(entries
-			.filter((entry) => this.rememberAwarenessId(entry.id))
-			.map((entry) => entry.id));
+		const newIds = new Set<string>();
+		for (const entry of entries) {
+			this.resolveAwarenessChannel(entry);
+			if (this.rememberAwarenessId(entry.id)) newIds.add(entry.id);
+		}
 		for (const entry of entries.filter((entry) => entry.role !== "toolResult").slice(-HISTORY_RENDER_LIMIT)) {
 			if (!newIds.has(entry.id)) continue;
 			this.renderAwarenessEntry(entry, true);
@@ -290,13 +297,38 @@ class TroublemakerTuiApp {
 
 	private renderLiveAwarenessLine(line: string): void {
 		const entry = parseContextLine(line);
-		if (!entry || !this.rememberAwarenessId(entry.id)) return;
-		if (entry.role === "user" && entry.text && this.consumeLocalEcho(entry.channel || "awareness", entry.text)) return;
+		if (!entry || this.seenAwarenessIds.has(entry.id)) return;
+		const channel = this.resolveAwarenessChannel(entry);
+		if (entry.role === "user" && entry.text && this.consumeLocalEcho(entry.channel || "awareness", entry.text)) {
+			this.rememberAwarenessId(entry.id);
+			return;
+		}
 		if (entry.role === "assistant") {
 			const fingerprint = assistantFingerprint(entry.content);
-			if (this.consumeAssistantEcho(fingerprint) || this.activeAbort) return;
+			if (channel === this.profile.channelId && (this.activeAbort || Date.now() < this.terminalEchoGraceUntil)) {
+				this.deferredAwarenessAssistantLines.delete(entry.id);
+				this.rememberAwarenessId(entry.id);
+				return;
+			}
+			if (this.consumeAssistantEcho(fingerprint)) {
+				this.deferredAwarenessAssistantLines.delete(entry.id);
+				this.rememberAwarenessId(entry.id);
+				return;
+			}
+			if (this.activeAbort) {
+				this.deferredAwarenessAssistantLines.set(entry.id, line);
+				return;
+			}
 		}
+		this.deferredAwarenessAssistantLines.delete(entry.id);
+		this.rememberAwarenessId(entry.id);
 		this.renderAwarenessEntry(entry, true);
+	}
+
+	private flushDeferredAwarenessAssistantLines(): void {
+		const lines = [...this.deferredAwarenessAssistantLines.values()];
+		this.deferredAwarenessAssistantLines.clear();
+		for (const line of lines) this.renderLiveAwarenessLine(line);
 	}
 
 	private renderAwarenessEntry(entry: TuiHistoryEntry, complete: boolean): void {
@@ -441,9 +473,18 @@ class TroublemakerTuiApp {
 		this.seenAwarenessOrder.push(id);
 		while (this.seenAwarenessOrder.length > SEEN_AWARENESS_LIMIT) {
 			const oldest = this.seenAwarenessOrder.shift();
-			if (oldest) this.seenAwarenessIds.delete(oldest);
+			if (oldest) {
+				this.seenAwarenessIds.delete(oldest);
+				this.awarenessChannelsById.delete(oldest);
+			}
 		}
 		return true;
+	}
+
+	private resolveAwarenessChannel(entry: TuiHistoryEntry): string | undefined {
+		const channel = entry.channel || (entry.parentId ? this.awarenessChannelsById.get(entry.parentId) : undefined);
+		if (channel) this.awarenessChannelsById.set(entry.id, channel);
+		return channel;
 	}
 
 	private rememberLocalEcho(channel: string, text: string): void {
@@ -529,8 +570,10 @@ class TroublemakerTuiApp {
 			const backlog = await this.client.getBacklog(HISTORY_LIMIT);
 			this.chat.clear();
 			this.lastTranscriptContent = null;
+			this.deferredAwarenessAssistantLines.clear();
 			this.seenAwarenessIds.clear();
 			this.seenAwarenessOrder.length = 0;
+			this.awarenessChannelsById.clear();
 			this.renderHistory(backlog.lines);
 		} catch (error) {
 			this.addError(error instanceof Error ? error.message : String(error), this.chat);

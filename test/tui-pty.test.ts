@@ -23,6 +23,57 @@ const ambientLine = JSON.stringify({
 		content: [{ type: "text", text: "[2026-01-02 03:04:05+00:00] [#general] [Taylor]: ambient update" }],
 	},
 });
+const activeAmbientLine = JSON.stringify({
+	type: "message",
+	id: "ambient-active",
+	timestamp: "2026-01-02T03:04:07Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "[2026-01-02 03:04:07+00:00] [general] [unknown]: [AMBIENT] A conversation is happening in slack:#general. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nRobin (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ambient during active turn\n</ambient_messages>\n\nChannel pulse: 1 messages in last 15min.\n\nYou're observing this conversation naturally.",
+		}],
+	},
+});
+const activeYieldLine = JSON.stringify({
+	type: "message",
+	id: "ambient-yield",
+	parentId: "ambient-active",
+	timestamp: "2026-01-02T03:04:08Z",
+	message: {
+		role: "assistant",
+		content: [{
+			type: "toolCall",
+			id: "yield-1",
+			name: "yield_no_action",
+			arguments: { reason: "nothing useful to add" },
+		}],
+	},
+});
+const terminalUserLine = JSON.stringify({
+	type: "message",
+	id: "terminal-user",
+	timestamp: "2026-01-02T03:04:06Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "[2026-01-02 03:04:06+00:00] [terminal:demo-agent] [you]: run a check" }],
+	},
+});
+const terminalAssistantEchoLine = JSON.stringify({
+	type: "message",
+	id: "terminal-assistant-echo",
+	parentId: "terminal-user",
+	timestamp: "2026-01-02T03:04:06Z",
+	message: {
+		role: "assistant",
+		content: [{ type: "text", text: "PERSISTED_TERMINAL_ECHO" }],
+	},
+});
+let awarenessResponse: ServerResponse | undefined;
+
+function emitAwareness(id: string, line: string): void {
+	awarenessResponse?.write(`id: ${id}\ndata: ${line}\n\n`);
+}
 
 const server = createServer(async (req, res) => {
 	if (req.url === "/health") {
@@ -46,10 +97,14 @@ const server = createServer(async (req, res) => {
 			"Cache-Control": "no-cache",
 			Connection: "keep-alive",
 		});
+		awarenessResponse = res;
 		const timer = setTimeout(() => {
-			res.write(`id: ambient-1\ndata: ${ambientLine}\n\n`);
+			emitAwareness("ambient-1", ambientLine);
 		}, 100);
-		req.on("close", () => clearTimeout(timer));
+		req.on("close", () => {
+			clearTimeout(timer);
+			if (awarenessResponse === res) awarenessResponse = undefined;
+		});
 		return;
 	}
 	if (req.url === "/api/v2/agents/current/messages") {
@@ -58,7 +113,12 @@ const server = createServer(async (req, res) => {
 		assert.equal(typeof body.message, "string");
 		receivedMessages.push(body.message as string);
 		if (receivedMessages.length === 1) {
-			await writeTurn(res, steerReceived);
+			await writeTurn(res, steerReceived, () => {
+				emitAwareness("terminal-user", terminalUserLine);
+				emitAwareness("terminal-assistant-echo", terminalAssistantEchoLine);
+				emitAwareness("ambient-active", activeAmbientLine);
+				emitAwareness("ambient-yield", activeYieldLine);
+			});
 		} else {
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
@@ -122,6 +182,11 @@ expect {
   timeout { puts stderr "Steering response timeout"; exit 10 }
   eof { puts stderr "TUI exited before steering response"; exit 11 }
 }
+expect {
+  {yield_no_action} {}
+  timeout { puts stderr "Deferred ambient yield timeout"; exit 12 }
+  eof { puts stderr "TUI exited before deferred ambient yield"; exit 13 }
+}
 send -- "\\003"
 expect eof
 `;
@@ -152,9 +217,14 @@ expect eof
 	assert.match(rendered, /Checking the workspace/);
 	assert.match(rendered, /All done\./);
 	assert.match(rendered, /Compacting context\.\.\./);
-	assert.match(rendered, /Steering active run\.\.\./);
+	assert.match(rendered, /Steering(?: active run)?\.\.\./);
 	assert.match(rendered, /Steered answer\./);
 	assert.match(rendered, /ambient update/);
+	assert.match(rendered, /Robin: ambient during active turn/);
+	assert.match(rendered, /yield_no_action/);
+	assert.doesNotMatch(rendered, /Channel pulse:/);
+	assert.doesNotMatch(rendered, /Reply target:/);
+	assert.doesNotMatch(rendered, /PERSISTED_TERMINAL_ECHO/);
 	assert.match(rendered, /\[slack:#general\] Taylor/);
 	assert.match(rendered, /awareness live/);
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
@@ -168,7 +238,7 @@ expect eof
 	await rm(tempRoot, { recursive: true, force: true });
 }
 
-async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>): Promise<void> {
+async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>, emitActiveAwareness: () => void): Promise<void> {
 	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 	res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
 	res.write(`data: ${JSON.stringify({
@@ -206,6 +276,7 @@ async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>): Prom
 			},
 		})}\n\n`);
 	res.write(`data: ${JSON.stringify({ type: "status", status: "compacting", message: "Compacting context..." })}\n\n`);
+	emitActiveAwareness();
 	await waitForSteer;
 	res.write(`data: ${JSON.stringify({ type: "status", status: "streaming", message: "Context compacted; resuming..." })}\n\n`);
 	res.write(`data: ${JSON.stringify({
