@@ -141,6 +141,11 @@ try {
 			res.end(JSON.stringify({ agent_name: "Example Agent", runtime: "troublemaker", mode: "standalone", workspace_ready: true }));
 			return;
 		}
+		if (req.url === "/status") {
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ running: ["awareness"], idle: false, activeRun: "external run" }));
+			return;
+		}
 		if (req.url?.startsWith("/api/v2/agents/current/events")) {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ lines: [historyLine], total: 1, offset: 0 }));
@@ -181,6 +186,7 @@ try {
 		const statusResponse = await client.getStatus();
 		assert.equal(statusResponse.agentName, "Example Agent");
 		assert.equal(statusResponse.workspaceReady, true);
+		assert.equal((await client.getRunStatus()).idle, false);
 		assert.equal((await client.getBacklog()).lines.length, 1);
 		let awarenessConnected = false;
 		const awarenessLines: string[] = [];

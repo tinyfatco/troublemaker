@@ -86,6 +86,7 @@ const terminalAssistantEchoLine = JSON.stringify({
 	},
 });
 let awarenessResponse: ServerResponse | undefined;
+let runBusy = false;
 
 function emitAwareness(id: string, line: string): void {
 	awarenessResponse?.write(`id: ${id}\ndata: ${line}\n\n`);
@@ -102,6 +103,15 @@ const server = createServer(async (req, res) => {
 		res.end(JSON.stringify({ agent_name: "Demo Agent", runtime: "troublemaker", mode: "standalone", workspace_ready: true }));
 		return;
 	}
+	if (req.url === "/status") {
+		res.writeHead(200, { "Content-Type": "application/json" });
+		res.end(JSON.stringify({
+			running: runBusy ? ["awareness"] : [],
+			idle: !runBusy,
+			activeRun: runBusy ? "external run" : "idle",
+		}));
+		return;
+	}
 	if (req.url?.startsWith("/api/v2/agents/current/events")) {
 		res.writeHead(200, { "Content-Type": "application/json" });
 		res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
@@ -115,14 +125,19 @@ const server = createServer(async (req, res) => {
 		});
 		awarenessResponse = res;
 		const ambientTimer = setTimeout(() => {
+			runBusy = true;
 			emitAwareness("ambient-1", ambientLine);
 		}, 100);
 		const assistantTimer = setTimeout(() => {
 			emitAwareness("ambient-assistant-1", idleAssistantLine);
-		}, 250);
+		}, 850);
+		const idleTimer = setTimeout(() => {
+			runBusy = false;
+		}, 1_000);
 		req.on("close", () => {
 			clearTimeout(ambientTimer);
 			clearTimeout(assistantTimer);
+			clearTimeout(idleTimer);
 			if (awarenessResponse === res) awarenessResponse = undefined;
 		});
 		return;
@@ -187,6 +202,11 @@ expect {
   eof { puts stderr "TUI exited before ambient update"; exit 7 }
 }
 expect {
+  {Working...} {}
+  timeout { puts stderr "External working indicator timeout"; exit 16 }
+  eof { puts stderr "TUI exited before external working indicator"; exit 17 }
+}
+expect {
   {External check finished} {}
   timeout { puts stderr "Idle external assistant repaint timeout"; exit 14 }
   eof { puts stderr "TUI exited before idle external assistant update"; exit 15 }
@@ -246,6 +266,7 @@ expect eof
 	assert.match(rendered, /Steering(?: active run)?\.\.\./);
 	assert.match(rendered, /Steered answer\./);
 	assert.match(rendered, /ambient update/);
+	assert.match(rendered, /Working\.\.\./);
 	assert.match(rendered, /External check finished/);
 	assert.match(rendered, /Robin: ambient during active turn @batman/);
 	assert.doesNotMatch(rendered, /<@U456>/);

@@ -9,6 +9,10 @@ export interface TuiAgentStatus {
 	workspaceReady: boolean;
 }
 
+export interface TuiRunStatus {
+	idle: boolean;
+}
+
 interface TuiBacklogResponse {
 	lines: string[];
 	total: number;
@@ -41,6 +45,16 @@ export class TroublemakerTuiClient {
 			lines: Array.isArray(raw.lines) ? raw.lines.filter((line): line is string => typeof line === "string") : [],
 			total: numberValue(raw.total),
 			offset: numberValue(raw.offset),
+		};
+	}
+
+	async getRunStatus(signal?: AbortSignal): Promise<TuiRunStatus> {
+		const response = await fetch(this.url("/status"), { cache: "no-store", signal });
+		if (!response.ok) throw new Error(`Agent run status failed (${response.status})`);
+		const raw = await response.json() as Record<string, unknown>;
+		const running = Array.isArray(raw.running) && raw.running.length > 0;
+		return {
+			idle: raw.idle === true || (raw.idle !== false && !running),
 		};
 	}
 

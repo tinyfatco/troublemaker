@@ -31,6 +31,7 @@ const HISTORY_RENDER_LIMIT = 30;
 const SEEN_AWARENESS_LIMIT = 5_000;
 const LOCAL_ECHO_TTL_MS = 30_000;
 const ASSISTANT_ECHO_TTL_MS = 30_000;
+const RUN_STATUS_POLL_MS = 500;
 
 type AwarenessState = "connecting" | "live" | "reconnecting";
 type TranscriptContentKind = "user" | "text" | "tool";
@@ -67,6 +68,8 @@ class TroublemakerTuiApp {
 	private readonly signalHandlers: Array<() => void> = [];
 	private readonly awarenessAbort = new AbortController();
 	private awarenessTask: Promise<void> | null = null;
+	private runStatusTask: Promise<void> | null = null;
+	private externalLoaderVisible = false;
 	private awarenessState: AwarenessState = "connecting";
 	private readonly seenAwarenessIds = new Set<string>();
 	private readonly seenAwarenessOrder: string[] = [];
@@ -125,6 +128,7 @@ class TroublemakerTuiApp {
 			this.resolveDone = resolve;
 		});
 		this.awarenessTask = this.runAwarenessLoop(this.awarenessAbort.signal);
+		this.runStatusTask = this.runStatusLoop(this.awarenessAbort.signal);
 		await done;
 	}
 
@@ -453,6 +457,27 @@ class TroublemakerTuiApp {
 		}
 	}
 
+	private async runStatusLoop(signal: AbortSignal): Promise<void> {
+		while (!signal.aborted) {
+			try {
+				const status = await this.client.getRunStatus(signal);
+				this.syncExternalWorking(!status.idle);
+			} catch (error) {
+				if (signal.aborted || isAbortError(error)) return;
+			}
+			await abortableDelay(RUN_STATUS_POLL_MS, signal).catch(() => {});
+		}
+	}
+
+	private syncExternalWorking(busy: boolean): void {
+		if (this.activeAbort) return;
+		if (busy) {
+			if (!this.activeLoader) this.showExternalLoader("Working...");
+		} else if (this.externalLoaderVisible) {
+			this.clearLoader();
+		}
+	}
+
 	private async catchUpAwareness(): Promise<void> {
 		try {
 			const backlog = await this.client.getBacklog(HISTORY_LIMIT, this.awarenessAbort.signal);
@@ -528,6 +553,16 @@ class TroublemakerTuiApp {
 	}
 
 	private showLoader(message: string): void {
+		this.externalLoaderVisible = false;
+		this.setLoader(message);
+	}
+
+	private showExternalLoader(message: string): void {
+		this.setLoader(message);
+		this.externalLoaderVisible = true;
+	}
+
+	private setLoader(message: string): void {
 		if (this.activeLoader) {
 			this.activeLoader.setMessage(message);
 			return;
@@ -539,6 +574,7 @@ class TroublemakerTuiApp {
 	}
 
 	private clearLoader(): void {
+		this.externalLoaderVisible = false;
 		this.activeLoader?.stop();
 		this.activeLoader = null;
 		this.statusContainer.clear();
@@ -635,6 +671,7 @@ class TroublemakerTuiApp {
 		this.ui.stop();
 		await this.terminal.drainInput(250, 25).catch(() => {});
 		void this.awarenessTask?.catch(() => {});
+		void this.runStatusTask?.catch(() => {});
 		this.resolveDone?.();
 		this.resolveDone = null;
 	}
