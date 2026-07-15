@@ -1,8 +1,10 @@
 # Claude Code CLI Backend
 
 Troublemaker can use an existing Claude Code CLI login as a model backend. The
-backend invokes `claude -p`, lets Claude Code own its native tool loop, and maps
-Claude's `stream-json` response into Troublemaker's normal assistant stream.
+backend invokes `claude -p`, lets Claude Code own the inference/tool loop, and
+maps Claude's `stream-json` response into Troublemaker's normal assistant
+stream. Tool execution still belongs to Troublemaker through a local MCP
+bridge.
 
 Troublemaker does not implement Claude login. Install Claude Code and log in as
 the same operating-system user that runs the Troublemaker service:
@@ -35,13 +37,28 @@ reuses the service user's Claude settings while excluding project and local
 setting sources. Troublemaker appends its system prompt through a temporary
 file, sends the turn over stdin, and passes the selected alias with `--model`.
 
-Claude Code, not Pi, executes tools for these turns. Troublemaker remains
-responsible for Slack ingress, unified awareness, final response delivery,
-session reset, and stream presentation. Troublemaker-only tools such as
-`send_message`, `list_channels`, and `self_configure` are not available inside
-the Claude process. Because of that, `claude-cli` selections use ordinary
-harness delivery even on platforms whose usual default is `messages-only`.
-Adapter-level suppression for ambiguous ambient events is unchanged.
+For the duration of the turn, Troublemaker starts an authenticated MCP server
+on a random `127.0.0.1` port and unguessable path. A temporary mode-`0600` MCP
+config gives Claude the bearer credential. `--strict-mcp-config` excludes every
+other configured MCP server. Claude's built-in action catalog is replaced with
+`ToolSearch`, the non-acting discovery tool required by Claude to resolve
+deferred MCP tools, and slash-command skills are disabled. Only `ToolSearch`
+and `mcp__troublemaker__*` are pre-approved. Native `SendMessage` is also
+explicitly denied because it is a Claude team-agent tool, not Troublemaker's
+channel delivery tool.
+
+The MCP server exposes the same live `AgentTool` instances used by Pi,
+including `bash`, `read`, `write`, `edit`, `send_message`, `list_channels`,
+`read_thread`, `self_configure`, and `yield_no_action`. Calls are surfaced
+through Troublemaker's existing tool-event pipeline, so Slack tool-label
+selection, send ordering, output snapshots, and logging remain consistent.
+`yield_no_action` sets the same silent-completion state as a Pi-native call.
+
+Troublemaker remains responsible for ingress, unified awareness, and channel
+delivery. `messages-only` retains its normal meaning for Claude: ordinary model
+text is recorded but not posted, and the model must use `send_message` for
+visible communication. Thinking deltas are not mapped into the assistant
+stream, and text belonging to nested Claude tool/subagent events is ignored.
 
 Fresh turns receive a UUID with `--session-id`. Successful sessions are stored
 at `awareness/claude-cli-session.json` with mode `0600`; later turns use
@@ -81,6 +98,6 @@ This follows OpenClaw's Claude CLI backend shape: stdin prompts, `stream-json`,
 partial messages, user setting sources, explicit model selection, durable
 session IDs, resumed turns, bounded output, inherited auth override scrubbing,
 and Claude-owned compaction. OpenClaw additionally maintains a live stdio
-session and generates a per-run MCP bridge exposing its own tool catalog.
-Troublemaker's first implementation intentionally omits that larger bridge;
-Claude uses its native tools and Troublemaker delivers the returned response.
+session. Troublemaker uses a short-lived authenticated loopback MCP server per
+`claude -p` turn instead, which preserves Troublemaker's existing live tools
+and channel event pipeline without exposing a durable local tool endpoint.

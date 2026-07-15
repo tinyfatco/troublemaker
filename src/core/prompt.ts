@@ -146,20 +146,14 @@ export function buildSystemPrompt(
 	const overlaySuffix = overlay ? `\n\n${overlay}` : "";
 	const activeModel = model?.provider && model?.id ? `${model.provider}/${model.id}` : "unknown";
 	const claudeCli = model?.provider === "claude-cli";
-	const heartbeatGuidance = claudeCli
-		? "The `heartbeat` channel is your internal reflection space. This backend can reply only through the currently attended Troublemaker channel; do not claim to have sent a cross-channel message."
-		: "The `heartbeat` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use `send_message` with an explicit target to reach out on a real channel (email, Telegram, Slack, Discord) when you want to follow up or complete unfinished work.";
-	const operatorReplyGuidance = claudeCli
-		? "When an operator instruction arrives, carry it out and report through ordinary assistant output in the currently attended channel."
-		: "The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via `send_message` with an explicit target.";
-	const crossChannelGuidance = claudeCli
-		? "If another channel becomes relevant mid-run, record what needs follow-up in the workspace and explain that limitation in your current reply; this backend has no direct cross-channel delivery tool."
-		: "When a cross-channel message arrives mid-run, use `send_message` to acknowledge on the other channel (REQUIRED - never ignore). The tool requires a `target`; use the delivery context or `list_channels` to choose one.";
-	const toolGuidance = claudeCli
-		? `## Tools
-You are running as a Claude Code CLI agent. Use the built-in Claude Code tools and the user-level Claude configuration available to the resident service account. Troublemaker runtime tools such as \`send_message\`, \`list_channels\`, \`read_thread\`, \`self_configure\`, and \`yield_no_action\` are not injected into this backend. Ordinary final text is returned to the currently attended channel by Troublemaker. Do not claim to have used an unavailable runtime tool.`
-		: `## Tools
-Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
+	const heartbeatGuidance = "The `heartbeat` channel is your internal reflection space. You wake periodically for spontaneous check-ins. When attending heartbeat, review context, notice patterns, and decide whether to act. Use `send_message` with an explicit target to reach out on a real channel (email, Telegram, Slack, Discord) when you want to follow up or complete unfinished work.";
+	const operatorReplyGuidance = "The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via `send_message` with an explicit target.";
+	const crossChannelGuidance = "When a cross-channel message arrives mid-run, use `send_message` to acknowledge on the other channel (REQUIRED - never ignore). The tool requires a `target`; use the delivery context or `list_channels` to choose one.";
+	const claudeToolBoundary = claudeCli
+		? "Claude Code's built-in action tools are disabled; only `ToolSearch` remains so Claude can discover deferred MCP tools. Every live Troublemaker tool is provided by the `troublemaker` MCP server and appears to Claude as `mcp__troublemaker__<tool_name>`. Use those MCP tools exclusively for actions. Never use or discuss Claude Code's native `SendMessage`; it is unrelated to Troublemaker delivery."
+		: "";
+	const toolGuidance = `## Tools
+${claudeToolBoundary ? `${claudeToolBoundary}\n` : ""}Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
 Runtime tools commonly include \`send_message\`, \`list_channels\`, \`read_thread\`, \`self_configure\`, and \`yield_no_action\`.
 Use \`list_channels\` to discover valid send targets, including recent Slack thread targets, Email thread targets, and SMS/iMessage conversation targets. Use \`read_thread\` with a \`slack:<channel>:<thread_ts>\`, \`email-thread:<id>\`, or \`phone-...\` target when several conversations are active and previews are not enough to choose. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, existing Email thread=email-thread:<id>, direct Email=email-{address}, Phone/SMS/iMessage conversation=phone-{hash}. When choosing among threads or group conversations, use the exact target from delivery context or \`list_channels\`; do not collapse distinct thread roots, email subjects, or group chat participants together.
 Follow the latest session context's channel delivery policy. When it says ordinary assistant output will not be delivered, use \`send_message\` with the suggested explicit target for every user-visible reply. Otherwise, ordinary assistant output is delivered by the harness; do not duplicate it with \`send_message\` unless you are replying cross-channel. For direct inbound that will take non-trivial work, send a brief acknowledgement before continuing.

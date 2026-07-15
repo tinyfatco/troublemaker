@@ -104,6 +104,7 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
   const sessionFlag = resumeIndex >= 0 ? resumeIndex : args.indexOf("--session-id");
   const sessionId = args[sessionFlag + 1];
   process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "fake-claude-model" }) + "\\n");
+  process.stdout.write(JSON.stringify({ type: "stream_event", parent_tool_use_id: "toolu_nested", event: { type: "content_block_delta", delta: { type: "text_delta", text: "nested leak" } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "from claude" } } }) + "\\n");
   process.stdout.write(JSON.stringify({
@@ -172,8 +173,8 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	assert.equal(resolveModel().id, "sonnet", "selected Claude CLI aliases resolve without API auth storage");
 	assert.equal(
 		new MomSettingsManager(workspaceDir).getVerbose("C123", "slack"),
-		true,
-		"Claude CLI final text remains deliverable without Troublemaker's send_message tool",
+		"messages-only",
+		"Claude CLI preserves Slack's send_message-only delivery boundary",
 	);
 	delete process.env.MOM_MODEL_PROVIDER;
 	delete process.env.MOM_MODEL_ID;
@@ -181,12 +182,19 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	const args = buildClaudeCliArgs({
 		modelId: "opus",
 		systemPromptFile: "/tmp/system.md",
+		mcpConfigFile: "/tmp/mcp.json",
 		sessionId: "11111111-1111-4111-8111-111111111111",
 		resume: false,
 		reasoning: "minimal",
 		permissionMode: "bypassPermissions",
 	});
 	assert.deepEqual(args.slice(0, 7), ["-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose", "--setting-sources", "user"]);
+	assert.ok(args.includes("--strict-mcp-config"), "Claude ignores user/project MCP servers for resident runs");
+	assert.equal(args[args.indexOf("--mcp-config") + 1], "/tmp/mcp.json", "Claude receives the per-turn Troublemaker MCP config");
+	assert.equal(args[args.indexOf("--tools") + 1], "ToolSearch", "only Claude's non-acting MCP discovery tool remains");
+	assert.equal(args[args.indexOf("--allowedTools") + 1], "ToolSearch,mcp__troublemaker__*", "ToolSearch and Troublemaker MCP tools are pre-approved");
+	assert.equal(args[args.indexOf("--disallowedTools") + 1], "SendMessage", "Claude's native SendMessage stays explicitly denied");
+	assert.ok(args.includes("--disable-slash-commands"), "resident Claude runs do not expose user slash-command skills");
 	assert.ok(args.includes("--session-id"), "fresh calls supply a deterministic session id");
 	assert.ok(args.includes("--effort") && args.includes("low"), "Troublemaker thinking maps to Claude effort");
 	assert.ok(args.includes("--permission-mode") && args.includes("bypassPermissions"), "explicit host permission mode is forwarded");
@@ -202,6 +210,7 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	assert.equal(first.message.stopReason, "stop");
 	assert.equal(first.message.content[0]?.type === "text" ? first.message.content[0].text : "", "hello from claude");
 	assert.deepEqual(first.deltas, ["hello ", "from claude"], "partial Claude stream-json deltas reach Pi");
+	assert.doesNotMatch(first.message.content[0]?.type === "text" ? first.message.content[0].text : "", /nested leak/, "nested Claude tool/subagent text is not surfaced as assistant output");
 	assert.equal(first.message.responseModel, "fake-claude-model");
 	assert.equal(first.message.usage.totalTokens, 26, "Claude result usage maps into Pi usage");
 	assert.equal(first.message.usage.cost.total, 0.25, "reported Claude CLI total cost is retained");

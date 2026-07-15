@@ -15,6 +15,13 @@ import {
 	type SimpleStreamOptions,
 	type Usage,
 } from "@earendil-works/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+	startClaudeCliMcpBridge,
+	type ClaudeCliMcpBridge,
+	type ClaudeCliRuntimeToolEvent,
+} from "./claude-cli-mcp.js";
+import type { ToolOutputEvent } from "./tools/tool-output-stream.js";
 
 export const CLAUDE_CLI_PROVIDER = "claude-cli";
 export const CLAUDE_CLI_API = "claude-cli";
@@ -86,6 +93,12 @@ interface ClaudeCliEmitter {
 	readonly hasText: boolean;
 	append(delta: string): void;
 	finish(result: ClaudeCliInvocationResult, model: Model<Api>): void;
+}
+
+export interface ClaudeCliStreamOptions {
+	tools?: () => AgentTool<any>[];
+	onToolEvent?: (event: ClaudeCliRuntimeToolEvent) => void | Promise<void>;
+	onToolOutput?: (event: ToolOutputEvent) => void | Promise<void>;
 }
 
 let authCache: { key: string; expiresAt: number; authenticated: boolean } | undefined;
@@ -182,7 +195,10 @@ export function resetClaudeCliSession(workspaceDir: string): void {
 	}
 }
 
-export function createClaudeCliStream(workspaceDir: string) {
+export function createClaudeCliStream(
+	workspaceDir: string,
+	runtime: ClaudeCliStreamOptions = {},
+) {
 	return (
 		model: Model<Api>,
 		context: Context,
@@ -190,7 +206,7 @@ export function createClaudeCliStream(workspaceDir: string) {
 	): AssistantMessageEventStream => {
 		const stream = createAssistantMessageEventStream();
 		const emitter = createEmitter(stream, model);
-		void runClaudeCliTurn({ workspaceDir, model, context, options, emitter }).catch((error) => {
+		void runClaudeCliTurn({ workspaceDir, model, context, options, emitter, runtime }).catch((error) => {
 			emitter.finish(
 				{
 					exitCode: null,
@@ -212,6 +228,7 @@ async function runClaudeCliTurn(params: {
 	context: Context;
 	options?: SimpleStreamOptions;
 	emitter: ClaudeCliEmitter;
+	runtime: ClaudeCliStreamOptions;
 }): Promise<void> {
 	if (!isClaudeCliProvider(params.model.provider)) {
 		throw new Error(`Claude CLI stream cannot run provider ${params.model.provider}`);
@@ -221,9 +238,17 @@ async function runClaudeCliTurn(params: {
 	}
 
 	const tempDir = await mkdtemp(join(tmpdir(), "troublemaker-claude-cli-"));
+	let mcpBridge: ClaudeCliMcpBridge | undefined;
 	try {
 		const systemPromptFile = join(tempDir, "system-prompt.md");
+		const mcpConfigFile = join(tempDir, "mcp-config.json");
 		await writeFile(systemPromptFile, params.context.systemPrompt || "", { encoding: "utf8", mode: 0o600 });
+		mcpBridge = await startClaudeCliMcpBridge({
+			tools: params.runtime.tools?.() || [],
+			onToolEvent: params.runtime.onToolEvent,
+			onToolOutput: params.runtime.onToolOutput,
+		});
+		await writeFile(mcpConfigFile, JSON.stringify(mcpBridge.config), { encoding: "utf8", mode: 0o600 });
 
 		const sessionState = readClaudeCliSession(params.workspaceDir);
 		const resume = Boolean(sessionState && canResumeClaudeSession(params.context));
@@ -234,6 +259,7 @@ async function runClaudeCliTurn(params: {
 			model: params.model,
 			options: params.options,
 			systemPromptFile,
+			mcpConfigFile,
 			prompt,
 			sessionId: requestedSessionId,
 			resume,
@@ -248,6 +274,7 @@ async function runClaudeCliTurn(params: {
 				model: params.model,
 				options: params.options,
 				systemPromptFile,
+				mcpConfigFile,
 				prompt: await buildClaudeCliPrompt(params.context, false, tempDir),
 				sessionId: requestedSessionId,
 				resume: false,
@@ -262,6 +289,7 @@ async function runClaudeCliTurn(params: {
 		}
 		params.emitter.finish(result, params.model);
 	} finally {
+		await mcpBridge?.close().catch(() => {});
 		await rm(tempDir, { recursive: true, force: true });
 	}
 }
@@ -271,6 +299,7 @@ async function invokeClaudeCli(params: {
 	model: Model<Api>;
 	options?: SimpleStreamOptions;
 	systemPromptFile: string;
+	mcpConfigFile: string;
 	prompt: string;
 	sessionId: string;
 	resume: boolean;
@@ -281,6 +310,7 @@ async function invokeClaudeCli(params: {
 	const args = buildClaudeCliArgs({
 		modelId: params.model.id,
 		systemPromptFile: params.systemPromptFile,
+		mcpConfigFile: params.mcpConfigFile,
 		sessionId: params.sessionId,
 		resume: params.resume,
 		reasoning: params.options?.reasoning,
@@ -351,6 +381,8 @@ async function invokeClaudeCli(params: {
 			}
 			if (parsed.type === "stream_event" && isRecord(parsed.event)) {
 				const event = parsed.event;
+				const parentToolUseId = readString(parsed.parent_tool_use_id) || readString(event.parent_tool_use_id);
+				if (parentToolUseId) return;
 				if (event.type === "content_block_delta" && isRecord(event.delta)) {
 					const delta = event.delta;
 					if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
@@ -420,6 +452,7 @@ async function invokeClaudeCli(params: {
 export function buildClaudeCliArgs(params: {
 	modelId: string;
 	systemPromptFile: string;
+	mcpConfigFile: string;
 	sessionId: string;
 	resume: boolean;
 	reasoning?: string;
@@ -433,6 +466,16 @@ export function buildClaudeCliArgs(params: {
 		"--verbose",
 		"--setting-sources",
 		"user",
+		"--strict-mcp-config",
+		"--mcp-config",
+		params.mcpConfigFile,
+		"--tools",
+		"ToolSearch",
+		"--allowedTools",
+		"ToolSearch,mcp__troublemaker__*",
+		"--disallowedTools",
+		"SendMessage",
+		"--disable-slash-commands",
 		"--no-chrome",
 		"--model",
 		params.modelId,
