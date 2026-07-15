@@ -23,6 +23,22 @@ const ambientLine = JSON.stringify({
 		content: [{ type: "text", text: "[2026-01-02 03:04:05+00:00] [#general] [Taylor]: ambient update" }],
 	},
 });
+const idleAssistantLine = JSON.stringify({
+	type: "message",
+	id: "ambient-assistant-1",
+	parentId: "ambient-1",
+	timestamp: "2026-01-02T03:04:06Z",
+	message: {
+		role: "assistant",
+		content: [{
+			type: "toolCall",
+			id: "external-tool-1",
+			name: "bash",
+			label: "External check finished",
+			arguments: { command: "EXTERNAL_PRIVATE_COMMAND" },
+		}],
+	},
+});
 const activeAmbientLine = JSON.stringify({
 	type: "message",
 	id: "ambient-active",
@@ -98,11 +114,15 @@ const server = createServer(async (req, res) => {
 			Connection: "keep-alive",
 		});
 		awarenessResponse = res;
-		const timer = setTimeout(() => {
+		const ambientTimer = setTimeout(() => {
 			emitAwareness("ambient-1", ambientLine);
 		}, 100);
+		const assistantTimer = setTimeout(() => {
+			emitAwareness("ambient-assistant-1", idleAssistantLine);
+		}, 250);
 		req.on("close", () => {
-			clearTimeout(timer);
+			clearTimeout(ambientTimer);
+			clearTimeout(assistantTimer);
 			if (awarenessResponse === res) awarenessResponse = undefined;
 		});
 		return;
@@ -123,6 +143,7 @@ const server = createServer(async (req, res) => {
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
 			res.write(`data: ${JSON.stringify({ type: "status", status: "steering", message: "Steering active run..." })}\n\n`);
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
 			res.end("data: [DONE]\n\n");
 			resolveSteer();
 		}
@@ -164,6 +185,11 @@ expect {
   {ambient update} {}
   timeout { puts stderr "Ambient update timeout"; exit 6 }
   eof { puts stderr "TUI exited before ambient update"; exit 7 }
+}
+expect {
+  {External check finished} {}
+  timeout { puts stderr "Idle external assistant repaint timeout"; exit 14 }
+  eof { puts stderr "TUI exited before idle external assistant update"; exit 15 }
 }
 send -- "run a check\\r"
 expect {
@@ -220,6 +246,7 @@ expect eof
 	assert.match(rendered, /Steering(?: active run)?\.\.\./);
 	assert.match(rendered, /Steered answer\./);
 	assert.match(rendered, /ambient update/);
+	assert.match(rendered, /External check finished/);
 	assert.match(rendered, /Robin: ambient during active turn @batman/);
 	assert.doesNotMatch(rendered, /<@U456>/);
 	assert.match(rendered, /yield_no_action/);
@@ -230,6 +257,7 @@ expect eof
 	assert.match(rendered, /awareness live/);
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
+	assert.doesNotMatch(rendered, /EXTERNAL_PRIVATE_COMMAND/);
 	assert.deepEqual(receivedMessages, ["run a check", "look at the newer results instead"]);
 	console.log("troublemaker TUI PTY smoke test passed");
 } finally {

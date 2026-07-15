@@ -350,6 +350,7 @@ class TroublemakerTuiApp {
 			isStreaming: !complete,
 		}, complete, this.lastTranscriptContent);
 		if (renderedKind) this.lastTranscriptContent = renderedKind;
+		this.ui.requestRender();
 	}
 
 	private renderAssistant(
