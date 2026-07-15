@@ -3,13 +3,15 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
-import { AuthStorage } from "@earendil-works/pi-coding-agent";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
 	buildClaudeCliArgs,
 	buildClaudeCliEnvironment,
 	createClaudeCliStream,
 	getClaudeCliModel,
+	getClaudeCliRuntimeAuth,
 	isClaudeCliAuthenticated,
+	registerClaudeCliRuntimeAuth,
 	resetClaudeCliAuthCache,
 	resetClaudeCliSession,
 } from "../src/claude-cli.js";
@@ -132,6 +134,17 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 		false,
 		"Claude CLI auth is never offered through Troublemaker /login",
 	);
+	const runtimeAuth = AuthStorage.inMemory();
+	registerClaudeCliRuntimeAuth(runtimeAuth);
+	const runtimeRegistry = ModelRegistry.create(runtimeAuth);
+	assert.equal(
+		runtimeRegistry.hasConfiguredAuth(getClaudeCliModel("sonnet")!),
+		true,
+		"Pi AgentSession's generic auth preflight accepts the local CLI backend",
+	);
+	assert.equal(runtimeAuth.has("claude-cli"), false, "the CLI preflight marker is never persisted as a credential");
+	assert.ok(getClaudeCliRuntimeAuth("claude-cli"), "the low-level agent receives the same non-secret runtime marker");
+	assert.equal(getClaudeCliRuntimeAuth("anthropic"), undefined, "normal providers never receive the CLI marker");
 	assert.equal(isClaudeCliAuthenticated(), true, "existing Claude CLI auth is detected");
 	const listed = listModels(undefined, { getAvailable: () => [], getAll: () => [] } as any);
 	assert.deepEqual(
@@ -206,6 +219,11 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	assert.match(invocations[1]?.input || "", /second turn/, "resume sends the new turn");
 	assert.doesNotMatch(invocations[1]?.input || "", /first turn/, "resume does not duplicate prior transcript context");
 	assert.equal(invocations.some((entry) => entry.leakedApiKey), false, "API key overrides never reach the fake Claude process");
+	assert.equal(
+		readFileSync(invocationLog, "utf8").includes(getClaudeCliRuntimeAuth("claude-cli")!),
+		false,
+		"the Pi preflight marker never reaches Claude arguments, input, or environment",
+	);
 
 	process.env.FAKE_CLAUDE_REJECT_RESUME = "true";
 	const thirdContext = contextWith([
