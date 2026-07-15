@@ -20,6 +20,15 @@ export const CLAUDE_CLI_PROVIDER = "claude-cli";
 export const CLAUDE_CLI_API = "claude-cli";
 export const CLAUDE_CLI_MODEL_IDS = ["haiku", "sonnet", "opus", "fable"] as const;
 
+// Pi's AgentSession requires configured request auth before it calls a custom
+// stream function. This runtime-only marker satisfies that generic preflight;
+// it is not a Claude credential and is never passed to the Claude subprocess.
+const CLAUDE_CLI_RUNTIME_AUTH_SENTINEL = "troublemaker-local-claude-cli";
+
+interface RuntimeAuthStorage {
+	setRuntimeApiKey(provider: string, apiKey: string): void;
+}
+
 type ClaudeCliModelId = (typeof CLAUDE_CLI_MODEL_IDS)[number];
 
 const CLAUDE_CLI_MODELS: Record<ClaudeCliModelId, Model<Api>> = {
@@ -98,6 +107,14 @@ function createClaudeCliModel(id: ClaudeCliModelId, name: string): Model<Api> {
 
 export function isClaudeCliProvider(provider: string | undefined): boolean {
 	return provider?.trim().toLowerCase() === CLAUDE_CLI_PROVIDER;
+}
+
+export function registerClaudeCliRuntimeAuth(authStorage: RuntimeAuthStorage): void {
+	authStorage.setRuntimeApiKey(CLAUDE_CLI_PROVIDER, CLAUDE_CLI_RUNTIME_AUTH_SENTINEL);
+}
+
+export function getClaudeCliRuntimeAuth(provider: string | undefined): string | undefined {
+	return isClaudeCliProvider(provider) ? CLAUDE_CLI_RUNTIME_AUTH_SENTINEL : undefined;
 }
 
 export function getClaudeCliModel(modelId: string): Model<Api> | undefined {

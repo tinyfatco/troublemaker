@@ -41,7 +41,13 @@ import { withToolOutputStream } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
-import { createClaudeCliStream, isClaudeCliProvider, resetClaudeCliSession } from "./claude-cli.js";
+import {
+	createClaudeCliStream,
+	getClaudeCliRuntimeAuth,
+	isClaudeCliProvider,
+	registerClaudeCliRuntimeAuth,
+	resetClaudeCliSession,
+} from "./claude-cli.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -354,6 +360,7 @@ function createRunner(
 
 	// Create AuthStorage and ModelRegistry
 	const authStorage = AuthStorage.create();
+	registerClaudeCliRuntimeAuth(authStorage);
 	const modelRegistry = ModelRegistry.create(authStorage, join(workspaceDir, "models.json"));
 
 	// Resolve model: env vars > settings.json > defaults
@@ -384,7 +391,7 @@ function createRunner(
 		},
 		convertToLlm,
 		streamFn,
-		getApiKey: async (provider: string) => isClaudeCliProvider(provider) ? "" : resolveApiKey(authStorage, provider),
+		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(authStorage, provider),
 	});
 
 	// Defer context loading to run()
