@@ -17,6 +17,7 @@ import {
 } from "../src/claude-cli.js";
 import { listModels, resolveModel } from "../src/model-config.js";
 import { MomSettingsManager } from "../src/context.js";
+import { resolveClaudeCliDeliveryRetry } from "../src/core/prompt.js";
 
 const tempDir = mkdtempSync(join(tmpdir(), "troublemaker-claude-cli-test-"));
 const workspaceDir = join(tempDir, "workspace");
@@ -198,6 +199,44 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	assert.ok(args.includes("--session-id"), "fresh calls supply a deterministic session id");
 	assert.ok(args.includes("--effort") && args.includes("low"), "Troublemaker thinking maps to Claude effort");
 	assert.ok(args.includes("--permission-mode") && args.includes("bypassPermissions"), "explicit host permission mode is forwarded");
+
+	const directDeliveryRetry = resolveClaudeCliDeliveryRetry({
+		model: { provider: "claude-cli" },
+		verbosity: "messages-only",
+		toolsUsed: [],
+		eventType: "dm",
+		replyTarget: "D123",
+	});
+	assert.match(directDeliveryRetry || "", /select:mcp__troublemaker__send_message/, "Claude direct-message retry selects the deferred send tool exactly");
+	assert.match(directDeliveryRetry || "", /exact target "D123"/, "Claude direct-message retry preserves the adapter-provided target");
+	assert.equal(
+		resolveClaudeCliDeliveryRetry({
+			model: { provider: "claude-cli" },
+			verbosity: "messages-only",
+			toolsUsed: ["send_message"],
+			eventType: "dm",
+		}),
+		null,
+		"Claude does not retry after explicit delivery",
+	);
+	assert.equal(
+		resolveClaudeCliDeliveryRetry({
+			model: { provider: "openai-codex" },
+			verbosity: "messages-only",
+			toolsUsed: [],
+			eventType: "dm",
+		}),
+		null,
+		"Claude delivery retry never affects other providers",
+	);
+	const ambientDeliveryRetry = resolveClaudeCliDeliveryRetry({
+		model: { provider: "claude-cli" },
+		verbosity: "messages-only",
+		toolsUsed: [],
+		directlyAddressed: false,
+		eventType: "mention",
+	});
+	assert.match(ambientDeliveryRetry || "", /select:mcp__troublemaker__yield_no_action/, "Claude ambient retry selects the explicit silence tool");
 
 	const childEnv = buildClaudeCliEnvironment(process.env);
 	assert.equal(childEnv.ANTHROPIC_API_KEY, undefined, "Anthropic API overrides are scrubbed from subscription-backed CLI calls");

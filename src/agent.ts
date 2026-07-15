@@ -23,6 +23,7 @@ import {
 	buildSystemPrompt,
 	getWorkspaceContext,
 	getWorkspaceSkillsMtime,
+	resolveClaudeCliDeliveryRetry,
 	resolveThinkingLevel,
 } from "./core/prompt.js";
 import * as log from "./log.js";
@@ -932,6 +933,7 @@ function createRunner(
 				ctx.message.channel,
 				ctx.channelName,
 				channelVerbosity,
+				currentModel,
 			);
 
 			// Set up file upload function
@@ -1089,7 +1091,9 @@ function createRunner(
 				}
 			}
 
-			// GPT-5 planning-only retry: if the model narrated a plan without acting, nudge and re-prompt once
+			// Retry one text-only turn when the active model failed its concrete
+			// action contract. Claude needs an exact deferred MCP selection in
+			// messages-only channels; GPT-5 keeps its planning-only act-now nudge.
 			if (runState.stopReason !== "error" && !wasYielded()) {
 				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
@@ -1099,10 +1103,20 @@ function createRunner(
 						.map((c) => c.text)
 						.join("\n") || "";
 
-				const retryInstruction = detectPlanningOnlyTurn(assistantText, runState.toolsUsed, currentModel);
+				const claudeDeliveryRetry = resolveClaudeCliDeliveryRetry({
+					model: currentModel,
+					verbosity: channelVerbosity,
+					toolsUsed: runState.toolsUsed,
+					directlyAddressed: ctx.message.directlyAddressed,
+					eventType: ctx.message.eventType,
+					replyTarget: ctx.message.replyTarget,
+				});
+				const retryInstruction = claudeDeliveryRetry
+					?? detectPlanningOnlyTurn(assistantText, runState.toolsUsed, currentModel);
 				if (retryInstruction) {
-					log.logInfo(`[gpt-steering] Planning-only turn detected, retrying with act-now nudge`);
-					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
+					const retrySource = claudeDeliveryRetry ? "claude-cli-delivery" : "gpt-steering";
+					log.logInfo(`[${retrySource}] Text-only turn detected, retrying with an explicit action contract`);
+					if (assistantText) log.logInfo(`[${retrySource}] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
 						acceptsSteering = true;
 						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
@@ -1118,7 +1132,7 @@ function createRunner(
 					} finally {
 						acceptsSteering = false;
 					}
-					log.logInfo(`[gpt-steering] Retry prompt completed`);
+					log.logInfo(`[${retrySource}] Retry prompt completed`);
 				}
 			}
 

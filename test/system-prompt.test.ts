@@ -44,6 +44,9 @@ assert(claudeCliPrompt.includes("built-in action tools are disabled"), "Claude C
 assert(claudeCliPrompt.includes("only `ToolSearch` remains"), "Claude CLI prompt identifies the non-acting discovery exception");
 assert(claudeCliPrompt.includes("`troublemaker` MCP server"), "Claude CLI prompt identifies the runtime tool bridge");
 assert(claudeCliPrompt.includes("mcp__troublemaker__<tool_name>"), "Claude CLI prompt explains namespaced runtime tools");
+assert(claudeCliPrompt.includes("select:mcp__troublemaker__send_message"), "Claude CLI prompt gives the exact deferred send_message selection query");
+assert(claudeCliPrompt.includes("select:mcp__troublemaker__yield_no_action"), "Claude CLI prompt gives the exact deferred yield selection query");
+assert(claudeCliPrompt.includes("mcp__troublemaker__bash"), "Claude CLI prompt names MCP-backed core tools instead of native actions");
 assert(claudeCliPrompt.includes("native `SendMessage`"), "Claude CLI prompt distinguishes the unrelated native team tool");
 assert(claudeCliPrompt.includes("Active runtime model: claude-cli/sonnet"), "Claude CLI prompt reports its exact model alias");
 assert(claudeCliPrompt.includes("When a cross-channel message arrives mid-run, use `send_message`"), "Claude CLI prompt preserves cross-channel delivery guidance");
