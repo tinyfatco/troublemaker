@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Type } from "typebox";
 import {
 	startClaudeCliMcpBridge,
 	type ClaudeCliRuntimeToolEvent,
 } from "../src/claude-cli-mcp.js";
+import {
+	CLAUDE_MCP_TOKEN_ENV,
+	CLAUDE_MCP_URL_ENV,
+	readClaudeCliMcpProxyEndpoint,
+} from "../src/claude-cli-mcp-proxy.js";
 import { emitToolOutput, type ToolOutputEvent } from "../src/tools/tool-output-stream.js";
 
 const calls: Array<{ id: string; args: unknown }> = [];
@@ -49,15 +56,34 @@ const bridge = await startClaudeCliMcpBridge({
 });
 
 const config = bridge.config.mcpServers.troublemaker;
-assert.match(config.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp\/[a-f0-9]{48}$/);
-assert.doesNotMatch(config.url, /Bearer|token/i, "bridge credential is not placed in the URL");
-assert.match(config.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
+const endpoint = bridge.endpoint;
+assert.equal(config.command, process.execPath);
+assert.equal(config.args.length, 1);
+assert.match(config.args[0] || "", /claude-cli-mcp-proxy\.js$/);
+assert.match(endpoint.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp\/[a-f0-9]{48}$/);
+assert.doesNotMatch(endpoint.url, /Bearer|token/i, "bridge credential is not placed in the URL");
+assert.match(endpoint.headers.Authorization, /^Bearer [a-f0-9]{64}$/);
+assert.equal(config.env[CLAUDE_MCP_URL_ENV], endpoint.url);
+assert.equal(`Bearer ${config.env[CLAUDE_MCP_TOKEN_ENV]}`, endpoint.headers.Authorization);
+assert.doesNotMatch(config.args.join(" "), /[a-f0-9]{48,}/, "proxy secrets are not command arguments");
 
-const unauthorized = await fetch(config.url, { method: "POST" });
+assert.throws(
+	() => readClaudeCliMcpProxyEndpoint({}),
+	/Missing Troublemaker MCP proxy configuration/,
+);
+assert.throws(
+	() => readClaudeCliMcpProxyEndpoint({
+		[CLAUDE_MCP_URL_ENV]: "http://example.com/mcp/" + "a".repeat(48),
+		[CLAUDE_MCP_TOKEN_ENV]: "b".repeat(64),
+	}),
+	/Invalid Troublemaker MCP proxy endpoint/,
+);
+
+const unauthorized = await fetch(endpoint.url, { method: "POST" });
 assert.equal(unauthorized.status, 401, "per-turn MCP endpoint rejects unauthenticated loopback calls");
 
-const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-	requestInit: { headers: config.headers },
+const transport = new StreamableHTTPClientTransport(new URL(endpoint.url), {
+	requestInit: { headers: endpoint.headers },
 });
 const client = new Client({ name: "troublemaker-test", version: "1.0.0" });
 
@@ -94,6 +120,32 @@ try {
 	assert.equal(events.at(-1)?.type === "tool_execution_end" && events.at(-1)?.isError, true);
 } finally {
 	await client.close();
+}
+
+const sourceProxyPath = fileURLToPath(new URL("../src/claude-cli-mcp-proxy.ts", import.meta.url));
+const inheritedEnv = Object.fromEntries(
+	Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+);
+const proxyTransport = new StdioClientTransport({
+	command: process.execPath,
+	args: [...process.execArgv, sourceProxyPath],
+	env: { ...inheritedEnv, ...config.env },
+	stderr: "pipe",
+});
+const proxyClient = new Client({ name: "troublemaker-proxy-test", version: "1.0.0" });
+try {
+	await proxyClient.connect(proxyTransport);
+	const listed = await proxyClient.listTools();
+	assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ["fail_runtime_tool", "send_message"]);
+	const result = await proxyClient.callTool({
+		name: "send_message",
+		arguments: { label: "Proxy delivery", target: "C456", text: "through stdio" },
+	});
+	assert.equal(result.isError, undefined);
+	assert.equal((result.content[0] as { type: string; text: string }).text, "sent:C456");
+	assert.equal(calls.length, 2, "stdio proxy reaches the live Troublemaker tool instance");
+} finally {
+	await proxyClient.close();
 	await bridge.close();
 }
 

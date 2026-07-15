@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer, type Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import { Server as McpProtocolServer } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -16,6 +17,10 @@ import {
 	type ToolOutputEvent,
 	withToolOutputStream,
 } from "./tools/tool-output-stream.js";
+import {
+	CLAUDE_MCP_TOKEN_ENV,
+	CLAUDE_MCP_URL_ENV,
+} from "./claude-cli-mcp-proxy.js";
 
 export type ClaudeCliRuntimeToolEvent =
 	| { type: "tool_execution_start"; toolCallId: string; toolName: string; args: unknown }
@@ -32,11 +37,15 @@ export interface ClaudeCliMcpBridge {
 	config: {
 		mcpServers: {
 			troublemaker: {
-				type: "http";
-				url: string;
-				headers: { Authorization: string };
+				command: string;
+				args: string[];
+				env: Record<string, string>;
 			};
 		};
+	};
+	endpoint: {
+		url: string;
+		headers: { Authorization: string };
 	};
 	close(): Promise<void>;
 }
@@ -216,17 +225,23 @@ export async function startClaudeCliMcpBridge(
 	});
 	const address = httpServer.address() as AddressInfo;
 	const url = `http://127.0.0.1:${address.port}${path}`;
+	const proxyPath = fileURLToPath(new URL("./claude-cli-mcp-proxy.js", import.meta.url));
+	const headers = { Authorization: `Bearer ${token}` };
 
 	return {
 		config: {
 			mcpServers: {
 				troublemaker: {
-					type: "http",
-					url,
-					headers: { Authorization: `Bearer ${token}` },
+					command: process.execPath,
+					args: [proxyPath],
+					env: {
+						[CLAUDE_MCP_URL_ENV]: url,
+						[CLAUDE_MCP_TOKEN_ENV]: token,
+					},
 				},
 			},
 		},
+		endpoint: { url, headers },
 		close: () => closeHttpServer(httpServer),
 	};
 }
