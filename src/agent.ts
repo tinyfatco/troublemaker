@@ -41,6 +41,7 @@ import { withToolOutputStream } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
+import { createClaudeCliStream, isClaudeCliProvider, resetClaudeCliSession } from "./claude-cli.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -365,8 +366,13 @@ function createRunner(
 	if (initialThinkingLevel !== requestedInitialThinkingLevel) {
 		log.logInfo(`[thinking] Effective thinking ${requestedInitialThinkingLevel} -> ${initialThinkingLevel} for ${model.provider}/${model.id}`);
 	}
-	const streamFn: StreamFn = (streamModel, context, options) =>
-		streamSimple(streamModel, context, normalizeSimpleStreamOptionsForModel(streamModel, options));
+	const claudeCliStream = createClaudeCliStream(workspaceDir);
+	const streamFn: StreamFn = (streamModel, context, options) => {
+		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, options);
+		return isClaudeCliProvider(streamModel.provider)
+			? claudeCliStream(streamModel, context, normalizedOptions)
+			: streamSimple(streamModel, context, normalizedOptions);
+	};
 
 	// Create agent
 	const agent = new Agent({
@@ -378,7 +384,7 @@ function createRunner(
 		},
 		convertToLlm,
 		streamFn,
-		getApiKey: async (provider: string) => resolveApiKey(authStorage, provider),
+		getApiKey: async (provider: string) => isClaudeCliProvider(provider) ? "" : resolveApiKey(authStorage, provider),
 	});
 
 	// Defer context loading to run()
@@ -415,9 +421,17 @@ function createRunner(
 	// models with different window sizes (MiniMax 197k, Anthropic 200k, etc).
 	const compactionSettingsProxy = new Proxy(settingsManager, {
 		get(target, prop, receiver) {
+			if (prop === "getCompactionEnabled") {
+				return () => isClaudeCliProvider(agent.state.model?.provider)
+					? false
+					: target.getCompactionEnabled();
+			}
 			if (prop === "getCompactionSettings") {
 				return () => {
 					const base = target.getCompactionSettings();
+					if (isClaudeCliProvider(agent.state.model?.provider)) {
+						return { ...base, enabled: false };
+					}
 					const currentModel = agent.state.model;
 					const contextWindow = currentModel?.contextWindow ?? 0;
 					if (contextWindow > 0 && base.thresholdPercent > 0 && base.thresholdPercent < 1) {
@@ -518,6 +532,7 @@ function createRunner(
 			log.logWarning(`[awareness] ${label}: truncate failed (${err instanceof Error ? err.message : String(err)})`);
 			throw err;
 		}
+		resetClaudeCliSession(workspaceDir);
 		resetSessionState();
 		log.logInfo(`[awareness] ${label}: context reset (${messagesCleared} messages archived)`);
 		return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
@@ -1238,6 +1253,9 @@ function createRunner(
 		},
 
 		async compact(instructions?: string): Promise<CompactResult> {
+			if (isClaudeCliProvider(agent.state.model?.provider)) {
+				throw new Error("Claude Code owns compaction for claude-cli models; use /clear to start a fresh session.");
+			}
 			const contextFile = join(awarenessDir, "context.jsonl");
 			// Ensure messages are loaded from context.jsonl before counting
 			const currentSession = await getSession();

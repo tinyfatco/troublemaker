@@ -105,7 +105,9 @@ The installer creates a profile in `~/.config/troublemaker/tui.json` and a comma
 
 | Variable | Required For | Description |
 |----------|-------------|-------------|
-| `ANTHROPIC_API_KEY` | All | Anthropic API key |
+| `ANTHROPIC_API_KEY` | Anthropic API models | Anthropic API key; not used by the Claude CLI backend |
+| `MOM_CLAUDE_CLI_PATH` | claude-cli models | Claude executable path (default: `claude`) |
+| `MOM_CLAUDE_CLI_PERMISSION_MODE` | claude-cli host tools | Optional explicit Claude permission mode |
 | `MOM_SLACK_APP_TOKEN` | slack:socket | Slack app-level token (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
@@ -116,6 +118,15 @@ The installer creates a profile in `~/.config/troublemaker/tui.json` and a comma
 | `MOM_EMAIL_TOOLS_TOKEN` | email:webhook | Token for email send API |
 | `MOM_EMAIL_SEND_URL` | email:webhook | Email send endpoint (default: `https://tinyfat.com/api/email/send`) |
 | `MOM_HTTP_PORT` | — | Gateway port override (same as `--port`) |
+
+### Claude Code CLI Models
+
+An existing Claude Code login can provide subscription-backed inference through
+`claude -p`. Troublemaker never performs this login itself. After the resident
+service user runs `claude auth login`, `/model` exposes
+`claude-cli/{haiku,sonnet,opus,fable}` and honors that user's Claude JSON
+settings. See [docs/claude-cli-backend.md](docs/claude-cli-backend.md) for the
+session, permission, delivery, and security contract.
 
 ## Data Directory
 
