@@ -5,12 +5,14 @@ import {
 	collectSlackThreadMessages,
 	collectSlackThreadMessagesFromLog,
 	collectThreadMessages,
+	createReadThreadTool,
 	formatSlackThreadTranscript,
 	formatThreadTranscript,
 	parseSlackThreadTarget,
 } from "../src/tools/read-thread.js";
 import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
 import type { PlatformAdapter } from "../src/adapters/types.js";
+import { Check } from "typebox/value";
 
 let passed = 0;
 let failed = 0;
@@ -28,6 +30,16 @@ function assert(condition: boolean, msg: string) {
 const workingDir = mkdtempSync(join(tmpdir(), "tm-read-thread-"));
 
 try {
+	const readThreadTool = createReadThreadTool(workingDir);
+	assert(!Check(readThreadTool.parameters, {
+		target: "slack:C0AN1GL51K7:1779777000.000100",
+	}), "read_thread rejects calls without a visible label");
+	assert(Check(readThreadTool.parameters, {
+		label: "Reading the deploy QA thread",
+		show: true,
+		target: "slack:C0AN1GL51K7:1779777000.000100",
+	}), "read_thread accepts a human-readable label and optional show flag");
+
 	const rows = [
 		{
 			date: "2026-05-26T08:00:00.000Z",

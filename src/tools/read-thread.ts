@@ -377,6 +377,8 @@ function emailRecordToThreadMessage(record: EmailThreadLedgerRecord): Conversati
 
 export function createReadThreadTool(workingDir: string, adapters: PlatformAdapter[] = []): AgentTool<any> {
 	const schema = Type.Object({
+		label: Type.String({ description: "Brief description of the conversation you're reading and why (shown to user)" }),
+		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..." }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
 	});
