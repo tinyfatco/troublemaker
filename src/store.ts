@@ -110,7 +110,8 @@ export class ChannelStore {
 
 		// Mark as logged and schedule cleanup after 60 seconds
 		this.recentlyLogged.set(dedupeKey, Date.now());
-		setTimeout(() => this.recentlyLogged.delete(dedupeKey), 60000);
+		const cleanupTimer = setTimeout(() => this.recentlyLogged.delete(dedupeKey), 60000);
+		cleanupTimer.unref();
 
 		const logPath = join(this.workingDir, "log.jsonl");
 

@@ -7,6 +7,7 @@ import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
 import { createSpeakTool } from "./speak.js";
 import { createWriteTool } from "./write.js";
+import { enforceRequiredToolLabels } from "./tool-label.js";
 
 export { setUploadFunction } from "./attach.js";
 export { createSelfConfigureTool } from "./self-configure.js";
@@ -16,14 +17,14 @@ export { createSearchToolsTool } from "./search-tools.js";
 
 export { createReadThreadTool } from "./read-thread.js";
 export function createMomTools(executor: Executor, workspaceDir = process.cwd()): AgentTool<any>[] {
-	return [
+	return enforceRequiredToolLabels([
 		createReadTool(executor),
 		createBashTool(executor),
 		createEditTool(executor),
 		createWriteTool(executor),
 		createSpeakTool(workspaceDir),
 		attachTool,
-	];
+	]);
 }
 
 export function createHostTools(host: Pick<HostServices, "executor">): AgentTool<any>[] {

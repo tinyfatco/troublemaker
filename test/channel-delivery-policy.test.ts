@@ -9,6 +9,7 @@ const workingDir = mkdtempSync(join(tmpdir(), "tm-channel-policy-"));
 try {
 	const defaults = new MomSettingsManager(join(workingDir, "empty"));
 	assert.equal(defaults.getVerbose("C1234567890", "slack"), "messages-only", "Slack keeps its safe default without config");
+	assert.equal(defaults.getVerbose("abcdefghijklmnopqrstuvwx12", "mattermost"), "messages-only", "Mattermost keeps its safe default without config");
 	assert.equal(defaults.getVerbose("8389147137", "telegram"), "messages-only", "Telegram keeps its safe default without config");
 	assert.equal(defaults.getVerbose("1443881334165733493", "discord"), "messages-only", "Discord keeps its safe default without config");
 	assert.equal(defaults.getVerbose("email-alex_example_com", "email"), "messages-only", "Email keeps its safe default without config");
@@ -65,6 +66,7 @@ try {
 	assert.equal(globallyVerbose.getSlackToolStreamWindowMinutes(), 5, "Slack tool-stream window can be changed durably");
 
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids retain the send_message-only default policy");
+	assert.equal(isSendMessageOnlyPlatform("abcdefghijklmnopqrstuvwx12"), true, "Mattermost channel ids infer the send_message-only policy");
 	assert.equal(isSendMessageOnlyPlatform("form-abc123"), false, "Form channels do not infer send_message-only policy");
 	assert.equal(isSendMessageOnlyPlatform("web", "web"), false, "Web is not send_message-only");
 

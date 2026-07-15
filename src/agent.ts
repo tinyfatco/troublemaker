@@ -37,6 +37,7 @@ import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js
 import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
@@ -346,11 +347,11 @@ function createRunner(
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
-	const tools = [
+	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
 		createSearchToolsTool(() => toolSearchRegistry.current),
-	];
+	]);
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
 	const systemPrompt = "Initializing...";
@@ -420,6 +421,14 @@ function createRunner(
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [tinyfatDomainsExtension],
+		extensionsOverride: (base) => {
+			for (const extension of base.extensions) {
+				for (const registered of extension.tools.values()) {
+					enforceRequiredToolLabel(registered.definition as any);
+				}
+			}
+			return base;
+		},
 		noExtensions: true,
 		noSkills: true,
 		noPromptTemplates: true,

@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { Check, Errors } from "typebox/value";
 import * as log from "./log.js";
+import { enforceRequiredToolLabels } from "./tools/tool-label.js";
 import {
 	type ToolOutputEvent,
 	withToolOutputStream,
@@ -87,7 +88,8 @@ async function emitToolEvent(
 }
 
 function createProtocolServer(options: ClaudeCliMcpBridgeOptions): McpProtocolServer {
-	const toolsByName = new Map(options.tools.map((tool) => [tool.name, tool]));
+	const tools = enforceRequiredToolLabels(options.tools);
+	const toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
 	const server = new McpProtocolServer(
 		{ name: "troublemaker", version: "1.0.0" },
 		{
@@ -99,7 +101,7 @@ function createProtocolServer(options: ClaudeCliMcpBridgeOptions): McpProtocolSe
 	);
 
 	server.setRequestHandler(ListToolsRequestSchema, async () => ({
-		tools: options.tools.map((tool) => ({
+		tools: tools.map((tool) => ({
 			name: tool.name,
 			description: tool.description || tool.name,
 			inputSchema: serializeToolParameters(tool.parameters) as any,

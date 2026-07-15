@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import { enforceRequiredToolLabels } from "./tool-label.js";
 
 const DEFAULT_BRIEFING_RECENT_LIMIT = 10;
 const DEFAULT_BRIEFING_MAX_CHARS = 4_000;
@@ -29,7 +30,7 @@ export interface ContextSearchMatch {
 }
 
 export function createRealtimeContextTools(workingDir: string): AgentTool<any>[] {
-	return [
+	return enforceRequiredToolLabels([
 		{
 			name: "get_context_briefing",
 			label: "get_context_briefing",
@@ -66,7 +67,7 @@ export function createRealtimeContextTools(workingDir: string): AgentTool<any>[]
 				};
 			},
 		},
-	];
+	]);
 }
 
 export function buildContextBriefing(

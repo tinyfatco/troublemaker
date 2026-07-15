@@ -13,6 +13,7 @@ import { TelegramWebhookAdapter } from "../../adapters/telegram-webhook.js";
 import { VoiceAdapter } from "../../adapters/voice.js";
 import { WebAdapter } from "../../adapters/web.js";
 import { McpAdapter } from "../../adapters/mcp.js";
+import { MattermostSocketAdapter } from "../../adapters/mattermost-socket.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
 import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
 import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
@@ -42,6 +43,7 @@ import { McpBridge } from "../../mcp-client/bridge.js";
 import { getAssistantSpeechGuardState } from "../../audio-feedback-guard.js";
 import { createHostBashRoute, createHostToolDefinitionsRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
 import { createMomTools } from "../../tools/index.js";
+import { enforceRequiredToolLabels } from "../../tools/tool-label.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
 import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
@@ -65,10 +67,15 @@ function isDiscordSnowflake(id: string): boolean {
 	return /^\d{17,20}$/.test(id);
 }
 
+function isMattermostId(id: string): boolean {
+	return /^[a-z0-9]{26}$/.test(id);
+}
+
 function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): string {
 	for (const adapter of adaptersList) {
 		const ch = adapter.getChannel(channelId);
 		if (ch) {
+			if (adapter.name === "mattermost" || isMattermostId(channelId)) return `mattermost:${ch.name}`;
 			if (/^[CDG]/.test(channelId)) return `slack:#${ch.name}`;
 			if (isDiscordSnowflake(channelId)) return `discord:#${ch.name}`;
 			if (/^-?\d+$/.test(channelId)) return `telegram:${ch.name}`;
@@ -83,6 +90,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	}
 	// Fallback for unknown channels
 	if (channelId === "heartbeat") return `heartbeat:heartbeat`;
+	if (isMattermostId(channelId)) return `mattermost:${channelId}`;
 	if (/^[CDG]/.test(channelId)) return `slack:${channelId}`;
 	if (isDiscordSnowflake(channelId)) return `discord:${channelId}`;
 	if (/^-?\d+$/.test(channelId)) return `telegram:${channelId}`;
@@ -185,6 +193,9 @@ function parseArgs(): ParsedArgs {
 			// intentionally not exposed to the container.
 			adapters.push("slack:webhook");
 		}
+		if (process.env.MOM_MATTERMOST_URL && process.env.MOM_MATTERMOST_BOT_TOKEN) {
+			adapters.push("mattermost");
+		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
 			// External orchestrator (crawdad-cf) signals "I manage the webhook URL
 			// and verify upstream" via MOM_SKIP_WEBHOOK_REGISTRATION. In that case
@@ -255,9 +266,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,mattermost,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, mattermost (=mattermost:socket), telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
 	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
@@ -445,6 +456,9 @@ function createAdapter(name: string): AdapterWithHandler {
 	const allowedDmUserIds = process.env.MOM_SLACK_ALLOWED_DM_USERS === undefined
 		? undefined
 		: process.env.MOM_SLACK_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+	const allowedMattermostDmUsers = process.env.MOM_MATTERMOST_ALLOWED_DM_USERS === undefined
+		? undefined
+		: process.env.MOM_MATTERMOST_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
 
 	switch (name) {
 		case "slack":
@@ -468,6 +482,25 @@ function createAdapter(name: string): AdapterWithHandler {
 			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET || "";
 			const store = new ChannelStore({ workingDir, botToken });
 			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
+		}
+		case "mattermost":
+		case "mattermost:socket": {
+			const url = process.env.MOM_MATTERMOST_URL;
+			const botToken = process.env.MOM_MATTERMOST_BOT_TOKEN;
+			if (!url || !botToken) {
+				console.error("Missing env: MOM_MATTERMOST_URL, MOM_MATTERMOST_BOT_TOKEN");
+				process.exit(1);
+			}
+			const store = new ChannelStore({ workingDir, botToken });
+			return new MattermostSocketAdapter({
+				url,
+				botToken,
+				workingDir,
+				store,
+				pulse,
+				allowedDmUsers: allowedMattermostDmUsers,
+				onAmbientMessage: handleAmbientMessage,
+			});
 		}
 		case "telegram":
 		case "telegram:polling": {
@@ -547,7 +580,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			});
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'phone-messaging:webhook', 'form:webhook', 'web', 'mcp', or 'voice'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'mattermost', 'mattermost:socket', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'phone-messaging:webhook', 'form:webhook', 'web', 'mcp', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -1128,7 +1161,7 @@ function realtimeHostTools() {
 			.filter((tool) => tool.name !== "speak")
 			.map((tool) => [tool.name, tool] as const),
 	);
-	return Array.from(byName.values());
+	return enforceRequiredToolLabels(Array.from(byName.values()));
 }
 
 gateway.register("/host/tools/bash", createHostBashRoute({
@@ -1717,7 +1750,7 @@ To change these, edit \`settings.json\` directly.
 - Keep this file short — it's included in every heartbeat prompt.
 - If you clear this file (leave it empty), heartbeats will be skipped entirely.
 - Use \`send_message\` with an explicit target to reach out on email/Telegram/Slack/Discord if something needs attention.
-- Use \`yield_no_action\` if nothing needs doing — the quiet is recorded.
+- Use \`yield_no_action\` if nothing needs doing ��� the quiet is recorded.
 - You can update this file yourself to evolve your own periodic behavior.
 `, "utf-8");
 		log.logInfo("Seeded HEARTBEAT.md");

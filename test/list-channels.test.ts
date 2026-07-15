@@ -55,6 +55,15 @@ try {
 			isBot: false,
 		},
 		{
+			date: "2026-05-26T08:02:30.000Z",
+			ts: "zyxwvutsrqponmlkjihgfedc21",
+			threadTs: "zyxwvutsrqponmlkjihgfedc21",
+			channel: "mattermost:agents",
+			channelId: "abcdefghijklmnopqrstuvwx12",
+			text: "Mattermost migration thread",
+			isBot: false,
+		},
+		{
 			date: "2026-05-26T08:03:00.000Z",
 			channel: "telegram:DM:Alex",
 			channelId: "1234567890",
@@ -153,6 +162,8 @@ try {
 	const combinedTable = formatChannelTable(channels, combinedThreads, emailThreads, phoneConversations);
 
 	assert(channels.some((c) => c.adapter === "slack" && c.id === "C0AN1GL51K7"), "channel list still includes Slack channel target");
+	assert(channels.some((c) => c.adapter === "mattermost" && c.id === "abcdefghijklmnopqrstuvwx12"), "channel list includes Mattermost channel targets");
+	assert(table.includes("`mattermost:abcdefghijklmnopqrstuvwx12`"), "formatted output uses an explicit Mattermost send target");
 	assert(threads.length === 2, "two Slack thread roots stay distinct");
 	assert(threads.every((t) => t.source === "log"), "log-discovered thread targets are labeled as local log");
 	assert(threads.some((t) => t.sendTarget === "slack:C0AN1GL51K7:1779777000.000100"), "first thread exposes exact send target");

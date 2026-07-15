@@ -31,6 +31,8 @@ import type {
 	UserInfo,
 } from "./types.js";
 
+const mcpToolLabelSchema = z.string().trim().min(1, "label must not be blank").describe("Brief, safe, human-readable description of what this tool call is doing");
+
 interface PhoneGroupMessageAdapter extends PlatformAdapter {
 	postMessageToRecipients(channel: string, text: string, recipients: string[], attachments?: Array<{ filePath: string; filename: string }>): Promise<string>;
 }
@@ -164,7 +166,7 @@ export class McpAdapter implements PlatformAdapter {
 			"bash",
 			{
 				description: "Run a shell command on your TinyFat computer. Returns stdout/stderr.",
-				inputSchema: { command: z.string().describe("Shell command to execute") },
+				inputSchema: { label: mcpToolLabelSchema, command: z.string().describe("Shell command to execute") },
 			},
 			async ({ command }: { command: string }) => {
 				log.logInfo(`[mcp] bash: ${command.substring(0, 100)}`);
@@ -197,6 +199,7 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description: "Read the contents of a file. Use offset/limit for large files.",
 				inputSchema: {
+					label: mcpToolLabelSchema,
 					path: z.string().describe("Path to the file to read (relative or absolute)"),
 					offset: z.number().optional().describe("Line number to start reading from (1-indexed)"),
 					limit: z.number().optional().describe("Maximum number of lines to read"),
@@ -246,6 +249,7 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
 				inputSchema: {
+					label: mcpToolLabelSchema,
 					path: z.string().describe("Path to the file to write (relative or absolute)"),
 					content: z.string().describe("Content to write to the file"),
 				},
@@ -273,6 +277,7 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description: "Edit a file by replacing exact text. The old_text must match exactly one occurrence (including whitespace).",
 				inputSchema: {
+					label: mcpToolLabelSchema,
 					path: z.string().describe("Path to the file to edit (relative or absolute)"),
 					old_text: z.string().describe("Exact text to find and replace (must match exactly)"),
 					new_text: z.string().describe("New text to replace the old text with"),
@@ -322,12 +327,13 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description:
 					"Send a message on the agent's behalf to one of its connected channels " +
-					"(Telegram, Slack, Discord, Email, SMS/iMessage). The required target determines routing: " +
+					"(Telegram, Slack, Mattermost, Discord, Email, SMS/iMessage). The required target determines routing: " +
 					"discord:<17-20 digit ID> or raw 17-20 digit snowflake → Discord, shorter numeric → Telegram, " +
-					"C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, email-thread:<id> → existing Email thread, email-{address} → Email, phone-{hash} → SMS/iMessage conversation. The send appears in the agent's " +
+					"C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, mattermost:<channel>[:<root>] → Mattermost channel/thread, email-thread:<id> → existing Email thread, email-{address} → Email, phone-{hash} → SMS/iMessage conversation. The send appears in the agent's " +
 					"awareness stream but does NOT trigger a run. Use list_channels to discover valid IDs.",
 				inputSchema: {
-					target: z.string().describe("Required target (discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-thread:<id> for existing Email threads, email-{addr} for Email, phone-{hash} for SMS/iMessage conversations)"),
+					label: mcpToolLabelSchema,
+					target: z.string().describe("Required target (mattermost:<channel>[:<root>] for Mattermost, discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-thread:<id> for existing Email threads, email-{addr} for Email, phone-{hash} for SMS/iMessage conversations)"),
 					text: z.string().describe("Message text to send"),
 					subject: z.string().optional().describe("Subject line (email only)"),
 					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
@@ -339,7 +345,7 @@ export class McpAdapter implements PlatformAdapter {
 
 				if (!target.trim()) {
 					return {
-						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as a channel ID, email-thread:<id>, email-user@example.com, phone-..., or slack:<channel>:<thread_ts>." }],
+						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as mattermost:<channel>[:<root>], slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-...." }],
 						isError: true,
 					};
 				}
@@ -347,7 +353,7 @@ export class McpAdapter implements PlatformAdapter {
 				const resolved = resolveMessageTarget(target.trim(), this.peerAdapters);
 				if (!resolved) {
 					return {
-						content: [{ type: "text" as const, text: `No adapter found for target "${target}". Valid patterns: discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), slack:<channel>:<thread_ts> (Slack thread), email-thread:<id> (existing Email thread), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
+						content: [{ type: "text" as const, text: `No adapter found for target "${target}". Valid patterns: mattermost:<channel>[:<root>] (Mattermost), discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), slack:<channel>:<thread_ts> (Slack thread), email-thread:<id> (existing Email thread), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
 						isError: true,
 					};
 				}
@@ -430,7 +436,7 @@ export class McpAdapter implements PlatformAdapter {
 					"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. Uses Slack API " +
 					"for live Slack thread discovery when available, with log.jsonl/ledgers as durable fallback for all adapters. " +
 					"Returns markdown tables of channels and concrete conversation send targets. Use slack:<channel>:<thread_ts>, email-thread:<id>, or phone-... targets returned here with send_message when choosing among conversations.",
-				inputSchema: {},
+				inputSchema: { label: mcpToolLabelSchema },
 			},
 			async () => {
 				const channels = collectChannelsFromLog(this.workingDir);
@@ -459,17 +465,18 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description:
 					"Read the transcript for a conversation target returned by list_channels, " +
-					"such as slack:<channel>:<thread_ts>, email-thread:<id>, or phone-.... Falls back to log.jsonl/ledgers when live API access is unavailable. " +
+					"such as mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-.... Falls back to APIs, log.jsonl, and ledgers when live access is unavailable. " +
 					"Use this to distinguish similar conversations before send_message.",
 				inputSchema: {
-					target: z.string().describe("Conversation target, e.g. slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..."),
+					label: mcpToolLabelSchema,
+					target: z.string().describe("Conversation target, e.g. mattermost:<channel>:<root>, slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..."),
 					limit: z.number().optional().describe("Maximum messages to return, default 40, max 100"),
 				},
 			},
 			async ({ target, limit }) => {
 				const result = await collectThreadMessages(this.workingDir, target, this.peerAdapters, limit);
 				if (!result) {
-					return { content: [{ type: "text" as const, text: `Invalid conversation target "${target}". Expected slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....` }], isError: true };
+					return { content: [{ type: "text" as const, text: `Invalid conversation target "${target}". Expected mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....` }], isError: true };
 				}
 				log.logInfo(`[mcp] read_thread: ${target} (${result.messages.length} messages, source=${result.source})`);
 				this.logToFile({

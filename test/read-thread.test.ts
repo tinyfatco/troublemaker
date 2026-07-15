@@ -2,12 +2,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+	collectMattermostThreadMessages,
 	collectSlackThreadMessages,
 	collectSlackThreadMessagesFromLog,
 	collectThreadMessages,
 	createReadThreadTool,
 	formatSlackThreadTranscript,
 	formatThreadTranscript,
+	parseMattermostThreadTarget,
 	parseSlackThreadTarget,
 } from "../src/tools/read-thread.js";
 import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
@@ -40,6 +42,9 @@ try {
 		target: "slack:C0AN1GL51K7:1779777000.000100",
 	}), "read_thread accepts a human-readable label and optional show flag");
 
+	const mattermostChannel = "abcdefghijklmnopqrstuvwx12";
+	const mattermostRoot = "zyxwvutsrqponmlkjihgfedc21";
+	const mattermostReply = "bcdefghijklmnopqrstuvwxy34";
 	const rows = [
 		{
 			date: "2026-05-26T08:00:00.000Z",
@@ -122,6 +127,26 @@ try {
 	writeFileSync(join(workingDir, "log.jsonl"), [
 		...rows,
 		{
+			date: "2026-05-26T10:30:00.000Z",
+			ts: mattermostRoot,
+			threadTs: mattermostRoot,
+			channel: "mattermost:agents",
+			channelId: mattermostChannel,
+			displayName: "Alex",
+			text: "Mattermost migration root",
+			isBot: false,
+		},
+		{
+			date: "2026-05-26T10:31:00.000Z",
+			ts: mattermostReply,
+			threadTs: mattermostRoot,
+			channel: "mattermost:agents",
+			channelId: mattermostChannel,
+			userName: "batman",
+			text: "Mattermost migration reply",
+			isBot: true,
+		},
+		{
 			date: "2026-05-26T11:00:00.000Z",
 			ts: "2026-05-26T11:00:00.000Z",
 			channel: "phone:sms/group-site-team",
@@ -143,6 +168,8 @@ try {
 
 	assert(parseSlackThreadTarget("slack:C0AN1GL51K7:1779777000.000100")?.channelId === "C0AN1GL51K7", "valid Slack thread target parses");
 	assert(parseSlackThreadTarget("C0AN1GL51K7") === null, "plain Slack channel is not a thread target");
+	assert(parseMattermostThreadTarget(`mattermost:${mattermostChannel}:${mattermostRoot}`)?.threadTs === mattermostRoot, "valid Mattermost thread target parses");
+	assert(parseMattermostThreadTarget(`mattermost:${mattermostChannel}`) === null, "Mattermost channel without a root is not a thread target");
 
 	const first = collectSlackThreadMessagesFromLog(workingDir, "slack:C0AN1GL51K7:1779777000.000100");
 	const second = collectSlackThreadMessagesFromLog(workingDir, "slack:C0AN1GL51K7:1779777100.000300");
@@ -202,6 +229,39 @@ try {
 	assert(apiResult?.source === "slack-api", "read_thread prefers live Slack API transcript when available");
 	assert(apiResult?.messages.some((m) => m.text.includes("API-only reply")), "Slack API transcript can include messages not present in local log");
 	assert(formatSlackThreadTranscript(apiResult!).includes("Source: Slack API"), "formatted API transcript shows Slack API source");
+
+	const mattermostApiAdapter = {
+		name: "mattermost",
+		readThread: async (channel: string, threadTs: string) => [
+			{
+				date: "2026-05-26T10:30:00.000Z",
+				ts: threadTs,
+				threadTs,
+				channelId: channel,
+				channelName: "agents",
+				sender: "Alex",
+				text: "Authoritative Mattermost root",
+				isRoot: true,
+				isBot: false,
+			},
+		],
+	} as unknown as PlatformAdapter;
+	const mattermostResult = await collectMattermostThreadMessages(
+		workingDir,
+		`mattermost:${mattermostChannel}:${mattermostRoot}`,
+		[mattermostApiAdapter],
+	);
+	assert(mattermostResult?.source === "mattermost-api", "read_thread prefers live Mattermost API transcript when available");
+	assert(mattermostResult?.messages[0]?.text.includes("Authoritative Mattermost"), "Mattermost API transcript is preserved");
+	assert(formatThreadTranscript(mattermostResult!).includes("Mattermost thread"), "generic formatter labels Mattermost threads");
+
+	const mattermostFallback = await collectMattermostThreadMessages(
+		workingDir,
+		`mattermost:${mattermostChannel}:${mattermostRoot}`,
+		[],
+	);
+	assert(mattermostFallback?.source === "log", "Mattermost transcript falls back to the local log");
+	assert(mattermostFallback?.messages.length === 2, "Mattermost log fallback keeps root and replies together");
 
 	const emailTarget = collectEmailThreadListings(workingDir)[0]?.sendTarget;
 	assert(Boolean(emailTarget), "email thread target is discoverable for read_thread");

@@ -1,6 +1,6 @@
 # Troublemaker
 
-An AI agent runtime with multi-platform adapters. Connects to Slack, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
+An AI agent runtime with multi-platform adapters. Connects to Slack, Mattermost, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
 
 Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
 
@@ -12,7 +12,7 @@ Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://m
 
 When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
 
-**For each conversation** (Slack channel, Telegram chat, email thread), the agent maintains:
+**For each conversation** (Slack or Mattermost channel, Telegram chat, email thread), the agent maintains:
 - **Persistent memory** — `MEMORY.md` files (global + per-channel) loaded into every prompt
 - **Full history** — `log.jsonl` with searchable message archive, `context.jsonl` for the LLM window
 - **Custom tools** — Skills the agent writes and reuses across sessions
@@ -37,7 +37,7 @@ Health check ─────► │  GET  /health            │
 
 All adapters share one HTTP server with path-based routing. The gateway starts first, then adapters initialize independently — if one adapter fails to start, the others keep working.
 
-For always-on deployments (VPS, Docker), Slack Socket Mode and Telegram polling adapters are also available — no inbound HTTP required.
+For always-on deployments (VPS, Docker), Slack Socket Mode, Mattermost WebSocket, and Telegram polling adapters are also available — no inbound HTTP required.
 
 ## Quick Start
 
@@ -67,6 +67,7 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 |---------|------|-------------------|----------|
 | `slack` / `slack:socket` | Outbound WebSocket | `MOM_SLACK_APP_TOKEN`, `MOM_SLACK_BOT_TOKEN` | Always-on (VPS, Docker) |
 | `slack:webhook` | Inbound HTTP | `MOM_SLACK_BOT_TOKEN`, `MOM_SLACK_SIGNING_SECRET` | Webhook-based |
+| `mattermost` / `mattermost:socket` | Outbound WebSocket + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN` | Self-hosted or managed Mattermost |
 | `telegram` / `telegram:polling` | Outbound polling | `MOM_TELEGRAM_BOT_TOKEN` | Always-on |
 | `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_SECRET` | Webhook-based |
 | `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN` | Webhook-based |
@@ -111,6 +112,9 @@ The installer creates a profile in `~/.config/troublemaker/tui.json` and a comma
 | `MOM_SLACK_APP_TOKEN` | slack:socket | Slack app-level token (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
+| `MOM_MATTERMOST_URL` | mattermost:* | Mattermost base URL, for example `https://mattermost.example.com` |
+| `MOM_MATTERMOST_BOT_TOKEN` | mattermost:* | Mattermost bot personal access token |
+| `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |
 | `MOM_TELEGRAM_BOT_TOKEN` | telegram:* | Telegram bot token from @BotFather |
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |

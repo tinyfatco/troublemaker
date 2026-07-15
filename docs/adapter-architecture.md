@@ -124,6 +124,14 @@ Each platform adapter supports multiple connection modes — one for always-on d
 
 Socket Mode and HTTP Events API are **mutually exclusive per Slack app** — you must choose one in the Slack admin console.
 
+### Mattermost
+
+| Mode | CLI flag | Env vars | Connection |
+|------|----------|----------|------------|
+| **WebSocket + REST** | `--adapter=mattermost` or `mattermost:socket` | `MOM_MATTERMOST_URL` + `MOM_MATTERMOST_BOT_TOKEN` | Outbound WebSocket events with REST sends, threads, edits, deletes, and file uploads. Always-on. |
+
+Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root_post_id>]` targets. `MOM_MATTERMOST_ALLOWED_DM_USERS` optionally limits DM invocation to comma-separated user IDs or usernames.
+
 ### Telegram
 
 | Mode | CLI flag | Env vars | Connection |
@@ -139,8 +147,9 @@ src/
 │   ├── types.ts          — PlatformAdapter, MomContext, MomEvent, MomHandler
 │   ├── slack-base.ts     — SlackBase abstract class (shared WebClient, metadata, backfill, context, logging)
 │   ├── slack-socket.ts   — SlackSocketAdapter (Socket Mode — outbound WebSocket)
-│   ├── slack-webhook.ts  — SlackWebhookAdapter (HTTP Events API — inbound HTTP)
-│   └── telegram.ts       — TelegramAdapter (polling + Bot API)
+│   ├── slack-webhook.ts       — SlackWebhookAdapter (HTTP Events API — inbound HTTP)
+│   ├── mattermost-socket.ts   — MattermostSocketAdapter (outbound WebSocket + REST)
+│   └── telegram.ts            — TelegramAdapter (polling + Bot API)
 ├── agent.ts              — AgentRunner, system prompt, tool handling
 ├── main.ts               — CLI, adapter factory, handler, channel state
 ├── events.ts             — Scheduled event watcher

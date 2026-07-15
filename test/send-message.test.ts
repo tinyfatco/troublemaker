@@ -76,7 +76,8 @@ async function run() {
 	const slack = makeAdapter("slack");
 	const email = makeAdapter("email");
 	const phone = makeAdapter("phone");
-	const adapters = [telegram.adapter, discord.adapter, slack.adapter, email.adapter, phone.adapter];
+	const mattermost = makeAdapter("mattermost");
+	const adapters = [telegram.adapter, discord.adapter, slack.adapter, mattermost.adapter, email.adapter, phone.adapter];
 
 	assertEqual(normalizeDiscordChannel(`discord:${snowflake}`), snowflake, "normalizes discord: snowflake");
 	assertEqual(normalizeDiscordChannel(`discord-${snowflake}`), snowflake, "normalizes discord- snowflake");
@@ -94,6 +95,14 @@ async function run() {
 	assertEqual(resolveAdapter(telegramId, adapters)?.name, "telegram", "shorter numeric ID still resolves to Telegram");
 	assertEqual(resolveMessageTarget(`discord:${snowflake}`, [telegram.adapter]), undefined, "discord target fails closed without Discord adapter");
 	assertEqual(resolveMessageTarget("slack:C1234567890:1710000000.123456", adapters)?.threadTs, "1710000000.123456", "slack thread target resolves thread timestamp");
+	const mattermostChannel = "abcdefghijklmnopqrstuvwx12";
+	const mattermostRoot = "zyxwvutsrqponmlkjihgfedc21";
+	const mattermostTarget = resolveMessageTarget(`mattermost:${mattermostChannel}:${mattermostRoot}`, adapters);
+	assertEqual(mattermostTarget?.adapter.name, "mattermost", "mattermost target resolves to Mattermost adapter");
+	assertEqual(mattermostTarget?.channel, mattermostChannel, "mattermost target preserves native channel ID");
+	assertEqual(mattermostTarget?.threadTs, mattermostRoot, "mattermost thread target resolves root post ID");
+	assertEqual(resolveMessageTarget(`mattermost:${mattermostChannel}`, adapters)?.threadTs, undefined, "mattermost channel target remains top-level");
+	assertEqual(resolveMessageTarget(`mattermost:${mattermostChannel}:${mattermostRoot}`, [slack.adapter]), undefined, "mattermost target fails closed without Mattermost adapter");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.adapter.name, "email", "email thread target resolves to Email adapter");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.channel, "email-thread:0123456789abcdef", "email thread target keeps thread channel for adapter resolution");
 	assert(isObsoleteSilentControlMessage("[SILENT]"), "detects exact obsolete silent marker");
@@ -156,6 +165,15 @@ async function run() {
 	assertEqual(slack.threadSent.length, 1, "tool sends slack thread targets through postInThread");
 	assertEqual(slack.threadSent[0]?.channel, "C1234567890", "slack thread target passes raw channel");
 	assertEqual(slack.threadSent[0]?.threadTs, "1710000000.123456", "slack thread target passes thread timestamp");
+
+	await (tool.execute as any)("call-mattermost-thread", {
+		label: "mattermost thread test",
+		target: `mattermost:${mattermostChannel}:${mattermostRoot}`,
+		text: "hello mattermost thread",
+	});
+	assertEqual(mattermost.threadSent.length, 1, "tool sends Mattermost thread targets through postInThread");
+	assertEqual(mattermost.threadSent[0]?.channel, mattermostChannel, "Mattermost thread target passes native channel");
+	assertEqual(mattermost.threadSent[0]?.threadTs, mattermostRoot, "Mattermost thread target passes root post ID");
 
 	await (tool.execute as any)("call-email-thread", {
 		label: "email thread test",

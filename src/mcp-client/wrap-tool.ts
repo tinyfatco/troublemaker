@@ -3,6 +3,7 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import * as log from "../log.js";
+import { requireNonblankToolLabel, requiredToolLabelSchema, stripToolPresentationArgs } from "../tools/tool-label.js";
 
 interface McpToolDef {
 	name: string;
@@ -251,7 +252,7 @@ function jsonSchemaToTypebox(schema: McpToolDef["inputSchema"]): TSchema {
 
 	// Pi requires a "label" parameter on all tools. `show` is local display
 	// metadata and must never be forwarded to the MCP server.
-	properties.label = Type.String({ description: "Brief description of what you're doing with this tool" });
+	properties.label = requiredToolLabelSchema("Brief description of what you're doing with this tool");
 	properties.show = Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." }));
 
 	return Type.Object(properties);
@@ -281,7 +282,8 @@ export function wrapMcpTool(
 			signal?: AbortSignal,
 			_onUpdate?: unknown,
 		): Promise<{ content: TextContent[]; details: undefined }> => {
-			const { label: _label, show: _show, ...toolArgs } = (params as Record<string, unknown>);
+			requireNonblankToolLabel(params, namespacedName);
+			const toolArgs = stripToolPresentationArgs(params);
 			const normalizedArgs = normalizePeekabooToolArgs(alias, tool.name, toolArgs, client, namespacedName);
 			log.logInfo(`[mcp-client] ${namespacedName}: ${JSON.stringify(normalizedArgs).substring(0, 200)}`);
 

@@ -15,6 +15,7 @@ import { parseEmailThreadTarget, readEmailThreadById, type EmailThreadLedgerReco
 import { displayNameForEntry, readLogEntries, type LogEntry } from "./list-channels.js";
 
 const SLACK_THREAD_TARGET_RE = /^slack:([CDG][A-Z0-9]+):(\d+\.\d+)$/i;
+const MATTERMOST_THREAD_TARGET_RE = /^mattermost:([a-z0-9]{26}):([a-z0-9]{26})$/;
 
 export interface SlackThreadTargetParts {
 	channelId: string;
@@ -44,7 +45,7 @@ export interface SlackThreadReadResult {
 }
 
 export interface ConversationThreadTargetParts {
-	platform: "slack" | "email" | "phone";
+	platform: "slack" | "mattermost" | "email" | "phone";
 	inputTarget: string;
 	label: string;
 }
@@ -63,7 +64,7 @@ export interface ConversationThreadMessage {
 export interface ConversationThreadReadResult {
 	target: ConversationThreadTargetParts;
 	messages: ConversationThreadMessage[];
-	source: "slack-api" | "log" | "email-ledger" | "phone-log";
+	source: "slack-api" | "mattermost-api" | "log" | "email-ledger" | "phone-log";
 	warning?: string;
 }
 
@@ -74,6 +75,16 @@ export function parseSlackThreadTarget(target: string): SlackThreadTargetParts |
 		channelId: match[1],
 		threadTs: match[2],
 		inputTarget: `slack:${match[1]}:${match[2]}`,
+	};
+}
+
+export function parseMattermostThreadTarget(target: string): SlackThreadTargetParts | null {
+	const match = target.trim().match(MATTERMOST_THREAD_TARGET_RE);
+	if (!match) return null;
+	return {
+		channelId: match[1],
+		threadTs: match[2],
+		inputTarget: `mattermost:${match[1]}:${match[2]}`,
 	};
 }
 
@@ -161,6 +172,70 @@ export async function collectSlackThreadMessages(
 	return collectSlackThreadMessagesFromLog(workingDir, target, limit);
 }
 
+export async function collectMattermostThreadMessages(
+	workingDir: string,
+	target: string,
+	adapters: PlatformAdapter[] = [],
+	limit = 40,
+): Promise<ConversationThreadReadResult | null> {
+	const parsed = parseMattermostThreadTarget(target);
+	if (!parsed) return null;
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
+	const fallback = (): ConversationThreadReadResult => {
+		const entries = readLogEntries(workingDir)
+			.filter((entry) => entry.channel?.startsWith("mattermost:")
+				&& entry.channelId === parsed.channelId
+				&& entry.ts
+				&& logEntryThreadTs(entry) === parsed.threadTs)
+			.sort((a, b) => (a.date || a.ts || "").localeCompare(b.date || b.ts || ""))
+			.slice(-boundedLimit);
+		const label = entries[0]?.channel?.slice("mattermost:".length) || parsed.channelId;
+		return {
+			target: { platform: "mattermost", inputTarget: parsed.inputTarget, label },
+			messages: entries.map((entry) => ({
+				date: entry.date || "",
+				ts: entry.ts || "",
+				sender: displayNameForEntry(entry),
+				text: normalizeText(entry.text),
+				isRoot: entry.ts === parsed.threadTs,
+				isBot: Boolean(entry.isBot),
+				directlyAddressed: entry.directlyAddressed,
+				sourceEventType: entry.sourceEventType,
+			})),
+			source: "log",
+		};
+	};
+
+	const mattermost = adapters.find((adapter) => adapter.name === "mattermost" && typeof adapter.readThread === "function");
+	if (!mattermost?.readThread) return fallback();
+	try {
+		const rawMessages = await mattermost.readThread(parsed.channelId, parsed.threadTs, boundedLimit);
+		return {
+			target: {
+				platform: "mattermost",
+				inputTarget: parsed.inputTarget,
+				label: rawMessages[0]?.channelName || parsed.channelId,
+			},
+			messages: rawMessages.map((message) => ({
+				date: message.date || "",
+				ts: message.ts,
+				sender: message.sender,
+				text: normalizeText(message.text),
+				isRoot: message.isRoot,
+				isBot: Boolean(message.isBot),
+				directlyAddressed: message.directlyAddressed,
+				sourceEventType: message.sourceEventType,
+			})),
+			source: "mattermost-api",
+		};
+	} catch (error) {
+		return {
+			...fallback(),
+			warning: `Mattermost API transcript read failed; using local log fallback: ${error instanceof Error ? error.message : String(error)}`,
+		};
+	}
+}
+
 export async function collectThreadMessages(
 	workingDir: string,
 	target: string,
@@ -169,6 +244,9 @@ export async function collectThreadMessages(
 ): Promise<ConversationThreadReadResult | null> {
 	const slack = await collectSlackThreadMessages(workingDir, target, adapters, limit);
 	if (slack) return slackToConversationThread(slack);
+
+	const mattermost = await collectMattermostThreadMessages(workingDir, target, adapters, limit);
+	if (mattermost) return mattermost;
 
 	const email = collectEmailThreadMessages(workingDir, target, limit);
 	if (email) return email;
@@ -295,9 +373,17 @@ export function formatSlackThreadTranscript(
 
 export function formatThreadTranscript(result: ConversationThreadReadResult): string {
 	const { target, messages, source, warning } = result;
-	const platformName = target.platform === "slack" ? "Slack thread" : target.platform === "email" ? "Email thread" : "Phone conversation";
+	const platformName = target.platform === "slack"
+		? "Slack thread"
+		: target.platform === "mattermost"
+			? "Mattermost thread"
+			: target.platform === "email"
+				? "Email thread"
+				: "Phone conversation";
 	const sourceLabel = source === "slack-api"
 		? "Slack API"
+		: source === "mattermost-api"
+			? "Mattermost API"
 		: source === "email-ledger"
 			? "email ledger"
 			: source === "phone-log"
@@ -379,7 +465,7 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of the conversation you're reading and why (shown to user)" }),
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
-		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..." }),
+		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. mattermost:<channel>:<root>, slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-..." }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
 	});
 
@@ -387,17 +473,17 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 		name: "read_thread",
 		label: "read_thread",
 		description:
-			"Read the transcript for a conversation target such as slack:<channel>:<thread_ts>, email-thread:<id>, or phone-..., with log/ledger fallback. " +
+			"Read the transcript for a conversation target such as mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-..., with API/log/ledger fallback. " +
 			"Use this after list_channels when several conversations are active and you need the nuance/context before choosing a send_message target.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
 			const { target, limit } = params as { target?: string; limit?: number };
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("read_thread requires a conversation target like slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
+				throw new Error("read_thread requires a conversation target like mattermost:<channel>:<root>, slack:C0AN1GL51K7:1779777014.658729, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
 			}
 			const result = await collectThreadMessages(workingDir, target, adapters, limit);
 			if (!result) {
-				throw new Error(`Invalid conversation target "${target}". Expected slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....`);
+				throw new Error(`Invalid conversation target "${target}". Expected mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....`);
 			}
 			return {
 				content: [{ type: "text" as const, text: formatThreadTranscript(result) }],

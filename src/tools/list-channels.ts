@@ -85,6 +85,9 @@ function sendTargetForChannel(channel: ChannelListing): string {
 	if (channel.adapter === "discord" && /^\d{17,20}$/.test(channel.id)) {
 		return `discord:${channel.id}`;
 	}
+	if (channel.adapter === "mattermost" && /^[a-z0-9]{26}$/.test(channel.id)) {
+		return `mattermost:${channel.id}`;
+	}
 	return channel.id;
 }
 
@@ -389,9 +392,9 @@ export function createListChannelsTool(workingDir: string, adapters: PlatformAda
 		description:
 			"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. " +
 			"Uses Slack API for recent Slack thread targets when available and log.jsonl as durable fallback. " +
-			"Reads channels from log.jsonl, so it covers all adapters (Telegram, Slack, Email, " +
+			"Reads channels from log.jsonl, so it covers all adapters (Telegram, Slack, Mattermost, Email, " +
 			"Discord, SMS/iMessage, etc.) and survives container restarts. Use this to discover valid " +
-			"send_message targets, including slack:<channel>:<thread_ts>, email-thread:<id>, and phone-... when choosing among conversations.",
+			"send_message targets, including mattermost:<channel>, slack:<channel>:<thread_ts>, email-thread:<id>, and phone-... when choosing among conversations.",
 		parameters: schema,
 		execute: async () => {
 			const channels = collectChannelsFromLog(workingDir);

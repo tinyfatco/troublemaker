@@ -6,6 +6,7 @@ import {
 	type BashToolInput,
 } from "../../core/tool-definitions.js";
 import type { RuntimeEventSink, WebTurnProjectContext } from "../../core/runtime-contract.js";
+import { enforceRequiredToolLabel } from "../../tools/tool-label.js";
 import type {
 	EdgeDeployPreviewInput,
 	EdgeManagedProjectBridge,
@@ -65,7 +66,7 @@ export function createEdgeBashTool(
 	hostBridge: EdgeHostBridge,
 	emit?: RuntimeEventSink,
 ): AgentTool<typeof bashToolSchema> {
-	return {
+	return enforceRequiredToolLabel<AgentTool<typeof bashToolSchema>>({
 		name: "bash",
 		label: "bash",
 		description: "Execute a bash command in the agent host container. In edge mode this wakes the host only when shell execution is required.",
@@ -99,14 +100,14 @@ export function createEdgeBashTool(
 			}
 			return { content: [{ type: "text", text }], details: { code: result.code } };
 		},
-	};
+	});
 }
 
 export function createEdgeDeployPreviewTool(
 	project: WebTurnProjectContext,
 	bridge: EdgeManagedProjectBridge,
 ): AgentTool<typeof deployPreviewToolSchema> {
-	return {
+	return enforceRequiredToolLabel<AgentTool<typeof deployPreviewToolSchema>>({
 		name: "deploy_preview",
 		label: "deploy preview",
 		description: [
@@ -126,13 +127,13 @@ export function createEdgeDeployPreviewTool(
 				details: result,
 			};
 		},
-	};
+	});
 }
 
 export function createEdgeReadFileTool(
 	bridge: EdgeWorkspaceBridge,
 ): AgentTool<typeof readFileToolSchema> {
-	return {
+	return enforceRequiredToolLabel<AgentTool<typeof readFileToolSchema>>({
 		name: "read",
 		label: "read",
 		description: [
@@ -153,13 +154,13 @@ export function createEdgeReadFileTool(
 				details: result,
 			};
 		},
-	};
+	});
 }
 
 export function createEdgeWriteFileTool(
 	bridge: EdgeWorkspaceBridge,
 ): AgentTool<typeof writeFileToolSchema> {
-	return {
+	return enforceRequiredToolLabel<AgentTool<typeof writeFileToolSchema>>({
 		name: "write",
 		label: "write",
 		description: [
@@ -178,13 +179,13 @@ export function createEdgeWriteFileTool(
 				details: result,
 			};
 		},
-	};
+	});
 }
 
 export function createEdgeEditFileTool(
 	bridge: EdgeWorkspaceBridge,
 ): AgentTool<typeof editFileToolSchema> {
-	return {
+	return enforceRequiredToolLabel<AgentTool<typeof editFileToolSchema>>({
 		name: "edit",
 		label: "edit",
 		description: [
@@ -203,5 +204,5 @@ export function createEdgeEditFileTool(
 				details: result,
 			};
 		},
-	};
+	});
 }
