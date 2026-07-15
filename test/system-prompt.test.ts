@@ -40,11 +40,13 @@ const claudeCliPrompt = buildSystemPrompt(
 	"format instructions",
 	{ id: "sonnet", provider: "claude-cli" },
 );
-assert(claudeCliPrompt.includes("Claude Code CLI agent"), "Claude CLI prompt identifies the native tool backend");
-assert(claudeCliPrompt.includes("user-level Claude configuration"), "Claude CLI prompt preserves resident user settings");
-assert(claudeCliPrompt.includes("not injected into this backend"), "Claude CLI prompt does not promise Troublemaker tools");
+assert(claudeCliPrompt.includes("built-in action tools are disabled"), "Claude CLI prompt identifies the MCP-only action boundary");
+assert(claudeCliPrompt.includes("only `ToolSearch` remains"), "Claude CLI prompt identifies the non-acting discovery exception");
+assert(claudeCliPrompt.includes("`troublemaker` MCP server"), "Claude CLI prompt identifies the runtime tool bridge");
+assert(claudeCliPrompt.includes("mcp__troublemaker__<tool_name>"), "Claude CLI prompt explains namespaced runtime tools");
+assert(claudeCliPrompt.includes("native `SendMessage`"), "Claude CLI prompt distinguishes the unrelated native team tool");
 assert(claudeCliPrompt.includes("Active runtime model: claude-cli/sonnet"), "Claude CLI prompt reports its exact model alias");
-assert(!claudeCliPrompt.includes("When a cross-channel message arrives mid-run, use `send_message`"), "Claude CLI prompt avoids unavailable cross-channel instructions");
+assert(claudeCliPrompt.includes("When a cross-channel message arrives mid-run, use `send_message`"), "Claude CLI prompt preserves cross-channel delivery guidance");
 
 const dockerWorkspacePath = createExecutor({ type: "docker", container: "test-container" }).getWorkspacePath("/host/data");
 const dockerPrompt = buildSystemPrompt(

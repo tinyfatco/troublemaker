@@ -37,7 +37,7 @@ import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
-import { withToolOutputStream } from "./tools/tool-output-stream.js";
+import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
@@ -48,6 +48,7 @@ import {
 	registerClaudeCliRuntimeAuth,
 	resetClaudeCliSession,
 } from "./claude-cli.js";
+import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -373,7 +374,13 @@ function createRunner(
 	if (initialThinkingLevel !== requestedInitialThinkingLevel) {
 		log.logInfo(`[thinking] Effective thinking ${requestedInitialThinkingLevel} -> ${initialThinkingLevel} for ${model.provider}/${model.id}`);
 	}
-	const claudeCliStream = createClaudeCliStream(workspaceDir);
+	let claudeCliToolEventHandler = async (_event: ClaudeCliRuntimeToolEvent): Promise<void> => {};
+	let claudeCliToolOutputHandler = (_event: ToolOutputEvent): void => {};
+	const claudeCliStream = createClaudeCliStream(workspaceDir, {
+		tools: () => tools,
+		onToolEvent: (event) => claudeCliToolEventHandler(event),
+		onToolOutput: (event) => claudeCliToolOutputHandler(event),
+	});
 	const streamFn: StreamFn = (streamModel, context, options) => {
 		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, options);
 		return isClaudeCliProvider(streamModel.provider)
@@ -792,6 +799,13 @@ function createRunner(
 			);
 		}
 	};
+	claudeCliToolEventHandler = eventHandler;
+	claudeCliToolOutputHandler = (event) => {
+		runState.liveSnapshot.appendToolOutput(event);
+		const entry = runState.liveSnapshot.current(true);
+		if (entry) runState.ctx?.emitContentBlock?.({ type: "assistant_snapshot", entry });
+		onActivity?.();
+	};
 
 	// Message length limit
 	const MAX_MESSAGE_LENGTH = 40000;
@@ -1047,12 +1061,7 @@ function createRunner(
 			const tPrompt = performance.now();
 			try {
 				acceptsSteering = true;
-				await withToolOutputStream((event) => {
-					runState.liveSnapshot.appendToolOutput(event);
-					const entry = runState.liveSnapshot.current(true);
-					if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
-					onActivity?.();
-				}, async () => {
+				await withToolOutputStream(claudeCliToolOutputHandler, async () => {
 					await currentSession.prompt(finalUserMessage, {
 						...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
 						streamingBehavior: "steer" as const,
@@ -1096,12 +1105,7 @@ function createRunner(
 					log.logInfo(`[gpt-steering] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
 						acceptsSteering = true;
-						await withToolOutputStream((event) => {
-							runState.liveSnapshot.appendToolOutput(event);
-							const entry = runState.liveSnapshot.current(true);
-							if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
-							onActivity?.();
-						}, async () => {
+						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
 							await currentSession.prompt(retryInstruction, {
 								streamingBehavior: "steer" as const,
 							});

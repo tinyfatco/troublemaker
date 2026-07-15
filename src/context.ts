@@ -373,29 +373,23 @@ export class MomSettingsManager {
 		const platformDefault: VerbosityLevel = isSendMessageOnlyPlatform(channelId, platform)
 			? "messages-only"
 			: true;
-		const ensureDeliverableForSelectedModel = (value: VerbosityLevel): VerbosityLevel => {
-			const provider = process.env.MOM_MODEL_PROVIDER || this.settings.defaultProvider;
-			return provider?.trim().toLowerCase() === "claude-cli" && value === "messages-only"
-				? true
-				: value;
-		};
 		const v = this.settings.verbose;
 		// Legacy bare boolean or "messages-only"
-		if (typeof v === "boolean" || v === "messages-only") return ensureDeliverableForSelectedModel(v);
+		if (typeof v === "boolean" || v === "messages-only") return v;
 		// No explicit config: preserve the safe platform default.
-		if (!v) return ensureDeliverableForSelectedModel(platformDefault);
+		if (!v) return platformDefault;
 		// Check a platform-wide value or a platform bucket with a channel override.
 		if (platform) {
 			const bucket = v[platform];
-			if (typeof bucket === "boolean" || bucket === "messages-only") return ensureDeliverableForSelectedModel(bucket);
+			if (typeof bucket === "boolean" || bucket === "messages-only") return bucket;
 			if (bucket && typeof bucket === "object") {
 				const overrides = bucket as Record<string, VerbosityLevel>;
-				if (channelId in overrides) return ensureDeliverableForSelectedModel(overrides[channelId]);
-				if ("default" in overrides) return ensureDeliverableForSelectedModel(overrides.default);
+				if (channelId in overrides) return overrides[channelId];
+				if ("default" in overrides) return overrides.default;
 			}
 		}
 		// Explicit global default overrides the platform default; otherwise preserve it.
-		return ensureDeliverableForSelectedModel(v.default ?? platformDefault);
+		return v.default ?? platformDefault;
 	}
 
 	setChannelVerbose(channelId: string, platform: string, value: VerbosityLevel | null): void {
