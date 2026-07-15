@@ -496,7 +496,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				verbose: verbosity,
 				toolStreaming,
 				workingStreamPresentation: settings.getSlackToolStreamPresentation(),
-				workingStreamBatchSize: settings.getSlackToolStreamBatchSize(),
+				workingStreamWindowMs: settings.getSlackToolStreamWindowMinutes() * 60_000,
 			},
 			{
 				onWorkingUpdate: (id) => {

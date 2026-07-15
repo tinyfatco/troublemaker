@@ -47,10 +47,10 @@ export interface TwoMessageConfig {
 	verbose?: VerbosityLevel;
 	/** In quiet modes, surface no tool labels, selected show:true labels, or all labels. */
 	toolStreaming?: ToolStreamingMode;
-	/** Keep one edited tool stream or segment it around deliberate sends. */
+	/** Keep one edited tool stream or split it at event-driven time boundaries. */
 	workingStreamPresentation?: WorkingStreamPresentation;
-	/** Surfaced tool labels per working message when presentation is batched. */
-	workingStreamBatchSize?: number;
+	/** Rolling milliseconds per working message when presentation is split. */
+	workingStreamWindowMs?: number;
 }
 
 /**
@@ -82,7 +82,7 @@ export function createTwoMessageContext(
 	let finalMessageId: string | null = null;
 	let isWorking = true;
 	let hasSurfacedToolLabel = false;
-	let surfacedToolLabelsInSegment = 0;
+	let workingSegmentStartedAt: number | null = null;
 	let updatePromise = Promise.resolve();
 
 	// Chronological entries for the working message
@@ -185,7 +185,7 @@ export function createTwoMessageContext(
 		workingEntries.length = 0;
 		pendingText = null;
 		hasSurfacedToolLabel = false;
-		surfacedToolLabelsInSegment = 0;
+		workingSegmentStartedAt = null;
 		isWorking = true;
 		lastEditTime = 0;
 		editDirty = false;
@@ -227,15 +227,18 @@ export function createTwoMessageContext(
 						|| toolStreaming === "all"
 						|| (toolStreaming === "important" && options.show === true);
 					if (!surface) return;
-					const batchSize = config.workingStreamBatchSize ?? Number.POSITIVE_INFINITY;
-					if (config.workingStreamPresentation === "batched" && surfacedToolLabelsInSegment >= batchSize) {
+					const eventTime = Date.now();
+					const windowMs = config.workingStreamWindowMs ?? Number.POSITIVE_INFINITY;
+					if (config.workingStreamPresentation === "split"
+						&& workingSegmentStartedAt !== null
+						&& eventTime - workingSegmentStartedAt >= windowMs) {
 						await restartWorkingSegment();
 					}
+					workingSegmentStartedAt ??= eventTime;
 					if (verbose) await flushPendingText();
 					hasSurfacedToolLabel = true;
 					const label = text.replace(/^_/, "").replace(/_$/, "");
 					workingEntries.push(ops.formatStatus(label));
-					surfacedToolLabelsInSegment++;
 					await scheduleWorkingUpdate();
 					return;
 				}

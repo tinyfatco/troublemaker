@@ -75,14 +75,14 @@ try {
 	settings = readSettings(workingDir);
 	assert(condensedPresentation.newValue === "condensed", "Slack tool-stream presentation normalizes one-message language");
 	assert((settings.slack as any).toolStreamPresentation === "condensed", "condensed tool-stream presentation persists inside Slack settings");
-	const batchedPresentation = applySelfConfiguration(workingDir, "slack.toolStreamLayout", "grouped");
+	const splitPresentation = applySelfConfiguration(workingDir, "slack.toolStreamLayout", "grouped");
 	settings = readSettings(workingDir);
-	assert(batchedPresentation.newValue === "batched", "tool-stream layout alias normalizes grouped language");
-	assert((settings.slack as any).toolStreamPresentation === "batched", "batched tool-stream presentation replaces the prior value");
-	const batchSize = applySelfConfiguration(workingDir, "slack.tool_stream_group_size", "4");
+	assert(splitPresentation.newValue === "split", "tool-stream layout alias normalizes grouped language to split");
+	assert((settings.slack as any).toolStreamPresentation === "split", "split tool-stream presentation replaces the prior value");
+	const windowMinutes = applySelfConfiguration(workingDir, "slack.tool_stream_group_minutes", "4");
 	settings = readSettings(workingDir);
-	assert(batchSize.newValue === 4, "tool-stream group-size alias accepts a numeric string");
-	assert((settings.slack as any).toolStreamBatchSize === 4, "tool-stream batch size persists inside Slack settings");
+	assert(windowMinutes.newValue === 4, "tool-stream group-minutes alias accepts a numeric string");
+	assert((settings.slack as any).toolStreamWindowMinutes === 4, "tool-stream window persists inside Slack settings");
 	const nativeProgress = applySelfConfiguration(workingDir, "slack.nativeProgress", "on");
 	settings = readSettings(workingDir);
 	assert(nativeProgress.newValue === true, "native progress alias accepts natural booleans");
@@ -136,14 +136,14 @@ try {
 		applySelfConfiguration(workingDir, "slack.tool_stream_presentation", "maximum-jazz");
 		assert(false, "invalid Slack tool-stream presentation throws");
 	} catch (err) {
-		assert(err instanceof Error && err.message.includes("batched"), "invalid Slack tool-stream presentation explains accepted values");
+		assert(err instanceof Error && err.message.includes("split"), "invalid Slack tool-stream presentation explains accepted values");
 	}
 
 	try {
-		applySelfConfiguration(workingDir, "slack.tool_stream_batch_size", 1);
-		assert(false, "unsafe Slack tool-stream batch size throws");
+		applySelfConfiguration(workingDir, "slack.tool_stream_window_minutes", 0);
+		assert(false, "unsafe Slack tool-stream window throws");
 	} catch (err) {
-		assert(err instanceof Error && err.message.includes("2"), "invalid Slack tool-stream batch size explains its safe range");
+		assert(err instanceof Error && err.message.includes("1"), "invalid Slack tool-stream window explains its safe range");
 	}
 
 	try {

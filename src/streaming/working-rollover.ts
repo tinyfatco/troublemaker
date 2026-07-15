@@ -17,7 +17,7 @@ export interface WorkingRolloverToolCompletion {
 export function shouldRolloverWorkingAfterToolCompletion(
 	completion: WorkingRolloverToolCompletion,
 ): boolean {
-	if ((completion.workingStreamPresentation ?? "batched") !== "batched") return false;
+	if ((completion.workingStreamPresentation ?? "split") !== "split") return false;
 	if (completion.toolName !== "send_message" || completion.isError || !completion.activeReplyTarget) {
 		return false;
 	}

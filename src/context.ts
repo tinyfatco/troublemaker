@@ -53,21 +53,21 @@ export interface MomVerboseSettings {
 
 export type SlackResponsePlacement = "thread" | "channel";
 export type ToolStreamingMode = "off" | "important" | "all";
-export type WorkingStreamPresentation = "batched" | "condensed";
+export type WorkingStreamPresentation = "split" | "condensed";
 export type SlackToolStreamPresentation = WorkingStreamPresentation;
-export const DEFAULT_SLACK_TOOL_STREAM_BATCH_SIZE = 3;
-export const MIN_SLACK_TOOL_STREAM_BATCH_SIZE = 2;
-export const MAX_SLACK_TOOL_STREAM_BATCH_SIZE = 20;
+export const DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
+export const MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
+export const MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES = 60;
 
 export interface MomSlackSettings {
 	/** Place the whole inbound Slack turn in its thread or at channel top level. */
 	responsePlacement?: SlackResponsePlacement;
 	/** Surface safe tool labels while ordinary harness output remains quiet. */
 	toolStreaming?: ToolStreamingMode;
-	/** Keep one edited working message or segment it around deliberate sends. */
+	/** Keep one edited working message or split it at event-driven time boundaries. */
 	toolStreamPresentation?: SlackToolStreamPresentation;
-	/** Surfaced labels per edited working message in batched presentation. */
-	toolStreamBatchSize?: number;
+	/** Rolling minutes per edited working message in split presentation. */
+	toolStreamWindowMinutes?: number;
 	/** Render selected tool lifecycle with Slack's native streaming task UI. */
 	nativeProgress?: boolean;
 }
@@ -463,9 +463,10 @@ export class MomSettingsManager {
 	}
 
 	getSlackToolStreamPresentation(): SlackToolStreamPresentation {
-		// Batched keeps each group edited in place while occasionally creating a
-		// real Slack message that other ambient agents can observe.
-		return this.settings.slack?.toolStreamPresentation === "condensed" ? "condensed" : "batched";
+		// Split keeps each time window edited in place while occasionally creating
+		// a real Slack message that other ambient agents can observe. Any persisted
+		// legacy "batched" value intentionally migrates to this default.
+		return this.settings.slack?.toolStreamPresentation === "condensed" ? "condensed" : "split";
 	}
 
 	setSlackToolStreamPresentation(value: SlackToolStreamPresentation): void {
@@ -473,21 +474,21 @@ export class MomSettingsManager {
 		this.save();
 	}
 
-	getSlackToolStreamBatchSize(): number {
-		const value = this.settings.slack?.toolStreamBatchSize;
+	getSlackToolStreamWindowMinutes(): number {
+		const value = this.settings.slack?.toolStreamWindowMinutes;
 		return typeof value === "number"
 			&& Number.isInteger(value)
-			&& value >= MIN_SLACK_TOOL_STREAM_BATCH_SIZE
-			&& value <= MAX_SLACK_TOOL_STREAM_BATCH_SIZE
+			&& value >= MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES
+			&& value <= MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES
 			? value
-			: DEFAULT_SLACK_TOOL_STREAM_BATCH_SIZE;
+			: DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES;
 	}
 
-	setSlackToolStreamBatchSize(value: number): void {
-		if (!Number.isInteger(value) || value < MIN_SLACK_TOOL_STREAM_BATCH_SIZE || value > MAX_SLACK_TOOL_STREAM_BATCH_SIZE) {
-			throw new Error(`Slack tool stream batch size must be an integer from ${MIN_SLACK_TOOL_STREAM_BATCH_SIZE} to ${MAX_SLACK_TOOL_STREAM_BATCH_SIZE}.`);
+	setSlackToolStreamWindowMinutes(value: number): void {
+		if (!Number.isInteger(value) || value < MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES || value > MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES) {
+			throw new Error(`Slack tool stream window must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
 		}
-		this.settings.slack = { ...this.settings.slack, toolStreamBatchSize: value };
+		this.settings.slack = { ...this.settings.slack, toolStreamWindowMinutes: value };
 		this.save();
 	}
 

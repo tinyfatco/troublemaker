@@ -27,8 +27,8 @@ assert.equal(shouldRolloverWorkingAfterToolCompletion({
 	args: { target: activeReplyTarget },
 	result: delivered,
 	activeReplyTarget,
-	workingStreamPresentation: "batched",
-}), true, "batched presentation rolls after inline sends");
+	workingStreamPresentation: "split",
+}), true, "split presentation rolls after inline sends");
 
 assert.equal(shouldRolloverWorkingAfterToolCompletion({
 	toolName: "send_message",
