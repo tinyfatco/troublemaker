@@ -177,6 +177,15 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 		"messages-only",
 		"Claude CLI preserves Slack's send_message-only delivery boundary",
 	);
+	writeFileSync(
+		join(workspaceDir, "settings.json"),
+		JSON.stringify({ verbose: { default: true, slack: "messages-only" } }),
+	);
+	assert.equal(
+		new MomSettingsManager(workspaceDir).getVerbose("D123"),
+		"messages-only",
+		"channel-derived platform lookup honors the Slack verbosity bucket",
+	);
 	delete process.env.MOM_MODEL_PROVIDER;
 	delete process.env.MOM_MODEL_ID;
 
