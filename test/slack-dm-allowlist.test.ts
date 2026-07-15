@@ -65,6 +65,17 @@ try {
 	assert.equal(restricted.getChannel("D_DENIED"), undefined, "rejected DM does not enter channel metadata");
 	assert.equal(existsSync(join(workingDir, "log.jsonl")), false, "rejected DM is not written to the workspace log");
 
+	const unhandled: unknown[] = [];
+	const onUnhandled = (error: unknown) => { unhandled.push(error); };
+	process.on("unhandledRejection", onUnhandled);
+	await restrictedListener({
+		...dm("U_OTHER", "D_DENIED", "another denied message"),
+		ack: async () => { throw new Error("socket disconnected before acknowledgement"); },
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	process.off("unhandledRejection", onUnhandled);
+	assert.equal(unhandled.length, 0, "a rejected Socket Mode acknowledgement never becomes an unhandled rejection");
+
 	let allowedAck = 0;
 	await restrictedListener({
 		...dm("U_ALEX", "D_ALLOWED", "hello Batman"),

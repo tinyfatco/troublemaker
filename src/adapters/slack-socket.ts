@@ -12,6 +12,16 @@ export interface SlackSocketAdapterConfig extends SlackBaseConfig {
 	appToken: string;
 }
 
+function safelyAcknowledge(ack: () => unknown): void {
+	try {
+		void Promise.resolve(ack()).catch((error) => {
+			log.logWarning("Slack Socket Mode acknowledgement failed", error instanceof Error ? error.message : String(error));
+		});
+	} catch (error) {
+		log.logWarning("Slack Socket Mode acknowledgement failed", error instanceof Error ? error.message : String(error));
+	}
+}
+
 export class SlackSocketAdapter extends SlackBase {
 	private socketClient: SocketModeClient;
 
@@ -57,13 +67,13 @@ export class SlackSocketAdapter extends SlackBase {
 			}
 
 			if (e.channel.startsWith("D")) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			// Ignore own messages only
 			if (e.user === this.botUserId) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
@@ -92,22 +102,22 @@ export class SlackSocketAdapter extends SlackBase {
 				log.logInfo(
 					`[${e.channel}] Logged old message (pre-startup), not triggering: ${momEvent.text.substring(0, 30)}`,
 				);
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			if (this.handler.resolvePendingInput(e.channel, momEvent.text)) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			if (await this.handler.handleSlashCommand(momEvent, this)) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			if (momEvent.text.toLowerCase().trim() === "stop") {
-				ack();
+				safelyAcknowledge(ack);
 				void this.handler.handleStop(e.channel, this, momEvent).catch((err) => {
 					log.logWarning("Slack stop response failed", err instanceof Error ? err.message : String(err));
 				});
@@ -120,7 +130,7 @@ export class SlackSocketAdapter extends SlackBase {
 				this.getQueue(e.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 			}
 
-			ack();
+			safelyAcknowledge(ack);
 		});
 
 		// All messages (for logging) + DMs (for triggering) + ambient engagement
@@ -145,7 +155,7 @@ export class SlackSocketAdapter extends SlackBase {
 			// content never enters the agent workspace or awareness stream.
 			if (isDM && !this.acceptsDmFrom(userId)) {
 				log.logInfo(`[${e.channel}] Ignoring Slack DM from non-allowlisted user ${userId}`);
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
@@ -158,28 +168,28 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Ignore own messages only — bots are just participants
 			if (e.user === this.botUserId) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 			// Ignore subtypes other than file_share and bot_message
 			if (e.subtype !== undefined && e.subtype !== "file_share" && e.subtype !== "bot_message") {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 			// Need at least a user or bot_id
 			if (!e.user && !e.bot_id) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 			if (!e.text && (!e.files || e.files.length === 0)) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			const threadTs = isDM ? undefined : e.thread_ts ?? e.ts;
 
 			if (!isDM && isBotMention) {
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
@@ -209,23 +219,23 @@ export class SlackSocketAdapter extends SlackBase {
 
 			if (this.startupTs && e.ts < this.startupTs) {
 				log.logInfo(`[${e.channel}] Skipping old message (pre-startup): ${momEvent.text.substring(0, 30)}`);
-				ack();
+				safelyAcknowledge(ack);
 				return;
 			}
 
 			if (isDM) {
 				if (this.handler.resolvePendingInput(e.channel, momEvent.text)) {
-					ack();
+					safelyAcknowledge(ack);
 					return;
 				}
 
 				if (await this.handler.handleSlashCommand(momEvent, this)) {
-					ack();
+					safelyAcknowledge(ack);
 					return;
 				}
 
 				if (momEvent.text.toLowerCase().trim() === "stop") {
-					ack();
+					safelyAcknowledge(ack);
 					void this.handler.handleStop(e.channel, this, momEvent).catch((err) => {
 						log.logWarning("Slack stop response failed", err instanceof Error ? err.message : String(err));
 					});
@@ -242,7 +252,7 @@ export class SlackSocketAdapter extends SlackBase {
 				this.onAmbientMessage?.(e.channel, momEvent, this);
 			}
 
-			ack();
+			safelyAcknowledge(ack);
 		});
 	}
 }
