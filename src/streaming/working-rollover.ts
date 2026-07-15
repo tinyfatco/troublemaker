@@ -1,9 +1,12 @@
+import type { WorkingStreamPresentation } from "../context.js";
+
 export interface WorkingRolloverToolCompletion {
 	toolName: string;
 	isError: boolean;
 	args: unknown;
 	result: unknown;
 	activeReplyTarget?: string;
+	workingStreamPresentation?: WorkingStreamPresentation;
 }
 
 /**
@@ -14,6 +17,7 @@ export interface WorkingRolloverToolCompletion {
 export function shouldRolloverWorkingAfterToolCompletion(
 	completion: WorkingRolloverToolCompletion,
 ): boolean {
+	if ((completion.workingStreamPresentation ?? "batched") !== "batched") return false;
 	if (completion.toolName !== "send_message" || completion.isError || !completion.activeReplyTarget) {
 		return false;
 	}

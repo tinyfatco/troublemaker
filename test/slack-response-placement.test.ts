@@ -129,12 +129,37 @@ try {
 	const defaults = new TestSlackAdapter(workingDir);
 	const defaultContext = defaults.createContext(event(), {} as ChannelStore);
 	assert.equal(defaultContext.message.replyTarget, "slack:C123:1710000000.000001", "setting-free turn suggests its inbound thread for send_message");
+	assert.equal(defaultContext.workingStreamPresentation, "batched", "setting-free Slack uses edited event-driven batches");
 	await defaultContext.setTyping(true);
 	await defaultContext.respond("_→ Default routine label_", false, { show: false });
 	await defaultContext.respondInThread("default raw tool detail");
 	await defaultContext.sendFinalResponse("default ordinary harness final");
 	assert.equal(defaults.posted.length, 1, "setting-free messages-only Slack emits routine labels in default all mode");
 	assert.equal(defaults.posted[0]?.thread_ts, "1710000000.000001", "setting-free routine label stays in the inbound thread");
+
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { toolStreaming: "all", toolStreamPresentation: "batched", toolStreamBatchSize: 2 },
+	}));
+	const batched = new TestSlackAdapter(workingDir);
+	const batchedContext = batched.createContext(event(), {} as ChannelStore);
+	await batchedContext.respond("_→ First batched label_", false);
+	await batchedContext.respond("_→ Second batched label_", false);
+	assert.equal(batched.posted.length, 1, "labels within the configured batch keep editing one working message");
+	await batchedContext.respond("_→ Third batched label_", false);
+	assert.equal(batched.posted.length, 2, "the next real tool label opens a fresh working message after the batch fills");
+	assert.match(batched.posted[1]?.text || "", /Third batched label/, "the boundary event becomes the first label in the fresh batch");
+
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { toolStreaming: "all", toolStreamPresentation: "condensed", toolStreamBatchSize: 2 },
+	}));
+	const condensed = new TestSlackAdapter(workingDir);
+	const condensedContext = condensed.createContext(event(), {} as ChannelStore);
+	await condensedContext.respond("_→ First condensed label_", false);
+	await condensedContext.respond("_→ Second condensed label_", false);
+	await condensedContext.respond("_→ Third condensed label_", false);
+	assert.equal(condensed.posted.length, 1, "condensed presentation keeps editing one message beyond the configured batch size");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
@@ -215,10 +240,11 @@ try {
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: { slack: "messages-only" },
-		slack: { toolStreaming: "all" },
+		slack: { toolStreaming: "all", toolStreamPresentation: "condensed" },
 	}));
 	const chronological = new TestSlackAdapter(workingDir);
 	const chronologicalContext = chronological.createContext(event(), {} as ChannelStore);
+	assert.equal(chronologicalContext.workingStreamPresentation, "condensed", "Slack context carries the configured working-stream presentation into the runner");
 	await chronologicalContext.respond("_→ Work before milestone_", false);
 	await chronological.postInThread("C123", "1710000000.000001", "milestone");
 	await chronologicalContext.restartWorking();

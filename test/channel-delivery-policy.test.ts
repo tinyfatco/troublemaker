@@ -16,6 +16,8 @@ try {
 	assert.equal(defaults.getVerbose("form-abc123", "form"), true, "Form ingress keeps direct harness output by default");
 	assert.equal(defaults.getVerbose("web", "web"), true, "Web chat keeps direct harness streaming by default");
 	assert.equal(defaults.getSlackToolStreaming(), "all", "Slack defaults to the complete tool-label stream");
+	assert.equal(defaults.getSlackToolStreamPresentation(), "batched", "Slack defaults to edited event-driven tool-stream batches");
+	assert.equal(defaults.getSlackToolStreamBatchSize(), 3, "Slack defaults to three surfaced labels per edited batch");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		verbose: {
@@ -50,6 +52,10 @@ try {
 	assert.equal(globallyVerbose.getVerbose("8389147137", "telegram"), true, "explicit verbose default overrides Telegram messages-only");
 	globallyVerbose.setSlackToolStreaming("off");
 	assert.equal(globallyVerbose.getSlackToolStreaming(), "off", "Slack tool-streaming mode can be turned off durably");
+	globallyVerbose.setSlackToolStreamPresentation("condensed");
+	assert.equal(globallyVerbose.getSlackToolStreamPresentation(), "condensed", "Slack tool-stream presentation can be condensed durably");
+	globallyVerbose.setSlackToolStreamBatchSize(5);
+	assert.equal(globallyVerbose.getSlackToolStreamBatchSize(), 5, "Slack tool-stream batch size can be changed durably");
 
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids retain the send_message-only default policy");
 	assert.equal(isSendMessageOnlyPlatform("form-abc123"), false, "Form channels do not infer send_message-only policy");

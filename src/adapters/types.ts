@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import type { WorkingStreamPresentation } from "../context.js";
 import type { Attachment, ChannelStore } from "../store.js";
 
 // ============================================================================
@@ -139,6 +140,8 @@ export interface MomContext {
 	uploadFile: (filePath: string, title?: string) => Promise<void>;
 	setWorking: (working: boolean) => Promise<void>;
 	deleteMessage: () => Promise<void>;
+	/** How this context groups edited progress around deliberate message sends. */
+	workingStreamPresentation?: WorkingStreamPresentation;
 	/** Finalize the current working message and start a fresh one (used by steering) */
 	restartWorking: (headerLine?: string) => Promise<void>;
 	/** Emit sanitized tool lifecycle to a platform-native progress surface. */

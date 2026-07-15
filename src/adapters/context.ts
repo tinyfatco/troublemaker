@@ -1,14 +1,15 @@
-import type { ToolStreamingMode, VerbosityLevel } from "../context.js";
+import type { ToolStreamingMode, VerbosityLevel, WorkingStreamPresentation } from "../context.js";
 import type { MomContext, MomEvent, RespondOptions, UserInfo, ChannelInfo } from "./types.js";
 
 // ============================================================================
 // Shared two-message context for chat adapters (Telegram, Slack)
 //
-// Two-message pattern:
-//   Message 1 (working): Accumulates status lines (thinking, tool arrows,
-//                         interim text) in chronological order. Edited in place.
-//   Message 2 (final):   Final response, posted as a NEW message so the
-//                         platform sends a notification.
+// Working/final pattern:
+//   Working segment(s): Accumulate status lines (thinking, tool arrows,
+//                       interim text). Each segment is edited in place; a
+//                       configured event boundary may start the next segment.
+//   Final message:      Final response, posted as a NEW message so the
+//                       platform sends a notification.
 // ============================================================================
 
 /**
@@ -46,6 +47,10 @@ export interface TwoMessageConfig {
 	verbose?: VerbosityLevel;
 	/** In quiet modes, surface no tool labels, selected show:true labels, or all labels. */
 	toolStreaming?: ToolStreamingMode;
+	/** Keep one edited tool stream or segment it around deliberate sends. */
+	workingStreamPresentation?: WorkingStreamPresentation;
+	/** Surfaced tool labels per working message when presentation is batched. */
+	workingStreamBatchSize?: number;
 }
 
 /**
@@ -77,6 +82,7 @@ export function createTwoMessageContext(
 	let finalMessageId: string | null = null;
 	let isWorking = true;
 	let hasSurfacedToolLabel = false;
+	let surfacedToolLabelsInSegment = 0;
 	let updatePromise = Promise.resolve();
 
 	// Chronological entries for the working message
@@ -161,6 +167,34 @@ export function createTwoMessageContext(
 		}
 	};
 
+	const restartWorkingSegment = async (newHeaderLine?: string) => {
+		// Finalize the current working message before the next event opens a
+		// fresh segment. No timer or poller creates messages on its own.
+		await flushPendingText();
+		if (editTimer) {
+			clearTimeout(editTimer);
+			editTimer = null;
+		}
+		isWorking = false;
+		if (workingMessageId) {
+			await flushWorkingMessage();
+		}
+
+		workingMessageId = null;
+		finalMessageId = null;
+		workingEntries.length = 0;
+		pendingText = null;
+		hasSurfacedToolLabel = false;
+		surfacedToolLabelsInSegment = 0;
+		isWorking = true;
+		lastEditTime = 0;
+		editDirty = false;
+
+		if (newHeaderLine) {
+			config.headerLine = newHeaderLine;
+		}
+	};
+
 	return {
 		message: {
 			text: event.text,
@@ -180,6 +214,7 @@ export function createTwoMessageContext(
 		channelName,
 		channels: channels.map((c) => ({ id: c.id, name: c.name })),
 		users: users.map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
+		workingStreamPresentation: config.workingStreamPresentation,
 
 		respond: async (text: string, shouldLog = true, options: RespondOptions = {}) => {
 			updatePromise = updatePromise.then(async () => {
@@ -192,10 +227,15 @@ export function createTwoMessageContext(
 						|| toolStreaming === "all"
 						|| (toolStreaming === "important" && options.show === true);
 					if (!surface) return;
+					const batchSize = config.workingStreamBatchSize ?? Number.POSITIVE_INFINITY;
+					if (config.workingStreamPresentation === "batched" && surfacedToolLabelsInSegment >= batchSize) {
+						await restartWorkingSegment();
+					}
 					if (verbose) await flushPendingText();
 					hasSurfacedToolLabel = true;
 					const label = text.replace(/^_/, "").replace(/_$/, "");
 					workingEntries.push(ops.formatStatus(label));
+					surfacedToolLabelsInSegment++;
 					await scheduleWorkingUpdate();
 					return;
 				}
@@ -326,31 +366,7 @@ export function createTwoMessageContext(
 
 		restartWorking: async (newHeaderLine?: string) => {
 			updatePromise = updatePromise.then(async () => {
-				// Finalize the current working message
-				await flushPendingText();
-				if (editTimer) {
-					clearTimeout(editTimer);
-					editTimer = null;
-				}
-				isWorking = false;
-				if (workingMessageId) {
-					await flushWorkingMessage();
-				}
-
-				// Reset state for fresh working message
-				workingMessageId = null;
-				finalMessageId = null;
-				workingEntries.length = 0;
-				pendingText = null;
-				hasSurfacedToolLabel = false;
-				isWorking = true;
-				lastEditTime = 0;
-				editDirty = false;
-
-				// Update header if provided
-				if (newHeaderLine) {
-					config.headerLine = newHeaderLine;
-				}
+				await restartWorkingSegment(newHeaderLine);
 			});
 			await updatePromise;
 		},

@@ -15,6 +15,24 @@ assert.equal(shouldRolloverWorkingAfterToolCompletion({
 assert.equal(shouldRolloverWorkingAfterToolCompletion({
 	toolName: "send_message",
 	isError: false,
+	args: { target: activeReplyTarget },
+	result: delivered,
+	activeReplyTarget,
+	workingStreamPresentation: "condensed",
+}), false, "condensed presentation keeps editing the current working message after inline sends");
+
+assert.equal(shouldRolloverWorkingAfterToolCompletion({
+	toolName: "send_message",
+	isError: false,
+	args: { target: activeReplyTarget },
+	result: delivered,
+	activeReplyTarget,
+	workingStreamPresentation: "batched",
+}), true, "batched presentation rolls after inline sends");
+
+assert.equal(shouldRolloverWorkingAfterToolCompletion({
+	toolName: "send_message",
+	isError: false,
 	args: { target: `  ${activeReplyTarget}  ` },
 	result: delivered,
 	activeReplyTarget,

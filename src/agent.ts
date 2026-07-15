@@ -687,6 +687,7 @@ function createRunner(
 				args: pending?.args,
 				result: agentEvent.result,
 				activeReplyTarget: ctx.message.replyTarget,
+				workingStreamPresentation: ctx.workingStreamPresentation,
 			})) {
 				queue.enqueue(() => ctx.restartWorking(), "restart working after inline send");
 			}

@@ -12,9 +12,12 @@ import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
+	MAX_SLACK_TOOL_STREAM_BATCH_SIZE,
+	MIN_SLACK_TOOL_STREAM_BATCH_SIZE,
 	MomSettingsManager,
 	type MomSpontaneitySettings,
 	type SlackResponsePlacement,
+	type SlackToolStreamPresentation,
 	type ToolStreamingMode,
 	type VerbosityLevel,
 } from "../context.js";
@@ -36,6 +39,8 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"slack.verbosity",
 	"slack.response_placement",
 	"slack.tool_streaming",
+	"slack.tool_stream_presentation",
+	"slack.tool_stream_batch_size",
 	"slack.native_progress",
 	"spontaneity.enabled",
 	"spontaneity.level",
@@ -60,10 +65,20 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
 	"slack.toolStreaming": "slack.tool_streaming",
+	"slack.toolStreamPresentation": "slack.tool_stream_presentation",
+	"slack.tool_stream_layout": "slack.tool_stream_presentation",
+	"slack.toolStreamLayout": "slack.tool_stream_presentation",
+	"slack.toolStreamBatchSize": "slack.tool_stream_batch_size",
+	"slack.tool_stream_group_size": "slack.tool_stream_batch_size",
+	"slack.toolStreamGroupSize": "slack.tool_stream_batch_size",
 	"slack.nativeProgress": "slack.native_progress",
 	"native_progress": "slack.native_progress",
 	"tool_streaming": "slack.tool_streaming",
 	"toolStreaming": "slack.tool_streaming",
+	"tool_stream_presentation": "slack.tool_stream_presentation",
+	"toolStreamPresentation": "slack.tool_stream_presentation",
+	"tool_stream_batch_size": "slack.tool_stream_batch_size",
+	"toolStreamBatchSize": "slack.tool_stream_batch_size",
 };
 
 interface SelfConfigureResult {
@@ -249,6 +264,46 @@ function configureSlackToolStreaming(workingDir: string, value: unknown): SelfCo
 	};
 }
 
+function parseSlackToolStreamPresentation(value: unknown): SlackToolStreamPresentation {
+	const normalized = parseString(value, "slack.tool_stream_presentation").trim().toLowerCase().replace(/_/g, "-");
+	if (["batched", "segmented", "interleaved", "grouped", "chronological", "rollover"].includes(normalized)) return "batched";
+	if (["condensed", "compact", "edited", "single", "single-message", "one-message"].includes(normalized)) return "condensed";
+	throw new Error('slack.tool_stream_presentation must be "batched" or "condensed".');
+}
+
+function configureSlackToolStreamPresentation(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getSlackToolStreamPresentation();
+	const newValue = parseSlackToolStreamPresentation(value);
+	manager.setSlackToolStreamPresentation(newValue);
+	return {
+		changed: true,
+		setting: "slack.tool_stream_presentation",
+		previousValue,
+		newValue,
+		note: newValue === "condensed"
+			? "On the next Slack turn, tool progress will stay in one edited working message even across deliberate sends."
+			: `On the next Slack turn, tool progress will edit within groups of ${manager.getSlackToolStreamBatchSize()} surfaced labels and start a fresh group after a deliberate send to the active conversation. New groups are created only when real tool events arrive.`,
+	};
+}
+
+function configureSlackToolStreamBatchSize(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getSlackToolStreamBatchSize();
+	const parsed = parseNumber(value, "slack.tool_stream_batch_size");
+	if (!Number.isInteger(parsed) || parsed < MIN_SLACK_TOOL_STREAM_BATCH_SIZE || parsed > MAX_SLACK_TOOL_STREAM_BATCH_SIZE) {
+		throw new Error(`slack.tool_stream_batch_size must be an integer from ${MIN_SLACK_TOOL_STREAM_BATCH_SIZE} to ${MAX_SLACK_TOOL_STREAM_BATCH_SIZE}.`);
+	}
+	manager.setSlackToolStreamBatchSize(parsed);
+	return {
+		changed: true,
+		setting: "slack.tool_stream_batch_size",
+		previousValue,
+		newValue: parsed,
+		note: `On the next batched Slack turn, each edited working message will hold up to ${parsed} surfaced tool labels before the next real tool event opens a fresh message.`,
+	};
+}
+
 function configureSlackNativeProgress(workingDir: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getSlackNativeProgress();
@@ -380,6 +435,8 @@ export function applySelfConfiguration(
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
+	if (target === "slack.tool_stream_presentation") return configureSlackToolStreamPresentation(workingDir, value);
+	if (target === "slack.tool_stream_batch_size") return configureSlackToolStreamBatchSize(workingDir, value);
 	if (target === "slack.native_progress") return configureSlackNativeProgress(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
@@ -406,7 +463,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.native_progress, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_batch_size, slack.native_progress, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
 				"heartbeat.checklist, voice/realtime_voice.",
@@ -418,7 +475,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack tool streaming, native Slack progress cards, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, and slack.native_progress to enable or disable native task cards. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack tool streaming, Slack tool-stream grouping, native Slack progress cards, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, slack.tool_stream_presentation with batched (the default) to edit within event-driven groups or condensed to keep one edited working message for the whole turn, slack.tool_stream_batch_size to choose 2-20 surfaced labels per batched message, and slack.native_progress to enable or disable native task cards. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
