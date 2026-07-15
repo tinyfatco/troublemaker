@@ -370,7 +370,8 @@ export class MomSettingsManager {
 	}
 
 	getVerbose(channelId: string, platform?: string): VerbosityLevel {
-		const platformDefault: VerbosityLevel = isSendMessageOnlyPlatform(channelId, platform)
+		const resolvedPlatform = platform || inferPlatformFromChannelId(channelId);
+		const platformDefault: VerbosityLevel = isSendMessageOnlyPlatform(channelId, resolvedPlatform)
 			? "messages-only"
 			: true;
 		const v = this.settings.verbose;
@@ -379,8 +380,8 @@ export class MomSettingsManager {
 		// No explicit config: preserve the safe platform default.
 		if (!v) return platformDefault;
 		// Check a platform-wide value or a platform bucket with a channel override.
-		if (platform) {
-			const bucket = v[platform];
+		if (resolvedPlatform) {
+			const bucket = v[resolvedPlatform];
 			if (typeof bucket === "boolean" || bucket === "messages-only") return bucket;
 			if (bucket && typeof bucket === "object") {
 				const overrides = bucket as Record<string, VerbosityLevel>;
