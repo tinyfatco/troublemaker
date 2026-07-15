@@ -58,5 +58,19 @@ const verboseSlackPreamble = buildSessionPreamble(
 );
 assert(!verboseSlackPreamble.includes("Channel delivery policy"), "verbose Slack does not claim harness output is undeliverable");
 
+const claudeSlackPreamble = buildSessionPreamble(
+	workspaceContext,
+	[],
+	[],
+	[],
+	"D1234567890",
+	"DM:alex",
+	"messages-only",
+	{ provider: "claude-cli" },
+);
+assert(claudeSlackPreamble.includes("select:mcp__troublemaker__send_message"), "Claude messages-only turns receive the exact send_message selection query");
+assert(claudeSlackPreamble.includes("select:mcp__troublemaker__yield_no_action"), "Claude messages-only turns receive the exact yield selection query");
+assert(claudeSlackPreamble.includes("Direct assistant text is discarded"), "Claude messages-only turns state the hard delivery boundary");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

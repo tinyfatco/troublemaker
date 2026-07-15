@@ -20,6 +20,42 @@ export interface PromptSkill {
 	disableModelInvocation?: boolean;
 }
 
+export const CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY = "select:mcp__troublemaker__send_message";
+export const CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY = "select:mcp__troublemaker__yield_no_action";
+
+interface ClaudeCliDeliveryRetryOptions {
+	model?: { provider?: string };
+	verbosity?: VerbosityLevel;
+	toolsUsed: string[];
+	directlyAddressed?: boolean;
+	eventType?: "mention" | "dm";
+	replyTarget?: string;
+}
+
+function baseToolName(name: string): string {
+	return name.split("__").at(-1)?.split(".").at(-1) || name;
+}
+
+/**
+ * Claude's deferred MCP tools require an explicit ToolSearch selection. If a
+ * messages-only turn ends without choosing either delivery or silence, retry
+ * once with an exact selection instruction instead of exposing model prose.
+ */
+export function resolveClaudeCliDeliveryRetry(options: ClaudeCliDeliveryRetryOptions): string | null {
+	if (options.model?.provider !== "claude-cli" || options.verbosity !== "messages-only") return null;
+	if (options.toolsUsed.some((name) => ["send_message", "yield_no_action"].includes(baseToolName(name)))) return null;
+
+	const direct = options.directlyAddressed === true || options.eventType === "dm";
+	if (direct) {
+		const target = options.replyTarget
+			? ` Use the exact target ${JSON.stringify(options.replyTarget)}.`
+			: " Use the exact suggested reply target from the latest delivery_context.";
+		return `Your previous assistant text was intentionally not delivered because this channel requires explicit Troublemaker delivery. Do not write another assistant response. Call ToolSearch now with query ${JSON.stringify(CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY)}, then call mcp__troublemaker__send_message with a concise reply to the latest user.${target} Use ToolSearch for any other mcp__troublemaker__ tools needed to complete the request before sending the reply.`;
+	}
+
+	return `Your previous assistant text was intentionally not delivered because this channel requires an explicit Troublemaker action. Do not write another assistant response. If a visible reply is warranted, call ToolSearch with query ${JSON.stringify(CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY)} and then call mcp__troublemaker__send_message. Otherwise call ToolSearch with query ${JSON.stringify(CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY)} and then call mcp__troublemaker__yield_no_action.`;
+}
+
 function escapeXml(str: string): string {
 	return str
 		.replace(/&/g, "&amp;")
@@ -150,10 +186,10 @@ export function buildSystemPrompt(
 	const operatorReplyGuidance = "The operator channel has **no outbound path**. If you need to reply to the operator, do it on whatever real channel your principal is watching from (Telegram, Slack, Discord, email) via `send_message` with an explicit target.";
 	const crossChannelGuidance = "When a cross-channel message arrives mid-run, use `send_message` to acknowledge on the other channel (REQUIRED - never ignore). The tool requires a `target`; use the delivery context or `list_channels` to choose one.";
 	const claudeToolBoundary = claudeCli
-		? "Claude Code's built-in action tools are disabled; only `ToolSearch` remains so Claude can discover deferred MCP tools. Every live Troublemaker tool is provided by the `troublemaker` MCP server and appears to Claude as `mcp__troublemaker__<tool_name>`. Use those MCP tools exclusively for actions. Never use or discuss Claude Code's native `SendMessage`; it is unrelated to Troublemaker delivery."
+		? `Claude Code's built-in action tools are disabled; only \`ToolSearch\` remains so Claude can discover deferred MCP tools. Every live Troublemaker tool is provided by the \`troublemaker\` MCP server and appears to Claude as \`mcp__troublemaker__<tool_name>\`. Use those MCP tools exclusively for actions. Before first use, load a tool with an exact ToolSearch query such as \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\` or \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\`; never merely describe the tool call in prose. Never use or discuss Claude Code's native \`SendMessage\`; it is unrelated to Troublemaker delivery.`
 		: "";
 	const toolGuidance = `## Tools
-${claudeToolBoundary ? `${claudeToolBoundary}\n` : ""}Core tools: \`bash\`, \`read\`, \`write\`, \`edit\`, \`attach\`.
+${claudeToolBoundary ? `${claudeToolBoundary}\nTroublemaker MCP tools include \`mcp__troublemaker__bash\`, \`mcp__troublemaker__read\`, \`mcp__troublemaker__write\`, \`mcp__troublemaker__edit\`, and \`mcp__troublemaker__attach\`.` : "Core tools: `bash`, `read`, `write`, `edit`, `attach`."}
 Runtime tools commonly include \`send_message\`, \`list_channels\`, \`read_thread\`, \`self_configure\`, and \`yield_no_action\`.
 Use \`list_channels\` to discover valid send targets, including recent Slack thread targets, Email thread targets, and SMS/iMessage conversation targets. Use \`read_thread\` with a \`slack:<channel>:<thread_ts>\`, \`email-thread:<id>\`, or \`phone-...\` target when several conversations are active and previews are not enough to choose. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, existing Email thread=email-thread:<id>, direct Email=email-{address}, Phone/SMS/iMessage conversation=phone-{hash}. When choosing among threads or group conversations, use the exact target from delivery context or \`list_channels\`; do not collapse distinct thread roots, email subjects, or group chat participants together.
 Follow the latest session context's channel delivery policy. When it says ordinary assistant output will not be delivered, use \`send_message\` with the suggested explicit target for every user-visible reply. Otherwise, ordinary assistant output is delivered by the harness; do not duplicate it with \`send_message\` unless you are replying cross-channel. For direct inbound that will take non-trivial work, send a brief acknowledgement before continuing.
@@ -219,6 +255,7 @@ export function buildSessionPreamble(
 	displayChannelId: string,
 	displayChannelName?: string,
 	verbosity?: VerbosityLevel,
+	model?: { provider?: string },
 ): string {
 	const channelMappings =
 		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
@@ -231,9 +268,13 @@ export function buildSessionPreamble(
 		.filter((value): value is string => typeof value === "string")
 		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
 
-	const channelPolicyNote = verbosity === "messages-only" && !isWebDirectChat
-		? "\nChannel delivery policy: ordinary assistant text and working output will NOT be delivered here. Use send_message with an explicit target for ALL user-visible communication."
-		: "";
+	let channelPolicyNote = "";
+	if (verbosity === "messages-only" && !isWebDirectChat) {
+		channelPolicyNote = "\nChannel delivery policy: ordinary assistant text and working output will NOT be delivered here. Use send_message with an explicit target for ALL user-visible communication.";
+		if (model?.provider === "claude-cli") {
+			channelPolicyNote += ` Before writing assistant text, call ToolSearch with \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, then call \`mcp__troublemaker__send_message\`. If no response is appropriate, select \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\` and call \`mcp__troublemaker__yield_no_action\`. Direct assistant text is discarded.`;
+		}
+	}
 
 	return `<session_context>
 Attending: ${attending}${channelPolicyNote}
