@@ -34,6 +34,18 @@ assert(!prompt.includes("ping (cross-channel messaging)"), "system prompt no lon
 assert(!prompt.includes("## Calendar Events"), "calendar event details moved out of the system prompt");
 assert(!prompt.includes("## Attention Queue"), "attention queue details moved out of the system prompt");
 
+const claudeCliPrompt = buildSystemPrompt(
+	"/srv/claude-agent/workspace",
+	{ type: "host" },
+	"format instructions",
+	{ id: "sonnet", provider: "claude-cli" },
+);
+assert(claudeCliPrompt.includes("Claude Code CLI agent"), "Claude CLI prompt identifies the native tool backend");
+assert(claudeCliPrompt.includes("user-level Claude configuration"), "Claude CLI prompt preserves resident user settings");
+assert(claudeCliPrompt.includes("not injected into this backend"), "Claude CLI prompt does not promise Troublemaker tools");
+assert(claudeCliPrompt.includes("Active runtime model: claude-cli/sonnet"), "Claude CLI prompt reports its exact model alias");
+assert(!claudeCliPrompt.includes("When a cross-channel message arrives mid-run, use `send_message`"), "Claude CLI prompt avoids unavailable cross-channel instructions");
+
 const dockerWorkspacePath = createExecutor({ type: "docker", container: "test-container" }).getWorkspacePath("/host/data");
 const dockerPrompt = buildSystemPrompt(
 	dockerWorkspacePath,

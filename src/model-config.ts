@@ -11,6 +11,12 @@ import type { Api, Model } from "@earendil-works/pi-ai";
 import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
+import {
+	getClaudeCliModel,
+	isClaudeCliAuthenticated,
+	isClaudeCliProvider,
+	listClaudeCliModels,
+} from "./claude-cli.js";
 import { DEFAULT_FIREWORKS_MODEL_ID, getFireworksModel, GLM_5P2_MODEL_ID, listBuiltinFireworksModels } from "./fireworks-models.js";
 import * as log from "./log.js";
 
@@ -199,6 +205,14 @@ function resolveFireworksAliasModel(
  */
 export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
 	const { provider, id: modelId } = getCurrentModelSelection(workingDir);
+	if (isClaudeCliProvider(provider)) {
+		const cliModel = getClaudeCliModel(modelId);
+		if (!cliModel) {
+			throw new Error(`Unsupported Claude CLI model: ${modelId}. Choose haiku, sonnet, opus, or fable.`);
+		}
+		log.logInfo(`Model: ${cliModel.provider}/${cliModel.id} (api: ${cliModel.api})`);
+		return cliModel;
+	}
 
 	const models = getRegistryModels(workingDir, modelRegistry);
 
@@ -228,6 +242,9 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 
 export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
 	const model = resolveModel(workingDir, modelRegistry);
+	// Claude CLI owns its login state. Invocation reports an actionable CLI
+	// auth error rather than silently falling back to an unrelated API model.
+	if (isClaudeCliProvider(model.provider)) return model;
 	if (!modelRegistry || modelRegistry.hasConfiguredAuth(model)) return model;
 
 	log.logWarning(
@@ -280,6 +297,7 @@ export function findModel(
 	if (!q) return undefined;
 
 	const allModels = getRegistryModels(workingDir, modelRegistry);
+	if (isClaudeCliAuthenticated()) allModels.push(...listClaudeCliModels());
 
 	// Friendly aliases first (e.g. /model minimax, /model opus, /model gpt5)
 	const fwAlias = resolveFireworksAliasModel(allModels, q);
@@ -371,6 +389,9 @@ export function listModels(
 		);
 	}
 	for (const option of CURATED_MODEL_OPTIONS) addOption(option);
+	if (isClaudeCliAuthenticated()) {
+		for (const model of listClaudeCliModels()) addModel(model);
+	}
 
 	const currentKey = modelKey(current.provider, current.id);
 	if (!byKey.has(currentKey)) {
@@ -393,8 +414,9 @@ function compareModelOptions(currentKey: string) {
 	const providerRank: Record<string, number> = {
 		"openai-codex": 0,
 		fireworks: 1,
-		anthropic: 2,
-		openai: 3,
+		"claude-cli": 2,
+		anthropic: 3,
+		openai: 4,
 	};
 	return (
 		a: { provider: string; id: string; name: string },
