@@ -38,14 +38,19 @@ setting sources. Troublemaker appends its system prompt through a temporary
 file, sends the turn over stdin, and passes the selected alias with `--model`.
 
 For the duration of the turn, Troublemaker starts an authenticated MCP server
-on a random `127.0.0.1` port and unguessable path. A temporary mode-`0600` MCP
-config gives Claude the bearer credential. `--strict-mcp-config` excludes every
-other configured MCP server. Claude's built-in action catalog is replaced with
-`ToolSearch`, the non-acting discovery tool required by Claude to resolve
-deferred MCP tools, and slash-command skills are disabled. Only `ToolSearch`
-and `mcp__troublemaker__*` are pre-approved. Native `SendMessage` is also
-explicitly denied because it is a Claude team-agent tool, not Troublemaker's
-channel delivery tool.
+on a random `127.0.0.1` port and unguessable path. Claude spawns a short-lived
+stdio MCP proxy that connects to this loopback server with credentials stored
+only in a temporary mode-`0600` MCP config. The proxy only relays MCP tool-list
+and tool-call requests; the live tools and their credentials remain inside
+Troublemaker. This stdio hop lets Claude initialize the tool server eagerly
+while retaining the authenticated per-turn boundary around the runtime.
+
+`--strict-mcp-config` excludes every other configured MCP server. Claude's
+built-in action catalog is replaced with `ToolSearch`, the non-acting discovery
+tool required by Claude to resolve deferred MCP tools, and slash-command skills
+are disabled. Only `ToolSearch` and `mcp__troublemaker__*` are pre-approved.
+Native `SendMessage` is also explicitly denied because it is a Claude
+team-agent tool, not Troublemaker's channel delivery tool.
 
 The MCP server exposes the same live `AgentTool` instances used by Pi,
 including `bash`, `read`, `write`, `edit`, `send_message`, `list_channels`,
@@ -98,6 +103,7 @@ This follows OpenClaw's Claude CLI backend shape: stdin prompts, `stream-json`,
 partial messages, user setting sources, explicit model selection, durable
 session IDs, resumed turns, bounded output, inherited auth override scrubbing,
 and Claude-owned compaction. OpenClaw additionally maintains a live stdio
-session. Troublemaker uses a short-lived authenticated loopback MCP server per
-`claude -p` turn instead, which preserves Troublemaker's existing live tools
-and channel event pipeline without exposing a durable local tool endpoint.
+session. Troublemaker uses a short-lived stdio proxy in front of an authenticated
+loopback MCP server per `claude -p` turn, which preserves Troublemaker's
+existing live tools and channel event pipeline without exposing a durable local
+tool endpoint.
