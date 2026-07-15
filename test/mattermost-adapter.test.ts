@@ -163,6 +163,18 @@ try {
 	assert.equal(handled[0]?.directlyAddressed, true, "@username posts directly invoke the agent");
 	assert.equal(handled[0]?.threadTs, mentionRoot, "channel mentions establish a Mattermost root thread");
 
+	const context = adapter.createContext(handled[0], store);
+	const beforeHarnessOutput = Object.keys(posts).length;
+	await context.respond("_→ Internal tool label", false, { show: true });
+	await context.respond("private model thinking", true);
+	await context.respondInThread("private tool result");
+	await context.sendFinalResponse("ordinary harness final response");
+	assert.equal(
+		Object.keys(posts).length,
+		beforeHarnessOutput,
+		"Mattermost messages-only contexts never expose labels, thinking, tool results, or ordinary final output",
+	);
+
 	const root = await adapter.postMessage(CHANNEL_ID, "outbound root");
 	await adapter.updateMessage(CHANNEL_ID, root, "outbound root updated");
 	const reply = await adapter.postInThread(CHANNEL_ID, root, "outbound reply");

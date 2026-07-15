@@ -1,7 +1,6 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import WebSocket from "ws";
-import { MomSettingsManager } from "../context.js";
 import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
@@ -354,8 +353,6 @@ Mention users with @username.`;
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[(?:EVENT|ATTENTION):([^:]+):/)?.[1] : undefined;
-		const settings = new MomSettingsManager(this.workingDir);
-		const verbosity = settings.getVerbose(event.channel, "mattermost");
 		const responseThreadTs = event.threadTs;
 		const threadMessages: string[] = [];
 		let workingMessageId: string | null = null;
@@ -380,8 +377,10 @@ Mention users with @username.`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: verbosity,
-				toolStreaming: verbosity === "messages-only" ? "all" : "off",
+				// Mattermost is a strict messages-only surface: only explicit send_message
+				// calls (plus forced runtime errors) may create user-visible output.
+				verbose: "messages-only",
+				toolStreaming: "off",
 			},
 			{
 				onWorkingUpdate: (id) => { workingMessageId = id; },
