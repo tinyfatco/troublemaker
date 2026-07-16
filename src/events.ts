@@ -91,6 +91,7 @@ function pushPastQuietHours(
 }
 
 const DEBOUNCE_MS = 100;
+const FULL_RESCAN_DEBOUNCE_KEY = "__full_rescan__";
 const MAX_RETRIES = 3;
 const RETRY_BASE_MS = 100;
 /** Grace window for past-due one-shot events (10 minutes). Covers cold-start delay. */
@@ -184,7 +185,11 @@ export class EventsWatcher {
 
 		// Watch for changes immediately (fast)
 		this.watcher = watch(this.eventsDir, (_eventType, filename) => {
-			if (!filename || !filename.endsWith(".json")) return;
+			if (!filename) {
+				this.debounce(FULL_RESCAN_DEBOUNCE_KEY, () => void this.scanExistingAsync());
+				return;
+			}
+			if (!filename.endsWith(".json")) return;
 			this.debounce(filename, () => this.handleFileChange(filename));
 		});
 
@@ -265,6 +270,13 @@ export class EventsWatcher {
 		} catch (err) {
 			log.logWarning(`Failed to read scheduled prompt directory (${this.label})`, String(err));
 			return;
+		}
+
+		const currentFiles = new Set(files);
+		for (const filename of [...this.knownFiles]) {
+			if (!currentFiles.has(filename)) {
+				this.handleDelete(filename);
+			}
 		}
 
 		for (const filename of files) {
@@ -484,7 +496,8 @@ export class EventsWatcher {
 			const timer = setTimeout(() => {
 				this.timers.delete(filename);
 				log.logInfo(`Executing jittered periodic scheduled prompt: ${filename}`);
-				this.execute(filename, event, false);
+				const sourceIsCurrent = this.execute(filename, event, false);
+				if (!sourceIsCurrent) return;
 				// Advance from the consumed cron slot, even when negative jitter fired early.
 				this.scheduleJitteredPeriodic(filename, event, plan.baseRunMs);
 			}, plan.delayMs);
@@ -495,7 +508,33 @@ export class EventsWatcher {
 		}
 	}
 
-	private execute(filename: string, event: ScheduledEvent, deleteAfter: boolean = true): void {
+	private sourceMatchesScheduledEvent(filename: string, scheduledEvent: ScheduledEvent): boolean {
+		const filePath = join(this.eventsDir, filename);
+		try {
+			const currentEvent = this.parseEvent(readFileSync(filePath, "utf-8"), filename);
+			if (JSON.stringify(currentEvent) === JSON.stringify(scheduledEvent)) {
+				return true;
+			}
+
+			log.logInfo(`Scheduled prompt source changed before execution, cancelling stale schedule: ${filename}`);
+			this.cancelScheduled(filename);
+			this.knownFiles.delete(filename);
+			void this.handleFile(filename);
+			return false;
+		} catch (err) {
+			const detail = err instanceof Error ? err.message : String(err);
+			log.logInfo(`Scheduled prompt source missing or invalid before execution, cancelling: ${filename} (${detail})`);
+			this.cancelScheduled(filename);
+			this.knownFiles.delete(filename);
+			return false;
+		}
+	}
+
+	private execute(filename: string, event: ScheduledEvent, deleteAfter: boolean = true): boolean {
+		if (!this.sourceMatchesScheduledEvent(filename, event)) {
+			return false;
+		}
+
 		// Format the message
 		let scheduleInfo: string;
 		switch (event.type) {
@@ -520,7 +559,7 @@ export class EventsWatcher {
 					log.logInfo(`[auto-compact] Skipped: ${err instanceof Error ? err.message : String(err)}`);
 				});
 			}
-			return;
+			return true;
 		}
 
 		const message = `[ATTENTION:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
@@ -553,6 +592,8 @@ export class EventsWatcher {
 				this.completeFile(filename, "expired");
 			}
 		}
+
+		return true;
 	}
 
 	private deleteFile(filename: string): void {
