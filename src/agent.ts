@@ -86,6 +86,7 @@ export interface AgentRunner {
 		ctx: MomContext,
 		store: ChannelStore,
 		pendingMessages?: PendingMessage[],
+		formatInstructions?: string,
 	): Promise<RunResult>;
 	abort(): void;
 	/** Queue a message at the active run's next safe turn boundary. */
@@ -871,6 +872,7 @@ function createRunner(
 			ctx: MomContext,
 			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
+			runFormatInstructions = formatInstructions,
 		): Promise<RunResult> {
 			const tRun = performance.now();
 
@@ -929,7 +931,7 @@ function createRunner(
 				agent.state.thinkingLevel = effectiveThinkingLevel;
 			}
 
-			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, formatInstructions, agent.state.model);
+			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
 			// Build dynamic preamble (injected into user message below)

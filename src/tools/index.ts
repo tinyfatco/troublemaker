@@ -14,6 +14,7 @@ export { createSelfConfigureTool } from "./self-configure.js";
 export { createSetGoalTool } from "./set-goal.js";
 export { createCompleteGoalTool } from "./complete-goal.js";
 export { createAbandonGoalTool } from "./abandon-goal.js";
+export { createBlockGoalTool } from "./block-goal.js";
 export { createSendMessageTool } from "./send-message.js";
 export { createSpeakTool } from "./speak.js";
 export { createSearchToolsTool } from "./search-tools.js";

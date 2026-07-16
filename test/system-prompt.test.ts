@@ -26,6 +26,7 @@ assert(prompt.includes("email-thread:<id>"), "system prompt names email thread t
 assert(prompt.includes("self_configure"), "system prompt names self_configure");
 assert(prompt.includes("set_goal"), "system prompt names persistent goal tools");
 assert(prompt.includes("complete_goal"), "system prompt explains how achieved goals close");
+assert(prompt.includes("block_goal"), "system prompt explains how genuinely blocked goals stop continuation");
 assert(prompt.includes("Do not turn ordinary one-turn requests into persistent goals"), "system prompt limits durable goal creation to explicit requests");
 assert(prompt.includes("selective Slack tool streaming"), "system prompt names selective Slack tool streaming");
 assert(prompt.includes("Slack tool-stream presentation (split or condensed)"), "system prompt advertises configurable Slack tool-stream grouping");

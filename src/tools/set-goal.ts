@@ -14,13 +14,17 @@ const schema = Type.Object({
 	}),
 });
 
-export function createSetGoalTool(workingDir: string): AgentTool<typeof schema> {
+export interface SetGoalToolOptions {
+	onSet?: (state: { goal: string; setAt: string; status: "active" }) => void;
+}
+
+export function createSetGoalTool(workingDir: string, options: SetGoalToolOptions = {}): AgentTool<typeof schema> {
 	const workspace = new FilesystemWorkspaceStore(workingDir);
 	return {
 		name: "set_goal",
 		label: "set_goal",
 		description:
-			"Set or replace this agent's active goal. The goal persists across turns and is surfaced at the start of every subsequent turn until completed or abandoned. Use this when the user explicitly establishes a persistent objective or asks to set a goal; do not infer a durable goal from an ordinary one-turn request.",
+			"Set or replace this agent's active goal. The goal persists and automatically continues through new turns until completed, abandoned, interrupted by newer user work, or blocked by a terminal error. Use this when the user explicitly establishes a persistent objective or asks to set a goal; do not infer a durable goal from an ordinary one-turn request.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
 			const goal = normalizeGoal((params as { goal?: unknown })?.goal);
@@ -30,6 +34,7 @@ export function createSetGoalTool(workingDir: string): AgentTool<typeof schema> 
 				status: "active" as const,
 			};
 			writeGoalState(workspace, state);
+			options.onSet?.(state);
 			return {
 				content: [{ type: "text" as const, text: `Set active goal: ${state.goal}` }],
 				details: state,

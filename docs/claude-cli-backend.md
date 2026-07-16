@@ -54,14 +54,18 @@ team-agent tool, not Troublemaker's channel delivery tool.
 
 The MCP server exposes the same live `AgentTool` instances used by Pi,
 including `bash`, `read`, `write`, `edit`, `send_message`, `list_channels`,
-`read_thread`, `self_configure`, `set_goal`, `complete_goal`, `abandon_goal`,
+`read_thread`, `self_configure`, `set_goal`, `complete_goal`, `block_goal`, `abandon_goal`,
 and `yield_no_action`. Calls are surfaced
 through Troublemaker's existing tool-event pipeline, so Slack tool-label
 selection, send ordering, output snapshots, and logging remain consistent.
 `yield_no_action` sets the same silent-completion state as a Pi-native call.
 Goal tools share the same workspace-backed `goal.json` state as Pi-native
-turns, so an active goal remains in later turn instructions until completed or
-abandoned.
+turns. When a turn becomes idle and the goal is still active, Troublemaker
+starts another internal continuation turn while preserving the original
+delivery locus. Queued user/client work wins the idle race, explicit stops and
+interrupts suppress continuation, terminal run errors block the goal instead
+of looping, and an active goal is resumed through the headless internal channel
+after a runtime restart. Completing or abandoning the goal ends continuation.
 
 Troublemaker remains responsible for ingress, unified awareness, and channel
 delivery. `messages-only` retains its normal meaning for Claude: ordinary model
