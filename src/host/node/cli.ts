@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "crypto";
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "../../adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
@@ -970,8 +971,36 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				await ctx.setWorking(false);
 				return;
 			}
-			const result = await state.runner.run(ctx, state.store, undefined, platform.formatInstructions);
-			await ctx.setWorking(false);
+			const liveMetadata = {
+				runId: randomUUID(),
+				channelId: turnEvent.channel,
+				channelLabel,
+				source: platform.name,
+			};
+			gateway.publishRuntimeEvent(liveMetadata, {
+				type: "status",
+				status: "streaming",
+				message: "Working...",
+			});
+			let result: RunResult;
+			try {
+				result = await state.runner.run(
+					ctx,
+					state.store,
+					undefined,
+					platform.formatInstructions,
+					(runtimeEvent) => { gateway.publishRuntimeEvent(liveMetadata, runtimeEvent); },
+				);
+			} finally {
+				try {
+					await ctx.setWorking(false);
+				} finally {
+					gateway.publishRuntimeEvent(liveMetadata, {
+						type: "run_complete",
+						channelId: turnEvent.channel,
+					});
+				}
+			}
 
 			if (result.stopReason === "aborted" && state.stopRequested) {
 				const stopResponse = state.stopResponse;

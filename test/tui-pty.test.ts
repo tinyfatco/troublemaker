@@ -39,6 +39,15 @@ const idleAssistantLine = JSON.stringify({
 		}],
 	},
 });
+const voiceLine = JSON.stringify({
+	type: "message",
+	id: "voice-1",
+	timestamp: "2026-01-02T03:04:06Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "[2026-01-02 03:04:06+00:00] [voice] [user]: voice update" }],
+	},
+});
 const activeAmbientLine = JSON.stringify({
 	type: "message",
 	id: "ambient-active",
@@ -86,10 +95,29 @@ const terminalAssistantEchoLine = JSON.stringify({
 	},
 });
 let awarenessResponse: ServerResponse | undefined;
+let liveResponse: ServerResponse | undefined;
+let liveSequence = 0;
 let runBusy = false;
 
 function emitAwareness(id: string, line: string): void {
 	awarenessResponse?.write(`id: ${id}\ndata: ${line}\n\n`);
+	emitLive({ kind: "awareness", line, awarenessId: id });
+}
+
+function emitRuntime(runId: string, channelId: string, event: Record<string, unknown>, source = "test"): void {
+	emitLive({ kind: "runtime", runId, channelId, channelLabel: channelId, source, event });
+}
+
+function emitLive(payload: Record<string, unknown>): void {
+	const sequence = ++liveSequence;
+	const envelope = {
+		...payload,
+		sequence,
+		streamId: "test-stream",
+		id: `live-${sequence}`,
+		timestamp: new Date().toISOString(),
+	};
+	liveResponse?.write(`id: ${sequence}\ndata: ${JSON.stringify(envelope)}\n\n`);
 }
 
 const server = createServer(async (req, res) => {
@@ -139,6 +167,57 @@ const server = createServer(async (req, res) => {
 			clearTimeout(assistantTimer);
 			clearTimeout(idleTimer);
 			if (awarenessResponse === res) awarenessResponse = undefined;
+		});
+		return;
+	}
+	if (req.url?.startsWith("/api/v2/agents/current/live")) {
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		});
+		liveResponse = res;
+		const ambientTimer = setTimeout(() => {
+			runBusy = true;
+			emitAwareness("ambient-1", ambientLine);
+		}, 100);
+		const assistantTimer = setTimeout(() => {
+			emitRuntime("external-run", "slack:#general", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "external-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:06Z",
+					role: "assistant",
+					content: [{ type: "toolCall", id: "external-tool-1", name: "bash", label: "External check finished", arguments: {} }],
+					isStreaming: true,
+				},
+			});
+		}, 850);
+		const voiceTimer = setTimeout(() => emitAwareness("voice-1", voiceLine), 1_050);
+		const voiceToolTimer = setTimeout(() => {
+			emitRuntime("voice-run", "voice", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "voice-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:07Z",
+					role: "assistant",
+					content: [{ type: "toolCall", id: "voice-tool-1", name: "bash", label: "Voice-side check", arguments: {} }],
+					isStreaming: true,
+				},
+			}, "voice");
+		}, 1_150);
+		const idleTimer = setTimeout(() => {
+			runBusy = false;
+		}, 1_350);
+		req.on("close", () => {
+			clearTimeout(ambientTimer);
+			clearTimeout(assistantTimer);
+			clearTimeout(voiceTimer);
+			clearTimeout(voiceToolTimer);
+			clearTimeout(idleTimer);
+			if (liveResponse === res) liveResponse = undefined;
 		});
 		return;
 	}
@@ -211,6 +290,16 @@ expect {
   timeout { puts stderr "Idle external assistant repaint timeout"; exit 14 }
   eof { puts stderr "TUI exited before idle external assistant update"; exit 15 }
 }
+expect {
+  {voice update} {}
+  timeout { puts stderr "External voice prompt repaint timeout"; exit 18 }
+  eof { puts stderr "TUI exited before external voice prompt"; exit 19 }
+}
+expect {
+  {Voice-side check} {}
+  timeout { puts stderr "External voice tool repaint timeout"; exit 20 }
+  eof { puts stderr "TUI exited before external voice tool"; exit 21 }
+}
 send -- "run a check\\r"
 expect {
   {All done.} {}
@@ -268,6 +357,8 @@ expect eof
 	assert.match(rendered, /ambient update/);
 	assert.match(rendered, /Working\.\.\./);
 	assert.match(rendered, /External check finished/);
+	assert.match(rendered, /voice update/);
+	assert.match(rendered, /Voice-side check/);
 	assert.match(rendered, /Robin: ambient during active turn @batman/);
 	assert.doesNotMatch(rendered, /<@U456>/);
 	assert.match(rendered, /yield_no_action/);
@@ -291,7 +382,7 @@ expect eof
 async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>, emitActiveAwareness: () => void): Promise<void> {
 	res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 	res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
-	res.write(`data: ${JSON.stringify({
+	const firstSnapshot = {
 		type: "assistant_snapshot",
 		entry: {
 			id: "live",
@@ -307,29 +398,37 @@ async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>, emitA
 			}],
 			isStreaming: true,
 		},
-	})}\n\n`);
+	};
+	res.write(`data: ${JSON.stringify(firstSnapshot)}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", firstSnapshot, "terminal");
 	await new Promise((resolvePromise) => setTimeout(resolvePromise, 80));
-	res.write(`data: ${JSON.stringify({
-			type: "assistant_snapshot",
-			entry: {
-				id: "live",
-				type: "message",
-				timestamp: "2026-01-02T03:04:06Z",
-				role: "assistant",
-				content: [
-					{ type: "toolCall", id: "tool-1", name: "bash", label: "Checking the workspace", arguments: { command: "TOP_SECRET_COMMAND" } },
-					{ type: "toolResult", toolCallId: "tool-1", result: "private output", isError: false },
-					{ type: "text", text: "All done." },
-				],
-				stopReason: "stop",
-				isStreaming: false,
-			},
-		})}\n\n`);
-	res.write(`data: ${JSON.stringify({ type: "status", status: "compacting", message: "Compacting context..." })}\n\n`);
+	const completedSnapshot = {
+		type: "assistant_snapshot",
+		entry: {
+			id: "live",
+			type: "message",
+			timestamp: "2026-01-02T03:04:06Z",
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "tool-1", name: "bash", label: "Checking the workspace", arguments: { command: "TOP_SECRET_COMMAND" } },
+				{ type: "toolResult", toolCallId: "tool-1", result: "private output", isError: false },
+				{ type: "text", text: "All done." },
+			],
+			stopReason: "stop",
+			isStreaming: false,
+		},
+	};
+	res.write(`data: ${JSON.stringify(completedSnapshot)}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", completedSnapshot, "terminal");
+	const compacting = { type: "status", status: "compacting", message: "Compacting context..." };
+	res.write(`data: ${JSON.stringify(compacting)}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", compacting, "terminal");
 	emitActiveAwareness();
 	await waitForSteer;
-	res.write(`data: ${JSON.stringify({ type: "status", status: "streaming", message: "Context compacted; resuming..." })}\n\n`);
-	res.write(`data: ${JSON.stringify({
+	const resumed = { type: "status", status: "streaming", message: "Context compacted; resuming..." };
+	res.write(`data: ${JSON.stringify(resumed)}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", resumed, "terminal");
+	const steeredSnapshot = {
 		type: "assistant_snapshot",
 		entry: {
 			id: "live",
@@ -345,8 +444,11 @@ async function writeTurn(res: ServerResponse, waitForSteer: Promise<void>, emitA
 			stopReason: "stop",
 			isStreaming: false,
 		},
-	})}\n\n`);
+	};
+	res.write(`data: ${JSON.stringify(steeredSnapshot)}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", steeredSnapshot, "terminal");
 	res.write(`data: ${JSON.stringify({ type: "run_complete", channelId: "terminal:demo-agent" })}\n\n`);
+	emitRuntime("terminal-run", "terminal:demo-agent", { type: "run_complete", channelId: "terminal:demo-agent" }, "terminal");
 	res.end("data: [DONE]\n\n");
 }
 

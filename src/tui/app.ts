@@ -21,7 +21,13 @@ import {
 	matchesKey,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
-import type { RuntimeAssistantSnapshotContent, RuntimeAssistantSnapshotEntry, RuntimeStreamEvent } from "../core/runtime-contract.js";
+import type {
+	RuntimeAssistantSnapshotContent,
+	RuntimeAssistantSnapshotEntry,
+	RuntimeLiveEvent,
+	RuntimeLiveRunEvent,
+	RuntimeStreamEvent,
+} from "../core/runtime-contract.js";
 import { TroublemakerTuiClient, type TuiAgentStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
 import { assistantContentDelta, parseContextLine, safeToolLabel, toAssistantSnapshot, type TuiHistoryEntry } from "./protocol.js";
@@ -35,6 +41,14 @@ const RUN_STATUS_POLL_MS = 500;
 
 type AwarenessState = "connecting" | "live" | "reconnecting";
 type TranscriptContentKind = "user" | "text" | "tool";
+
+interface LiveRunView {
+	channelId: string;
+	target: Container;
+	latestSnapshot: RuntimeAssistantSnapshotEntry | null;
+	segmentBaseline: RuntimeAssistantSnapshotContent[];
+	precedingContent: TranscriptContentKind | null;
+}
 
 export async function runTroublemakerTui(profile: TuiAgentProfile): Promise<void> {
 	const client = new TroublemakerTuiClient(profile);
@@ -77,6 +91,10 @@ class TroublemakerTuiApp {
 	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
 	private readonly pendingAssistantEchoes: Array<{ fingerprint: string; expiresAt: number }> = [];
 	private readonly deferredAwarenessAssistantLines = new Map<string, string>();
+	private readonly liveRuns = new Map<string, LiveRunView>();
+	private readonly runtimeEchoGraceByChannel = new Map<string, number>();
+	private liveSequence = 0;
+	private liveStreamId = "";
 	private terminalEchoGraceUntil = 0;
 	private readonly steeringAborts = new Set<AbortController>();
 
@@ -233,24 +251,9 @@ class TroublemakerTuiApp {
 			else if (event.status !== "accepted") this.showLoader(event.message || "Working...");
 			return;
 		}
-		const snapshot = toAssistantSnapshot(event);
-		if (snapshot && this.activeTurn) {
-			this.latestAssistantSnapshot = { ...snapshot, content: [...snapshot.content] };
-			const renderedKind = this.renderAssistant(this.activeTurn, {
-				...snapshot,
-				content: assistantContentDelta(snapshot.content, this.activeSegmentBaseline),
-			}, false, this.activeSegmentPrecedingContent);
-			if (renderedKind) this.lastTranscriptContent = renderedKind;
-			if (snapshot.isStreaming === false) this.rememberAssistantEcho(snapshot.content);
-			const pendingTool = this.pendingToolLabel(snapshot);
-			if (snapshot.isStreaming === false && !pendingTool && !isToolUseStopReason(snapshot.stopReason)) {
-				this.clearLoader();
-			} else {
-				this.showLoader(pendingTool || "Thinking...");
-			}
-			this.ui.requestRender();
-			return;
-		}
+		// Assistant snapshots are rendered exclusively from the unified live
+		// feed. The POST response remains the control/compatibility channel.
+		if (toAssistantSnapshot(event)) return;
 		if (event.type === "error") {
 			this.addError(event.message, this.activeTurn || this.chat);
 			this.clearLoader();
@@ -260,12 +263,19 @@ class TroublemakerTuiApp {
 	}
 
 	private async submitSteer(text: string): Promise<void> {
-		this.activeSegmentBaseline = [...(this.latestAssistantSnapshot?.content || [])];
+		const liveView = this.findLiveRunForChannel(this.profile.channelId);
+		const baseline = liveView?.latestSnapshot?.content || this.latestAssistantSnapshot?.content || [];
+		this.activeSegmentBaseline = [...baseline];
 		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
 		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
+		if (liveView) {
+			liveView.target = this.activeTurn;
+			liveView.segmentBaseline = [...baseline];
+			liveView.precedingContent = this.activeSegmentPrecedingContent;
+		}
 		this.showLoader("Steering...");
 		const controller = new AbortController();
 		this.steeringAborts.add(controller);
@@ -282,6 +292,102 @@ class TroublemakerTuiApp {
 		} finally {
 			this.steeringAborts.delete(controller);
 		}
+	}
+
+	private handleLiveEvent(event: RuntimeLiveEvent): void {
+		if (this.liveStreamId !== event.streamId) {
+			this.liveStreamId = event.streamId;
+			this.liveSequence = 0;
+			this.liveRuns.clear();
+			void this.catchUpAwareness();
+		}
+		if (event.kind === "reset") {
+			this.liveSequence = Math.max(this.liveSequence, event.sequence);
+			void this.catchUpAwareness();
+			return;
+		}
+		if (event.sequence <= this.liveSequence) return;
+		this.liveSequence = event.sequence;
+		if (event.kind === "awareness") {
+			this.renderLiveAwarenessLine(event.line);
+			return;
+		}
+		this.handleLiveRuntimeEvent(event);
+	}
+
+	private handleLiveRuntimeEvent(envelope: RuntimeLiveRunEvent): void {
+		const event = envelope.event;
+		if (event.type === "status") {
+			if (event.status === "accepted") return;
+			const message = event.status === "steering" ? "Steering..." : event.message || "Working...";
+			if (this.activeAbort) this.showLoader(message);
+			else this.showExternalLoader(message);
+			return;
+		}
+
+		const snapshot = toAssistantSnapshot(event);
+		if (snapshot) {
+			const view = this.getOrCreateLiveRunView(envelope);
+			view.latestSnapshot = { ...snapshot, content: [...snapshot.content] };
+			const renderedKind = this.renderAssistant(view.target, {
+				...snapshot,
+				content: assistantContentDelta(snapshot.content, view.segmentBaseline),
+			}, false, view.precedingContent);
+			if (renderedKind) this.lastTranscriptContent = renderedKind;
+			if (envelope.channelId === this.profile.channelId) {
+				this.latestAssistantSnapshot = view.latestSnapshot;
+			}
+			if (snapshot.isStreaming === false) {
+				this.rememberAssistantEcho(snapshot.content);
+				this.rememberRuntimeEcho(envelope.channelId);
+			}
+			const pendingTool = this.pendingToolLabel(snapshot);
+			if (snapshot.isStreaming === false && !pendingTool && !isToolUseStopReason(snapshot.stopReason)) {
+				this.clearLoader();
+			} else if (this.activeAbort) {
+				this.showLoader(pendingTool || "Thinking...");
+			} else {
+				this.showExternalLoader(pendingTool || "Working...");
+			}
+			this.ui.requestRender();
+			return;
+		}
+
+		if (event.type === "error") {
+			const view = this.liveRuns.get(envelope.runId);
+			this.addError(event.message, view?.target || this.activeTurn || this.chat);
+			this.clearLoader();
+			return;
+		}
+		if (event.type === "run_complete") {
+			const view = this.liveRuns.get(envelope.runId);
+			if (view?.latestSnapshot) this.rememberAssistantEcho(view.latestSnapshot.content);
+			this.rememberRuntimeEcho(envelope.channelId);
+			this.liveRuns.delete(envelope.runId);
+			this.clearLoader();
+			this.flushDeferredAwarenessAssistantLines();
+		}
+	}
+
+	private getOrCreateLiveRunView(envelope: RuntimeLiveRunEvent): LiveRunView {
+		const existing = this.liveRuns.get(envelope.runId);
+		if (existing) return existing;
+		const terminalTarget = envelope.channelId === this.profile.channelId ? this.activeTurn : null;
+		const target = terminalTarget || new Container();
+		if (!terminalTarget) this.chat.addChild(target);
+		const view: LiveRunView = {
+			channelId: envelope.channelId,
+			target,
+			latestSnapshot: null,
+			segmentBaseline: terminalTarget ? [...this.activeSegmentBaseline] : [],
+			precedingContent: terminalTarget ? this.activeSegmentPrecedingContent : this.lastTranscriptContent,
+		};
+		this.liveRuns.set(envelope.runId, view);
+		return view;
+	}
+
+	private findLiveRunForChannel(channelId: string): LiveRunView | undefined {
+		return [...this.liveRuns.values()].reverse().find((view) => view.channelId === channelId);
 	}
 
 	private renderHistory(lines: string[]): void {
@@ -309,6 +415,11 @@ class TroublemakerTuiApp {
 		}
 		if (entry.role === "assistant") {
 			const fingerprint = assistantFingerprint(entry.content);
+			if (channel && this.hasRuntimeEchoGrace(channel)) {
+				this.deferredAwarenessAssistantLines.delete(entry.id);
+				this.rememberAwarenessId(entry.id);
+				return;
+			}
 			if (channel === this.profile.channelId && (this.activeAbort || Date.now() < this.terminalEchoGraceUntil)) {
 				this.deferredAwarenessAssistantLines.delete(entry.id);
 				this.rememberAwarenessId(entry.id);
@@ -440,13 +551,14 @@ class TroublemakerTuiApp {
 		while (!signal.aborted) {
 			this.setAwarenessState(this.awarenessState === "connecting" ? "connecting" : "reconnecting");
 			try {
-				await this.client.streamAwareness(
-					(line) => this.renderLiveAwarenessLine(line),
+				await this.client.streamLive(
+					(event) => this.handleLiveEvent(event),
 					signal,
 					() => {
 						this.setAwarenessState("live");
 						void this.catchUpAwareness();
 					},
+					this.liveSequence,
 				);
 			} catch (error) {
 				if (signal.aborted || isAbortError(error)) return;
@@ -550,6 +662,20 @@ class TroublemakerTuiApp {
 		for (let index = this.pendingAssistantEchoes.length - 1; index >= 0; index--) {
 			if (this.pendingAssistantEchoes[index]!.expiresAt <= now) this.pendingAssistantEchoes.splice(index, 1);
 		}
+		for (const [channel, expiresAt] of this.runtimeEchoGraceByChannel) {
+			if (expiresAt <= now) this.runtimeEchoGraceByChannel.delete(channel);
+		}
+	}
+
+	private rememberRuntimeEcho(channel: string): void {
+		if (!channel) return;
+		this.prunePendingEchoes();
+		this.runtimeEchoGraceByChannel.set(channel, Date.now() + ASSISTANT_ECHO_TTL_MS);
+	}
+
+	private hasRuntimeEchoGrace(channel: string): boolean {
+		this.prunePendingEchoes();
+		return (this.runtimeEchoGraceByChannel.get(channel) || 0) > Date.now();
 	}
 
 	private showLoader(message: string): void {

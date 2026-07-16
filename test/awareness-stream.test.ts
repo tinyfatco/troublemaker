@@ -21,6 +21,7 @@ let PORT = 0;
 const line1 = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-01-01T00:00:00Z" });
 const line2 = JSON.stringify({ type: "message", id: "m1", timestamp: "2026-01-01T00:01:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:01:00+00:00] [web] [testuser]: hello" }] } });
 const line3 = JSON.stringify({ type: "message", id: "m2", timestamp: "2026-01-01T00:02:00Z", message: { role: "assistant", content: [{ type: "text", text: "hi there" }] } });
+const rotatedLine = JSON.stringify({ type: "message", id: "voice-after-compaction", timestamp: "2026-01-01T00:03:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:03:00+00:00] [voice] [user]: continue" }] } });
 
 let passed = 0;
 let failed = 0;
@@ -65,6 +66,83 @@ async function run() {
   const liveEvents = await livePromise;
   assert(liveEvents.length >= 1, `got ${liveEvents.length} live events (expected ≥1)`);
   assert(liveEvents[0]?.includes('"m2"') || false, "live event contains message m2");
+
+  console.log("\nTest 3: Unified runtime event delivery is sanitized");
+
+  const runtimePromise = collectEvents(1, 5000, "/api/v2/agents/current/live");
+  await sleep(200);
+  gw.publishRuntimeEvent({
+    runId: "external-run",
+    channelId: "voice",
+    channelLabel: "voice",
+    source: "voice",
+  }, {
+    type: "assistant_snapshot",
+    entry: {
+      id: "live-assistant",
+      type: "message",
+      timestamp: "2026-01-01T00:03:01Z",
+      role: "assistant",
+      isStreaming: true,
+      content: [
+        { type: "thinking", thinking: "PRIVATE_THINKING" },
+        { type: "toolCall", id: "tool-1", name: "bash", label: "Checking safely", arguments: { command: "PRIVATE_ARGUMENT" } },
+        { type: "toolResult", toolCallId: "tool-1", result: "PRIVATE_RESULT", isError: false },
+      ],
+    },
+  });
+  const runtimeEvents = await runtimePromise;
+  const runtimePayload = runtimeEvents[0] || "";
+  assert(runtimePayload.includes('"kind":"runtime"'), "unified feed identifies runtime events");
+  assert(runtimePayload.includes("Checking safely"), "unified feed preserves safe tool labels");
+  assert(!runtimePayload.includes("PRIVATE_ARGUMENT"), "unified feed removes raw tool arguments");
+  assert(!runtimePayload.includes("PRIVATE_RESULT"), "unified feed removes raw tool results");
+  assert(!runtimePayload.includes("PRIVATE_THINKING"), "unified feed removes thinking content");
+
+  const runtimeSequence = Number((JSON.parse(runtimePayload) as { sequence: number }).sequence);
+  const statusEnvelope = gw.publishRuntimeEvent({ runId: "external-run", channelId: "voice", source: "voice" }, {
+    type: "status",
+    status: "streaming",
+    message: "Continuing safely",
+  });
+  const replayEvents = await collectEvents(1, 5000, `/api/v2/agents/current/live?after=${runtimeSequence}`);
+  assert(replayEvents.some((event) => event.includes("Continuing safely")), "unified feed replays a missed sequenced event after reconnect");
+
+  const activeAttachEvents = await collectEvents(1, 5000, "/api/v2/agents/current/live");
+  assert(activeAttachEvents.some((event) => event.includes("Continuing safely")), "a newly attached terminal receives the active run state");
+
+  const directToolPromise = collectEvents(1, 5000, `/api/v2/agents/current/live?after=${statusEnvelope.sequence}`);
+  await sleep(100);
+  const directToolEnvelope = gw.publishRuntimeEvent({ runId: "direct-tool-run", channelId: "slack:C123", source: "slack" }, {
+    type: "toolcall_delta",
+    id: "direct-tool",
+    name: "bash",
+    delta: "PRIVATE_STREAMED_ARGUMENT",
+    arguments: { command: "PRIVATE_DIRECT_ARGUMENT" },
+  });
+  const directToolEvents = await directToolPromise;
+  assert(!directToolEvents.some((event) => event.includes("PRIVATE_STREAMED_ARGUMENT")), "unified feed removes streamed tool argument deltas");
+  assert(!directToolEvents.some((event) => event.includes("PRIVATE_DIRECT_ARGUMENT")), "unified feed removes direct tool arguments");
+
+  const externalComplete = gw.publishRuntimeEvent({ runId: "external-run", channelId: "voice", source: "voice" }, {
+    type: "run_complete",
+    channelId: "voice",
+  });
+  const directComplete = gw.publishRuntimeEvent({ runId: "direct-tool-run", channelId: "slack:C123", source: "slack" }, {
+    type: "run_complete",
+    channelId: "slack:C123",
+  });
+  assert(externalComplete.sequence < directComplete.sequence && directToolEnvelope.sequence < directComplete.sequence, "completed runs advance the ordered live cursor");
+
+  console.log("\nTest 4: Context rotation resets the live tail cursor");
+
+  writeFileSync(CONTEXT_FILE, `${line1}\n${line2}\n${"x".repeat(250_000)}\n`);
+  const rotationPromise = collectEvents(2, 5000, `/api/v2/agents/current/live?after=${directComplete.sequence}`);
+  await sleep(700);
+  writeFileSync(CONTEXT_FILE, `${rotatedLine}\n`);
+  const rotationEvents = await rotationPromise;
+  assert(rotationEvents.some((event) => event.includes('"reason":"context_rotated"')), "unified feed announces context rotation");
+  assert(rotationEvents.some((event) => event.includes("voice-after-compaction")), "first post-compaction voice message is delivered");
 
   // Cleanup
   await gw.stop();
@@ -111,12 +189,12 @@ function fetchBacklog(): Promise<{ lines: string[]; total: number; offset: numbe
   });
 }
 
-function collectEvents(minCount: number, timeoutMs: number): Promise<string[]> {
+function collectEvents(minCount: number, timeoutMs: number, path = "/awareness/stream"): Promise<string[]> {
   return new Promise((resolve) => {
     const events: string[] = [];
     let timer: ReturnType<typeof setTimeout>;
 
-    const req = http.get(`http://localhost:${PORT}/awareness/stream`, (res) => {
+    const req = http.get(`http://localhost:${PORT}${path}`, (res) => {
       let buffer = "";
       res.on("data", (chunk: Buffer) => {
         buffer += chunk.toString();

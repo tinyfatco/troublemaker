@@ -84,6 +84,10 @@ assert.match(cliSource, /decideGoalContinuation\(\{/);
 assert.match(cliSource, /queuedRuns: queuedRunCount/);
 assert.match(cliSource, /createGoalContinuationEvent\(event, automaticGoalTurn\)/);
 assert.match(cliSource, /enqueueActiveGoalContinuationWake\(true\)/, "active goals resume after runtime startup");
-assert.match(cliSource, /state\.runner\.run\(ctx, state\.store, undefined, platform\.formatInstructions\)/);
+assert.match(
+	cliSource,
+	/state\.runner\.run\(\s*ctx,\s*state\.store,\s*undefined,\s*platform\.formatInstructions,\s*\(runtimeEvent\) => \{ gateway\.publishRuntimeEvent\(liveMetadata, runtimeEvent\); \},\s*\)/,
+	"goal continuations use the normal runner path and unified live-event sink",
+);
 
 console.log("goal continuation: ok");
