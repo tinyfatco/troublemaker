@@ -580,6 +580,7 @@ When mentioning users, use <@userId> format.`;
 		// Otherwise fall back to channel-based messaging (e.g., from events system).
 		// Escape underscores in status text so Discord doesn't interpret them as italics
 		const formatStatus = (text: string) => `*${text.replace(/_/g, "\\_")}*`;
+		const settings = new MomSettingsManager(this.workingDir);
 
 		const ops = interactionToken
 			? {
@@ -621,7 +622,10 @@ When mentioning users, use <@userId> format.`;
 				users: this.getAllUsers(),
 				channelName: this.channels.get(event.channel)?.name,
 				isEvent,
-				verbose: new MomSettingsManager(this.workingDir).getVerbose(event.channel, "discord"),
+				verbose: settings.getVerbose(event.channel, "discord"),
+				toolStreaming: settings.getDiscordToolStreaming(),
+				workingStreamPresentation: settings.getDiscordToolStreamPresentation(),
+				workingStreamWindowMs: settings.getDiscordToolStreamWindowMinutes() * 60_000,
 			},
 			{
 				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),

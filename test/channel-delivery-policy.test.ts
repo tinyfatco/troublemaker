@@ -19,6 +19,9 @@ try {
 	assert.equal(defaults.getSlackToolStreaming(), "all", "Slack defaults to the complete tool-label stream");
 	assert.equal(defaults.getSlackToolStreamPresentation(), "split", "Slack defaults to edited event-driven tool-stream windows");
 	assert.equal(defaults.getSlackToolStreamWindowMinutes(), 1, "Slack defaults to one rolling minute per edited working message");
+	assert.equal(defaults.getDiscordToolStreaming(), "all", "Discord defaults to the complete tool-label stream");
+	assert.equal(defaults.getDiscordToolStreamPresentation(), "split", "Discord defaults to edited event-driven tool-stream windows");
+	assert.equal(defaults.getDiscordToolStreamWindowMinutes(), 1, "Discord defaults to one rolling minute per edited working message");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		slack: { toolStreamPresentation: "batched", toolStreamBatchSize: 20 },
@@ -64,6 +67,12 @@ try {
 	assert.equal(globallyVerbose.getSlackToolStreamPresentation(), "condensed", "Slack tool-stream presentation can be condensed durably");
 	globallyVerbose.setSlackToolStreamWindowMinutes(5);
 	assert.equal(globallyVerbose.getSlackToolStreamWindowMinutes(), 5, "Slack tool-stream window can be changed durably");
+	globallyVerbose.setDiscordToolStreaming("off");
+	assert.equal(globallyVerbose.getDiscordToolStreaming(), "off", "Discord tool-streaming mode can be turned off durably");
+	globallyVerbose.setDiscordToolStreamPresentation("condensed");
+	assert.equal(globallyVerbose.getDiscordToolStreamPresentation(), "condensed", "Discord tool-stream presentation can be condensed durably");
+	globallyVerbose.setDiscordToolStreamWindowMinutes(5);
+	assert.equal(globallyVerbose.getDiscordToolStreamWindowMinutes(), 5, "Discord tool-stream window can be changed durably");
 
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids retain the send_message-only default policy");
 	assert.equal(isSendMessageOnlyPlatform("abcdefghijklmnopqrstuvwx12"), true, "Mattermost channel ids infer the send_message-only policy");

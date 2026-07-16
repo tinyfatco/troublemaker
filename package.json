@@ -54,7 +54,7 @@
 		"test:working-rollover-policy": "npx tsx test/working-rollover-policy.test.ts",
 		"test:context-messages-only-error": "npx tsx test/context-messages-only-error.test.ts",
 		"test:discord-ambient": "npx tsx test/discord-ambient.test.ts",
-		"test:discord-gateway": "npx tsx test/discord-gateway-lifecycle.test.ts && npx tsx test/discord-gateway-classification.test.ts && npx tsx test/discord-gateway-config.test.ts && npx tsx test/discord-rest.test.ts",
+		"test:discord-gateway": "npx tsx test/discord-gateway-lifecycle.test.ts && npx tsx test/discord-gateway-classification.test.ts && npx tsx test/discord-gateway-config.test.ts && npx tsx test/discord-rest.test.ts && npx tsx test/discord-tool-streaming.test.ts",
 		"test:channel-pulse-dedupe": "npx tsx test/channel-pulse-dedupe.test.ts",
 		"test:ambient-context": "npx tsx test/ambient-context.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",

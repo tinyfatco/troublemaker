@@ -55,9 +55,13 @@ export type SlackResponsePlacement = "thread" | "channel";
 export type ToolStreamingMode = "off" | "important" | "all";
 export type WorkingStreamPresentation = "split" | "condensed";
 export type SlackToolStreamPresentation = WorkingStreamPresentation;
+export type DiscordToolStreamPresentation = WorkingStreamPresentation;
 export const DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
 export const MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
 export const MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES = 60;
+export const DEFAULT_DISCORD_TOOL_STREAM_WINDOW_MINUTES = DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES;
+export const MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES = MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES;
+export const MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES = MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES;
 
 export interface MomSlackSettings {
 	/** Place the whole inbound Slack turn in its thread or at channel top level. */
@@ -70,6 +74,15 @@ export interface MomSlackSettings {
 	toolStreamWindowMinutes?: number;
 	/** Render selected tool lifecycle with Slack's native streaming task UI. */
 	nativeProgress?: boolean;
+}
+
+export interface MomDiscordSettings {
+	/** Surface safe tool labels while ordinary harness output remains quiet. */
+	toolStreaming?: ToolStreamingMode;
+	/** Keep one edited working message or split it at event-driven time boundaries. */
+	toolStreamPresentation?: DiscordToolStreamPresentation;
+	/** Rolling minutes per edited working message in split presentation. */
+	toolStreamWindowMinutes?: number;
 }
 
 export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "sag" | "noop" | "disabled";
@@ -111,6 +124,7 @@ export interface MomSettings {
 	realtimeVoice?: string;
 	verbose?: VerbosityLevel | MomVerboseSettings;
 	slack?: MomSlackSettings;
+	discord?: MomDiscordSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
@@ -497,6 +511,42 @@ export class MomSettingsManager {
 			throw new Error(`Slack tool stream window must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
 		}
 		this.settings.slack = { ...this.settings.slack, toolStreamWindowMinutes: value };
+		this.save();
+	}
+
+	getDiscordToolStreaming(): ToolStreamingMode {
+		return this.settings.discord?.toolStreaming ?? "all";
+	}
+
+	setDiscordToolStreaming(value: ToolStreamingMode): void {
+		this.settings.discord = { ...this.settings.discord, toolStreaming: value };
+		this.save();
+	}
+
+	getDiscordToolStreamPresentation(): DiscordToolStreamPresentation {
+		return this.settings.discord?.toolStreamPresentation === "condensed" ? "condensed" : "split";
+	}
+
+	setDiscordToolStreamPresentation(value: DiscordToolStreamPresentation): void {
+		this.settings.discord = { ...this.settings.discord, toolStreamPresentation: value };
+		this.save();
+	}
+
+	getDiscordToolStreamWindowMinutes(): number {
+		const value = this.settings.discord?.toolStreamWindowMinutes;
+		return typeof value === "number"
+			&& Number.isInteger(value)
+			&& value >= MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES
+			&& value <= MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES
+			? value
+			: DEFAULT_DISCORD_TOOL_STREAM_WINDOW_MINUTES;
+	}
+
+	setDiscordToolStreamWindowMinutes(value: number): void {
+		if (!Number.isInteger(value) || value < MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES || value > MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES) {
+			throw new Error(`Discord tool stream window must be an integer from ${MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
+		}
+		this.settings.discord = { ...this.settings.discord, toolStreamWindowMinutes: value };
 		this.save();
 	}
 

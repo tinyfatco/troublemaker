@@ -12,9 +12,12 @@ import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
+	MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES,
 	MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES,
+	MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES,
 	MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES,
 	MomSettingsManager,
+	type DiscordToolStreamPresentation,
 	type MomSpontaneitySettings,
 	type SlackResponsePlacement,
 	type SlackToolStreamPresentation,
@@ -42,6 +45,9 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"slack.tool_stream_presentation",
 	"slack.tool_stream_window_minutes",
 	"slack.native_progress",
+	"discord.tool_streaming",
+	"discord.tool_stream_presentation",
+	"discord.tool_stream_window_minutes",
 	"spontaneity.enabled",
 	"spontaneity.level",
 	"spontaneity.intervalMinutes",
@@ -75,6 +81,15 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"slack.tool_stream_split_minutes": "slack.tool_stream_window_minutes",
 	"slack.toolStreamSplitMinutes": "slack.tool_stream_window_minutes",
 	"slack.nativeProgress": "slack.native_progress",
+	"discord.toolStreaming": "discord.tool_streaming",
+	"discord.toolStreamPresentation": "discord.tool_stream_presentation",
+	"discord.tool_stream_layout": "discord.tool_stream_presentation",
+	"discord.toolStreamLayout": "discord.tool_stream_presentation",
+	"discord.toolStreamWindowMinutes": "discord.tool_stream_window_minutes",
+	"discord.tool_stream_group_minutes": "discord.tool_stream_window_minutes",
+	"discord.toolStreamGroupMinutes": "discord.tool_stream_window_minutes",
+	"discord.tool_stream_split_minutes": "discord.tool_stream_window_minutes",
+	"discord.toolStreamSplitMinutes": "discord.tool_stream_window_minutes",
 	"native_progress": "slack.native_progress",
 	"tool_streaming": "slack.tool_streaming",
 	"toolStreaming": "slack.tool_streaming",
@@ -246,18 +261,18 @@ function configureSlackResponsePlacement(workingDir: string, value: unknown): Se
 	};
 }
 
-function parseToolStreamingMode(value: unknown): ToolStreamingMode {
-	const normalized = parseString(value, "slack.tool_streaming").trim().toLowerCase().replace(/_/g, "-");
+function parseToolStreamingMode(value: unknown, setting: string): ToolStreamingMode {
+	const normalized = parseString(value, setting).trim().toLowerCase().replace(/_/g, "-");
 	if (["off", "none", "quiet", "false"].includes(normalized)) return "off";
 	if (["important", "selected", "selective", "on", "true"].includes(normalized)) return "important";
 	if (["all", "everything"].includes(normalized)) return "all";
-	throw new Error('slack.tool_streaming must be "off", "important", or "all".');
+	throw new Error(`${setting} must be "off", "important", or "all".`);
 }
 
 function configureSlackToolStreaming(workingDir: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getSlackToolStreaming();
-	const newValue = parseToolStreamingMode(value);
+	const newValue = parseToolStreamingMode(value, "slack.tool_streaming");
 	manager.setSlackToolStreaming(newValue);
 	return {
 		changed: true,
@@ -272,17 +287,17 @@ function configureSlackToolStreaming(workingDir: string, value: unknown): SelfCo
 	};
 }
 
-function parseSlackToolStreamPresentation(value: unknown): SlackToolStreamPresentation {
-	const normalized = parseString(value, "slack.tool_stream_presentation").trim().toLowerCase().replace(/_/g, "-");
+function parseToolStreamPresentation(value: unknown, setting: string): SlackToolStreamPresentation {
+	const normalized = parseString(value, setting).trim().toLowerCase().replace(/_/g, "-");
 	if (["split", "batched", "segmented", "interleaved", "grouped", "chronological", "rollover"].includes(normalized)) return "split";
 	if (["condensed", "compact", "edited", "single", "single-message", "one-message"].includes(normalized)) return "condensed";
-	throw new Error('slack.tool_stream_presentation must be "split" or "condensed".');
+	throw new Error(`${setting} must be "split" or "condensed".`);
 }
 
 function configureSlackToolStreamPresentation(workingDir: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getSlackToolStreamPresentation();
-	const newValue = parseSlackToolStreamPresentation(value);
+	const newValue = parseToolStreamPresentation(value, "slack.tool_stream_presentation");
 	manager.setSlackToolStreamPresentation(newValue);
 	return {
 		changed: true,
@@ -309,6 +324,57 @@ function configureSlackToolStreamWindowMinutes(workingDir: string, value: unknow
 		previousValue,
 		newValue: parsed,
 		note: `On the next split Slack turn, each edited working message will cover a rolling ${parsed}-minute window. The first real tool event after that window opens a fresh message.`,
+	};
+}
+
+function configureDiscordToolStreaming(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getDiscordToolStreaming();
+	const newValue = parseToolStreamingMode(value, "discord.tool_streaming");
+	manager.setDiscordToolStreaming(newValue);
+	return {
+		changed: true,
+		setting: "discord.tool_streaming",
+		previousValue,
+		newValue,
+		note: newValue === "off"
+			? "Discord tool labels are quiet on the next turn."
+			: newValue === "important"
+				? "On the next Discord turn, only safe tool labels explicitly marked show: true will surface."
+				: "On the next Discord turn, every safe tool label will surface; raw arguments and results still follow the verbosity boundary.",
+	};
+}
+
+function configureDiscordToolStreamPresentation(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getDiscordToolStreamPresentation();
+	const newValue = parseToolStreamPresentation(value, "discord.tool_stream_presentation") as DiscordToolStreamPresentation;
+	manager.setDiscordToolStreamPresentation(newValue);
+	return {
+		changed: true,
+		setting: "discord.tool_stream_presentation",
+		previousValue,
+		newValue,
+		note: newValue === "condensed"
+			? "On the next Discord turn, tool progress will stay in one edited working message."
+			: `On the next Discord turn, tool progress will edit one working message for each rolling ${manager.getDiscordToolStreamWindowMinutes()}-minute window. New messages are created only when real tool events arrive.`,
+	};
+}
+
+function configureDiscordToolStreamWindowMinutes(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getDiscordToolStreamWindowMinutes();
+	const parsed = parseNumber(value, "discord.tool_stream_window_minutes");
+	if (!Number.isInteger(parsed) || parsed < MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES || parsed > MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES) {
+		throw new Error(`discord.tool_stream_window_minutes must be an integer from ${MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES}.`);
+	}
+	manager.setDiscordToolStreamWindowMinutes(parsed);
+	return {
+		changed: true,
+		setting: "discord.tool_stream_window_minutes",
+		previousValue,
+		newValue: parsed,
+		note: `On the next split Discord turn, each edited working message will cover a rolling ${parsed}-minute window. The first real tool event after that window opens a fresh message.`,
 	};
 }
 
@@ -472,6 +538,9 @@ export function applySelfConfiguration(
 	if (target === "slack.tool_stream_presentation") return configureSlackToolStreamPresentation(workingDir, value);
 	if (target === "slack.tool_stream_window_minutes") return configureSlackToolStreamWindowMinutes(workingDir, value);
 	if (target === "slack.native_progress") return configureSlackNativeProgress(workingDir, value);
+	if (target === "discord.tool_streaming") return configureDiscordToolStreaming(workingDir, value);
+	if (target === "discord.tool_stream_presentation") return configureDiscordToolStreamPresentation(workingDir, value);
+	if (target === "discord.tool_stream_window_minutes") return configureDiscordToolStreamWindowMinutes(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "speak.auto") return configureAutomaticSpeech(workingDir, value);
@@ -499,6 +568,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		setting: Type.String({
 			description:
 				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
+				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
 				"heartbeat.checklist, speak.auto, voice/realtime_voice.",
@@ -510,7 +580,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack tool streaming, Slack tool-stream grouping, native Slack progress cards, automatic local SAG speech, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use speak.auto=true to speak final responses through SAG, slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, slack.tool_stream_presentation with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, slack.tool_stream_window_minutes to choose 1-60 minutes per split message, and slack.native_progress to enable or disable native task cards. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, automatic local SAG speech, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use speak.auto=true to speak final responses through SAG, slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, and slack.native_progress to enable or disable native task cards. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

@@ -88,6 +88,27 @@ try {
 	assert(nativeProgress.newValue === true, "native progress alias accepts natural booleans");
 	assert((settings.slack as any).nativeProgress === true, "native progress persists inside the Slack settings block");
 
+	const discordSelectiveStreaming = applySelfConfiguration(workingDir, "discord.tool_streaming", "selected");
+	settings = readSettings(workingDir);
+	assert(discordSelectiveStreaming.newValue === "important", "Discord tool streaming normalizes selected to important");
+	assert((settings.discord as any).toolStreaming === "important", "Discord tool streaming writes its durable settings block");
+	const discordAllStreaming = applySelfConfiguration(workingDir, "discord.toolStreaming", "everything");
+	settings = readSettings(workingDir);
+	assert(discordAllStreaming.newValue === "all", "Discord camelCase tool-streaming alias normalizes everything to all");
+	assert((settings.discord as any).toolStreaming === "all", "Discord camelCase tool-streaming alias persists all mode");
+	const discordCondensedPresentation = applySelfConfiguration(workingDir, "discord.tool_stream_presentation", "one_message");
+	settings = readSettings(workingDir);
+	assert(discordCondensedPresentation.newValue === "condensed", "Discord tool-stream presentation normalizes one-message language");
+	assert((settings.discord as any).toolStreamPresentation === "condensed", "Discord condensed presentation persists");
+	const discordSplitPresentation = applySelfConfiguration(workingDir, "discord.toolStreamLayout", "grouped");
+	settings = readSettings(workingDir);
+	assert(discordSplitPresentation.newValue === "split", "Discord tool-stream layout alias normalizes grouped language");
+	assert((settings.discord as any).toolStreamPresentation === "split", "Discord split presentation replaces the prior value");
+	const discordWindowMinutes = applySelfConfiguration(workingDir, "discord.tool_stream_group_minutes", "4");
+	settings = readSettings(workingDir);
+	assert(discordWindowMinutes.newValue === 4, "Discord tool-stream group-minutes alias accepts a numeric string");
+	assert((settings.discord as any).toolStreamWindowMinutes === 4, "Discord tool-stream window persists inside Discord settings");
+
 	const spontaneity = applySelfConfiguration(workingDir, "spontaneity.level", 5);
 	settings = readSettings(workingDir);
 	assert((settings.spontaneity as any).level === 5, "spontaneity level writes settings");
@@ -154,6 +175,27 @@ try {
 		assert(false, "unsafe Slack tool-stream window throws");
 	} catch (err) {
 		assert(err instanceof Error && err.message.includes("1"), "invalid Slack tool-stream window explains its safe range");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "discord.tool_streaming", "maximum-jazz");
+		assert(false, "invalid Discord tool-streaming mode throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("important"), "invalid Discord tool-streaming mode explains accepted values");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "discord.tool_stream_presentation", "maximum-jazz");
+		assert(false, "invalid Discord tool-stream presentation throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("split"), "invalid Discord tool-stream presentation explains accepted values");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "discord.tool_stream_window_minutes", 0);
+		assert(false, "unsafe Discord tool-stream window throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("1"), "invalid Discord tool-stream window explains its safe range");
 	}
 
 	try {
