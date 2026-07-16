@@ -139,6 +139,29 @@ Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root
 | **Polling** (default) | `--adapter=telegram` | `MOM_TELEGRAM_BOT_TOKEN` | Outbound `getUpdates` polling. Always-on. |
 | **Webhook** (planned) | `--adapter=telegram:webhook` | `MOM_TELEGRAM_BOT_TOKEN` + secret | HTTP server receives pushed updates. Serverless-friendly. |
 
+### Discord
+
+| Mode | CLI flag | Env vars | Connection |
+|------|----------|----------|------------|
+| **Gateway** | `--adapter=discord` or `discord:gateway` | `MOM_DISCORD_BOT_TOKEN` + `MOM_DISCORD_APPLICATION_ID` | Outbound API v10 WebSocket for DMs, mentions, replies, and opt-in ambient messages; REST for sends. |
+| **Interactions webhook** | `--adapter=discord:webhook` | Bot token + application ID + `MOM_DISCORD_PUBLIC_KEY` | Signed inbound HTTP interactions; the compatible relay route remains available. |
+
+The Gateway adapter discovers its endpoint through `/gateway/bot`, tracks
+sequence and session state, resumes after recoverable disconnects, watches
+heartbeat acknowledgements, and uses bounded jittered reconnects. It checks the
+session-start budget and local five-second Identify window before identifying.
+If Discord recommends multiple shards, configure one shard per process rather
+than silently receiving partial guild coverage.
+
+Ambient guild intake is off by default. Optional guild, guild-channel,
+global-user, and DM-user allowlists are applied before metadata, activity
+tracking, or workspace logging. The global-user list applies everywhere;
+guild and channel lists apply only to guild messages, and the DM-user list
+applies only to DMs. Applicable configured lists compose with logical AND, and
+an explicitly empty list denies its scope. DM channel IDs are dynamic and never
+need to appear in the guild-channel allowlist. See the README for environment
+names and startup examples.
+
 ## File Structure
 
 ```
@@ -149,6 +172,9 @@ src/
 │   ├── slack-socket.ts   — SlackSocketAdapter (Socket Mode — outbound WebSocket)
 │   ├── slack-webhook.ts       — SlackWebhookAdapter (HTTP Events API — inbound HTTP)
 │   ├── mattermost-socket.ts   — MattermostSocketAdapter (outbound WebSocket + REST)
+│   ├── discord-base.ts        — Shared Discord REST, boundaries, normalization, and context
+│   ├── discord-gateway.ts     — DiscordGatewayAdapter (outbound API v10 Gateway)
+│   ├── discord-webhook.ts     — DiscordWebhookAdapter (signed Interactions HTTP)
 │   └── telegram.ts            — TelegramAdapter (polling + Bot API)
 ├── agent.ts              — AgentRunner, system prompt, tool handling
 ├── main.ts               — CLI, adapter factory, handler, channel state

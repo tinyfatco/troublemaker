@@ -1,9 +1,9 @@
-import { appendFileSync, existsSync, readFileSync } from "fs";
+import { appendFileSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
 import type { ChannelPulse } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
-import type { Attachment, ChannelStore } from "../store.js";
+import type { ChannelStore } from "../store.js";
 import { markdownToDiscordMarkdown, stripDiscordMentions } from "./discord-format.js";
 import { createTwoMessageContext } from "./context.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
@@ -23,8 +23,60 @@ export interface DiscordBaseConfig {
 	applicationId: string;
 	workingDir: string;
 	pulse?: ChannelPulse;
+	/**
+	 * Optional inbound boundaries. Omitted lists do not add a restriction; an
+	 * explicitly empty list denies that scope. User boundaries apply to every
+	 * message, guild/channel boundaries only to guild messages, and the DM-user
+	 * boundary only to DMs. Every applicable configured list must match.
+	 */
+	allowedGuildIds?: Iterable<string>;
+	allowedChannelIds?: Iterable<string>;
+	allowedUserIds?: Iterable<string>;
+	allowedDmUserIds?: Iterable<string>;
 	/** Called when a non-DM, non-mention message arrives and the agent might want to engage. */
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	/** @internal Deterministic REST hooks used by adapter tests. */
+	rest?: DiscordRestOptions;
+}
+
+export interface DiscordRestOptions {
+	fetch?: typeof globalThis.fetch;
+	sleep?: (delayMs: number) => Promise<void>;
+	maxRateLimitRetries?: number;
+	maxRetryAfterMs?: number;
+	requestTimeoutMs?: number;
+}
+
+export type DiscordMessageTrigger = "dm" | "mention" | "reply" | "ambient";
+
+/** Normalized MESSAGE_CREATE shape shared by the in-process and relay adapters. */
+export interface DiscordGatewayMessagePayload {
+	type: string;
+	trigger?: DiscordMessageTrigger;
+	channelId: string;
+	channelName?: string;
+	guildId: string | null;
+	author: {
+		id: string;
+		username: string;
+		global_name?: string | null;
+		discriminator?: string;
+	};
+	content: string;
+	rawContent?: string;
+	messageId: string;
+	isDM: boolean;
+	isMentioned?: boolean;
+	timestamp: string;
+	botUserId?: string;
+	referencedMessageId?: string;
+}
+
+interface DiscordInboundBoundaryInput {
+	guildId: string | null;
+	channelId: string;
+	userId: string;
+	isDM: boolean;
 }
 
 type QueuedWork = () => Promise<void>;
@@ -43,6 +95,16 @@ When mentioning users, use <@userId> format.`;
 	protected botUserId: string | null = null;
 	protected pulse?: ChannelPulse;
 	protected onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	private allowedGuildIds?: ReadonlySet<string>;
+	private allowedChannelIds?: ReadonlySet<string>;
+	private allowedUserIds?: ReadonlySet<string>;
+	private allowedDmUserIds?: ReadonlySet<string>;
+	private restFetch: typeof globalThis.fetch;
+	private restSleep: (delayMs: number) => Promise<void>;
+	private restMaxRateLimitRetries: number;
+	private restMaxRetryAfterMs: number;
+	private restRequestTimeoutMs: number;
+	private recentBotMessageIds = new Set<string>();
 
 	// Track users/channels we've seen
 	protected users = new Map<string, UserInfo>();
@@ -57,6 +119,15 @@ When mentioning users, use <@userId> format.`;
 		this.botUserId = config.applicationId;
 		this.pulse = config.pulse;
 		this.onAmbientMessage = config.onAmbientMessage;
+		this.allowedGuildIds = optionalIdSet(config.allowedGuildIds);
+		this.allowedChannelIds = optionalIdSet(config.allowedChannelIds);
+		this.allowedUserIds = optionalIdSet(config.allowedUserIds);
+		this.allowedDmUserIds = optionalIdSet(config.allowedDmUserIds);
+		this.restFetch = config.rest?.fetch ?? globalThis.fetch;
+		this.restSleep = config.rest?.sleep ?? ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
+		this.restMaxRateLimitRetries = boundedInteger(config.rest?.maxRateLimitRetries, 2, 0, 10);
+		this.restMaxRetryAfterMs = boundedInteger(config.rest?.maxRetryAfterMs, 60_000, 0, 15 * 60_000);
+		this.restRequestTimeoutMs = boundedInteger(config.rest?.requestTimeoutMs, 15_000, 1, 5 * 60_000);
 		this.pulse?.setSelfId(this.botUserId);
 	}
 
@@ -80,27 +151,197 @@ When mentioning users, use <@userId> format.`;
 		options: RequestInit = {},
 	): Promise<Response> {
 		const url = `${DISCORD_API}${path}`;
-		const headers: Record<string, string> = {
-			authorization: `Bot ${this.botToken}`,
-			...(options.headers as Record<string, string> || {}),
-		};
+		const routeLabel = describeDiscordRoute(path);
+		const method = (options.method || "GET").toUpperCase();
+		const headers = new Headers(options.headers);
+		headers.set("authorization", `Bot ${this.botToken}`);
+		headers.set("user-agent", "DiscordBot (https://github.com/tinyfatco/troublemaker, 0.1.0)");
 
 		// Add content-type for JSON bodies
-		if (options.body && typeof options.body === "string") {
-			headers["content-type"] = "application/json";
+		if (options.body && typeof options.body === "string" && !headers.has("content-type")) {
+			headers.set("content-type", "application/json");
 		}
 
-		const resp = await fetch(url, { ...options, headers });
+		for (let attempt = 0; ; attempt++) {
+			const timeoutController = new AbortController();
+			const timeout = setTimeout(() => timeoutController.abort(), this.restRequestTimeoutMs);
+			const callerSignal = options.signal;
+			const abortFromCaller = () => timeoutController.abort();
+			if (callerSignal?.aborted) timeoutController.abort();
+			callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 
-		// Handle rate limits
-		if (resp.status === 429) {
-			const retryAfter = parseFloat(resp.headers.get("retry-after") || "1");
-			log.logWarning(`[discord] Rate limited, retrying after ${retryAfter}s`);
-			await new Promise((r) => setTimeout(r, retryAfter * 1000));
-			return this.discordFetch(path, options);
+			let resp: Response;
+			try {
+				resp = await this.restFetch(url, { ...options, headers, signal: timeoutController.signal });
+			} catch (error) {
+				const kind = error instanceof Error ? error.name : "unknown error";
+				log.logWarning(`[discord] REST ${method} ${routeLabel} failed (${kind})`);
+				throw new Error(`Discord REST ${method} ${routeLabel} failed`, { cause: error });
+			} finally {
+				clearTimeout(timeout);
+				callerSignal?.removeEventListener("abort", abortFromCaller);
+			}
+
+			if (resp.status !== 429) {
+				if (!resp.ok) {
+					log.logWarning(`[discord] REST ${method} ${routeLabel} returned HTTP ${resp.status}`);
+					throw new Error(`Discord REST ${method} ${routeLabel} returned HTTP ${resp.status}`);
+				}
+				return resp;
+			}
+
+			if (attempt >= this.restMaxRateLimitRetries) {
+				log.logWarning(`[discord] REST ${method} ${routeLabel} remained rate limited after ${attempt + 1} attempts`);
+				throw new Error(`Discord REST ${method} ${routeLabel} returned HTTP 429 after ${attempt + 1} attempts`);
+			}
+
+			const retryAfterMs = await readRetryAfterMs(resp);
+			if (retryAfterMs === null || retryAfterMs > this.restMaxRetryAfterMs) {
+				log.logWarning(`[discord] REST ${method} ${routeLabel} returned an unusable retry delay; not retrying`);
+				throw new Error(`Discord REST ${method} ${routeLabel} returned HTTP 429 with an unusable retry delay`);
+			}
+
+			log.logWarning(`[discord] REST ${method} ${routeLabel} rate limited; retrying in ${Math.ceil(retryAfterMs)}ms (attempt ${attempt + 2}/${this.restMaxRateLimitRetries + 1})`);
+			await this.restSleep(retryAfterMs);
+		}
+	}
+
+	// ==========================================================================
+	// Shared inbound MESSAGE_CREATE normalization and boundaries
+	// ==========================================================================
+
+	/** Whether an inbound identity/channel tuple crosses every applicable configured boundary. */
+	protected acceptsIncomingDiscordMessage(input: DiscordInboundBoundaryInput): boolean {
+		if (this.allowedUserIds !== undefined && !this.allowedUserIds.has(input.userId)) return false;
+		if (input.isDM) {
+			return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(input.userId);
+		}
+		return input.guildId !== null
+			&& (this.allowedGuildIds === undefined || this.allowedGuildIds.has(input.guildId))
+			&& (this.allowedChannelIds === undefined || this.allowedChannelIds.has(input.channelId));
+	}
+
+	protected acceptsDiscordGuild(guildId: string): boolean {
+		return this.allowedGuildIds === undefined || this.allowedGuildIds.has(guildId);
+	}
+
+	protected acceptsDiscordChannel(channelId: string): boolean {
+		return this.allowedChannelIds === undefined || this.allowedChannelIds.has(channelId);
+	}
+
+	protected setDiscordBotUserId(userId: string): void {
+		if (!userId) return;
+		this.botUserId = userId;
+		this.pulse?.setSelfId(userId);
+	}
+
+	protected observeDiscordChannel(channelId: string, name?: string): void {
+		if (!channelId) return;
+		const previous = this.channels.get(channelId);
+		this.channels.set(channelId, { id: channelId, name: name?.trim() || previous?.name || channelId });
+	}
+
+	protected forgetDiscordChannel(channelId: string): void {
+		this.channels.delete(channelId);
+	}
+
+	protected isKnownBotMessage(messageId: string | undefined): boolean {
+		return !!messageId && this.recentBotMessageIds.has(messageId);
+	}
+
+	/**
+	 * Normalize and route a classified Discord message. Boundary rejection occurs
+	 * before metadata, pulse, or workspace logging, matching isolated-agent DM
+	 * behavior in the Slack Socket adapter.
+	 */
+	async handleGatewayMessage(payload: DiscordGatewayMessagePayload): Promise<boolean> {
+		if (!isDiscordGatewayMessagePayload(payload)) {
+			log.logWarning("[discord] Ignoring malformed normalized message payload");
+			return false;
 		}
 
-		return resp;
+		const { channelId, author, messageId, isDM } = payload;
+		const trigger = payload.trigger || (isDM ? "dm" : "mention");
+		const content = payload.content || "";
+		const rawContent = payload.rawContent || content;
+		const displayName = author.global_name || author.username;
+
+		if (!content.trim()) return false;
+		if (!this.acceptsIncomingDiscordMessage({
+			guildId: payload.guildId,
+			channelId,
+			userId: author.id,
+			isDM,
+		})) {
+			log.logInfo("[discord] Ignoring message outside configured inbound boundaries");
+			return false;
+		}
+
+		if (payload.botUserId) this.setDiscordBotUserId(payload.botUserId);
+
+		log.logInfo(`[discord] Gateway message: ${trigger} from ${displayName}: ${content.substring(0, 80)}`);
+
+		this.users.set(author.id, { id: author.id, userName: author.username, displayName });
+		this.observeDiscordChannel(channelId, payload.channelName || (isDM ? `DM with ${displayName}` : undefined));
+
+		this.pulse?.record(channelId, author.id, rawContent.length, rawContent, { messageId, directlyAddressed: trigger !== "ambient" });
+
+		const replyTargetDescription = isDM
+			? "Discord DM"
+			: trigger === "ambient"
+				? "Discord channel containing this ambient message; use only if a visible reply is appropriate"
+				: trigger === "reply"
+					? "Discord channel containing this reply to the bot"
+					: "Discord channel where this message arrived";
+		const momEvent: MomEvent = {
+			type: isDM ? "dm" : "mention",
+			channel: channelId,
+			ts: messageId,
+			user: author.id,
+			text: stripDiscordMentions(content),
+			rawText: rawContent,
+			sourceEventType: `discord_${trigger}`,
+			directlyAddressed: trigger !== "ambient",
+			replyTarget: `discord:${channelId}`,
+			replyTargetDescription,
+		};
+
+		this.logToFile({
+			date: new Date().toISOString(),
+			ts: messageId,
+			channel: `discord:${isDM ? "DM" : this.channels.get(channelId)?.name || channelId}`,
+			channelId,
+			user: author.id,
+			userName: author.username,
+			displayName,
+			text: rawContent,
+			attachments: [],
+			isBot: false,
+		});
+
+		if (!isDM && trigger === "ambient") {
+			this.onAmbientMessage?.(channelId, momEvent, this);
+			return true;
+		}
+
+		if (this.handler.resolvePendingInput(channelId, momEvent.text)) return true;
+		if (await this.handler.handleSlashCommand(momEvent, this)) return true;
+
+		if (momEvent.text.toLowerCase().trim() === "stop") {
+			if (this.handler.isRunning(channelId)) {
+				void this.handler.handleStop(channelId, this, momEvent).catch((error) => {
+					log.logWarning("[discord] Stop response failed", error instanceof Error ? error.message : String(error));
+				});
+			}
+			return true;
+		}
+
+		if (this.handler.isRunning(channelId)) {
+			this.handler.handleSteer(momEvent, this);
+		} else {
+			this.enqueueWork(channelId, async () => { await this.handler.handleEvent(momEvent, this); });
+		}
+		return true;
 	}
 
 	// ==========================================================================
@@ -148,10 +389,7 @@ When mentioning users, use <@userId> format.`;
 					body: JSON.stringify({ content: markdownToDiscordMarkdown(chunk) }),
 				},
 			);
-			if (resp.ok) {
-				const data = (await resp.json()) as { id: string };
-				lastId = data.id;
-			}
+			lastId = await readDiscordMessageId(resp);
 		}
 		return lastId;
 	}
@@ -195,10 +433,7 @@ When mentioning users, use <@userId> format.`;
 				method: "POST",
 				body: JSON.stringify({ content: markdownToDiscordMarkdown(chunk) }),
 			});
-			if (resp.ok) {
-				const data = (await resp.json()) as { id: string };
-				lastId = data.id;
-			}
+			lastId = await readDiscordMessageId(resp);
 		}
 		return lastId;
 	}
@@ -232,11 +467,7 @@ When mentioning users, use <@userId> format.`;
 				message_reference: { message_id: threadTs },
 			}),
 		});
-		if (resp.ok) {
-			const data = (await resp.json()) as { id: string };
-			return data.id;
-		}
-		return "";
+		return readDiscordMessageId(resp);
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
@@ -270,6 +501,13 @@ When mentioning users, use <@userId> format.`;
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
+		if (ts) {
+			this.recentBotMessageIds.add(ts);
+			if (this.recentBotMessageIds.size > 256) {
+				const oldest = this.recentBotMessageIds.values().next().value as string | undefined;
+				if (oldest) this.recentBotMessageIds.delete(oldest);
+			}
+		}
 		const ch = this.channels.get(channel);
 		this.logToFile({
 			date: new Date().toISOString(),
@@ -456,4 +694,86 @@ function chunkText(text: string, maxLength: number): string[] {
 	}
 
 	return chunks;
+}
+
+function optionalIdSet(ids: Iterable<string> | undefined): ReadonlySet<string> | undefined {
+	if (ids === undefined) return undefined;
+	return new Set(Array.from(ids, (id) => id.trim()).filter(Boolean));
+}
+
+function boundedInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+	if (value === undefined) return fallback;
+	if (!Number.isInteger(value) || value < min || value > max) {
+		throw new Error(`Discord configuration value must be an integer between ${min} and ${max}`);
+	}
+	return value;
+}
+
+function describeDiscordRoute(path: string): string {
+	return path
+		.split("?", 1)[0]
+		.replace(/\/webhooks\/[^/]+\/[^/]+/, "/webhooks/:application/:token")
+		.replace(/\b\d{17,20}\b/g, ":id");
+}
+
+async function readRetryAfterMs(response: Response): Promise<number | null> {
+	const retryAfterHeader = response.headers.get("retry-after");
+	if (retryAfterHeader !== null) {
+		const headerSeconds = Number(retryAfterHeader);
+		if (Number.isFinite(headerSeconds) && headerSeconds >= 0) return headerSeconds * 1000;
+	}
+
+	try {
+		const body = await response.clone().json() as { retry_after?: unknown };
+		const bodySeconds = Number(body.retry_after);
+		return Number.isFinite(bodySeconds) && bodySeconds >= 0 ? bodySeconds * 1000 : null;
+	} catch {
+		return null;
+	}
+}
+
+async function readDiscordMessageId(response: Response): Promise<string> {
+	let body: unknown;
+	try {
+		body = await response.json();
+	} catch {
+		throw new Error("Discord REST returned an invalid message response");
+	}
+	if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || !(body as { id: string }).id) {
+		throw new Error("Discord REST returned an invalid message response");
+	}
+	return (body as { id: string }).id;
+}
+
+function isDiscordGatewayMessagePayload(payload: unknown): payload is DiscordGatewayMessagePayload {
+	if (!payload || typeof payload !== "object") return false;
+	const candidate = payload as Partial<DiscordGatewayMessagePayload>;
+	if (candidate.type !== "message") return false;
+	if (typeof candidate.channelId !== "string" || !candidate.channelId) return false;
+	if (typeof candidate.messageId !== "string" || !candidate.messageId) return false;
+	if (typeof candidate.content !== "string" || typeof candidate.isDM !== "boolean") return false;
+	if (candidate.guildId !== null && typeof candidate.guildId !== "string") return false;
+	if (candidate.isDM !== (candidate.guildId === null)) return false;
+	if (candidate.trigger !== undefined && !isDiscordMessageTrigger(candidate.trigger)) return false;
+	if (candidate.isDM && candidate.trigger !== undefined && candidate.trigger !== "dm") return false;
+	if (!candidate.isDM && candidate.trigger === "dm") return false;
+	if (candidate.channelName !== undefined && typeof candidate.channelName !== "string") return false;
+	if (candidate.rawContent !== undefined && typeof candidate.rawContent !== "string") return false;
+	if (candidate.timestamp !== undefined && typeof candidate.timestamp !== "string") return false;
+	if (candidate.botUserId !== undefined && typeof candidate.botUserId !== "string") return false;
+	if (candidate.referencedMessageId !== undefined && typeof candidate.referencedMessageId !== "string") return false;
+	if (candidate.isMentioned !== undefined && typeof candidate.isMentioned !== "boolean") return false;
+	if (!candidate.author || typeof candidate.author !== "object") return false;
+	if (candidate.author.global_name !== undefined
+		&& candidate.author.global_name !== null
+		&& typeof candidate.author.global_name !== "string") return false;
+	if (candidate.author.discriminator !== undefined && typeof candidate.author.discriminator !== "string") return false;
+	return typeof candidate.author.id === "string"
+		&& !!candidate.author.id
+		&& typeof candidate.author.username === "string"
+		&& !!candidate.author.username;
+}
+
+function isDiscordMessageTrigger(value: unknown): value is DiscordMessageTrigger {
+	return value === "dm" || value === "mention" || value === "reply" || value === "ambient";
 }

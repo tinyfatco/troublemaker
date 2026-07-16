@@ -70,6 +70,8 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 | `mattermost` / `mattermost:socket` | Outbound WebSocket + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN` | Self-hosted or managed Mattermost |
 | `telegram` / `telegram:polling` | Outbound polling | `MOM_TELEGRAM_BOT_TOKEN` | Always-on |
 | `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_SECRET` | Webhook-based |
+| `discord` / `discord:gateway` | Outbound Gateway WebSocket + REST | `MOM_DISCORD_BOT_TOKEN`, `MOM_DISCORD_APPLICATION_ID` | Always-on; no public ingress or relay |
+| `discord:webhook` | Signed inbound Interactions HTTP | Discord bot token, application ID, and public key | Slash commands and compatible relay deployments |
 | `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN` | Webhook-based |
 
 **Auto-detection:** If no `--adapter` flag is given, troublemaker detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
@@ -119,9 +121,50 @@ The installer creates a profile in `~/.config/troublemaker/tui.json` and a comma
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |
 | `MOM_SKIP_WEBHOOK_REGISTRATION` | telegram:webhook | Skip Telegram webhook registration (for external management) |
+| `MOM_DISCORD_BOT_TOKEN` | discord:* | Discord bot token; never put it in source or logs |
+| `MOM_DISCORD_APPLICATION_ID` | discord:* | Discord application snowflake |
+| `MOM_DISCORD_PUBLIC_KEY` | discord:webhook | Ed25519 public key for signed Interactions |
+| `MOM_DISCORD_GATEWAY` | auto-detection | Set to `true` to explicitly auto-select `discord:gateway` |
+| `MOM_DISCORD_GATEWAY_INTENTS` | discord:gateway | Optional decimal intent bitfield (default `37377`) |
+| `MOM_DISCORD_GATEWAY_AMBIENT_MESSAGES` | discord:gateway | Set to `true` to observe non-mention guild messages (default `false`) |
+| `MOM_DISCORD_GATEWAY_SHARD_ID` | discord:gateway | Optional zero-based shard handled by this process; set with shard count |
+| `MOM_DISCORD_GATEWAY_SHARD_COUNT` | discord:gateway | Optional total shard count; set with shard ID |
+| `MOM_DISCORD_ALLOWED_GUILDS` | discord:* | Optional comma-separated guild snowflakes |
+| `MOM_DISCORD_ALLOWED_CHANNELS` | discord:* | Optional comma-separated guild-channel snowflakes; not applied to DMs |
+| `MOM_DISCORD_ALLOWED_USERS` | discord:* | Optional comma-separated user snowflakes for all inbound messages |
+| `MOM_DISCORD_ALLOWED_DM_USERS` | discord:* | Optional comma-separated user snowflakes for DMs |
 | `MOM_EMAIL_TOOLS_TOKEN` | email:webhook | Token for email send API |
 | `MOM_EMAIL_SEND_URL` | email:webhook | Email send endpoint (default: `https://tinyfat.com/api/email/send`) |
 | `MOM_HTTP_PORT` | — | Gateway port override (same as `--port`) |
+
+### Discord Gateway
+
+Gateway mode receives DMs, bot mentions, and replies to known bot messages over
+an outbound Discord API v10 WebSocket. Ordinary guild messages are discarded
+unless ambient intake is explicitly enabled. Enable the **Message Content**
+privileged intent for the Discord application, then run:
+
+```bash
+export MOM_DISCORD_BOT_TOKEN='<bot-token>'
+export MOM_DISCORD_APPLICATION_ID='<application-snowflake>'
+troublemaker --adapter=discord ./data
+```
+
+Allowlist variables are scope-aware and conjunctive within their scope.
+`MOM_DISCORD_ALLOWED_USERS` applies to every inbound message; guild and channel
+lists apply only to guild messages, while `MOM_DISCORD_ALLOWED_DM_USERS` applies
+only to DMs. Every applicable list that is set must match. An unset list adds no
+restriction, while a set-but-empty list denies that scope; for example,
+`MOM_DISCORD_ALLOWED_DM_USERS=''` denies all DMs before metadata, activity
+tracking, or workspace logging. A DM never needs its dynamic channel ID in
+`MOM_DISCORD_ALLOWED_CHANNELS`.
+
+Gateway mode is never selected from credentials alone. Use the explicit CLI
+mode above, or set `MOM_DISCORD_GATEWAY=true` for environment auto-detection.
+When a public key is present and Gateway opt-in is absent, existing signed
+`discord:webhook` auto-detection is preserved. Large bots run one configured
+shard per process with both `MOM_DISCORD_GATEWAY_SHARD_ID` and
+`MOM_DISCORD_GATEWAY_SHARD_COUNT`.
 
 ### Claude Code CLI Models
 

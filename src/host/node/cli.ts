@@ -2,6 +2,8 @@
 
 import { randomUUID } from "crypto";
 import { join, resolve } from "path";
+import { detectDiscordAdapterFromEnv, normalizeDiscordAdapterName, readDiscordBoundaryEnvironment, readDiscordGatewayEnvironment } from "../../adapters/discord-config.js";
+import { DiscordGatewayAdapter } from "../../adapters/discord-gateway.js";
 import { DiscordWebhookAdapter } from "../../adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "../../adapters/heartbeat.js";
@@ -194,7 +196,7 @@ function parseArgs(): ParsedArgs {
 	// "slack" alone = "slack:socket" for backwards compat.
 	let adapters: string[];
 	if (adapterArg) {
-		adapters = adapterArg.split(",").map((a) => a.trim());
+		adapters = adapterArg.split(",").map((a) => normalizeDiscordAdapterName(a.trim()));
 	} else {
 		adapters = [];
 		if (process.env.MOM_SLACK_APP_TOKEN && process.env.MOM_SLACK_BOT_TOKEN) {
@@ -221,9 +223,8 @@ function parseArgs(): ParsedArgs {
 				adapters.push("telegram");
 			}
 		}
-		if (process.env.MOM_DISCORD_BOT_TOKEN && process.env.MOM_DISCORD_APPLICATION_ID && process.env.MOM_DISCORD_PUBLIC_KEY) {
-			adapters.push("discord:webhook");
-		}
+		const discordAdapter = detectDiscordAdapterFromEnv(process.env);
+		if (discordAdapter) adapters.push(discordAdapter);
 		if (process.env.MOM_EMAIL_TOOLS_TOKEN) {
 			adapters.push("email:webhook");
 		}
@@ -279,9 +280,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,mattermost,telegram:webhook] [--port=3000] [--skills=<dir>] <working-directory>");
+	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,mattermost,telegram:webhook,discord:gateway] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, mattermost (=mattermost:socket), telegram (=telegram:polling), telegram:webhook, discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
+	console.error("       Adapters: slack (=slack:socket), slack:webhook, mattermost (=mattermost:socket), telegram (=telegram:polling), telegram:webhook, discord (=discord:gateway), discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
 	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
@@ -544,6 +545,30 @@ function createAdapter(name: string): AdapterWithHandler {
 			}
 			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
 		}
+		case "discord":
+		case "discord:gateway": {
+			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
+			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID;
+			if (!discordBotToken || !discordAppId) {
+				console.error("Missing env: MOM_DISCORD_BOT_TOKEN, MOM_DISCORD_APPLICATION_ID");
+				process.exit(1);
+			}
+			let gatewayConfig: ReturnType<typeof readDiscordGatewayEnvironment>;
+			try {
+				gatewayConfig = readDiscordGatewayEnvironment(process.env);
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+				process.exit(1);
+			}
+			return new DiscordGatewayAdapter({
+				botToken: discordBotToken,
+				applicationId: discordAppId,
+				workingDir,
+				pulse,
+				onAmbientMessage: handleAmbientMessage,
+				...gatewayConfig,
+			});
+		}
 		case "discord:webhook": {
 			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
 			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID;
@@ -552,7 +577,22 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_DISCORD_BOT_TOKEN, MOM_DISCORD_APPLICATION_ID, MOM_DISCORD_PUBLIC_KEY");
 				process.exit(1);
 			}
-			return new DiscordWebhookAdapter({ botToken: discordBotToken, applicationId: discordAppId, publicKey: discordPublicKey, workingDir, pulse, onAmbientMessage: handleAmbientMessage });
+			let boundaryConfig: ReturnType<typeof readDiscordBoundaryEnvironment>;
+			try {
+				boundaryConfig = readDiscordBoundaryEnvironment(process.env);
+			} catch (error) {
+				console.error(error instanceof Error ? error.message : String(error));
+				process.exit(1);
+			}
+			return new DiscordWebhookAdapter({
+				botToken: discordBotToken,
+				applicationId: discordAppId,
+				publicKey: discordPublicKey,
+				workingDir,
+				pulse,
+				onAmbientMessage: handleAmbientMessage,
+				...boundaryConfig,
+			});
 		}
 		case "email:webhook": {
 			const toolsToken = process.env.MOM_EMAIL_TOOLS_TOKEN;
@@ -593,7 +633,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			});
 		}
 		default:
-			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'mattermost', 'mattermost:socket', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord:webhook', 'email:webhook', 'phone-messaging:webhook', 'form:webhook', 'web', 'mcp', or 'voice'.`);
+			console.error(`Unknown adapter: ${name}. Use 'slack', 'slack:socket', 'slack:webhook', 'mattermost', 'mattermost:socket', 'telegram', 'telegram:polling', 'telegram:webhook', 'discord', 'discord:gateway', 'discord:webhook', 'email:webhook', 'phone-messaging:webhook', 'form:webhook', 'web', 'mcp', or 'voice'.`);
 			process.exit(1);
 	}
 }
@@ -1922,25 +1962,34 @@ log.logInfo(`[perf] scheduled prompt watcher started: ${(performance.now() - T_B
 
 log.logInfo(`[perf] TOTAL STARTUP: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
-// Handle shutdown
-process.on("SIGINT", () => {
+// Handle shutdown. Await adapter cleanup so persistent sockets can send a
+// normal close and, importantly, cannot arm reconnect timers during teardown.
+let shuttingDown = false;
+async function shutdown(): Promise<void> {
+	if (shuttingDown) return;
+	shuttingDown = true;
 	log.logInfo("Shutting down...");
-	mcpBridge.disconnect().catch(() => {});
 	eventsWatcher.stop();
-	gateway.stop();
-	for (const adapter of adapters) {
-		adapter.stop();
-	}
+	const cleanup = Promise.allSettled([
+		mcpBridge.disconnect(),
+		gateway.stop(),
+		...adapters.map((adapter) => adapter.stop()),
+	]);
+	let cleanupTimedOut = false;
+	let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+	await Promise.race([
+		cleanup,
+		new Promise<void>((resolve) => {
+			cleanupTimer = setTimeout(() => {
+				cleanupTimedOut = true;
+				resolve();
+			}, 5000);
+		}),
+	]);
+	if (cleanupTimer) clearTimeout(cleanupTimer);
+	if (cleanupTimedOut) log.logWarning("Shutdown cleanup timed out; exiting after best-effort close");
 	process.exit(0);
-});
+}
 
-process.on("SIGTERM", () => {
-	log.logInfo("Shutting down...");
-	mcpBridge.disconnect().catch(() => {});
-	eventsWatcher.stop();
-	gateway.stop();
-	for (const adapter of adapters) {
-		adapter.stop();
-	}
-	process.exit(0);
-});
+process.once("SIGINT", () => { void shutdown(); });
+process.once("SIGTERM", () => { void shutdown(); });

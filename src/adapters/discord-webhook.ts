@@ -127,90 +127,6 @@ export class DiscordWebhookAdapter extends DiscordBase {
 	}
 
 	// ==========================================================================
-	// Gateway relay message handler (MESSAGE_CREATE from discord-gateway)
-	// ==========================================================================
-
-	async handleGatewayMessage(payload: DiscordGatewayMessagePayload): Promise<void> {
-		const { channelId, author, messageId, isDM } = payload;
-		const trigger = payload.trigger || (isDM ? "dm" : "mention");
-		const content = payload.content || "";
-		const rawContent = payload.rawContent || content;
-		const displayName = author.global_name || author.username;
-
-		if (!content.trim()) return;
-
-		if (payload.botUserId) {
-			this.botUserId = payload.botUserId;
-			this.pulse?.setSelfId(payload.botUserId);
-		}
-
-		log.logInfo(`[discord] Gateway message: ${trigger} from ${displayName}: ${content.substring(0, 80)}`);
-
-		// Track user
-		this.users.set(author.id, { id: author.id, userName: author.username, displayName });
-
-		// Track channel
-		this.channels.set(channelId, { id: channelId, name: payload.channelName || channelId });
-
-		this.pulse?.record(channelId, author.id, rawContent.length, rawContent, { messageId, directlyAddressed: trigger !== "ambient" });
-
-		const momEvent: MomEvent = {
-			type: isDM ? "dm" : "mention",
-			channel: channelId,
-			ts: messageId,
-			user: author.id,
-			text: stripDiscordMentions(content),
-			rawText: rawContent,
-			sourceEventType: `discord_${trigger}`,
-			directlyAddressed: trigger !== "ambient",
-			replyTarget: `discord:${channelId}`,
-			replyTargetDescription: isDM ? "Discord DM" : "Discord channel where this message arrived",
-		};
-
-		// Log user message
-		this.logToFile({
-			date: new Date().toISOString(),
-			ts: messageId,
-			channel: `discord:${isDM ? "DM" : channelId}`,
-			channelId,
-			user: author.id,
-			userName: author.username,
-			displayName,
-			text: rawContent,
-			attachments: [],
-			isBot: false,
-		});
-
-		if (!isDM && trigger === "ambient") {
-			this.onAmbientMessage?.(channelId, momEvent, this);
-			return;
-		}
-
-		if (this.handler.resolvePendingInput(channelId, momEvent.text)) {
-			return;
-		}
-
-		if (await this.handler.handleSlashCommand(momEvent, this)) {
-			return;
-		}
-
-		// Check for stop
-		if (momEvent.text.toLowerCase().trim() === "stop") {
-			if (this.handler.isRunning(channelId)) {
-				this.handler.handleStop(channelId, this);
-			}
-			return;
-		}
-
-		// Steer into active run or start new one
-		if (this.handler.isRunning(channelId)) {
-			this.handler.handleSteer(momEvent, this);
-		} else {
-			this.enqueueWork(channelId, async () => { await this.handler.handleEvent(momEvent, this); });
-		}
-	}
-
-	// ==========================================================================
 	// Signature verification (Ed25519)
 	// ==========================================================================
 
@@ -254,6 +170,15 @@ export class DiscordWebhookAdapter extends DiscordBase {
 		const userId = discordUser.id;
 		const userName = discordUser.username;
 		const displayName = discordUser.global_name || discordUser.username;
+		if (!this.acceptsIncomingDiscordMessage({
+			guildId: interaction.guild_id ?? null,
+			channelId,
+			userId,
+			isDM: !interaction.guild_id,
+		})) {
+			log.logInfo("[discord] Ignoring interaction outside configured inbound boundaries");
+			return;
+		}
 
 		// Track user
 		this.users.set(userId, { id: userId, userName, displayName });
@@ -340,27 +265,6 @@ export class DiscordWebhookAdapter extends DiscordBase {
 // ============================================================================
 // Helpers
 // ============================================================================
-
-interface DiscordGatewayMessagePayload {
-	type: string;
-	trigger?: "dm" | "mention" | "ambient";
-	channelId: string;
-	channelName?: string;
-	guildId: string | null;
-	author: {
-		id: string;
-		username: string;
-		global_name?: string;
-		discriminator?: string;
-	};
-	content: string;
-	rawContent?: string;
-	messageId: string;
-	isDM: boolean;
-	isMentioned?: boolean;
-	timestamp: string;
-	botUserId?: string;
-}
 
 function hexToUint8Array(hex: string): Uint8Array {
 	const bytes = new Uint8Array(hex.length / 2);
