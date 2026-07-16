@@ -3,7 +3,7 @@
 import { join, resolve } from "path";
 import { DiscordWebhookAdapter } from "../../adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
-import { HeartbeatAdapter } from "../../adapters/heartbeat.js";
+import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "../../adapters/heartbeat.js";
 import { syncHeartbeatFromSpontaneity } from "../../heartbeat-schedule.js";
 import { OperatorAdapter } from "../../adapters/operator.js";
 import { SlackSocketAdapter } from "../../adapters/slack-socket.js";
@@ -49,6 +49,7 @@ import { createSelfConfigureTool } from "../../tools/self-configure.js";
 import { createSetGoalTool } from "../../tools/set-goal.js";
 import { createCompleteGoalTool } from "../../tools/complete-goal.js";
 import { createAbandonGoalTool } from "../../tools/abandon-goal.js";
+import { createBlockGoalTool } from "../../tools/block-goal.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
@@ -56,6 +57,14 @@ import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
+import {
+	applyGoalContinuationIdentity,
+	createGoalContinuationEvent,
+	decideGoalContinuation,
+	GOAL_TERMINAL_ERROR_REASON,
+	isGoalContinuationEvent,
+} from "../../goal-continuation.js";
+import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -605,6 +614,7 @@ adapters.push(operatorAdapter);
 // ============================================================================
 
 const AWARENESS_DIR = "awareness";
+const goalWorkspace = new FilesystemWorkspaceStore(workingDir);
 
 // Inject the full adapter list into the MCP adapter so its send_message
 // and list_channels tools can route through peer adapters. Done after all adapters
@@ -760,6 +770,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createSelfConfigureTool(workingDir),
 			createSetGoalTool(workingDir),
 			createCompleteGoalTool(workingDir),
+			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
@@ -937,51 +948,79 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	const channelLabel = getChannelLabel(event.channel, adapters);
 	log.logInfo(`[${platform.name}:${event.channel}] Starting run (${channelLabel}): ${event.text.substring(0, 50)}`);
 
+	let turnEvent = event;
+	let automaticGoalTurn = isGoalContinuationEvent(event) ? 1 : 0;
 	try {
-		if (pendingInterrupts.length > 0) {
-			log.logInfo(`[interrupt:${event.channel}] Run superseded before start by ${pendingInterrupts.length} newer message(s)`);
-			scheduleInterruptRestart();
-			return;
-		}
-
-		// Create context from adapter — targets the DISPLAY channel (real channel ID)
-		const ctx = platform.createContext(event, state.store, isEvent);
-
-		// Run the agent
-		await ctx.setTyping(true);
-		await ctx.setWorking(true);
-		if (state.interruptRequested) {
-			log.logInfo(`[interrupt:${event.channel}] Run superseded before model prompt`);
-			await ctx.setWorking(false);
-			return;
-		}
-		const result = await state.runner.run(ctx, state.store);
-		await ctx.setWorking(false);
-
-		if (result.stopReason === "aborted" && state.stopRequested) {
-			const stopResponse = state.stopResponse;
-			if (stopResponse) {
-				try {
-					const stopMessageTs = await stopResponse.messageTs;
-					await stopResponse.adapter.updateMessage(stopResponse.channelId, stopMessageTs, "_Stopped_");
-				} catch {
-					await postResponseMessage(stopResponse.adapter, stopResponse.channelId, "_Stopped_", stopResponse.event);
-				} finally {
-					if (state.stopResponse === stopResponse) state.stopResponse = undefined;
-				}
-			} else {
-				await postResponseMessage(platform, event.channel, "_Stopped_", event);
+		while (true) {
+			if (pendingInterrupts.length > 0) {
+				log.logInfo(`[interrupt:${event.channel}] Run superseded before start by ${pendingInterrupts.length} newer message(s)`);
+				scheduleInterruptRestart();
+				return;
 			}
-		}
 
-		return result;
+			// Build a fresh delivery context for each automatic goal turn while
+			// preserving the original channel/thread placement.
+			const ctx = platform.createContext(turnEvent, state.store, isEvent);
+			if (isGoalContinuationEvent(turnEvent)) applyGoalContinuationIdentity(ctx);
+
+			await ctx.setTyping(true);
+			await ctx.setWorking(true);
+			if (state.interruptRequested) {
+				log.logInfo(`[interrupt:${event.channel}] Run superseded before model prompt`);
+				await ctx.setWorking(false);
+				return;
+			}
+			const result = await state.runner.run(ctx, state.store, undefined, platform.formatInstructions);
+			await ctx.setWorking(false);
+
+			if (result.stopReason === "aborted" && state.stopRequested) {
+				const stopResponse = state.stopResponse;
+				if (stopResponse) {
+					try {
+						const stopMessageTs = await stopResponse.messageTs;
+						await stopResponse.adapter.updateMessage(stopResponse.channelId, stopMessageTs, "_Stopped_");
+					} catch {
+						await postResponseMessage(stopResponse.adapter, stopResponse.channelId, "_Stopped_", stopResponse.event);
+					} finally {
+						if (state.stopResponse === stopResponse) state.stopResponse = undefined;
+					}
+				} else {
+					await postResponseMessage(platform, event.channel, "_Stopped_", event);
+				}
+			}
+
+			const decision = decideGoalContinuation({
+				goal: readGoalState(goalWorkspace),
+				stopReason: result.stopReason,
+				stopRequested: state.stopRequested,
+				interruptRequested: state.interruptRequested,
+				runtimeRunning: state.running,
+				queuedRuns: queuedRunCount,
+			});
+			if (decision === "block") {
+				blockActiveGoal(goalWorkspace, GOAL_TERMINAL_ERROR_REASON);
+				log.logWarning("[goal] Active goal blocked after a terminal run error");
+				return result;
+			}
+			if (decision === "stop") return result;
+
+			automaticGoalTurn++;
+			turnEvent = createGoalContinuationEvent(event, automaticGoalTurn);
+			log.logInfo(`[goal] Starting automatic continuation turn ${automaticGoalTurn}`);
+		}
 	} catch (err) {
 		const errMsg = err instanceof Error ? err.message : String(err);
+		if (!state.interruptRequested && !state.stopRequested) {
+			const blocked = blockActiveGoal(goalWorkspace, GOAL_TERMINAL_ERROR_REASON);
+			if (blocked?.status === "blocked") {
+				log.logWarning("[goal] Active goal blocked after an unhandled run failure");
+			}
+		}
 		log.logWarning(
 			`[${platform.name}:${event.channel}] Run error`,
 			errMsg,
 		);
-		if (!state.interruptRequested) {
+		if (!state.interruptRequested && !isGoalContinuationEvent(turnEvent)) {
 			try {
 				await platform.postMessage(event.channel, `⚠ Run failed: ${errMsg}`);
 			} catch { /* best-effort */ }
@@ -992,6 +1031,21 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		state.running = false;
 		state.interruptRequested = false;
 	}
+}
+
+function enqueueActiveGoalContinuationWake(resumedAfterRestart: boolean): boolean {
+	const goal = readGoalState(goalWorkspace);
+	if (!goal || goal.status !== "active") return false;
+
+	const base: MomEvent = {
+		type: "dm",
+		channel: HEARTBEAT_CHANNEL_ID,
+		ts: String(Date.now()),
+		user: "goal",
+		text: "",
+	};
+	const event = createGoalContinuationEvent(base, 1, resumedAfterRestart);
+	return heartbeatAdapter.enqueueEvent(event);
 }
 
 // ============================================================================
@@ -1161,8 +1215,15 @@ function realtimeHostTools() {
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
-			createSetGoalTool(workingDir),
+			createSetGoalTool(workingDir, {
+				onSet: () => queueMicrotask(() => {
+					if (enqueueActiveGoalContinuationWake(false)) {
+						log.logInfo("[goal] Queued continuation after an externally executed set_goal");
+					}
+				}),
+			}),
 			createCompleteGoalTool(workingDir),
+			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
@@ -1316,6 +1377,10 @@ await Promise.all(adapters.map(async (adapter, i) => {
 	}
 }));
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
+
+if (enqueueActiveGoalContinuationWake(true)) {
+	log.logInfo("[goal] Resuming active goal after runtime startup");
+}
 
 // Stuck-run watchdog — detect runs with no activity for 5 minutes and force-release
 const WATCHDOG_INTERVAL_MS = 60_000;

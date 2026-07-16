@@ -24,7 +24,9 @@ export function createAbandonGoalTool(workingDir: string): AgentTool<typeof sche
 			const reason = normalizeReason((params as { reason?: unknown })?.reason);
 			const current = readGoalState(workspace);
 			if (!current) return textResult("No active goal found.", { status: "missing" });
-			if (current.status !== "active") return textResult(`Goal is already ${current.status}.`, current);
+			if (current.status === "completed" || current.status === "abandoned") {
+				return textResult(`Goal is already ${current.status}.`, current);
+			}
 
 			const next = {
 				...current,
