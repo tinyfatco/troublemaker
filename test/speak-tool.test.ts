@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSpeakTool, resolveSpeakConfig } from "../src/tools/speak.js";
+import {
+	autoSpeakFinalResponse,
+	createSpeakTool,
+	prepareAutomaticSpeechText,
+	resolveSpeakConfig,
+} from "../src/tools/speak.js";
 
 function shellEscape(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
@@ -49,6 +54,36 @@ try {
 	});
 	assert.equal(result.details?.backend, "command");
 	await waitForFile(spokenPath, "hello from speak");
+
+	const sagPath = join(tempDir, "fake-sag.sh");
+	const sagShellPath = join(tempDir, "fake-login-shell.sh");
+	const autoSpokenPath = join(tempDir, "auto-spoken.txt");
+	await writeFile(sagPath, `#!/bin/sh\ncat > ${shellEscape(autoSpokenPath)}\n`);
+	await writeFile(sagShellPath, "#!/bin/sh\nfor last do :; done\nexec /bin/sh -c \"$last\"\n");
+	await chmod(sagPath, 0o700);
+	await chmod(sagShellPath, 0o700);
+	await writeFile(join(tempDir, "settings.json"), `${JSON.stringify({
+		speak: {
+			enabled: true,
+			auto: true,
+			backend: "sag",
+			maxChars: 80,
+			sag: {
+				command: sagPath,
+				modelId: "fake-fast-model",
+				shell: sagShellPath,
+			},
+		},
+	}, null, 2)}\n`);
+
+	const sagConfig = resolveSpeakConfig(tempDir, { env: {}, platform: "darwin" });
+	assert.equal(sagConfig.backend, "sag");
+	assert.equal(sagConfig.auto, true);
+	assert.equal(sagConfig.sag.command, sagPath);
+	assert.equal(sagConfig.sag.modelId, "fake-fast-model");
+	assert.equal(prepareAutomaticSpeechText("**Hello** [Alex](https://example.com).", 80), "Hello Alex.");
+	assert.equal(await autoSpeakFinalResponse(tempDir, "**Hello** [Alex](https://example.com).", { env: {}, platform: "darwin" }), true);
+	await waitForFile(autoSpokenPath, "Hello Alex.");
 
 	const httpConfig = resolveSpeakConfig(tempDir, {
 		env: {

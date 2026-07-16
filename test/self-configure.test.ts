@@ -108,6 +108,16 @@ try {
 	assert(voiceAlias.newValue === "marin", "voice alias reports selected voice");
 	assert(settings.realtimeVoice === "marin", "voice alias writes realtimeVoice");
 
+	const autoSpeech = applySelfConfiguration(workingDir, "sag", true);
+	settings = readSettings(workingDir);
+	assert(autoSpeech.newValue === true, "SAG alias enables automatic speech");
+	assert((settings.speak as any).auto === true, "automatic speech persists in speak settings");
+	assert((settings.speak as any).backend === "sag", "enabling automatic speech selects the SAG backend");
+	const disableAutoSpeech = applySelfConfiguration(workingDir, "speak.auto", false);
+	settings = readSettings(workingDir);
+	assert(disableAutoSpeech.newValue === false, "automatic speech can be disabled directly");
+	assert((settings.speak as any).auto === false, "disabling automatic speech persists without deleting speech settings");
+
 	const tool = createSelfConfigureTool(workingDir);
 	const result = await (tool.execute as any)("call-1", {
 		label: "set thinking high",

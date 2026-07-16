@@ -18,6 +18,9 @@ import * as log from "../log.js";
 const DEFAULT_MAX_CHARS = 1200;
 const DEFAULT_ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM";
 const DEFAULT_ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128";
+const DEFAULT_SAG_COMMAND = "/opt/homebrew/bin/sag";
+const DEFAULT_SAG_MODEL_ID = "eleven_flash_v2_5";
+const DEFAULT_SAG_SHELL = "/bin/zsh";
 
 const speakToolSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what you're saying" }),
@@ -28,6 +31,7 @@ const speakToolSchema = Type.Object({
 
 export interface ResolvedSpeakConfig {
 	enabled: boolean;
+	auto: boolean;
 	backend: MomSpeakBackend;
 	maxChars: number;
 	macosSay: {
@@ -38,6 +42,11 @@ export interface ResolvedSpeakConfig {
 	http?: {
 		url: string;
 		headers: Record<string, string>;
+	};
+	sag: {
+		command: string;
+		modelId: string;
+		shell: string;
 	};
 	elevenlabs?: {
 		apiKey?: string;
@@ -98,7 +107,7 @@ function normalizeBackend(value: unknown): MomSpeakBackend | undefined {
 	if (normalized === "say") return "macos-say";
 	if (normalized === "macos" || normalized === "macos_say") return "macos-say";
 	if (normalized === "none" || normalized === "off") return "disabled";
-	if (["macos-say", "command", "http", "elevenlabs", "noop", "disabled"].includes(normalized)) {
+	if (["macos-say", "command", "http", "elevenlabs", "sag", "noop", "disabled"].includes(normalized)) {
 		return normalized as MomSpeakBackend;
 	}
 	return undefined;
@@ -167,7 +176,8 @@ export function resolveSpeakConfig(
 	const env = options.env ?? process.env;
 	const platform = options.platform ?? process.platform;
 	const settings = readSettings(workspaceDir);
-	const speak = isRecord(settings.speak) ? settings.speak : {};
+	const speak = (isRecord(settings.speak) ? settings.speak : {}) as MomSpeakSettings;
+	const sag = isRecord(speak.sag) ? speak.sag : {};
 
 	const backend = normalizeBackend(env.MOM_SPEAK_BACKEND)
 		?? normalizeBackend(speak.backend)
@@ -181,6 +191,7 @@ export function resolveSpeakConfig(
 
 	return {
 		enabled,
+		auto: booleanSetting(env.MOM_SPEAK_AUTO) ?? booleanSetting(speak.auto) ?? false,
 		backend,
 		maxChars: numberSetting(env.MOM_SPEAK_MAX_CHARS)
 			?? numberSetting(speak.maxChars)
@@ -191,6 +202,17 @@ export function resolveSpeakConfig(
 		},
 		command: stringSetting(env.MOM_SPEAK_COMMAND) ?? stringSetting(speak.command),
 		http: url ? { url, headers: resolveHttpHeaders(speak, env) } : undefined,
+		sag: {
+			command: stringSetting(env.MOM_SPEAK_SAG_COMMAND)
+				?? stringSetting(sag.command)
+				?? DEFAULT_SAG_COMMAND,
+			modelId: stringSetting(env.MOM_SPEAK_SAG_MODEL_ID)
+				?? stringSetting(sag.modelId)
+				?? DEFAULT_SAG_MODEL_ID,
+			shell: stringSetting(env.MOM_SPEAK_SAG_SHELL)
+				?? stringSetting(sag.shell)
+				?? DEFAULT_SAG_SHELL,
+		},
 		elevenlabs: resolveElevenLabsConfig(speak, env),
 	};
 }
@@ -285,6 +307,27 @@ async function runCommandBackend(text: string, config: ResolvedSpeakConfig): Pro
 	return "Speaking via command backend.";
 }
 
+function shellQuote(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+async function runSagBackend(text: string, config: ResolvedSpeakConfig): Promise<string> {
+	const { command, modelId, shell } = config.sag;
+	const invocation = `exec ${shellQuote(command)} --model-id ${shellQuote(modelId)}`;
+	const speechId = beginAssistantSpeech(text);
+	try {
+		// SAG reads the response from stdin. A login+interactive Zsh loads the
+		// operator-approved ElevenLabs environment without copying secrets into
+		// Troublemaker settings or command-line arguments.
+		const child = await startManagedSpeechProcess(shell, ["-lic", invocation], text);
+		child.once("close", () => finishAssistantSpeech(speechId));
+	} catch (err) {
+		finishAssistantSpeech(speechId);
+		throw err;
+	}
+	return "Speaking via SAG.";
+}
+
 async function runHttpBackend(text: string, interrupt: boolean, config: ResolvedSpeakConfig, signal?: AbortSignal): Promise<string> {
 	if (!config.http) {
 		throw new Error("speak http backend requires settings.speak.url or MOM_SPEAK_URL.");
@@ -349,6 +392,94 @@ async function runElevenLabsBackend(text: string, config: ResolvedSpeakConfig): 
 	return "Speaking via ElevenLabs.";
 }
 
+async function dispatchSpeech(
+	text: string,
+	config: ResolvedSpeakConfig,
+	interrupt: boolean,
+	signal?: AbortSignal,
+): Promise<string> {
+	if (activeSpeech) {
+		if (!interrupt) {
+			throw new Error("Speech is already in progress. Call speak with interrupt=true to replace it.");
+		}
+		stopActiveSpeech();
+	}
+
+	if (config.backend === "macos-say") return runMacSay(text, config);
+	if (config.backend === "command") return runCommandBackend(text, config);
+	if (config.backend === "http") return runHttpBackend(text, interrupt, config, signal);
+	if (config.backend === "elevenlabs") return runElevenLabsBackend(text, config);
+	if (config.backend === "sag") return runSagBackend(text, config);
+	return `Speech is disabled (${config.backend}).`;
+}
+
+export function prepareAutomaticSpeechText(text: string, maxChars: number): string {
+	let clean = text
+		.replace(/```[\s\S]*?```/g, " Code omitted. ")
+		.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+		.replace(/`([^`]+)`/g, "$1")
+		.replace(/^\s{0,3}#{1,6}\s+/gm, "")
+		.replace(/^\s*>\s?/gm, "")
+		.replace(/[*_~]/g, "")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!clean || maxChars <= 0) return "";
+	if (clean.length <= maxChars) return clean;
+
+	const suffix = " The rest is on screen.";
+	if (maxChars <= suffix.length + 8) return clean.slice(0, maxChars).trim();
+	const limit = maxChars - suffix.length;
+	const prefix = clean.slice(0, limit);
+	const sentenceEnd = Math.max(prefix.lastIndexOf(". "), prefix.lastIndexOf("! "), prefix.lastIndexOf("? "));
+	clean = (sentenceEnd >= Math.floor(limit * 0.55) ? prefix.slice(0, sentenceEnd + 1) : prefix).trim();
+	return `${clean}${suffix}`;
+}
+
+export async function speakConfiguredText(
+	workspaceDir: string,
+	text: string,
+	request: { interrupt?: boolean; signal?: AbortSignal } = {},
+	options: SpeakToolOptions = {},
+): Promise<{ backend: MomSpeakBackend; enabled: boolean; message: string }> {
+	const cleanText = text.trim();
+	if (!cleanText) throw new Error("speak requires non-empty text.");
+
+	const config = resolveSpeakConfig(workspaceDir, options);
+	if (!config.enabled) {
+		return { backend: config.backend, enabled: false, message: `Speech is disabled (${config.backend}).` };
+	}
+	if (cleanText.length > config.maxChars) {
+		throw new Error(`speak text is ${cleanText.length} characters; limit is ${config.maxChars}. Speak a shorter phrase.`);
+	}
+
+	const message = await dispatchSpeech(cleanText, config, request.interrupt === true, request.signal);
+	log.logInfo(`[speak] ${config.backend}: ${cleanText.slice(0, 120)}`);
+	return { backend: config.backend, enabled: true, message };
+}
+
+export async function autoSpeakFinalResponse(
+	workspaceDir: string,
+	text: string,
+	options: SpeakToolOptions = {},
+): Promise<boolean> {
+	const config = resolveSpeakConfig(workspaceDir, options);
+	if (!config.enabled || !config.auto) return false;
+	const speechText = prepareAutomaticSpeechText(text, config.maxChars);
+	if (!speechText) return false;
+
+	try {
+		await dispatchSpeech(speechText, config, true);
+		log.logInfo(`[speak:auto] ${config.backend}: ${speechText.slice(0, 120)}`);
+		return true;
+	} catch (err) {
+		// Speech is a local convenience surface. It must never make canonical
+		// response delivery fail.
+		log.logWarning("[speak:auto] playback failed", err instanceof Error ? err.message : String(err));
+		return false;
+	}
+}
+
 export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions = {}): AgentTool<typeof speakToolSchema> {
 	return {
 		name: "speak",
@@ -356,56 +487,18 @@ export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions 
 		description:
 			"Speak a short phrase aloud through Noodle's configured local TTS backend. " +
 			"Use this when the user asks you to say something out loud or when a local Mac demo needs audible narration. " +
-			"Do not use this for ordinary voice/phone/web-voice replies; those adapters speak normal responses themselves. " +
-			"Config comes from settings.json `speak` or env vars. Backends: macos-say, command, http, elevenlabs, noop/disabled.",
+			"Do not use this for ordinary voice/phone/web-voice replies; automatic response speech is configured separately. " +
+			"Config comes from settings.json `speak` or env vars. Backends: macos-say, command, http, elevenlabs, sag, noop/disabled.",
 		parameters: speakToolSchema,
 		execute: async (
 			_toolCallId: string,
 			{ text, interrupt }: { label: string; text: string; interrupt?: boolean },
 			signal?: AbortSignal,
 		) => {
-			const cleanText = text.trim();
-			if (!cleanText) throw new Error("speak requires non-empty text.");
-
-			const config = resolveSpeakConfig(workspaceDir, options);
-			if (!config.enabled) {
-				return {
-					content: [{ type: "text" as const, text: `Speech is disabled (${config.backend}).` }],
-					details: { backend: config.backend, enabled: false },
-				};
-			}
-
-			if (cleanText.length > config.maxChars) {
-				throw new Error(`speak text is ${cleanText.length} characters; limit is ${config.maxChars}. Speak a shorter phrase.`);
-			}
-
-			if (activeSpeech) {
-				if (!interrupt) {
-					throw new Error("Speech is already in progress. Call speak with interrupt=true to replace it.");
-				}
-				stopActiveSpeech();
-			}
-
-			let message: string;
-			if (config.backend === "macos-say") {
-				message = await runMacSay(cleanText, config);
-			} else if (config.backend === "command") {
-				message = await runCommandBackend(cleanText, config);
-			} else if (config.backend === "http") {
-				message = await runHttpBackend(cleanText, interrupt === true, config, signal);
-			} else if (config.backend === "elevenlabs") {
-				message = await runElevenLabsBackend(cleanText, config);
-			} else {
-				return {
-					content: [{ type: "text" as const, text: `Speech is disabled (${config.backend}).` }],
-					details: { backend: config.backend, enabled: false },
-				};
-			}
-
-			log.logInfo(`[speak] ${config.backend}: ${cleanText.slice(0, 120)}`);
+			const result = await speakConfiguredText(workspaceDir, text, { interrupt, signal }, options);
 			return {
-				content: [{ type: "text" as const, text: message }],
-				details: { backend: config.backend, enabled: true },
+				content: [{ type: "text" as const, text: result.message }],
+				details: { backend: result.backend, enabled: result.enabled },
 			};
 		},
 	};
