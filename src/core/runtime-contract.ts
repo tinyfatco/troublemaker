@@ -217,3 +217,41 @@ export type RuntimeStreamEvent =
 	| RuntimeRunCompleteEvent;
 
 export type RuntimeEventSink = (event: RuntimeStreamEvent) => void | Promise<void>;
+
+export interface RuntimeLiveRunMetadata {
+	runId: string;
+	channelId: string;
+	channelLabel?: string;
+	source?: string;
+}
+
+interface RuntimeLiveEventBase {
+	/** Monotonic within one resident runtime process. */
+	sequence: number;
+	/** Changes whenever the resident runtime process restarts. */
+	streamId: string;
+	id: string;
+	timestamp: string;
+}
+
+export interface RuntimeLiveAwarenessEvent extends RuntimeLiveEventBase {
+	kind: "awareness";
+	line: string;
+	awarenessId?: string;
+}
+
+export interface RuntimeLiveRunEvent extends RuntimeLiveEventBase, RuntimeLiveRunMetadata {
+	kind: "runtime";
+	event: RuntimeStreamEvent;
+}
+
+export interface RuntimeLiveResetEvent extends RuntimeLiveEventBase {
+	kind: "reset";
+	reason: "context_rotated" | "replay_gap";
+}
+
+/**
+ * The terminal's one live transport. Durable awareness entries and ephemeral
+ * in-flight runtime snapshots share this ordered envelope.
+ */
+export type RuntimeLiveEvent = RuntimeLiveAwarenessEvent | RuntimeLiveRunEvent | RuntimeLiveResetEvent;

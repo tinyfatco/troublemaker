@@ -1,4 +1,4 @@
-import type { RuntimeStreamEvent } from "../core/runtime-contract.js";
+import type { RuntimeLiveEvent, RuntimeStreamEvent } from "../core/runtime-contract.js";
 import type { TuiAgentProfile } from "./config.js";
 import { readRuntimeSse, readSseData } from "./protocol.js";
 
@@ -100,6 +100,33 @@ export class TroublemakerTuiClient {
 		}
 	}
 
+	async streamLive(
+		onEvent: (event: RuntimeLiveEvent) => void | Promise<void>,
+		signal?: AbortSignal,
+		onConnected?: () => void | Promise<void>,
+		afterSequence = 0,
+	): Promise<void> {
+		const suffix = afterSequence > 0 ? `?after=${afterSequence}` : "";
+		const response = await fetch(this.url(`/api/v2/agents/current/live${suffix}`), {
+			headers: {
+				Accept: "text/event-stream",
+				...(afterSequence > 0 ? { "Last-Event-ID": String(afterSequence) } : {}),
+			},
+			signal,
+		});
+		if (!response.ok || !response.body) {
+			for await (const _data of readSseData(response)) {
+				// readSseData supplies the canonical status/body error.
+			}
+			return;
+		}
+		await onConnected?.();
+		for await (const data of readSseData(response)) {
+			const event = parseLiveEvent(data);
+			if (event) await onEvent(event);
+		}
+	}
+
 	async stop(signal?: AbortSignal): Promise<void> {
 		const response = await fetch(this.url("/api/v2/agents/current/messages/stop"), {
 			method: "POST",
@@ -121,4 +148,15 @@ function stringValue(value: unknown): string {
 
 function numberValue(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function parseLiveEvent(data: string): RuntimeLiveEvent | null {
+	try {
+		const parsed = JSON.parse(data) as Record<string, unknown>;
+		if (!parsed || !["awareness", "runtime", "reset"].includes(String(parsed.kind))) return null;
+		if (typeof parsed.sequence !== "number" || !Number.isSafeInteger(parsed.sequence)) return null;
+		return parsed as unknown as RuntimeLiveEvent;
+	} catch {
+		return null;
+	}
 }

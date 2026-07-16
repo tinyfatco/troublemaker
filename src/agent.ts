@@ -26,6 +26,7 @@ import {
 	resolveClaudeCliDeliveryRetry,
 	resolveThinkingLevel,
 } from "./core/prompt.js";
+import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } from "./model-thinking.js";
@@ -87,6 +88,7 @@ export interface AgentRunner {
 		store: ChannelStore,
 		pendingMessages?: PendingMessage[],
 		formatInstructions?: string,
+		liveEventSink?: RuntimeEventSink,
 	): Promise<RunResult>;
 	abort(): void;
 	/** Queue a message at the active run's next safe turn boundary. */
@@ -584,6 +586,22 @@ function createRunner(
 		errorMessage: undefined as string | undefined,
 		initialPromptSent: false,
 		liveSnapshot: new LiveAssistantSnapshot(),
+		liveEventSink: null as RuntimeEventSink | null,
+	};
+
+	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
+		const sink = runState.liveEventSink;
+		if (!sink) return;
+		try {
+			const pending = sink(event);
+			if (pending && typeof (pending as Promise<void>).catch === "function") {
+				void (pending as Promise<void>).catch((error) => {
+					log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
+				});
+			}
+		} catch (error) {
+			log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
+		}
 	};
 
 	// Activity callback for external watchdog
@@ -605,7 +623,10 @@ function createRunner(
 		const { ctx, logCtx, queue, pendingTools } = runState;
 		const emitSnapshot = (isStreaming = true) => {
 			const entry = runState.liveSnapshot.current(isStreaming);
-			if (entry) ctx.emitContentBlock?.({ type: "assistant_snapshot", entry });
+			if (!entry) return;
+			const snapshot = { type: "assistant_snapshot" as const, entry };
+			emitLiveEvent(snapshot);
+			ctx.emitContentBlock?.(snapshot);
 		};
 
 		if (event.type === "tool_execution_start") {
@@ -787,7 +808,9 @@ function createRunner(
 			}
 		} else if (event.type === "compaction_start") {
 			log.logInfo(`Compaction started (reason: ${(event as any).reason})`);
-			ctx.emitContentBlock?.({ type: "status", status: "compacting", message: "Compacting context..." });
+			const status = { type: "status" as const, status: "compacting" as const, message: "Compacting context..." };
+			emitLiveEvent(status);
+			ctx.emitContentBlock?.(status);
 			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
 		} else if (event.type === "compaction_end") {
 			const compEvent = event as any;
@@ -801,7 +824,9 @@ function createRunner(
 				// (nothing to summarize) or model/apiKey was missing.
 				log.logInfo(`Compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
 			}
-			ctx.emitContentBlock?.({ type: "status", status: "streaming", message: "Context compacted; resuming..." });
+			const status = { type: "status" as const, status: "streaming" as const, message: "Context compacted; resuming..." };
+			emitLiveEvent(status);
+			ctx.emitContentBlock?.(status);
 		} else if (event.type === "auto_retry_start") {
 			const retryEvent = event as any;
 			log.logWarning(`Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`, retryEvent.errorMessage);
@@ -815,7 +840,11 @@ function createRunner(
 	claudeCliToolOutputHandler = (event) => {
 		runState.liveSnapshot.appendToolOutput(event);
 		const entry = runState.liveSnapshot.current(true);
-		if (entry) runState.ctx?.emitContentBlock?.({ type: "assistant_snapshot", entry });
+		if (entry) {
+			const snapshot = { type: "assistant_snapshot" as const, entry };
+			emitLiveEvent(snapshot);
+			runState.ctx?.emitContentBlock?.(snapshot);
+		}
 		onActivity?.();
 	};
 
@@ -873,6 +902,7 @@ function createRunner(
 			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
 			runFormatInstructions = formatInstructions,
+			liveEventSink?: RuntimeEventSink,
 		): Promise<RunResult> {
 			const tRun = performance.now();
 
@@ -976,6 +1006,7 @@ function createRunner(
 			runState.errorMessage = undefined;
 			runState.initialPromptSent = false;
 			runState.liveSnapshot.reset();
+			runState.liveEventSink = liveEventSink ?? null;
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -1156,7 +1187,9 @@ function createRunner(
 				try {
 					const visibleError = formatUserVisibleError(runState.errorMessage);
 					const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
-					ctx.emitContentBlock?.({ type: "error", message: visibleError });
+					const errorEvent = { type: "error" as const, message: visibleError };
+					emitLiveEvent(errorEvent);
+					ctx.emitContentBlock?.(errorEvent);
 					await ctx.sendFinalResponse(userErrorMsg, { force: true });
 					await ctx.respondInThread(`_Error: ${visibleError}_`);
 				} catch (err) {
@@ -1219,6 +1252,7 @@ function createRunner(
 			runState.logCtx = null;
 			runState.queue = null;
 			runState.liveSnapshot.reset();
+			runState.liveEventSink = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };

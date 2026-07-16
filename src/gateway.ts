@@ -3,6 +3,8 @@ import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
 import { ConsoleError, ConsoleService } from "./console/service.js";
+import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
+import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
 import { validatePreviewPort } from "./preview/ports.js";
 import { FilesystemAwarenessStore } from "./storage/node/filesystem-awareness.js";
@@ -97,8 +99,11 @@ export class Gateway {
 	private awarenessStore: FilesystemAwarenessStore | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
+	private liveClientCount = 0;
+	private readonly liveEvents = new RuntimeLiveEventHub();
 	private awarenessWatcher: ReturnType<typeof setInterval> | null = null;
 	private awarenessFileSize = 0;
+	private awarenessFileIdentity = "";
 
 	constructor(options: GatewayOptions = {}) {
 		if (options.uiDir && existsSync(options.uiDir)) {
@@ -116,6 +121,11 @@ export class Gateway {
 	register(path: string, handler: RouteHandler): void {
 		this.routes.set(path, handler);
 		log.logInfo(`[gateway] registered route: POST ${path}`);
+	}
+
+	/** Publish one sanitized in-flight runtime event to every unified live client. */
+	publishRuntimeEvent(metadata: RuntimeLiveRunMetadata, event: RuntimeStreamEvent): RuntimeLiveEvent {
+		return this.liveEvents.publishRuntime(metadata, event);
 	}
 
 	/** Register a GET route handler (e.g., "/schedule") */
@@ -490,19 +500,95 @@ export class Gateway {
 		res.on("close", () => {
 			clearInterval(heartbeat);
 			this.awarenessClients.delete(res);
-			if (this.awarenessClients.size === 0 && this.awarenessWatcher) {
-				clearInterval(this.awarenessWatcher);
-				this.awarenessWatcher = null;
-			}
+			this.stopAwarenessWatcherIfUnused();
 		});
+	}
+
+	/**
+	 * One ordered terminal feed: durable awareness lines plus ephemeral runtime
+	 * snapshots. Existing web/console streams stay backward-compatible.
+	 */
+	private handleRuntimeLiveStream(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.workspaceDir) {
+			res.writeHead(500);
+			res.end("No workspace configured");
+			return;
+		}
+
+		const contextFile = resolve(this.workspaceDir, "awareness/context.jsonl");
+		let currentSize = 0;
+		try {
+			currentSize = statSync(contextFile).size;
+		} catch {
+			// File does not exist yet.
+		}
+
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+			"X-Accel-Buffering": "no",
+		});
+		res.flushHeaders?.();
+
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const headerCursor = Array.isArray(req.headers["last-event-id"])
+			? req.headers["last-event-id"][0]
+			: req.headers["last-event-id"];
+		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
+		this.liveClientCount++;
+		const subscription = this.liveEvents.subscribe((event) => {
+			try {
+				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+			} catch {
+				// The close handler owns cleanup.
+			}
+		}, afterSequence);
+
+		if (!this.awarenessWatcher) {
+			this.awarenessFileSize = currentSize;
+			this.startAwarenessWatcher(contextFile);
+		}
+
+		const heartbeat = setInterval(() => {
+			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+		}, 15_000);
+
+		res.on("close", () => {
+			clearInterval(heartbeat);
+			subscription.unsubscribe();
+			this.liveClientCount = Math.max(0, this.liveClientCount - 1);
+			this.stopAwarenessWatcherIfUnused();
+		});
+	}
+
+	private stopAwarenessWatcherIfUnused(): void {
+		if (this.awarenessClients.size > 0 || this.liveClientCount > 0 || !this.awarenessWatcher) return;
+		clearInterval(this.awarenessWatcher);
+		this.awarenessWatcher = null;
 	}
 
 	/** Poll context.jsonl for new bytes and push to all connected SSE clients */
 	private startAwarenessWatcher(contextFile: string): void {
+		try {
+			const stat = statSync(contextFile);
+			this.awarenessFileIdentity = `${stat.dev}:${stat.ino}`;
+		} catch {
+			this.awarenessFileIdentity = "";
+		}
 		this.awarenessWatcher = setInterval(() => {
 			try {
 				const stat = statSync(contextFile);
 				const newSize = stat.size;
+				const fileIdentity = `${stat.dev}:${stat.ino}`;
+				if ((this.awarenessFileIdentity && fileIdentity !== this.awarenessFileIdentity) || newSize < this.awarenessFileSize) {
+					// Compaction and /clear truncate context.jsonl. Resetting the cursor is
+					// essential: retaining the old larger offset poisons the stream until
+					// the new file eventually grows past its former size.
+					this.awarenessFileSize = 0;
+					this.liveEvents.publishReset("context_rotated");
+				}
+				this.awarenessFileIdentity = fileIdentity;
 				if (newSize <= this.awarenessFileSize) return;
 
 				// Read only the new bytes
@@ -522,6 +608,7 @@ export class Gateway {
 					for (const client of this.awarenessClients) {
 						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
 					}
+					this.liveEvents.publishAwareness(line, id || undefined);
 				}
 			} catch {
 				// File gone or read error — skip this tick
@@ -581,6 +668,11 @@ export class Gateway {
 
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/events/stream")) {
 				this.handleAwarenessStream(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/live")) {
+				this.handleRuntimeLiveStream(req, res);
 				return;
 			}
 
@@ -842,4 +934,10 @@ function extractAwarenessEventId(line: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+function parseLiveSequence(value: string | null | undefined): number {
+	if (!value) return 0;
+	const parsed = Number.parseInt(value, 10);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
 }
