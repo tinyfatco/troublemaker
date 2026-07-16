@@ -45,6 +45,7 @@
 		"test:mattermost-adapter": "npx tsx test/mattermost-adapter.test.ts",
 		"test:channel-delivery-policy": "npx tsx test/channel-delivery-policy.test.ts",
 		"test:self-configure": "npx tsx test/self-configure.test.ts",
+		"test:goal-tools": "npx tsx test/goal-tools.test.ts",
 		"test:slack-response-placement": "npx tsx test/slack-response-placement.test.ts",
 		"test:slack-ambient-origin": "npx tsx test/slack-ambient-origin.test.ts",
 		"test:slack-dm-allowlist": "npx tsx test/slack-dm-allowlist.test.ts",

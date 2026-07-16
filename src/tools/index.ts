@@ -11,6 +11,9 @@ import { enforceRequiredToolLabels } from "./tool-label.js";
 
 export { setUploadFunction } from "./attach.js";
 export { createSelfConfigureTool } from "./self-configure.js";
+export { createSetGoalTool } from "./set-goal.js";
+export { createCompleteGoalTool } from "./complete-goal.js";
+export { createAbandonGoalTool } from "./abandon-goal.js";
 export { createSendMessageTool } from "./send-message.js";
 export { createSpeakTool } from "./speak.js";
 export { createSearchToolsTool } from "./search-tools.js";

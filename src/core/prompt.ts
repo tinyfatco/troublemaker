@@ -5,6 +5,7 @@ import { normalizeThinkingLevel } from "../model-thinking.js";
 import { resolveOpenAIOverlay } from "../openai-overlay.js";
 import type { SandboxConfig } from "../sandbox.js";
 import type { WorkspaceStore } from "../storage/workspace.js";
+import { readGoalState, renderGoalContext } from "../goal-state.js";
 
 const WORKSPACE_CONTEXT_FILES = [
 	["AGENTS.md", "Agents"],
@@ -146,6 +147,9 @@ export function getWorkspaceContext(workspace: WorkspaceStore): string {
 	const brief = readWorkspaceFile(workspace, "BRIEF.md");
 	if (brief) sections.push(`Current Brief (assigned by operator):\n${brief}`);
 
+	const goal = renderGoalContext(readGoalState(workspace));
+	if (goal) sections.push(goal);
+
 	const recent = getRecentDailyMemory(workspace);
 	if (recent) sections.push(`Recent:\n${recent}`);
 
@@ -190,10 +194,11 @@ export function buildSystemPrompt(
 		: "";
 	const toolGuidance = `## Tools
 ${claudeToolBoundary ? `${claudeToolBoundary}\nTroublemaker MCP tools include \`mcp__troublemaker__bash\`, \`mcp__troublemaker__read\`, \`mcp__troublemaker__write\`, \`mcp__troublemaker__edit\`, and \`mcp__troublemaker__attach\`.` : "Core tools: `bash`, `read`, `write`, `edit`, `attach`."}
-Runtime tools commonly include \`send_message\`, \`list_channels\`, \`read_thread\`, \`self_configure\`, and \`yield_no_action\`.
+Runtime tools commonly include \`send_message\`, \`list_channels\`, \`read_thread\`, \`self_configure\`, \`set_goal\`, \`complete_goal\`, \`abandon_goal\`, and \`yield_no_action\`.
 Use \`list_channels\` to discover valid send targets, including Mattermost and Slack thread targets, Email thread targets, and SMS/iMessage conversation targets. Use \`read_thread\` with a \`mattermost:<channel>:<root>\`, \`slack:<channel>:<thread_ts>\`, \`email-thread:<id>\`, or \`phone-...\` target when several conversations are active and previews are not enough to choose. Use \`send_message\` to deliver user-visible text; \`target\` is required and missing targets fail. Target formats: Mattermost=mattermost:<channel>[:<root>], Discord=discord:<17-20 digit snowflake> or raw 17-20 digit snowflake, Telegram=shorter numeric, Slack=C/D/G prefix, Slack thread=slack:<channel>:<thread_ts>, existing Email thread=email-thread:<id>, direct Email=email-{address}, Phone/SMS/iMessage conversation=phone-{hash}. When choosing among threads or group conversations, use the exact target from delivery context or \`list_channels\`; do not collapse distinct thread roots, email subjects, or group chat participants together.
 Follow the latest session context's channel delivery policy. When it says ordinary assistant output will not be delivered, use \`send_message\` with the suggested explicit target for every user-visible reply. Otherwise, ordinary assistant output is delivered by the harness; do not duplicate it with \`send_message\` unless you are replying cross-channel. For direct inbound that will take non-trivial work, send a brief acknowledgement before continuing.
 Use \`self_configure\` when the user explicitly asks you to change your own model, thinking level, verbosity, Slack response placement, selective Slack tool streaming, Slack tool-stream presentation (split or condensed), Slack tool-stream window minutes, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings.
+Use \`set_goal\` for an explicitly requested persistent objective. The active goal is included in every turn until you call \`complete_goal\` after actually achieving it or \`abandon_goal\` because the user cancels or redirects it. Do not turn ordinary one-turn requests into persistent goals.
 When a tool offers \`show\`, set it to true only when its safe human-readable label is itself a useful progress milestone. Omit it for routine reads/checks and never put secrets, raw arguments, private content, or sensitive paths in a surfaced label. The runtime may display selected labels while suppressing all other harness detail.
 Use \`yield_no_action\` for heartbeat or ambient cases where nothing needs doing and no user-visible response should be posted.`;
 
@@ -229,6 +234,7 @@ ${workspacePath}/
 ├── log.jsonl                  # Unified activity log (JSONL: date, channel, channelId, user, userName, text, isBot)
 ├── MEMORY.md                  # Persistent memory (unified, not per-channel)
 ├── BRIEF.md                   # Current operator-assigned brief (if any) — read on every wake
+├── goal.json                  # Active persistent goal and lifecycle state
 ├── SYSTEM.md                  # Environment config log (packages, env vars, config changes)
 ├── settings.json              # Model & preferences (change model here or /model <name>)
 ├── skills/                    # Custom CLI tools (each has SKILL.md with name/description frontmatter)

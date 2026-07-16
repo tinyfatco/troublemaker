@@ -46,6 +46,9 @@ import { createMomTools } from "../../tools/index.js";
 import { enforceRequiredToolLabels } from "../../tools/tool-label.js";
 import { createListChannelsTool } from "../../tools/list-channels.js";
 import { createSelfConfigureTool } from "../../tools/self-configure.js";
+import { createSetGoalTool } from "../../tools/set-goal.js";
+import { createCompleteGoalTool } from "../../tools/complete-goal.js";
+import { createAbandonGoalTool } from "../../tools/abandon-goal.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
@@ -755,6 +758,9 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
+			createSetGoalTool(workingDir),
+			createCompleteGoalTool(workingDir),
+			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
 		];
@@ -1155,6 +1161,9 @@ function realtimeHostTools() {
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
+			createSetGoalTool(workingDir),
+			createCompleteGoalTool(workingDir),
+			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
 			...mcpBridge.tools(),
 		]
