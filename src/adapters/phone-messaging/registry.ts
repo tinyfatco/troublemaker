@@ -1,4 +1,5 @@
 import { LoopProvider } from "./loop-provider.js";
+import { ManagedPhoneProvider } from "./managed-provider.js";
 import { TwilioProvider } from "./twilio-provider.js";
 import type { PhoneChannelRecord, PhoneMessagingProvider, PhoneTransport } from "./types.js";
 
@@ -36,6 +37,17 @@ export class PhoneProviderRegistry {
 export function createPhoneProviderRegistryFromEnv(): PhoneProviderRegistry {
 	const registry = new PhoneProviderRegistry();
 	const preferred = (process.env.MOM_PHONE_DEFAULT_PROVIDER || "").toLowerCase();
+
+	const managedEndpoint = process.env.MOM_PHONE_SEND_URL;
+	const managedToken = process.env.MOM_PHONE_SEND_TOKEN || process.env.FAT_TOOLS_TOKEN;
+	if (managedEndpoint && managedToken) {
+		const providerName = preferred || "managed";
+		registry.register(new ManagedPhoneProvider({
+			endpoint: managedEndpoint,
+			token: managedToken,
+			providerName,
+		}), true);
+	}
 
 	const loopApiKey = process.env.LOOPMESSAGE_API_KEY || process.env.MOM_LOOPMESSAGE_API_KEY;
 	if (loopApiKey) {
