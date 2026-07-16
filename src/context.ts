@@ -72,10 +72,12 @@ export interface MomSlackSettings {
 	nativeProgress?: boolean;
 }
 
-export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "noop" | "disabled";
+export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "sag" | "noop" | "disabled";
 
 export interface MomSpeakSettings {
 	enabled?: boolean;
+	/** Automatically speak each non-empty final assistant response. */
+	auto?: boolean;
 	backend?: MomSpeakBackend;
 	voice?: string;
 	rate?: number;
@@ -87,6 +89,11 @@ export interface MomSpeakSettings {
 	tokenEnv?: string;
 	tokenHeader?: string;
 	tokenPrefix?: string;
+	sag?: {
+		command?: string;
+		modelId?: string;
+		shell?: string;
+	};
 	elevenlabs?: {
 		apiKey?: string;
 		apiKeyEnv?: string;
