@@ -1,6 +1,7 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-addressing.js";
 import { SlackBase, type SlackBaseConfig } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
 
@@ -86,7 +87,7 @@ export class SlackSocketAdapter extends SlackBase {
 				ts: e.ts,
 				user: userId,
 				teamId: (body as { team_id?: string }).team_id,
-				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+				text: stripSlackBroadcastMentions((e.text || "").replace(/<@[A-Z0-9]+>/gi, "")),
 				rawText: e.text || "",
 				sourceEventType: "slack_app_mention",
 				directlyAddressed: true,
@@ -148,6 +149,8 @@ export class SlackSocketAdapter extends SlackBase {
 			};
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
+			const isBroadcastMention = !isDM && hasSlackBroadcastMention(e.text);
+			const isDirectlyAddressed = isDM || isBroadcastMention;
 			const userId = e.user || e.bot_id || "unknown";
 
 			// A resident host-mode agent may be intentionally reachable by only one
@@ -163,7 +166,12 @@ export class SlackSocketAdapter extends SlackBase {
 
 			// Feed pulse before any filtering — pulse needs to see everything
 			if (this.pulse && (e.user || e.bot_id)) {
-				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(e.channel, e.ts, e.thread_ts, !isDM && Boolean(isBotMention)));
+				this.pulse.record(e.channel, e.user || e.bot_id!, (e.text || "").length, e.text, this.slackPulseMetadata(
+					e.channel,
+					e.ts,
+					e.thread_ts,
+					isDirectlyAddressed || Boolean(isBotMention),
+				));
 			}
 
 			// Ignore own messages only — bots are just participants
@@ -199,19 +207,27 @@ export class SlackSocketAdapter extends SlackBase {
 				ts: e.ts,
 				user: userId,
 				teamId: (body as { team_id?: string }).team_id,
-				text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+				text: stripSlackBroadcastMentions((e.text || "").replace(/<@[A-Z0-9]+>/gi, "")),
 				rawText: e.text || "",
-				sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
-				directlyAddressed: isDM,
+				sourceEventType: isDM
+					? "slack_dm"
+					: isBroadcastMention
+						? "slack_broadcast_mention"
+						: "slack_ambient_message",
+				directlyAddressed: isDirectlyAddressed,
 				threadTs,
 				replyTarget: isDM
 					? e.channel
 					: `slack:${e.channel}:${threadTs}`,
 				replyTargetDescription: isDM
 					? "Slack DM"
-					: e.thread_ts
-						? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
-						: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
+					: isBroadcastMention
+						? e.thread_ts
+							? "Slack thread containing this channel-wide mention"
+							: "Slack thread under this channel-wide mention"
+						: e.thread_ts
+							? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
+							: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
 				files: e.files,
 			};
 
@@ -223,7 +239,7 @@ export class SlackSocketAdapter extends SlackBase {
 				return;
 			}
 
-			if (isDM) {
+			if (isDirectlyAddressed) {
 				if (this.handler.resolvePendingInput(e.channel, momEvent.text)) {
 					safelyAcknowledge(ack);
 					return;
@@ -248,7 +264,7 @@ export class SlackSocketAdapter extends SlackBase {
 					this.getQueue(e.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 				}
 			} else {
-				// Ambient engagement: non-DM, non-mention message
+				// Ambient engagement: non-DM, non-addressed message
 				this.onAmbientMessage?.(e.channel, momEvent, this);
 			}
 
