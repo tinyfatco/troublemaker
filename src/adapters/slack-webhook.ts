@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-addressing.js";
 import { SlackBase, type SlackBaseConfig } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
 
@@ -135,7 +136,8 @@ export class SlackWebhookAdapter extends SlackBase {
 
 		const isDirectlyAddressed = event.type === "app_mention"
 			|| event.channel_type === "im"
-			|| Boolean(event.text?.includes(`<@${this.botUserId}>`));
+			|| Boolean(event.text?.includes(`<@${this.botUserId}>`))
+			|| hasSlackBroadcastMention(event.text);
 
 		// Feed pulse on every message (before any filtering) — pulse needs to see everything
 		if (this.pulse && event.ts && (event.user || event.bot_id)) {
@@ -175,7 +177,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			ts: event.ts,
 			user: event.user || event.bot_id || "unknown",
 			teamId,
-			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+			text: stripSlackBroadcastMentions((event.text || "").replace(/<@[A-Z0-9]+>/gi, "")),
 			rawText: event.text || "",
 			sourceEventType: "slack_app_mention",
 			directlyAddressed: true,
@@ -211,6 +213,8 @@ export class SlackWebhookAdapter extends SlackBase {
 		if (!event.text && (!event.files || event.files.length === 0)) return;
 		const isDM = event.channel_type === "im";
 		const isBotMention = event.text?.includes(`<@${this.botUserId}>`);
+		const isBroadcastMention = !isDM && hasSlackBroadcastMention(event.text);
+		const isDirectlyAddressed = isDM || isBroadcastMention;
 		const userId = event.user || event.bot_id || "unknown";
 		if (isDM && !this.acceptsDmFrom(userId)) {
 			log.logInfo(`[${event.channel}] Ignoring Slack DM from non-allowlisted user ${userId}`);
@@ -230,25 +234,33 @@ export class SlackWebhookAdapter extends SlackBase {
 			ts: event.ts,
 			user: userId,
 			teamId,
-			text: (event.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+			text: stripSlackBroadcastMentions((event.text || "").replace(/<@[A-Z0-9]+>/gi, "")),
 			rawText: event.text || "",
-			sourceEventType: isDM ? "slack_dm" : "slack_ambient_message",
-			directlyAddressed: isDM,
+			sourceEventType: isDM
+				? "slack_dm"
+				: isBroadcastMention
+					? "slack_broadcast_mention"
+					: "slack_ambient_message",
+			directlyAddressed: isDirectlyAddressed,
 			threadTs,
 			replyTarget: isDM
 				? event.channel
 				: `slack:${event.channel}:${threadTs}`,
 			replyTargetDescription: isDM
 				? "Slack DM"
-				: event.thread_ts
-					? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
-					: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
+				: isBroadcastMention
+					? event.thread_ts
+						? "Slack thread containing this channel-wide mention"
+						: "Slack thread under this channel-wide mention"
+					: event.thread_ts
+						? "Slack thread containing this ambient message; use only if a visible reply is appropriate"
+						: "Slack thread rooted under this ambient message; use only if a visible reply is appropriate",
 			files: event.files,
 		};
 
 		momEvent.attachments = this.logUserMessage(momEvent);
 
-		if (isDM) {
+		if (isDirectlyAddressed) {
 			if (this.handler.resolvePendingInput(event.channel, momEvent.text)) {
 				return;
 			}
@@ -268,7 +280,7 @@ export class SlackWebhookAdapter extends SlackBase {
 				this.lastRunDone = this.getQueue(event.channel).enqueue(async () => { await this.handler.handleEvent(momEvent, this); });
 			}
 		} else {
-			// Ambient engagement: non-DM, non-mention message — let the engagement system decide
+			// Ambient engagement: non-DM, non-addressed message — let the engagement system decide
 			this.onAmbientMessage?.(event.channel, momEvent, this);
 		}
 	}
