@@ -213,6 +213,32 @@ export function assistantContentDelta(
 	return delta;
 }
 
+/**
+ * Returns true when one durable assistant turn is already represented inside
+ * a cumulative live snapshot. Tool calls use their stable runtime IDs; text
+ * uses exact visible content. Thinking, tool output, and results are ignored
+ * because the terminal does not render them as assistant transcript content.
+ */
+export function isAssistantContentCoveredBySnapshot(
+	durableContent: RuntimeAssistantSnapshotContent[],
+	snapshotContent: RuntimeAssistantSnapshotContent[],
+): boolean {
+	if (durableContent.some((block) => block.type === "toolCall" && !block.id)) return false;
+	const durableTokens = visibleAssistantTokens(durableContent);
+	if (durableTokens.length === 0) return false;
+
+	const available = new Map<string, number>();
+	for (const token of visibleAssistantTokens(snapshotContent)) {
+		available.set(token, (available.get(token) || 0) + 1);
+	}
+	for (const token of durableTokens) {
+		const remaining = available.get(token) || 0;
+		if (remaining === 0) return false;
+		available.set(token, remaining - 1);
+	}
+	return true;
+}
+
 export function toAssistantSnapshot(event: RuntimeStreamEvent): RuntimeAssistantSnapshotEntry | null {
 	if (event.type !== "assistant_snapshot") return null;
 	return event.entry;
@@ -293,6 +319,18 @@ function normalizeContent(value: unknown): RuntimeAssistantSnapshotContent[] {
 		}
 	}
 	return content;
+}
+
+function visibleAssistantTokens(content: RuntimeAssistantSnapshotContent[]): string[] {
+	const tokens: string[] = [];
+	for (const block of content) {
+		if (block.type === "toolCall" && block.id) {
+			tokens.push(`tool:${block.id}`);
+		} else if (block.type === "text" && block.text.trim()) {
+			tokens.push(`text:${block.text.trim()}`);
+		}
+	}
+	return tokens;
 }
 
 function stripModelContextBlocks(text: string): string {

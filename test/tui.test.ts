@@ -11,7 +11,15 @@ import {
 	normalizeTuiCommand,
 	resolveInvokedAgent,
 } from "../src/tui/config.js";
-import { assistantContentDelta, getAmbientDisplayLines, normalizeChannelLabel, parseContextLine, readRuntimeSse, safeToolLabel } from "../src/tui/protocol.js";
+import {
+	assistantContentDelta,
+	getAmbientDisplayLines,
+	isAssistantContentCoveredBySnapshot,
+	normalizeChannelLabel,
+	parseContextLine,
+	readRuntimeSse,
+	safeToolLabel,
+} from "../src/tui/protocol.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -122,6 +130,27 @@ try {
 		{ type: "toolCall", id: "done", name: "bash", label: "Already done", arguments: {} },
 		{ type: "toolResult", toolCallId: "done", result: "same" },
 	]), []);
+	const cumulativeSnapshot = [
+		{ type: "toolCall" as const, id: "tool-1", name: "read", label: "First check", arguments: {} },
+		{ type: "toolResult" as const, toolCallId: "tool-1", result: "", isError: false },
+		{ type: "toolCall" as const, id: "tool-2", name: "edit", label: "Second check", arguments: {} },
+		{ type: "text" as const, text: "Visible update" },
+	];
+	assert.equal(isAssistantContentCoveredBySnapshot([
+		{ type: "toolCall", id: "tool-2", name: "edit", label: "Second check", arguments: {} },
+	], cumulativeSnapshot), true, "a durable tool turn matches its identity inside a cumulative live snapshot");
+	assert.equal(isAssistantContentCoveredBySnapshot([
+		{ type: "text", text: "Visible update" },
+	], cumulativeSnapshot), true, "a durable text turn matches its exact visible block inside a cumulative live snapshot");
+	assert.equal(isAssistantContentCoveredBySnapshot([
+		{ type: "toolCall", id: "different-tool", name: "edit", label: "Second check", arguments: {} },
+	], cumulativeSnapshot), false, "matching labels cannot hide a distinct tool call");
+	assert.equal(isAssistantContentCoveredBySnapshot([
+		{ type: "toolCall", id: "", name: "edit", label: "Second check", arguments: {} },
+	], cumulativeSnapshot), false, "a durable tool without a stable identity is never hidden");
+	assert.equal(isAssistantContentCoveredBySnapshot([
+		{ type: "text", text: "Different update" },
+	], cumulativeSnapshot), false, "different assistant text remains visible");
 	const finalSseEvents = [];
 	for await (const event of readRuntimeSse(new Response('data: {"type":"status","status":"accepted"}'))) {
 		finalSseEvents.push(event.type);
