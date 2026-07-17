@@ -30,7 +30,14 @@ import type {
 } from "../core/runtime-contract.js";
 import { TroublemakerTuiClient, type TuiAgentStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
-import { assistantContentDelta, parseContextLine, safeToolLabel, toAssistantSnapshot, type TuiHistoryEntry } from "./protocol.js";
+import {
+	assistantContentDelta,
+	isAssistantContentCoveredBySnapshot,
+	parseContextLine,
+	safeToolLabel,
+	toAssistantSnapshot,
+	type TuiHistoryEntry,
+} from "./protocol.js";
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
@@ -89,7 +96,10 @@ class TroublemakerTuiApp {
 	private readonly seenAwarenessOrder: string[] = [];
 	private readonly awarenessChannelsById = new Map<string, string>();
 	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
-	private readonly pendingAssistantEchoes: Array<{ fingerprint: string; expiresAt: number }> = [];
+	private readonly pendingAssistantEchoes: Array<{
+		content: RuntimeAssistantSnapshotContent[];
+		expiresAt: number;
+	}> = [];
 	private readonly deferredAwarenessAssistantLines = new Map<string, string>();
 	private readonly liveRuns = new Map<string, LiveRunView>();
 	private readonly runtimeEchoGraceByChannel = new Map<string, number>();
@@ -414,7 +424,6 @@ class TroublemakerTuiApp {
 			return;
 		}
 		if (entry.role === "assistant") {
-			const fingerprint = assistantFingerprint(entry.content);
 			if (channel && this.hasRuntimeEchoGrace(channel)) {
 				this.deferredAwarenessAssistantLines.delete(entry.id);
 				this.rememberAwarenessId(entry.id);
@@ -425,7 +434,7 @@ class TroublemakerTuiApp {
 				this.rememberAwarenessId(entry.id);
 				return;
 			}
-			if (this.consumeAssistantEcho(fingerprint)) {
+			if (this.consumeAssistantEcho(entry.content)) {
 				this.deferredAwarenessAssistantLines.delete(entry.id);
 				this.rememberAwarenessId(entry.id);
 				return;
@@ -639,16 +648,22 @@ class TroublemakerTuiApp {
 	}
 
 	private rememberAssistantEcho(content: RuntimeAssistantSnapshotContent[]): void {
-		const fingerprint = assistantFingerprint(content);
-		if (!fingerprint) return;
+		if (!content.some((block) =>
+			(block.type === "toolCall" && Boolean(block.id)) ||
+			(block.type === "text" && Boolean(block.text.trim()))
+		)) return;
 		this.prunePendingEchoes();
-		this.pendingAssistantEchoes.push({ fingerprint, expiresAt: Date.now() + ASSISTANT_ECHO_TTL_MS });
+		this.pendingAssistantEchoes.push({
+			content: content.map((block) => ({ ...block })),
+			expiresAt: Date.now() + ASSISTANT_ECHO_TTL_MS,
+		});
 	}
 
-	private consumeAssistantEcho(fingerprint: string): boolean {
-		if (!fingerprint) return false;
+	private consumeAssistantEcho(content: RuntimeAssistantSnapshotContent[]): boolean {
 		this.prunePendingEchoes();
-		const index = this.pendingAssistantEchoes.findIndex((entry) => entry.fingerprint === fingerprint);
+		const index = this.pendingAssistantEchoes.findIndex((entry) =>
+			isAssistantContentCoveredBySnapshot(content, entry.content)
+		);
 		if (index < 0) return false;
 		this.pendingAssistantEchoes.splice(index, 1);
 		return true;
@@ -832,17 +847,6 @@ function toPiAssistantMessage(snapshot: RuntimeAssistantSnapshotEntry, content: 
 		stopReason,
 		timestamp: Date.parse(snapshot.timestamp) || Date.now(),
 	};
-}
-
-function assistantFingerprint(content: RuntimeAssistantSnapshotContent[]): string {
-	return content
-		.map((block) => {
-			if (block.type === "text") return `text:${block.text.trim()}`;
-			if (block.type === "toolCall") return `tool:${safeToolLabel(block) || ""}`;
-			return "";
-		})
-		.filter(Boolean)
-		.join("\u0000");
 }
 
 function isToolUseStopReason(stopReason: string | undefined): boolean {
