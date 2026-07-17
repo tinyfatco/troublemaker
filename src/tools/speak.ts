@@ -31,7 +31,6 @@ const speakToolSchema = Type.Object({
 
 export interface ResolvedSpeakConfig {
 	enabled: boolean;
-	auto: boolean;
 	backend: MomSpeakBackend;
 	maxChars: number;
 	macosSay: {
@@ -191,7 +190,6 @@ export function resolveSpeakConfig(
 
 	return {
 		enabled,
-		auto: booleanSetting(env.MOM_SPEAK_AUTO) ?? booleanSetting(speak.auto) ?? false,
 		backend,
 		maxChars: numberSetting(env.MOM_SPEAK_MAX_CHARS)
 			?? numberSetting(speak.maxChars)
@@ -413,29 +411,6 @@ async function dispatchSpeech(
 	return `Speech is disabled (${config.backend}).`;
 }
 
-export function prepareAutomaticSpeechText(text: string, maxChars: number): string {
-	let clean = text
-		.replace(/```[\s\S]*?```/g, " Code omitted. ")
-		.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-		.replace(/`([^`]+)`/g, "$1")
-		.replace(/^\s{0,3}#{1,6}\s+/gm, "")
-		.replace(/^\s*>\s?/gm, "")
-		.replace(/[*_~]/g, "")
-		.replace(/\s+/g, " ")
-		.trim();
-	if (!clean || maxChars <= 0) return "";
-	if (clean.length <= maxChars) return clean;
-
-	const suffix = " The rest is on screen.";
-	if (maxChars <= suffix.length + 8) return clean.slice(0, maxChars).trim();
-	const limit = maxChars - suffix.length;
-	const prefix = clean.slice(0, limit);
-	const sentenceEnd = Math.max(prefix.lastIndexOf(". "), prefix.lastIndexOf("! "), prefix.lastIndexOf("? "));
-	clean = (sentenceEnd >= Math.floor(limit * 0.55) ? prefix.slice(0, sentenceEnd + 1) : prefix).trim();
-	return `${clean}${suffix}`;
-}
-
 export async function speakConfiguredText(
 	workspaceDir: string,
 	text: string,
@@ -458,28 +433,6 @@ export async function speakConfiguredText(
 	return { backend: config.backend, enabled: true, message };
 }
 
-export async function autoSpeakFinalResponse(
-	workspaceDir: string,
-	text: string,
-	options: SpeakToolOptions = {},
-): Promise<boolean> {
-	const config = resolveSpeakConfig(workspaceDir, options);
-	if (!config.enabled || !config.auto) return false;
-	const speechText = prepareAutomaticSpeechText(text, config.maxChars);
-	if (!speechText) return false;
-
-	try {
-		await dispatchSpeech(speechText, config, true);
-		log.logInfo(`[speak:auto] ${config.backend}: ${speechText.slice(0, 120)}`);
-		return true;
-	} catch (err) {
-		// Speech is a local convenience surface. It must never make canonical
-		// response delivery fail.
-		log.logWarning("[speak:auto] playback failed", err instanceof Error ? err.message : String(err));
-		return false;
-	}
-}
-
 export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions = {}): AgentTool<typeof speakToolSchema> {
 	return {
 		name: "speak",
@@ -487,7 +440,7 @@ export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions 
 		description:
 			"Speak a short phrase aloud through Noodle's configured local TTS backend. " +
 			"Use this when the user asks you to say something out loud or when a local Mac demo needs audible narration. " +
-			"Do not use this for ordinary voice/phone/web-voice replies; automatic response speech is configured separately. " +
+			"Do not use this for ordinary voice/phone/web-voice replies; those sessions provide their own TTS. " +
 			"Config comes from settings.json `speak` or env vars. Backends: macos-say, command, http, elevenlabs, sag, noop/disabled.",
 		parameters: speakToolSchema,
 		execute: async (

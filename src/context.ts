@@ -89,8 +89,6 @@ export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | 
 
 export interface MomSpeakSettings {
 	enabled?: boolean;
-	/** Automatically speak each non-empty final assistant response. */
-	auto?: boolean;
 	backend?: MomSpeakBackend;
 	voice?: string;
 	rate?: number;

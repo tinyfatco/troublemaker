@@ -40,7 +40,6 @@ import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
-import { autoSpeakFinalResponse } from "./tools/speak.js";
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
@@ -1192,7 +1191,6 @@ function createRunner(
 					emitLiveEvent(errorEvent);
 					ctx.emitContentBlock?.(errorEvent);
 					await ctx.sendFinalResponse(userErrorMsg, { force: true });
-					await autoSpeakFinalResponse(workspaceDir, userErrorMsg);
 					await ctx.respondInThread(`_Error: ${visibleError}_`);
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
@@ -1221,7 +1219,6 @@ function createRunner(
 								? `${cappedText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
 								: cappedText;
 						await ctx.sendFinalResponse(mainText);
-						await autoSpeakFinalResponse(workspaceDir, mainText);
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);
 						log.logWarning("Failed to replace message with final text", errMsg);

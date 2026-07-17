@@ -129,12 +129,11 @@ http://127.0.0.1:3002/input/webhook
 Troublemaker maps that into the web adapter as a `voice` channel prompt and
 returns `202 Accepted` immediately.
 
-## Automatic SAG Response Speech
+## Explicit SAG Speech
 
-On macOS, final assistant responses can be spoken automatically with
-[`sag`](https://github.com/superpower-chat/sag). Enable the durable mode through
-`self_configure` with setting `speak.auto` and value `true`. Enabling it selects
-the `sag` backend while leaving the explicit `speak` tool available.
+On macOS, the explicit `speak` tool can use
+[`sag`](https://github.com/superpower-chat/sag). Set `speak.backend` to `sag` in
+`settings.json`; ordinary final responses are not spoken automatically.
 
 The default SAG invocation is equivalent to:
 
@@ -142,12 +141,9 @@ The default SAG invocation is equivalent to:
 /opt/homebrew/bin/sag --model-id eleven_flash_v2_5
 ```
 
-Troublemaker sends speech text over stdin and launches SAG through a login Zsh,
+When the `speak` tool is called, Troublemaker sends speech text over stdin and launches SAG through a login Zsh,
 so an operator-approved ElevenLabs environment can load without copying API
 keys into `settings.json` or command-line arguments. Override the executable,
 model, or shell with `settings.json` under `speak.sag`, or with
 `MOM_SPEAK_SAG_COMMAND`, `MOM_SPEAK_SAG_MODEL_ID`, and
 `MOM_SPEAK_SAG_SHELL`.
-
-Automatic speech is fail-soft: text delivery does not depend on audio playback,
-and a new final response interrupts older in-progress speech.

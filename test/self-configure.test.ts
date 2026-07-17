@@ -129,17 +129,31 @@ try {
 	assert(voiceAlias.newValue === "marin", "voice alias reports selected voice");
 	assert(settings.realtimeVoice === "marin", "voice alias writes realtimeVoice");
 
-	const autoSpeech = applySelfConfiguration(workingDir, "sag", true);
-	settings = readSettings(workingDir);
-	assert(autoSpeech.newValue === true, "SAG alias enables automatic speech");
-	assert((settings.speak as any).auto === true, "automatic speech persists in speak settings");
-	assert((settings.speak as any).backend === "sag", "enabling automatic speech selects the SAG backend");
-	const disableAutoSpeech = applySelfConfiguration(workingDir, "speak.auto", false);
-	settings = readSettings(workingDir);
-	assert(disableAutoSpeech.newValue === false, "automatic speech can be disabled directly");
-	assert((settings.speak as any).auto === false, "disabling automatic speech persists without deleting speech settings");
-
 	const tool = createSelfConfigureTool(workingDir);
+	const settingDescription = (tool.parameters as any).properties.setting.description as string;
+	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
+	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
+
+	for (const removedSetting of ["speak.auto", "auto_speak", "autoSpeak", "sag", "sag.enabled", "speak.automatic"]) {
+		try {
+			applySelfConfiguration(workingDir, removedSetting, true);
+			assert(false, `${removedSetting} is rejected`);
+		} catch (err) {
+			assert(err instanceof Error && err.message.includes("Unknown self_configure setting"), `${removedSetting} is rejected`);
+		}
+	}
+
+	try {
+		await (tool.execute as any)("call-removed-speech", {
+			label: "removed setting",
+			setting: "speak.auto",
+			value: true,
+		});
+		assert(false, "self_configure tool rejects speak.auto");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("Unknown self_configure setting"), "self_configure tool rejects speak.auto");
+	}
+
 	const result = await (tool.execute as any)("call-1", {
 		label: "set thinking high",
 		setting: "thinking_level",
