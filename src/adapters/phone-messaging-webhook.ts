@@ -51,6 +51,12 @@ You are replying in an SMS/iMessage-style conversation. Keep messages concise, d
 	}
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		if (!isAuthorizedVpsIngress(req)) {
+			res.writeHead(401);
+			res.end("Unauthorized");
+			return;
+		}
+
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", async () => {
@@ -392,6 +398,21 @@ function validatePayload(payload: PhoneInboundPayload): string | null {
 	if (!payload.from) return "from";
 	if (payload.text == null) return "text";
 	return null;
+}
+
+function isAuthorizedVpsIngress(req: IncomingMessage): boolean {
+	const expected = process.env.MOM_PHONE_INBOUND_TOKEN?.trim();
+	if (!expected) return true;
+	if (req.headers["x-crawdad-vps-verified"] !== "true") return false;
+	const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
+	return constantTimeEqual(supplied, expected);
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+	if (left.length !== right.length) return false;
+	let diff = 0;
+	for (let i = 0; i < left.length; i++) diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+	return diff === 0;
 }
 
 function normalizeAddress(value: string): string {
