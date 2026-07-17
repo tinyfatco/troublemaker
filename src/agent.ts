@@ -29,7 +29,11 @@ import {
 import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
-import { normalizeSimpleStreamOptionsForModel, normalizeThinkingLevelForModel } from "./model-thinking.js";
+import {
+	boundCompactionStreamOptions,
+	normalizeSimpleStreamOptionsForModel,
+	normalizeThinkingLevelForModel,
+} from "./model-thinking.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
@@ -82,6 +86,24 @@ export interface CompactResult {
 	tokensBefore: number;
 }
 
+export interface CompactionStatus {
+	reason: string;
+	startedAt: number;
+	timeoutAt: number;
+	abortRequestedAt?: number;
+}
+
+export const DEFAULT_COMPACTION_TIMEOUT_MS = 6 * 60 * 1000;
+const MIN_COMPACTION_TIMEOUT_MS = 30 * 1000;
+const MAX_COMPACTION_TIMEOUT_MS = 30 * 60 * 1000;
+
+export function resolveCompactionTimeoutMs(value = process.env.MOM_COMPACTION_TIMEOUT_MS): number {
+	if (!value?.trim()) return DEFAULT_COMPACTION_TIMEOUT_MS;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return DEFAULT_COMPACTION_TIMEOUT_MS;
+	return Math.max(MIN_COMPACTION_TIMEOUT_MS, Math.min(MAX_COMPACTION_TIMEOUT_MS, Math.floor(parsed)));
+}
+
 export interface AgentRunner {
 	run(
 		ctx: MomContext,
@@ -91,8 +113,12 @@ export interface AgentRunner {
 		liveEventSink?: RuntimeEventSink,
 	): Promise<RunResult>;
 	abort(): void;
+	/** Abort only an in-progress manual or automatic context compaction. */
+	abortCompaction(): boolean;
 	/** Queue a message at the active run's next safe turn boundary. */
 	steer(text: string): boolean;
+	/** Describe an in-progress context compaction for status surfaces. */
+	getCompactionStatus(): CompactionStatus | null;
 	/** Get current context diagnostics */
 	getContextInfo(): ContextInfo;
 	/** Compact context — summarize old messages, keep recent */
@@ -387,7 +413,8 @@ function createRunner(
 		onToolOutput: (event) => claudeCliToolOutputHandler(event),
 	});
 	const streamFn: StreamFn = (streamModel, context, options) => {
-		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, options);
+		const boundedOptions = boundCompactionStreamOptions(context, options);
+		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
 		return isClaudeCliProvider(streamModel.provider)
 			? claudeCliStream(streamModel, context, normalizedOptions)
 			: streamSimple(streamModel, context, normalizedOptions);
@@ -606,10 +633,41 @@ function createRunner(
 
 	// Activity callback for external watchdog
 	let onActivity: (() => void) | undefined;
+	const compactionTimeoutMs = resolveCompactionTimeoutMs();
+	let compactionStatus: CompactionStatus | null = null;
+	let compactionTimer: ReturnType<typeof setTimeout> | undefined;
+	const requestCompactionAbort = (): boolean => {
+		if (!session || !compactionStatus) return false;
+		compactionStatus.abortRequestedAt ??= Date.now();
+		session.abortCompaction();
+		return true;
+	};
+	const beginCompaction = (reason: unknown) => {
+		if (compactionTimer) clearTimeout(compactionTimer);
+		const startedAt = Date.now();
+		compactionStatus = {
+			reason: typeof reason === "string" && reason ? reason : "unknown",
+			startedAt,
+			timeoutAt: startedAt + compactionTimeoutMs,
+		};
+		compactionTimer = setTimeout(() => {
+			if (!compactionStatus || compactionStatus.startedAt !== startedAt) return;
+			log.logWarning(`[compaction] Timed out after ${compactionTimeoutMs}ms; requesting cancellation`);
+			requestCompactionAbort();
+		}, compactionTimeoutMs);
+		compactionTimer.unref?.();
+	};
+	const finishCompaction = () => {
+		if (compactionTimer) clearTimeout(compactionTimer);
+		compactionTimer = undefined;
+		compactionStatus = null;
+	};
 
 	// Event handler
 	let _eventSeq = 0;
 	const eventHandler = async (event: any) => {
+		if (event.type === "compaction_start") beginCompaction(event.reason);
+		else if (event.type === "compaction_end") finishCompaction();
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
 
 		_eventSeq++;
@@ -824,7 +882,12 @@ function createRunner(
 				// (nothing to summarize) or model/apiKey was missing.
 				log.logInfo(`Compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
 			}
-			const status = { type: "status" as const, status: "streaming" as const, message: "Context compacted; resuming..." };
+			const message = compEvent.result
+				? "Context compacted; resuming..."
+				: compEvent.aborted
+					? "Compaction stopped; resuming..."
+					: "Compaction skipped; resuming...";
+			const status = { type: "status" as const, status: "streaming" as const, message };
 			emitLiveEvent(status);
 			ctx.emitContentBlock?.(status);
 		} else if (event.type === "auto_retry_start") {
@@ -1261,11 +1324,16 @@ function createRunner(
 		abort(): void {
 			acceptsSteering = false;
 			if (!session) return;
+			requestCompactionAbort();
 			const cleared = session.clearQueue();
 			if (cleared.steering.length > 0 || cleared.followUp.length > 0) {
 				log.logInfo(`[awareness] Cleared ${cleared.steering.length} steering and ${cleared.followUp.length} follow-up message(s) during abort`);
 			}
 			void session.abort();
+		},
+
+		abortCompaction(): boolean {
+			return requestCompactionAbort();
 		},
 
 		steer(text: string): boolean {
@@ -1274,6 +1342,10 @@ function createRunner(
 				log.logWarning(`[awareness] steer failed`, err.message);
 			});
 			return true;
+		},
+
+		getCompactionStatus(): CompactionStatus | null {
+			return compactionStatus ? { ...compactionStatus } : null;
 		},
 
 		getContextInfo(): ContextInfo {

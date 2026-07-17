@@ -132,10 +132,21 @@ try {
 	settings = readSettings(workingDir);
 	assert(JSON.stringify(wakeAliases.newValue) === JSON.stringify(["Lantern", "Orbit"]), "wake aliases deduplicate case-insensitively");
 	assert(JSON.stringify((settings.voice as any).aliases) === JSON.stringify(["Lantern", "Orbit"]), "wake aliases persist in the voice settings block");
+	const webhookSteer = applySelfConfiguration(workingDir, "voice.webhookInputMode", "soft_steer");
+	settings = readSettings(workingDir);
+	assert(webhookSteer.previousValue === "interrupt", "voice webhook routing defaults to interrupt");
+	assert(webhookSteer.newValue === "steer", "voice webhook routing normalizes soft-steer language");
+	assert((settings.voice as any).webhookInputMode === "steer", "voice webhook routing persists alongside wake aliases");
+	assert(JSON.stringify((settings.voice as any).aliases) === JSON.stringify(["Lantern", "Orbit"]), "voice webhook routing preserves wake aliases");
+	const webhookInterrupt = applySelfConfiguration(workingDir, "voice.webhook_mode", "restart");
+	settings = readSettings(workingDir);
+	assert(webhookInterrupt.newValue === "interrupt", "voice webhook mode alias normalizes restart to interrupt");
+	assert((settings.voice as any).webhookInputMode === "interrupt", "voice webhook mode alias updates the durable setting");
 
 	const tool = createSelfConfigureTool(workingDir);
 	const settingDescription = (tool.parameters as any).properties.setting.description as string;
 	assert(settingDescription.includes("voice.wake_aliases"), "self_configure schema exposes compact wake aliases");
+	assert(settingDescription.includes("voice.webhook_input_mode"), "self_configure schema exposes voice webhook routing");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
 	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
 
@@ -215,6 +226,13 @@ try {
 		assert(false, "unsafe Discord tool-stream window throws");
 	} catch (err) {
 		assert(err instanceof Error && err.message.includes("1"), "invalid Discord tool-stream window explains its safe range");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "voice.webhook_input_mode", "sometimes");
+		assert(false, "invalid voice webhook input mode throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("interrupt"), "invalid voice webhook input mode explains accepted values");
 	}
 
 	try {

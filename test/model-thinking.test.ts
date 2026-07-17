@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import {
+	boundCompactionStreamOptions,
+	COMPACTION_MAX_OUTPUT_TOKENS,
 	normalizeSimpleStreamOptionsForModel,
 	normalizeThinkingLevel,
 	normalizeThinkingLevelForModel,
@@ -44,6 +46,27 @@ assert.equal(
 assert.equal(
 	normalizeSimpleStreamOptionsForModel({ provider: "test", id: "test-model", reasoning: false }, { reasoning: "high" })?.reasoning,
 	undefined,
+);
+
+const ordinaryOptions = { maxTokens: 128000, reasoning: "xhigh" as const };
+assert.equal(
+	boundCompactionStreamOptions({ systemPrompt: "Ordinary agent prompt" }, ordinaryOptions),
+	ordinaryOptions,
+	"ordinary model turns retain their requested output and reasoning",
+);
+const compactOptions = boundCompactionStreamOptions(
+	{ systemPrompt: "You are a context summarization assistant. Only summarize." },
+	ordinaryOptions,
+);
+assert.equal(compactOptions?.maxTokens, COMPACTION_MAX_OUTPUT_TOKENS, "compaction output is capped independently of trigger headroom");
+assert.equal(compactOptions?.reasoning, "low", "compaction does not inherit pathological xhigh reasoning");
+assert.equal(
+	boundCompactionStreamOptions(
+		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
+		{ maxTokens: 2048 },
+	)?.maxTokens,
+	2048,
+	"smaller branch-summary budgets remain intact",
 );
 
 console.log("model thinking tests passed");

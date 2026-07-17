@@ -140,6 +140,12 @@ http://127.0.0.1:3002/input/webhook
 Troublemaker maps that into the web adapter as a `voice` channel prompt and
 returns `202 Accepted` immediately.
 
+Busy webhook transcripts interrupt and restart the active run by default. An
+agent can change that behavior with `self_configure` setting
+`voice.webhook_input_mode` to `steer`; steering appends to an accepting model
+turn and otherwise queues a fresh turn without aborting active work. Set it
+back to `interrupt` to restore replacement behavior.
+
 ## Explicit SAG Speech
 
 On macOS, the explicit `speak` tool can use

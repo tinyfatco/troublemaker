@@ -28,7 +28,7 @@ import type {
 	RuntimeLiveRunEvent,
 	RuntimeStreamEvent,
 } from "../core/runtime-contract.js";
-import { TroublemakerTuiClient, type TuiAgentStatus } from "./client.js";
+import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
 import {
 	assistantContentDelta,
@@ -582,7 +582,7 @@ class TroublemakerTuiApp {
 		while (!signal.aborted) {
 			try {
 				const status = await this.client.getRunStatus(signal);
-				this.syncExternalWorking(!status.idle);
+				this.syncExternalWorking(status);
 			} catch (error) {
 				if (signal.aborted || isAbortError(error)) return;
 			}
@@ -590,10 +590,19 @@ class TroublemakerTuiApp {
 		}
 	}
 
-	private syncExternalWorking(busy: boolean): void {
-		if (this.activeAbort) return;
-		if (busy) {
-			if (!this.activeLoader) this.showExternalLoader("Working...");
+	private syncExternalWorking(status: TuiRunStatus): void {
+		const queued = status.queuedInputCount || status.queuedRuns;
+		const queuedSuffix = queued > 0 ? ` · ${queued} input${queued === 1 ? "" : "s"} queued` : "";
+		const message = status.phase === "compacting"
+			? `${status.compactionAbortRequested ? "Stopping stalled compaction" : "Compacting context"} · ${formatElapsed(status.phaseElapsedMs)}${queuedSuffix}`
+			: `Working${queuedSuffix}...`;
+
+		if (this.activeAbort) {
+			if (status.phase === "compacting") this.showLoader(message);
+			return;
+		}
+		if (!status.idle) {
+			this.showExternalLoader(message);
 		} else if (this.externalLoaderVisible) {
 			this.clearLoader();
 		}
@@ -869,6 +878,13 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 		};
 		signal.addEventListener("abort", onAbort, { once: true });
 	});
+}
+
+function formatElapsed(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function abortError(): Error {

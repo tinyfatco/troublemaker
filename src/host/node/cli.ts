@@ -747,7 +747,10 @@ let runQueueTail: Promise<void> = Promise.resolve();
 let voiceContract: FirstClassVoiceContract | null = null;
 
 function isCanonicalExecutionBusy(): boolean {
-	return activeRun !== null || queuedRunCount > 0 || (awareness?.running ?? false);
+	return activeRun !== null
+		|| queuedRunCount > 0
+		|| (awareness?.running ?? false)
+		|| Boolean(awareness?.runner.getCompactionStatus());
 }
 
 function isRunBusy(): boolean {
@@ -917,6 +920,12 @@ function enqueueHardInterrupt(event: MomEvent, adapter: PlatformAdapter): void {
 	pendingInterrupts.push({ event, adapter, receivedAt: Date.now() });
 	if (pendingInterrupts.length > MAX_INTERRUPT_BATCH) {
 		pendingInterrupts.splice(0, pendingInterrupts.length - MAX_INTERRUPT_BATCH);
+	}
+
+	const compacting = awareness?.runner.getCompactionStatus();
+	if (compacting && !awareness?.running) {
+		log.logInfo(`[interrupt:${event.channel}] Cancelling background compaction for new input`);
+		awareness?.runner.abortCompaction();
 	}
 
 	if (awareness?.running) {
@@ -1132,6 +1141,32 @@ function enqueueActiveGoalContinuationWake(resumedAfterRestart: boolean): boolea
 	return heartbeatAdapter.enqueueEvent(event);
 }
 
+const liveSettings = new MomSettingsManager(workingDir);
+
+function isConfigurableVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): boolean {
+	if (adapter.name !== "web") return false;
+	const sourceType = event.sourceEventType?.toLowerCase().replace(/-/g, "_") ?? "";
+	return sourceType.includes("voice")
+		|| event.channel === "voice"
+		|| event.channel.startsWith("voice-");
+}
+
+function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): void {
+	if (awareness?.running && awareness.runner.steer(event.text)) {
+		log.logInfo(`[voice-webhook:${event.channel}] Soft-steered transcript into the active run`);
+		return;
+	}
+
+	log.logInfo(`[voice-webhook:${event.channel}] Active work cannot accept steering; queued a fresh turn`);
+	void withGlobalRunSlot(`voice-webhook:${event.channel}`, () => runEventInSlot(event, adapter, false))
+		.catch((err) => {
+			log.logWarning(
+				`[voice-webhook:${event.channel}] Queued turn failed`,
+				err instanceof Error ? err.message : String(err),
+			);
+		});
+}
+
 // ============================================================================
 // Handler (shared across all adapters)
 // ============================================================================
@@ -1166,6 +1201,13 @@ const handler: MomHandler = {
 		if (sameTerminalRun && awareness && tryTerminalTuiSoftSteer(event, awareness.runner)) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
 			return;
+		}
+		if (isConfigurableVoiceWebhook(event, adapter)) {
+			liveSettings.reload();
+			if (liveSettings.getVoiceWebhookInputMode() === "steer") {
+				steerOrQueueVoiceWebhook(event, adapter);
+				return;
+			}
 		}
 
 		// Other busy inbound messages preempt stale generation instead of being
@@ -1281,9 +1323,37 @@ function withExecutorCwd(executor: Executor, cwd: string): Executor {
 
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
-	const running = isRunBusy() ? [AWARENESS_DIR] : [];
-	res.writeHead(200, { "Content-Type": "application/json" });
-	res.end(JSON.stringify({ running, idle: running.length === 0, activeRun: describeActiveRun() }));
+	const now = Date.now();
+	const compaction = awareness?.runner.getCompactionStatus() ?? null;
+	const busy = isRunBusy();
+	const running = busy ? [AWARENESS_DIR] : [];
+	const queuedVoiceTurns = voiceContract?.pendingCount ?? 0;
+	const queuedInterrupts = pendingInterrupts.length;
+	const phase = compaction ? "compacting" : busy ? "running" : "idle";
+	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+	res.end(JSON.stringify({
+		running,
+		idle: !busy,
+		phase,
+		phaseElapsedMs: compaction
+			? now - compaction.startedAt
+			: activeRun
+				? now - activeRun.startedAt
+				: 0,
+		activeRun: describeActiveRun(),
+		activeRunLabel: activeRun?.label ?? null,
+		activeRunStartedAt: activeRun?.startedAt ?? null,
+		queuedRuns: queuedRunCount,
+		queuedInterrupts,
+		queuedVoiceTurns,
+		queuedInputCount: queuedInterrupts + queuedVoiceTurns,
+		compaction: compaction ? {
+			reason: compaction.reason,
+			startedAt: compaction.startedAt,
+			timeoutAt: compaction.timeoutAt,
+			abortRequestedAt: compaction.abortRequestedAt ?? null,
+		} : null,
+	}));
 });
 
 // Local voice bridges can poll this before uploading mic audio to cloud STT.
@@ -1490,13 +1560,23 @@ if (enqueueActiveGoalContinuationWake(true)) {
 	log.logInfo("[goal] Resuming active goal after runtime startup");
 }
 
-// Stuck-run watchdog — detect runs with no activity for 5 minutes and force-release
+// Stuck-run watchdog — detect runs with no activity for 5 minutes and request cancellation.
+// Compaction has its own abort controller; keep queued steering intact when only
+// the summary request is stale.
 const WATCHDOG_INTERVAL_MS = 60_000;
 const WATCHDOG_STALE_THRESHOLD_MS = 5 * 60 * 1000;
 setInterval(() => {
 	if (!awareness?.running) return;
 	const staleness = Date.now() - awareness.lastActivity;
 	if (staleness > WATCHDOG_STALE_THRESHOLD_MS) {
+		const compaction = awareness.runner.getCompactionStatus();
+		if (compaction) {
+			if (!compaction.abortRequestedAt) {
+				log.logWarning(`[watchdog] Stale compaction detected (no activity for ${Math.round(staleness / 1000)}s), requesting cancellation`);
+				awareness.runner.abortCompaction();
+			}
+			return;
+		}
 		log.logWarning(`[watchdog] Stale run detected (no activity for ${Math.round(staleness / 1000)}s), aborting`);
 		try { awareness.runner.abort(); } catch { /* best-effort */ }
 		awareness.running = false;
@@ -1992,8 +2072,10 @@ const eventsWatcher = createEventsWatcher(workingDir, adapters, {
 	initialScanDelayMs: INITIAL_EVENTS_SCAN_DELAY_MS,
 	onCompact: async () => {
 		if (!awareness) throw new Error("No awareness — nothing to compact");
-		const result = await awareness.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");
-		log.logInfo(`[auto-compact] ${result.messagesBefore} → ${result.messagesAfter} messages`);
+		await withGlobalRunSlot("compaction:scheduled", async () => {
+			const result = await awareness!.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");
+			log.logInfo(`[auto-compact] ${result.messagesBefore} → ${result.messagesAfter} messages`);
+		});
 	},
 });
 eventsWatcher.start();

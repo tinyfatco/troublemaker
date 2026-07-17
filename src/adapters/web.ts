@@ -40,6 +40,7 @@ interface WebChatPayload {
 	session_id?: string;
 	sourceEventType?: string;
 	source_event_type?: string;
+	event_type?: string;
 	source?: string;
 	origin?: string;
 	role?: string;
@@ -277,7 +278,11 @@ Keep responses concise and helpful.`;
 		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
 		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
 		const sourceEventType = this.firstString(payload.sourceEventType, payload.source_event_type).trim();
-		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(source.toLowerCase());
+		const legacyEventType = this.firstString(payload.event_type).trim().toLowerCase();
+		const normalizedSource = source.toLowerCase();
+		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(normalizedSource)
+			|| normalizedSource.includes("yappatron")
+			|| legacyEventType.includes("utterance");
 
 		return {
 			message,

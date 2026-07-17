@@ -180,6 +180,14 @@ async function run() {
 		assert(lastEvent?.sessionId === "voice-session-1", "fresh voice message carries session id into handler");
 		assert(lastEvent?.sourceEventType === "web_voice", "fresh voice message marks source event type");
 
+		await dispatch(adapter, {
+			text: "legacy transcript",
+			source: "yappatron-mac",
+			event_type: "yappatron.utterance.v1",
+		});
+		assert(eventCount === 3, "legacy finalized transcript starts an idle agent run");
+		assert(lastEvent?.sourceEventType === "web_voice", "legacy finalized transcript is classified for configurable voice routing");
+
 		running = true;
 		const stopResponse = await dispatchStop(adapter);
 		assert(stopResponse.statusCode === 200, "stop endpoint returns JSON success");

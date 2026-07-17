@@ -56,6 +56,7 @@ export type ToolStreamingMode = "off" | "important" | "all";
 export type WorkingStreamPresentation = "split" | "condensed";
 export type SlackToolStreamPresentation = WorkingStreamPresentation;
 export type DiscordToolStreamPresentation = WorkingStreamPresentation;
+export type VoiceWebhookInputMode = "interrupt" | "steer";
 export const DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
 export const MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
 export const MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES = 60;
@@ -118,6 +119,8 @@ export interface MomSpeakSettings {
 export interface MomVoiceSettings {
 	/** Optional wake names in addition to the Name field in IDENTITY.md. */
 	aliases?: string[];
+	/** Route busy webhook transcripts by replacing the active run or steering it. */
+	webhookInputMode?: VoiceWebhookInputMode;
 }
 
 export interface MomSettings {
@@ -560,6 +563,15 @@ export class MomSettingsManager {
 
 	setSlackNativeProgress(value: boolean): void {
 		this.settings.slack = { ...this.settings.slack, nativeProgress: value };
+		this.save();
+	}
+
+	getVoiceWebhookInputMode(): VoiceWebhookInputMode {
+		return this.settings.voice?.webhookInputMode === "steer" ? "steer" : "interrupt";
+	}
+
+	setVoiceWebhookInputMode(value: VoiceWebhookInputMode): void {
+		this.settings.voice = { ...this.settings.voice, webhookInputMode: value };
 		this.save();
 	}
 

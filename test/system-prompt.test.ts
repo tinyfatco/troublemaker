@@ -31,6 +31,7 @@ assert(prompt.includes("Do not turn ordinary one-turn requests into persistent g
 assert(prompt.includes("selective Slack tool streaming"), "system prompt names selective Slack tool streaming");
 assert(prompt.includes("Slack tool-stream presentation (split or condensed)"), "system prompt advertises configurable Slack tool-stream grouping");
 assert(prompt.includes("Slack tool-stream window minutes"), "system prompt advertises configurable Slack tool-stream window");
+assert(prompt.includes("busy voice-webhook routing (interrupt or steer)"), "system prompt advertises configurable voice webhook routing");
 assert(prompt.includes("set it to true only when its safe human-readable label"), "system prompt limits show:true to meaningful safe labels");
 assert(prompt.includes("never put secrets, raw arguments, private content, or sensitive paths"), "system prompt protects surfaced labels from sensitive content");
 assert(prompt.includes("yield_no_action"), "system prompt names yield_no_action");

@@ -11,6 +11,11 @@ export interface TuiAgentStatus {
 
 export interface TuiRunStatus {
 	idle: boolean;
+	phase: "idle" | "running" | "compacting";
+	phaseElapsedMs: number;
+	queuedRuns: number;
+	queuedInputCount: number;
+	compactionAbortRequested: boolean;
 }
 
 interface TuiBacklogResponse {
@@ -53,8 +58,22 @@ export class TroublemakerTuiClient {
 		if (!response.ok) throw new Error(`Agent run status failed (${response.status})`);
 		const raw = await response.json() as Record<string, unknown>;
 		const running = Array.isArray(raw.running) && raw.running.length > 0;
+		const rawPhase = stringValue(raw.phase);
+		const phase = rawPhase === "compacting" || rawPhase === "running" || rawPhase === "idle"
+			? rawPhase
+			: raw.idle === true || (raw.idle !== false && !running)
+				? "idle"
+				: "running";
+		const compaction = raw.compaction && typeof raw.compaction === "object"
+			? raw.compaction as Record<string, unknown>
+			: null;
 		return {
 			idle: raw.idle === true || (raw.idle !== false && !running),
+			phase,
+			phaseElapsedMs: numberValue(raw.phaseElapsedMs),
+			queuedRuns: numberValue(raw.queuedRuns),
+			queuedInputCount: numberValue(raw.queuedInputCount),
+			compactionAbortRequested: typeof compaction?.abortRequestedAt === "number",
 		};
 	}
 

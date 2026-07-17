@@ -23,6 +23,7 @@ import {
 	type SlackToolStreamPresentation,
 	type ToolStreamingMode,
 	type VerbosityLevel,
+	type VoiceWebhookInputMode,
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { findModel } from "../model-config.js";
@@ -58,6 +59,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"spontaneity.timezone",
 	"heartbeat.checklist",
 	"voice.wake_aliases",
+	"voice.webhook_input_mode",
 	"voice",
 	"realtime_voice",
 	"realtime.voice",
@@ -67,6 +69,10 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"voice": "realtime_voice",
 	"voice.aliases": "voice.wake_aliases",
 	"voice.wakeAliases": "voice.wake_aliases",
+	"voice.webhookInputMode": "voice.webhook_input_mode",
+	"voice.webhook_mode": "voice.webhook_input_mode",
+	"voice.input_mode": "voice.webhook_input_mode",
+	"voiceWebhookInputMode": "voice.webhook_input_mode",
 	"wake_aliases": "voice.wake_aliases",
 	"realtimeVoice": "realtime_voice",
 	"realtime.voice": "realtime_voice",
@@ -499,6 +505,34 @@ function configureVoiceWakeAliases(workingDir: string, value: unknown): SelfConf
 	};
 }
 
+function configureVoiceWebhookInputMode(workingDir: string, value: unknown): SelfConfigureResult {
+	const normalized = parseString(value, "voice.webhook_input_mode")
+		.trim()
+		.toLowerCase()
+		.replace(/_/g, "-");
+	let newValue: VoiceWebhookInputMode;
+	if (["interrupt", "preempt", "restart", "replace"].includes(normalized)) {
+		newValue = "interrupt";
+	} else if (["steer", "steer-in", "soft-steer", "append"].includes(normalized)) {
+		newValue = "steer";
+	} else {
+		throw new Error('voice.webhook_input_mode must be "interrupt" or "steer".');
+	}
+
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getVoiceWebhookInputMode();
+	manager.setVoiceWebhookInputMode(newValue);
+	return {
+		changed: true,
+		setting: "voice.webhook_input_mode",
+		previousValue,
+		newValue,
+		note: newValue === "steer"
+			? "Busy voice webhook transcripts will steer the active model turn when possible and otherwise queue without aborting active work."
+			: "Busy voice webhook transcripts will interrupt the active run and restart from the newest input.",
+	};
+}
+
 function configureRealtimeVoice(workingDir: string, value: unknown): SelfConfigureResult {
 	const query = parseString(value, "realtime_voice").trim();
 	const voice = normalizeRealtimeVoiceName(query);
@@ -543,6 +577,7 @@ export function applySelfConfiguration(
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "voice.wake_aliases") return configureVoiceWakeAliases(workingDir, value);
+	if (target === "voice.webhook_input_mode") return configureVoiceWebhookInputMode(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
 	throw new Error(`Unsupported self_configure setting: ${setting}`);
 }
@@ -570,7 +605,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
-				"heartbeat.checklist, voice.wake_aliases, voice/realtime_voice.",
+				"heartbeat.checklist, voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
 		}),
 		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
 	});
@@ -579,7 +614,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, and slack.native_progress to enable or disable native task cards. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
