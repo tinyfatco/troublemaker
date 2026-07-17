@@ -42,7 +42,11 @@ import {
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
 const SEEN_AWARENESS_LIMIT = 5_000;
-const LOCAL_ECHO_TTL_MS = 30_000;
+// Compaction and hard-interrupt restart can delay persistence for several
+// minutes. Keep a bounded local-echo ledger long enough to meet that delayed
+// awareness record instead of repainting the user's input as a second entry.
+const LOCAL_ECHO_TTL_MS = 30 * 60_000;
+const MAX_PENDING_LOCAL_ECHOES = 100;
 const ASSISTANT_ECHO_TTL_MS = 30_000;
 const RUN_STATUS_POLL_MS = 500;
 
@@ -419,6 +423,15 @@ class TroublemakerTuiApp {
 		const entry = parseContextLine(line);
 		if (!entry || this.seenAwarenessIds.has(entry.id)) return;
 		const channel = this.resolveAwarenessChannel(entry);
+		if (entry.role === "user" && entry.batchedUserEntries) {
+			entry.batchedUserEntries = entry.batchedUserEntries.filter((message) =>
+				!this.consumeLocalEcho(message.channel, message.text)
+			);
+			if (entry.batchedUserEntries.length === 0) {
+				this.rememberAwarenessId(entry.id);
+				return;
+			}
+		}
 		if (entry.role === "user" && entry.text && this.consumeLocalEcho(entry.channel || "awareness", entry.text)) {
 			this.rememberAwarenessId(entry.id);
 			return;
@@ -456,6 +469,12 @@ class TroublemakerTuiApp {
 	}
 
 	private renderAwarenessEntry(entry: TuiHistoryEntry, complete: boolean): void {
+		if (entry.role === "user" && entry.batchedUserEntries) {
+			for (const message of entry.batchedUserEntries) {
+				this.addUserMessage(message.channel, message.userName, message.text);
+			}
+			return;
+		}
 		if (entry.role === "user" && entry.text) {
 			this.addUserMessage(entry.channel || "awareness", entry.userName || "user", entry.text);
 			return;
@@ -646,6 +665,9 @@ class TroublemakerTuiApp {
 	private rememberLocalEcho(channel: string, text: string): void {
 		this.prunePendingEchoes();
 		this.pendingLocalEchoes.push({ channel, text, expiresAt: Date.now() + LOCAL_ECHO_TTL_MS });
+		if (this.pendingLocalEchoes.length > MAX_PENDING_LOCAL_ECHOES) {
+			this.pendingLocalEchoes.splice(0, this.pendingLocalEchoes.length - MAX_PENDING_LOCAL_ECHOES);
+		}
 	}
 
 	private consumeLocalEcho(channel: string, text: string): boolean {

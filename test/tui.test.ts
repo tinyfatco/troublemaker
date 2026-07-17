@@ -17,6 +17,7 @@ import {
 	isAssistantContentCoveredBySnapshot,
 	normalizeChannelLabel,
 	parseContextLine,
+	parseInterruptBatchMessages,
 	readRuntimeSse,
 	safeToolLabel,
 } from "../src/tui/protocol.js";
@@ -107,6 +108,19 @@ try {
 	assert.equal(parsedBareSteeredAmbient?.isAmbient, true);
 	assert(!parsedBareSteeredAmbient?.text?.includes("Channel pulse:"), "bare steered ambient prompts hide pulse and control scaffolding");
 	assert(!parsedBareSteeredAmbient?.text?.includes("Reply target:"), "bare steered ambient prompts hide routing metadata");
+	const interruptBatch = `Recent messages:\n[2026-07-17 16:10:59-05:00] [terminal:ghost] [terminal-user]: Sent\n[2026-07-17 16:12:32-05:00] [terminal:ghost] [terminal-user]: Ghost please open Mattermost\nand keep working`;
+	assert.deepEqual(parseInterruptBatchMessages(interruptBatch), [
+		{ channel: "terminal:ghost", userName: "terminal-user", text: "Sent" },
+		{ channel: "terminal:ghost", userName: "terminal-user", text: "Ghost please open Mattermost\nand keep working" },
+	]);
+	const parsedInterruptBatch = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "compaction-delayed-interrupt-batch",
+		timestamp: "2026-07-17T21:14:40Z",
+		message: { role: "user", content: [{ type: "text", text: `[2026-07-17 16:14:40-05:00] [terminal:ghost] [terminal-user]: ${interruptBatch}` }] },
+	}));
+	assert.equal(parsedInterruptBatch?.text, undefined, "synthetic interrupt batches do not render as one raw user block");
+	assert.equal(parsedInterruptBatch?.batchedUserEntries?.length, 2, "synthetic interrupt batches retain individual messages for echo filtering");
 	assert.equal(normalizeChannelLabel("123456"), "telegram:123456");
 	assert.equal(safeToolLabel({
 		type: "toolCall",

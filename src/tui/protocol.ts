@@ -16,6 +16,13 @@ export interface TuiHistoryEntry {
 	model?: string;
 	stopReason?: string;
 	isAmbient?: boolean;
+	batchedUserEntries?: TuiBatchedUserEntry[];
+}
+
+export interface TuiBatchedUserEntry {
+	channel: string;
+	userName: string;
+	text: string;
 }
 
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
@@ -88,9 +95,11 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 				if (messageText.startsWith("[AMBIENT]")) {
 					applyAmbientDisplay(entry, messageText, slackUsers, normalizeChannelLabel(match[2]));
 				} else {
+					const batchedUserEntries = parseInterruptBatchMessages(messageText);
 					entry.channel = normalizeChannelLabel(match[2]);
 					entry.userName = match[3];
-					entry.text = messageText;
+					if (batchedUserEntries.length > 0) entry.batchedUserEntries = batchedUserEntries;
+					else entry.text = messageText;
 				}
 			} else if (visibleText.startsWith("[AMBIENT]")) {
 				// Same-thread ambient context can be soft-steered directly into an
@@ -105,6 +114,26 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 	}
 
 	return entry;
+}
+
+export function parseInterruptBatchMessages(text: string): TuiBatchedUserEntry[] {
+	if (!text.startsWith("Recent messages:\n")) return [];
+	const body = text.slice("Recent messages:\n".length);
+	const header = /^\[([^\]\n]+)\]\s+\[([^\]\n]+)\]\s+\[([^\]\n]+)\]:[ \t]*/gm;
+	const matches = [...body.matchAll(header)];
+	// Harness interrupt batches contain at least two messages. Requiring that
+	// boundary avoids reinterpreting an ordinary user-authored phrase.
+	if (matches.length < 2) return [];
+
+	return matches.map((match, index) => {
+		const start = (match.index ?? 0) + match[0].length;
+		const end = matches[index + 1]?.index ?? body.length;
+		return {
+			channel: normalizeChannelLabel(match[2]),
+			userName: match[3],
+			text: body.slice(start, end).trimEnd(),
+		};
+	}).filter((entry) => Boolean(entry.text));
 }
 
 function applyAmbientDisplay(
