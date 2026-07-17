@@ -15,6 +15,7 @@
  */
 
 import WebSocket from "ws";
+import { randomUUID } from "crypto";
 import * as log from "../log.js";
 import {
 	beginAssistantSpeech,
@@ -26,7 +27,7 @@ import {
 import { AssistantAudioGate, pcm16RmsLevel } from "../audio-capture-gate.js";
 import { createSttSession, type SttConfig, type SttSession } from "./voice-stt.js";
 import { textToSpeechStreaming, type TtsConfig } from "./voice-tts.js";
-import type { MomEvent, MomHandler, PlatformAdapter, MomContext, ChannelInfo, UserInfo } from "./types.js";
+import type { MomEvent, MomHandler, PlatformAdapter, MomContext, ChannelInfo, UserInfo, VoiceSessionNotice } from "./types.js";
 import type { ChannelStore } from "../store.js";
 import { appendFileSync } from "fs";
 import { join } from "path";
@@ -62,6 +63,8 @@ export function handleWebVoiceSession(
 		modelId: config.elevenlabsModelId,
 		outputFormat: "mp3_44100",
 	};
+	const voiceSessionId = randomUUID();
+	adapter.setActiveSession(ws, ttsConfig, voiceSessionId);
 
 	let sttSession: SttSession | null = null;
 	const upstreamSttGate = new AssistantAudioGate();
@@ -92,26 +95,23 @@ export function handleWebVoiceSession(
 			sendControl({ type: "transcript", text });
 			sendControl({ type: "thinking" });
 
-			// Set the active WebSocket and TTS config on the bridge adapter
-			adapter.setActiveSession(ws, ttsConfig);
-
 			const event: MomEvent = {
 				type: "dm",
 				channel: "web-voice",
 				ts: String(Date.now()),
 				user: "web-user",
 				text,
+				rawText: text,
+				sessionId: voiceSessionId,
+				sourceEventType: "web_voice",
 			};
 
-			if (handler.isRunning("web-voice")) {
-				handler.handleSteer(event, adapter);
-			} else {
-				handler.handleEvent(event, adapter).catch((err) => {
-					log.logWarning(`[web-voice] handleEvent error: ${err instanceof Error ? err.message : String(err)}`);
-					sendControl({ type: "error", message: "Agent error" });
-					sendControl({ type: "listening" });
-				});
+			if (!handler.handleVoiceEvent) {
+				log.logWarning("[web-voice] Resident handler does not provide the explicit voice contract");
+				sendControl({ type: "error", message: "Voice contract unavailable" });
+				return;
 			}
+			handler.handleVoiceEvent(event, adapter);
 		},
 		// On partial transcript
 		(partial: string) => {
@@ -156,6 +156,7 @@ export function handleWebVoiceSession(
 				const msg = JSON.parse(data.toString());
 				if (msg.type === "stop") {
 					log.logInfo("[web-voice] Client requested stop");
+					handler.closeVoiceSession?.(voiceSessionId, adapter);
 					sttSession?.close();
 					ws.close();
 				}
@@ -169,14 +170,16 @@ export function handleWebVoiceSession(
 		log.logInfo("[web-voice] Browser voice session closed");
 		sttSession?.close();
 		sttSession = null;
-		adapter.clearActiveSession();
+		handler.closeVoiceSession?.(voiceSessionId, adapter);
+		adapter.clearActiveSession(voiceSessionId);
 	});
 
 	ws.on("error", (err) => {
 		log.logWarning(`[web-voice] WebSocket error: ${err.message}`);
 		sttSession?.close();
 		sttSession = null;
-		adapter.clearActiveSession();
+		handler.closeVoiceSession?.(voiceSessionId, adapter);
+		adapter.clearActiveSession(voiceSessionId);
 	});
 }
 
@@ -199,6 +202,10 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private workingDir: string;
 	private activeWs: WebSocket | null = null;
 	private activeTtsConfig: TtsConfig | null = null;
+	private activeSessionId: string | null = null;
+	private outputEnabled = false;
+	private audioGeneration = 0;
+	private assistantSpeechId: string | null = null;
 	private handler!: MomHandler;
 
 	constructor(workingDir: string) {
@@ -209,14 +216,25 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 		this.handler = handler;
 	}
 
-	setActiveSession(ws: WebSocket, ttsConfig: TtsConfig): void {
+	setActiveSession(ws: WebSocket, ttsConfig: TtsConfig, sessionId: string): void {
+		this.audioGeneration++;
+		if (this.assistantSpeechId) finishAssistantSpeech(this.assistantSpeechId);
+		this.assistantSpeechId = null;
 		this.activeWs = ws;
 		this.activeTtsConfig = ttsConfig;
+		this.activeSessionId = sessionId;
+		this.outputEnabled = false;
 	}
 
-	clearActiveSession(): void {
+	clearActiveSession(sessionId?: string): void {
+		if (sessionId && this.activeSessionId !== sessionId) return;
+		this.audioGeneration++;
+		if (this.assistantSpeechId) finishAssistantSpeech(this.assistantSpeechId);
+		this.assistantSpeechId = null;
 		this.activeWs = null;
 		this.activeTtsConfig = null;
+		this.activeSessionId = null;
+		this.outputEnabled = false;
 	}
 
 	async start(): Promise<void> {
@@ -235,26 +253,33 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	}
 
 	private async speakToClient(text: string): Promise<void> {
-		if (!this.activeWs || this.activeWs.readyState !== WebSocket.OPEN || !this.activeTtsConfig) return;
+		if (!this.outputEnabled || !this.activeWs || this.activeWs.readyState !== WebSocket.OPEN || !this.activeTtsConfig) return;
 
+		const ws = this.activeWs;
+		const ttsConfig = this.activeTtsConfig;
+		const generation = ++this.audioGeneration;
 		this.sendControl({ type: "assistant_text", text });
 		this.sendControl({ type: "speaking" });
 		const speechId = beginAssistantSpeech(text);
+		this.assistantSpeechId = speechId;
 
 		try {
-			await textToSpeechStreaming(text, this.activeTtsConfig, (base64Audio: string) => {
-				if (this.activeWs?.readyState === WebSocket.OPEN) {
+			await textToSpeechStreaming(text, ttsConfig, (base64Audio: string) => {
+				if (this.audioGeneration === generation && ws.readyState === WebSocket.OPEN) {
 					// Send as binary (decoded from base64)
-					this.activeWs.send(Buffer.from(base64Audio, "base64"));
+					ws.send(Buffer.from(base64Audio, "base64"));
 				}
 			});
 
+			if (this.audioGeneration !== generation) return;
 			// Signal end of audio
 			finishAssistantSpeech(speechId, { activeHoldMs: Math.min(1500, estimateSpeechActiveMs(text)) });
+			if (this.assistantSpeechId === speechId) this.assistantSpeechId = null;
 			this.sendControl({ type: "listening" });
 		} catch (err) {
 			log.logWarning(`[web-voice] TTS error: ${err instanceof Error ? err.message : String(err)}`);
 			finishAssistantSpeech(speechId);
+			if (this.assistantSpeechId === speechId) this.assistantSpeechId = null;
 			this.sendControl({ type: "listening" });
 		}
 	}
@@ -262,6 +287,45 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	async postMessage(_channel: string, text: string): Promise<string> {
 		await this.speakToClient(text);
 		return String(Date.now());
+	}
+
+	interruptOutputAudio(event: MomEvent): void {
+		if (event.sessionId && event.sessionId !== this.activeSessionId) return;
+		this.audioGeneration++;
+		if (this.assistantSpeechId) finishAssistantSpeech(this.assistantSpeechId);
+		this.assistantSpeechId = null;
+		this.sendControl({ type: "interrupt_audio" });
+	}
+
+	handleVoiceSessionNotice(event: MomEvent, notice: VoiceSessionNotice): void {
+		if (event.sessionId && event.sessionId !== this.activeSessionId) return;
+		switch (notice.type) {
+			case "session_opened":
+				this.outputEnabled = true;
+				this.sendControl({ type: "voice_session_open", wake_name: notice.wakeName });
+				this.sendControl({ type: "listening" });
+				break;
+			case "session_closed":
+				this.outputEnabled = false;
+				this.sendControl({ type: "voice_session_closed" });
+				this.sendControl({ type: "listening" });
+				break;
+			case "wake_required":
+				this.sendControl({ type: "wake_required", reason: notice.reason });
+				this.sendControl({ type: "listening" });
+				break;
+			case "voice_changed":
+				this.sendControl({ type: "voice_changed", voice: notice.voice });
+				this.sendControl({ type: "listening" });
+				break;
+			case "voice_change_rejected":
+				this.sendControl({ type: "voice_change_rejected", reason: notice.reason });
+				this.sendControl({ type: "listening" });
+				break;
+			case "turn_queued":
+				this.sendControl({ type: "thinking", queue_position: notice.position });
+				break;
+		}
 	}
 
 	async updateMessage(): Promise<void> {}
@@ -297,6 +361,8 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		let lastSpokenText: string | null = null;
+		const sessionId = event.sessionId;
+		const isCurrentSession = () => !sessionId || sessionId === this.activeSessionId;
 
 		return {
 			message: {
@@ -306,6 +372,9 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				userName: event.user,
 				channel: event.channel,
 				ts: event.ts,
+				sessionId: event.sessionId,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
 				attachments: [],
 			},
 			channelName: "voice",
@@ -313,7 +382,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			users: this.getAllUsers(),
 
 			respond: async (text: string, shouldLog = true) => {
-				if (!text.trim()) return;
+				if (!text.trim() || !isCurrentSession()) return;
 
 				// Tool call labels — speak them
 				if (!shouldLog && text.startsWith("_→")) {
@@ -333,7 +402,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			},
 
 			sendFinalResponse: async (text: string) => {
-				if (!text.trim()) return;
+				if (!text.trim() || !isCurrentSession()) return;
 				if (text !== lastSpokenText) {
 					await this.speakToClient(text);
 				}
@@ -360,10 +429,8 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private async processEventQueue(): Promise<void> {
 		while (this.eventQueue.length > 0) {
 			const event = this.eventQueue.shift()!;
-			if (!this.handler.isRunning("web-voice")) {
-				try { await this.handler.handleEvent(event, this); }
-				catch (err) { log.logWarning(`[web-voice] Event error: ${err instanceof Error ? err.message : String(err)}`); }
-			}
+			try { await this.handler.handleEvent(event, this); }
+			catch (err) { log.logWarning(`[web-voice] Event error: ${err instanceof Error ? err.message : String(err)}`); }
 		}
 	}
 }

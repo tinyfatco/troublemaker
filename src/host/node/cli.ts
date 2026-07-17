@@ -68,6 +68,7 @@ import {
 	isGoalContinuationEvent,
 } from "../../goal-continuation.js";
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
+import { FirstClassVoiceContract } from "../../voice-contract.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -743,9 +744,14 @@ let activeRun: ActiveRun | null = null;
 let activeDeliveryScope: ActiveDeliveryScope | null = null;
 let queuedRunCount = 0;
 let runQueueTail: Promise<void> = Promise.resolve();
+let voiceContract: FirstClassVoiceContract | null = null;
+
+function isCanonicalExecutionBusy(): boolean {
+	return activeRun !== null || queuedRunCount > 0 || (awareness?.running ?? false);
+}
 
 function isRunBusy(): boolean {
-	return activeRun !== null || queuedRunCount > 0 || (awareness?.running ?? false);
+	return isCanonicalExecutionBusy() || (voiceContract?.hasPendingWork ?? false);
 }
 
 function slashCommandNeedsRunner(text: string): boolean {
@@ -754,7 +760,11 @@ function slashCommandNeedsRunner(text: string): boolean {
 }
 
 function describeActiveRun(): string {
-	if (!activeRun) return queuedRunCount > 0 ? `${queuedRunCount} queued run(s)` : "idle";
+	if (!activeRun) {
+		if (queuedRunCount > 0) return `${queuedRunCount} queued run(s)`;
+		if (voiceContract?.pendingCount) return `${voiceContract.pendingCount} queued voice turn(s)`;
+		return "idle";
+	}
 	return `${activeRun.label} for ${Date.now() - activeRun.startedAt}ms`;
 }
 
@@ -787,6 +797,7 @@ async function withGlobalRunSlot<T>(label: string, fn: () => Promise<T>): Promis
 		log.logInfo(`[run-gate] ${label} released after ${durationMs}ms`);
 		activeRun = null;
 		releaseTail();
+		queueMicrotask(() => voiceContract?.notifyCanonicalBoundary());
 	}
 }
 
@@ -993,6 +1004,10 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	let automaticGoalTurn = isGoalContinuationEvent(event) ? 1 : 0;
 	try {
 		while (true) {
+			if (automaticGoalTurn > 0 && (voiceContract?.pendingCount ?? 0) > 0) {
+				log.logInfo(`[voice:${event.channel}] Deferring automatic goal continuation to queued voice work`);
+				return;
+			}
 			if (pendingInterrupts.length > 0) {
 				log.logInfo(`[interrupt:${event.channel}] Run superseded before start by ${pendingInterrupts.length} newer message(s)`);
 				scheduleInterruptRestart();
@@ -1064,7 +1079,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				stopRequested: state.stopRequested,
 				interruptRequested: state.interruptRequested,
 				runtimeRunning: state.running,
-				queuedRuns: queuedRunCount,
+				queuedRuns: queuedRunCount + (voiceContract?.pendingCount ?? 0),
 			});
 			if (decision === "block") {
 				blockActiveGoal(goalWorkspace, GOAL_TERMINAL_ERROR_REASON);
@@ -1142,13 +1157,13 @@ const handler: MomHandler = {
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
-		if (!awareness || !isRunBusy()) {
+		if (!isRunBusy()) {
 			log.logWarning(`[interrupt] handleSteer called but awareness not running`);
 			return;
 		}
 		const sameTerminalRun = activeDeliveryScope?.adapter === adapter
 			&& activeDeliveryScope.channelId === event.channel;
-		if (sameTerminalRun && tryTerminalTuiSoftSteer(event, awareness.runner)) {
+		if (sameTerminalRun && awareness && tryTerminalTuiSoftSteer(event, awareness.runner)) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
 			return;
 		}
@@ -1158,12 +1173,25 @@ const handler: MomHandler = {
 		enqueueHardInterrupt(event, adapter);
 	},
 
+	handleVoiceEvent(event: MomEvent, adapter: PlatformAdapter): void {
+		if (!voiceContract) {
+			log.logWarning(`[voice:${adapter.name}] Voice contract is not initialized`);
+			return;
+		}
+		voiceContract.commit(event, adapter);
+	},
+
+	closeVoiceSession(sessionId: string, adapter: PlatformAdapter): void {
+		voiceContract?.closeTransportSession(sessionId, adapter);
+	},
+
 	async handleStop(channelId: string, platform: PlatformAdapter, event?: MomEvent): Promise<void> {
 		const ambientCancellation = cancelPendingAmbientEvaluations(ambientTimers, ambientIncludedKeys, pulse);
 		const cancelledInterrupts = pendingInterrupts.splice(0).length;
-		if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0) {
+		const cancelledVoiceTurns = voiceContract?.clearPendingTurns() ?? 0;
+		if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0) {
 			log.logInfo(
-				`[stop] Cancelled ${ambientCancellation.cancelledTimers} ambient wake(s), discarded ${ambientCancellation.discardedMessages} ambient message(s), and cleared ${cancelledInterrupts} queued interrupt(s)`,
+				`[stop] Cancelled ${ambientCancellation.cancelledTimers} ambient wake(s), discarded ${ambientCancellation.discardedMessages} ambient message(s), cleared ${cancelledInterrupts} queued interrupt(s), and cleared ${cancelledVoiceTurns} queued voice turn(s)`,
 			);
 		}
 
@@ -1173,7 +1201,7 @@ const handler: MomHandler = {
 			awareness.stopResponse = { channelId, adapter: platform, event, messageTs };
 			awareness.runner.abort();
 			await messageTs;
-		} else if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0) {
+		} else if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0) {
 			await postResponseMessage(platform, channelId, "_Stopped_", event);
 		} else {
 			await postResponseMessage(platform, channelId, "_Nothing running_", event);
@@ -1189,6 +1217,17 @@ const handler: MomHandler = {
 		return withGlobalRunSlot(label, () => runEventInSlot(event, platform, isEvent));
 	},
 };
+
+voiceContract = new FirstClassVoiceContract({
+	workspace: goalWorkspace,
+	isCanonicalBusy: isCanonicalExecutionBusy,
+	runCanonicalTurn: (event, adapter) => handler.handleEvent(event, adapter),
+	resolvePendingInput,
+	handleStop: (channelId, adapter, event) => handler.handleStop(channelId, adapter, event),
+	onError: (message, error) => {
+		log.logWarning(`[voice-contract] ${message}`, error instanceof Error ? error.message : String(error));
+	},
+});
 
 // ============================================================================
 // Start

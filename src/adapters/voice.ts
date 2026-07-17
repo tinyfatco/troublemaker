@@ -24,7 +24,7 @@ import {
 	shouldSuppressAssistantSpeechEcho,
 } from "../audio-feedback-guard.js";
 import type { ChannelStore } from "../store.js";
-import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
+import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo, VoiceSessionNotice } from "./types.js";
 import { createSttSession, type SttConfig, type SttSession } from "./voice-stt.js";
 import { textToSpeechStreaming, type TtsConfig } from "./voice-tts.js";
 
@@ -45,6 +45,10 @@ interface CallSession {
 	sttSession: SttSession | null;
 	/** Whether TTS is currently playing */
 	ttsPlaying: boolean;
+	/** Wake-gated output state for this explicit call session. */
+	voiceOpen: boolean;
+	/** Invalidates streaming TTS callbacks immediately on barge-in. */
+	audioGeneration: number;
 	assistantSpeechId?: string | null;
 	assistantSpeechFallback?: ReturnType<typeof setTimeout>;
 	startedAt: number;
@@ -162,6 +166,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 
 	async stop(): Promise<void> {
 		for (const [, call] of this.calls) {
+			this.handler.closeVoiceSession?.(call.callSid, this);
 			call.sttSession?.close();
 			call.ws?.close();
 		}
@@ -202,6 +207,8 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 							ws,
 							sttSession: null,
 							ttsPlaying: false,
+							voiceOpen: false,
+							audioGeneration: 0,
 							startedAt: Date.now(),
 						};
 						this.calls.set(callSid, session);
@@ -228,6 +235,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 						if (session) {
 							session.sttSession?.close();
 							this.finishAssistantSpeechForSession(session);
+							this.handler.closeVoiceSession?.(session.callSid, this);
 							this.calls.delete(session.callSid);
 						}
 						break;
@@ -242,6 +250,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			if (session) {
 				session.sttSession?.close();
 				this.finishAssistantSpeechForSession(session);
+				this.handler.closeVoiceSession?.(session.callSid, this);
 				this.calls.delete(session.callSid);
 			}
 		});
@@ -284,16 +293,16 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			ts: String(Date.now()),
 			user: session.from,
 			text,
+			rawText: text,
+			sessionId: session.callSid,
+			sourceEventType: "telephony_voice",
 		};
 
-		if (this.handler.isRunning(this.channelId)) {
-			this.handler.handleSteer(event, this);
+		if (!this.handler.handleVoiceEvent) {
+			log.logWarning("[voice] Resident handler does not provide the explicit voice contract");
 			return;
 		}
-
-		this.handler.handleEvent(event, this).catch((err) => {
-			log.logWarning(`[voice] handleEvent error: ${err instanceof Error ? err.message : String(err)}`);
-		});
+		this.handler.handleVoiceEvent(event, this);
 	}
 
 	// ==========================================================================
@@ -301,17 +310,18 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	// ==========================================================================
 
 	private async speakToCall(session: CallSession, text: string): Promise<void> {
-		if (session.ws.readyState !== WebSocket.OPEN || !session.streamSid) return;
+		if (!session.voiceOpen || session.ws.readyState !== WebSocket.OPEN || !session.streamSid) return;
 
 		this.finishAssistantSpeechForSession(session);
 		session.ttsPlaying = true;
 		session.assistantSpeechId = beginAssistantSpeech(text);
 		const sid = session.streamSid;
+		const generation = ++session.audioGeneration;
 		let chunkCount = 0;
 
 		try {
 			await textToSpeechStreaming(text, this.ttsConfig, (base64Audio: string) => {
-				if (session.ws.readyState !== WebSocket.OPEN) return;
+				if (session.audioGeneration !== generation || session.ws.readyState !== WebSocket.OPEN) return;
 				session.ws.send(JSON.stringify({
 					event: "media",
 					streamSid: sid,
@@ -320,7 +330,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				chunkCount++;
 			});
 
-			if (session.ws.readyState === WebSocket.OPEN) {
+			if (session.audioGeneration === generation && session.ws.readyState === WebSocket.OPEN) {
 				session.ws.send(JSON.stringify({
 					event: "mark",
 					streamSid: sid,
@@ -341,6 +351,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	}
 
 	private finishAssistantSpeechForSession(session: CallSession): void {
+		session.ttsPlaying = false;
 		if (session.assistantSpeechFallback) {
 			clearTimeout(session.assistantSpeechFallback);
 			session.assistantSpeechFallback = undefined;
@@ -362,6 +373,29 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 		const session = this.getActiveCall();
 		if (session) await this.speakToCall(session, text);
 		return String(Date.now());
+	}
+
+	interruptOutputAudio(event: MomEvent): void {
+		const session = this.getCallForEvent(event);
+		if (!session) return;
+		session.audioGeneration++;
+		if (session.ws.readyState === WebSocket.OPEN && session.streamSid) {
+			session.ws.send(JSON.stringify({
+				event: "clear",
+				streamSid: session.streamSid,
+			}));
+		}
+		this.finishAssistantSpeechForSession(session);
+	}
+
+	handleVoiceSessionNotice(event: MomEvent, notice: VoiceSessionNotice): void {
+		const session = this.getCallForEvent(event);
+		if (!session) return;
+		if (notice.type === "session_opened") {
+			session.voiceOpen = true;
+		} else if (notice.type === "session_closed") {
+			session.voiceOpen = false;
+		}
 	}
 
 	async updateMessage(): Promise<void> {}
@@ -396,7 +430,7 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	getAllChannels(): ChannelInfo[] { return [{ id: this.channelId, name: "phone" }]; }
 
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
-		const session = this.getActiveCall();
+		const session = this.getCallForEvent(event);
 		let lastSpokenText: string | null = null;
 
 		return {
@@ -407,6 +441,9 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 				userName: event.user,
 				channel: event.channel,
 				ts: event.ts,
+				sessionId: event.sessionId,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
 				attachments: [],
 			},
 			channelName: "phone",
@@ -467,11 +504,14 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 	private async processEventQueue(): Promise<void> {
 		while (this.eventQueue.length > 0) {
 			const event = this.eventQueue.shift()!;
-			if (!this.handler.isRunning(this.channelId)) {
-				try { await this.handler.handleEvent(event, this); }
-				catch (err) { log.logWarning(`[voice] Event error: ${err instanceof Error ? err.message : String(err)}`); }
-			}
+			try { await this.handler.handleEvent(event, this); }
+			catch (err) { log.logWarning(`[voice] Event error: ${err instanceof Error ? err.message : String(err)}`); }
 		}
+	}
+
+	private getCallForEvent(event: Pick<MomEvent, "sessionId">): CallSession | null {
+		if (event.sessionId) return this.calls.get(event.sessionId) ?? null;
+		return this.getActiveCall();
 	}
 
 	private getActiveCall(): CallSession | null {

@@ -128,9 +128,14 @@ try {
 	settings = readSettings(workingDir);
 	assert(voiceAlias.newValue === "marin", "voice alias reports selected voice");
 	assert(settings.realtimeVoice === "marin", "voice alias writes realtimeVoice");
+	const wakeAliases = applySelfConfiguration(workingDir, "voice.wakeAliases", ["Lantern", "lantern", "Orbit"]);
+	settings = readSettings(workingDir);
+	assert(JSON.stringify(wakeAliases.newValue) === JSON.stringify(["Lantern", "Orbit"]), "wake aliases deduplicate case-insensitively");
+	assert(JSON.stringify((settings.voice as any).aliases) === JSON.stringify(["Lantern", "Orbit"]), "wake aliases persist in the voice settings block");
 
 	const tool = createSelfConfigureTool(workingDir);
 	const settingDescription = (tool.parameters as any).properties.setting.description as string;
+	assert(settingDescription.includes("voice.wake_aliases"), "self_configure schema exposes compact wake aliases");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
 	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
 
