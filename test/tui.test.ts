@@ -94,6 +94,19 @@ try {
 	assert.equal(parsedAmbient?.userName, "ambient");
 	assert.equal(parsedAmbient?.text, "Alex: ship the fix @batman\nBatman: on it");
 	assert.equal(parsedAmbient?.isAmbient, true);
+	const parsedBareSteeredAmbient = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "ambient-bare-steer",
+		parentId: "ambient-parent",
+		timestamp: "2026-01-02T03:04:06Z",
+		message: { role: "user", content: [{ type: "text", text: `<session_context>\nUsers:\nU123\t@alex\tAlex\nU456\t@batman\tBatman\nSkills:\n(none)\n</session_context>\n\n${ambientPrompt}` }] },
+	}));
+	assert.equal(parsedBareSteeredAmbient?.channel, "slack:#biz");
+	assert.equal(parsedBareSteeredAmbient?.userName, "ambient");
+	assert.equal(parsedBareSteeredAmbient?.text, "Alex: ship the fix @batman\nBatman: on it");
+	assert.equal(parsedBareSteeredAmbient?.isAmbient, true);
+	assert(!parsedBareSteeredAmbient?.text?.includes("Channel pulse:"), "bare steered ambient prompts hide pulse and control scaffolding");
+	assert(!parsedBareSteeredAmbient?.text?.includes("Reply target:"), "bare steered ambient prompts hide routing metadata");
 	assert.equal(normalizeChannelLabel("123456"), "telegram:123456");
 	assert.equal(safeToolLabel({
 		type: "toolCall",

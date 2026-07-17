@@ -88,6 +88,7 @@ export function formatChannel(channel: string): { label: string; type: string } 
   if (channel === 'operator' || channel.startsWith('operator:')) return { label: 'operator', type: 'operator' };
   if (channel === 'voice' || channel === 'web-voice') return { label: 'voice', type: 'voice' };
   if (channel === 'web' || channel === 'web-user') return { label: 'web', type: 'web' };
+  if (channel.startsWith('slack:')) return { label: channel.slice('slack:'.length), type: 'slack' };
   if (channel.startsWith('email-')) return { label: 'email', type: 'email' };
   if (channel.startsWith('telegram:') || /^-?\d+$/.test(channel)) return { label: channel.replace('telegram:', ''), type: 'telegram' };
   if (channel === 'DM:Alex' || channel.startsWith('DM:')) return { label: channel, type: 'telegram' };
@@ -132,16 +133,25 @@ export function parseContextLine(line: string): AwarenessEntry | null {
           if (parsed) {
             entry.channel = parsed.channel;
             entry.userName = parsed.userName;
-            entry.strippedText = parsed.strippedText;
+            entry.strippedText = parsed.strippedText.trimStart();
             // Detect ambient engagement messages
-            if (parsed.strippedText.startsWith('[AMBIENT]')) {
+            if (entry.strippedText.startsWith('[AMBIENT]')) {
               entry.isAmbient = true;
               entry.userName = 'system';
             }
             // Detect system actions (/model, /compact, etc.)
-            if (parsed.userName === 'system' && parsed.strippedText.startsWith('/')) {
+            if (parsed.userName === 'system' && entry.strippedText.startsWith('/')) {
               entry.isSystemAction = true;
             }
+          } else if (cleaned.startsWith('[AMBIENT]')) {
+            // Same-thread ambient context may be soft-steered directly into an
+            // active model turn and persisted without the usual user prefix.
+            // Classify it before rendering so model-only evaluation guidance
+            // can never fall through as an ordinary awareness user message.
+            entry.channel = ambientChannel(cleaned) || 'awareness';
+            entry.userName = 'system';
+            entry.strippedText = cleaned;
+            entry.isAmbient = true;
           } else if (cleaned !== textBlock.text) {
             // Session context was stripped but no prefix found — use cleaned text
             entry.strippedText = cleaned;
@@ -155,6 +165,11 @@ export function parseContextLine(line: string): AwarenessEntry | null {
     // Malformed line
   }
   return null;
+}
+
+function ambientChannel(text: string): string | undefined {
+  const match = text.match(/^\[AMBIENT\]\s+A conversation is happening in ([^.\n]+)\./);
+  return match?.[1]?.trim() || undefined;
 }
 
 function normalizeContentBlocks(content: unknown): ContentBlock[] | undefined {

@@ -16,9 +16,12 @@ export function cleanAmbientLineForDisplay(line: string): string {
 }
 
 function extractAmbientMessageBlock(rawText: string): string {
+  const tagged = rawText.match(/<ambient_messages>\s*([\s\S]*?)\s*<\/ambient_messages>/);
+  if (tagged?.[1]) return tagged[1].trim();
+
   const ambientText = rawText.replace(/^\[AMBIENT\]\s*/, "").trim();
   const patterns = [
-    /New unseen messages since your last ambient wake:\s*\n\n([\s\S]*?)(?:\n\nChannel pulse:|\n\nYou're observing|$)/,
+    /New unseen(?:, complete)? messages since your last ambient wake:\s*\n\n([\s\S]*?)(?:\n\nChannel pulse:|\n\nYou're observing|$)/,
     /Recent messages:\s*\n\n([\s\S]*?)(?:\n\nChannel pulse:|\n\nYou're observing|$)/,
   ];
 

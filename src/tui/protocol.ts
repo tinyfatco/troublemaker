@@ -84,19 +84,20 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 			const visibleText = stripModelContextBlocks(text.text).trim();
 			const match = visibleText.match(USER_PREFIX_RE);
 			if (match) {
-				const messageText = match[4];
+				const messageText = match[4].trimStart();
 				if (messageText.startsWith("[AMBIENT]")) {
-					entry.isAmbient = true;
-					entry.channel = ambientChannelLabel(messageText) || normalizeChannelLabel(match[2]);
-					entry.userName = "ambient";
-					entry.text = getAmbientDisplayLines(messageText)
-						.map((displayLine) => resolveSlackUserMentions(displayLine, slackUsers))
-						.join("\n");
+					applyAmbientDisplay(entry, messageText, slackUsers, normalizeChannelLabel(match[2]));
 				} else {
 					entry.channel = normalizeChannelLabel(match[2]);
 					entry.userName = match[3];
 					entry.text = messageText;
 				}
+			} else if (visibleText.startsWith("[AMBIENT]")) {
+				// Same-thread ambient context can be soft-steered directly into an
+				// active run, so Pi persists it without the normal timestamp/channel
+				// envelope. Keep internal evaluation instructions out of the TUI and
+				// surface only the already-posted messages inside the bounded block.
+				applyAmbientDisplay(entry, visibleText, slackUsers);
 			} else {
 				entry.text = visibleText;
 			}
@@ -104,6 +105,20 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 	}
 
 	return entry;
+}
+
+function applyAmbientDisplay(
+	entry: TuiHistoryEntry,
+	rawText: string,
+	slackUsers: ReadonlyMap<string, string>,
+	fallbackChannel?: string,
+): void {
+	entry.isAmbient = true;
+	entry.channel = ambientChannelLabel(rawText) || fallbackChannel || "awareness";
+	entry.userName = "ambient";
+	entry.text = getAmbientDisplayLines(rawText)
+		.map((displayLine) => resolveSlackUserMentions(displayLine, slackUsers))
+		.join("\n");
 }
 
 export function normalizeChannelLabel(channel: string): string {
