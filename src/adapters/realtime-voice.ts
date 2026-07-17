@@ -1,6 +1,6 @@
 import { appendFileSync } from "fs";
 import type { IncomingMessage } from "http";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Socket } from "net";
 import { join } from "path";
 import WebSocket, { WebSocketServer } from "ws";
@@ -10,27 +10,31 @@ import {
 	shouldSuppressAssistantSpeechEcho,
 } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
+import {
+	DEFAULT_REALTIME_VOICE,
+	normalizeRealtimeVoiceName,
+} from "../realtime-voices.js";
 import type { ChannelStore } from "../store.js";
 import type { LocalEventboxClient, LocalEventboxEvent } from "../local/eventbox-client.js";
+import { FilesystemWorkspaceStore } from "../storage/node/filesystem-workspace.js";
+import { readConfiguredRealtimeVoice } from "../voice-contract.js";
 import {
-	slashCommandHandled,
-	slashCommandPending,
 	type ChannelInfo,
 	type MomContext,
 	type MomEvent,
 	type MomHandler,
 	type PlatformAdapter,
 	type UserInfo,
+	type VoiceSessionNotice,
 } from "./types.js";
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-2";
 const REALTIME_MODEL = "gpt-realtime-2";
 const TRANSCRIPTION_MODEL = "gpt-realtime-whisper";
-const DEFAULT_VOICE = "marin";
 const REALTIME_CHANNEL_ID = "mac-realtime";
 const REALTIME_CHANNEL_NAME = "realtime voice";
 const REALTIME_USER_ID = "mac-user";
-const REALTIME_USER_NAME = "Alex";
+const REALTIME_USER_NAME = "voice-user";
 const OPENAI_PLACEHOLDER_KEY = "sk-tfat-egress-openai-placeholder";
 
 export interface RealtimeVoiceBridgeConfig {
@@ -69,7 +73,7 @@ export function createRealtimeVoiceInstructions(): string {
 	].join("\n");
 }
 
-export function createRealtimeAudioConfig(voice = DEFAULT_VOICE): Record<string, unknown> {
+export function createRealtimeAudioConfig(voice = DEFAULT_REALTIME_VOICE): Record<string, unknown> {
 	return {
 		input: {
 			format: { type: "audio/pcm", rate: 24000 },
@@ -102,7 +106,7 @@ export function createRealtimeSessionUpdate(options: { voice?: string } = {}): R
 			instructions: createRealtimeVoiceInstructions(),
 			tools: [],
 			parallel_tool_calls: false,
-			audio: createRealtimeAudioConfig(options.voice ?? DEFAULT_VOICE),
+			audio: createRealtimeAudioConfig(options.voice ?? DEFAULT_REALTIME_VOICE),
 		},
 	};
 }
@@ -125,7 +129,7 @@ export function createCanonicalSpeechResponse(text: string): Record<string, unkn
 					content: [
 						{
 							type: "input_text",
-							text: `Speak this exact canonical Zip response:\n\n${text}`,
+							text: `Speak this exact canonical agent response:\n\n${text}`,
 						},
 					],
 				},
@@ -152,13 +156,15 @@ export function handleRealtimeVoiceUpgrade(
 	};
 }
 
-class RealtimeVoiceSession {
+export class RealtimeVoiceSession {
 	private readonly client: WebSocket;
 	private readonly config: RealtimeVoiceBridgeConfig;
 	private readonly adapter: RealtimeVoiceCanonicalAdapter;
 	private openai: WebSocket | null = null;
 	private openaiReady = false;
-	private voice = DEFAULT_VOICE;
+	private voice = DEFAULT_REALTIME_VOICE;
+	private readonly sessionId = randomUUID();
+	private outputEnabled = false;
 	private outputActive = false;
 	private outputCancelSent = false;
 	private userSpeechActive = false;
@@ -205,7 +211,7 @@ class RealtimeVoiceSession {
 
 	speakCanonicalText(text: string): void {
 		const clean = text.trim();
-		if (!clean || !this.openai || this.openai.readyState !== WebSocket.OPEN || !this.openaiReady) return;
+		if (!this.outputEnabled || !clean || !this.openai || this.openai.readyState !== WebSocket.OPEN || !this.openaiReady) return;
 
 		this.cancelOutput({ notifyClient: true });
 		this.outputActive = true;
@@ -229,7 +235,7 @@ class RealtimeVoiceSession {
 				this.sendClient({ type: "thinking", message: "Tool finished." });
 				break;
 			case "thinking":
-				this.sendClient({ type: "thinking", message: "Zip is thinking..." });
+				this.sendClient({ type: "thinking", message: "The agent is thinking..." });
 				break;
 			case "error":
 				this.sendClient({ type: "error", message: stringValue(block.message) || "Runtime error" });
@@ -262,7 +268,10 @@ class RealtimeVoiceSession {
 	}
 
 	private async handleStart(msg: RealtimeClientStart): Promise<void> {
-		this.voice = sanitizeVoice(msg.voice);
+		const workspace = new FilesystemWorkspaceStore(this.config.workingDir);
+		this.voice = readConfiguredRealtimeVoice(workspace)
+			?? normalizeRealtimeVoiceName(msg.voice)
+			?? DEFAULT_REALTIME_VOICE;
 		let apiKey = "";
 		try {
 			apiKey = await realtimeApiKey(msg.apiKey, this.voice);
@@ -330,7 +339,7 @@ class RealtimeVoiceSession {
 				break;
 			case "session.updated":
 				this.openaiReady = true;
-				this.sendClient({ type: "listening", message: "Realtime voice ready for Zip." });
+				this.sendClient({ type: "listening", message: "Realtime voice ready; waiting for the wake phrase." });
 				break;
 			case "response.created":
 				this.outputActive = true;
@@ -370,7 +379,7 @@ class RealtimeVoiceSession {
 			case "response.done":
 				this.finishOutput();
 				if (!this.userSpeechActive && !this.closed) {
-					this.sendClient({ type: "listening", message: "Listening for Zip..." });
+					this.sendClient({ type: "listening", message: "Listening..." });
 				}
 				break;
 			case "error":
@@ -394,13 +403,10 @@ class RealtimeVoiceSession {
 			this.sendClient({ type: "transcript_ignored", reason: suppression.reason });
 			return;
 		}
-		this.cancelOutput({ notifyClient: true });
-		this.adapter.logInbound(text);
-		this.publishEventboxTurn("turn.user.final", { text });
-		await this.dispatchCanonicalUtterance(text);
+		this.dispatchCanonicalUtterance(text);
 	}
 
-	private async dispatchCanonicalUtterance(text: string): Promise<void> {
+	private dispatchCanonicalUtterance(text: string): void {
 		const event: MomEvent = {
 			type: "dm",
 			channel: REALTIME_CHANNEL_ID,
@@ -408,36 +414,16 @@ class RealtimeVoiceSession {
 			user: REALTIME_USER_ID,
 			text,
 			rawText: text,
+			sessionId: this.sessionId,
 			sourceEventType: "realtime_voice",
-			directlyAddressed: true,
 		};
 
-		try {
-			if (this.config.handler.resolvePendingInput(REALTIME_CHANNEL_ID, text)) return;
-
-			if (text.trim().startsWith("/")) {
-				const commandResult = await this.config.handler.handleSlashCommand(event, this.adapter);
-				const pending = slashCommandPending(commandResult);
-				if (pending) await pending;
-				if (slashCommandHandled(commandResult)) return;
-			}
-
-			if (text.toLowerCase().trim() === "stop") {
-				await this.config.handler.handleStop(REALTIME_CHANNEL_ID, this.adapter);
-				return;
-			}
-
-			this.sendClient({ type: "thinking", message: "Zip is thinking..." });
-			if (this.config.handler.isRunning(REALTIME_CHANNEL_ID)) {
-				this.config.handler.handleSteer(event, this.adapter);
-				return;
-			}
-			await this.config.handler.handleEvent(event, this.adapter);
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			log.logWarning("[realtime-voice] canonical handler error", message);
-			this.sendClient({ type: "error", message });
+		if (!this.config.handler.handleVoiceEvent) {
+			log.logWarning("[realtime-voice] Resident handler does not provide the explicit voice contract");
+			this.sendClient({ type: "error", message: "Voice contract unavailable" });
+			return;
 		}
+		this.config.handler.handleVoiceEvent(event, this.adapter);
 	}
 
 	private forwardAudio(data: WebSocket.RawData): void {
@@ -453,7 +439,31 @@ class RealtimeVoiceSession {
 	private interrupt(): void {
 		this.sendOpenAI({ type: "input_audio_buffer.clear" });
 		this.cancelOutput({ notifyClient: true });
-		this.sendClient({ type: "listening", message: "Listening for Zip..." });
+		this.sendClient({ type: "listening", message: "Listening..." });
+	}
+
+	interruptAssistantAudio(): void {
+		this.cancelOutput({ notifyClient: true });
+	}
+
+	setVoiceSessionOpen(open: boolean): void {
+		this.outputEnabled = open;
+	}
+
+	applyRealtimeVoice(voice: string): void {
+		const normalized = normalizeRealtimeVoiceName(voice);
+		if (!normalized) return;
+		this.voice = normalized;
+		if (this.openaiReady) this.sendOpenAI(createRealtimeSessionUpdate({ voice: normalized }));
+	}
+
+	recordCanonicalInput(text: string): void {
+		this.adapter.logInbound(text);
+		this.publishEventboxTurn("turn.user.final", { text });
+	}
+
+	sendVoiceControl(event: Record<string, unknown>): void {
+		this.sendClient(event);
 	}
 
 	private cancelOutput(options: { notifyClient: boolean }): void {
@@ -512,6 +522,7 @@ class RealtimeVoiceSession {
 	private close(): void {
 		if (this.closed) return;
 		this.closed = true;
+		this.config.handler.closeVoiceSession?.(this.sessionId, this.adapter);
 		this.eventboxUnsubscribe?.();
 		this.eventboxUnsubscribe = null;
 		this.finishOutput();
@@ -524,13 +535,13 @@ class RealtimeVoiceSession {
 	}
 }
 
-class RealtimeVoiceCanonicalAdapter implements PlatformAdapter {
+export class RealtimeVoiceCanonicalAdapter implements PlatformAdapter {
 	readonly name = "realtime-voice";
 	readonly maxMessageLength = 100000;
 	readonly formatInstructions = `## Realtime Voice
 You are responding through a live voice interface. Keep responses concise, natural, and spoken-friendly.
-Do not use raw Markdown formatting, long tables, or huge code blocks unless Alex explicitly asks.
-This is the canonical Zip runtime: use your normal memory, tools, workspace, and channel awareness.`;
+Do not use raw Markdown formatting, long tables, or huge code blocks unless the user explicitly asks.
+This is the canonical agent runtime: use your normal memory, tools, workspace, and channel awareness.`;
 
 	private readonly session: RealtimeVoiceSession;
 	private readonly workingDir: string;
@@ -570,6 +581,45 @@ This is the canonical Zip runtime: use your normal memory, tools, workspace, and
 		return String(Date.now());
 	}
 
+	interruptOutputAudio(_event: MomEvent): void {
+		this.session.interruptAssistantAudio();
+	}
+
+	handleVoiceSessionNotice(event: MomEvent, notice: VoiceSessionNotice): void {
+		switch (notice.type) {
+			case "session_opened":
+				this.session.setVoiceSessionOpen(true);
+				this.session.sendVoiceControl({ type: "voice_session_open", wake_name: notice.wakeName });
+				this.session.sendVoiceControl({ type: "listening" });
+				break;
+			case "session_closed":
+				this.session.setVoiceSessionOpen(false);
+				this.session.sendVoiceControl({ type: "voice_session_closed" });
+				this.session.sendVoiceControl({ type: "listening" });
+				break;
+			case "wake_required":
+				this.session.sendVoiceControl({ type: "wake_required", reason: notice.reason });
+				this.session.sendVoiceControl({ type: "listening" });
+				break;
+			case "voice_changed":
+				this.session.sendVoiceControl({ type: "voice_changed", voice: notice.voice });
+				this.session.sendVoiceControl({ type: "listening" });
+				break;
+			case "voice_change_rejected":
+				this.session.sendVoiceControl({ type: "voice_change_rejected", reason: notice.reason });
+				this.session.sendVoiceControl({ type: "listening" });
+				break;
+			case "turn_queued":
+				this.session.recordCanonicalInput(event.text);
+				this.session.sendVoiceControl({ type: "thinking", message: "The agent is thinking...", queue_position: notice.position });
+				break;
+		}
+	}
+
+	applyRealtimeVoice(_event: MomEvent, voice: string): void {
+		this.session.applyRealtimeVoice(voice);
+	}
+
 	async updateMessage(_channel: string, _ts: string, _text: string): Promise<void> {}
 	async deleteMessage(_channel: string, _ts: string): Promise<void> {}
 	async postInThread(_channel: string, _threadTs: string, _text: string): Promise<string> { return String(Date.now()); }
@@ -589,7 +639,7 @@ This is the canonical Zip runtime: use your normal memory, tools, workspace, and
 			ts,
 			channel: `realtime:${channel}`,
 			channelId: channel,
-			user: "zip",
+			user: "agent",
 			text,
 			attachments: [],
 			isBot: true,
@@ -617,6 +667,7 @@ This is the canonical Zip runtime: use your normal memory, tools, workspace, and
 				userName: REALTIME_USER_NAME,
 				channel: event.channel,
 				ts: event.ts,
+				sessionId: event.sessionId,
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
 				directlyAddressed: event.directlyAddressed,
@@ -639,14 +690,14 @@ This is the canonical Zip runtime: use your normal memory, tools, workspace, and
 			uploadFile: async () => {},
 			setWorking: async (working: boolean) => {
 				if (working) {
-					this.session.sendRuntimeStatus("Zip is thinking...");
+					this.session.sendRuntimeStatus("The agent is thinking...");
 				} else if (!this.session.isOutputActive()) {
-					this.session.sendRuntimeStatus("Listening for Zip...");
+					this.session.sendRuntimeStatus("Listening...");
 				}
 			},
 			deleteMessage: async () => {},
 			restartWorking: async () => {
-				this.session.sendRuntimeStatus("Updating Zip's run...");
+				this.session.sendRuntimeStatus("Updating the agent run...");
 			},
 			emitContentBlock: (block) => this.session.emitContentBlock(block),
 		};
@@ -695,12 +746,6 @@ function rawDataToString(data: WebSocket.RawData): string {
 	if (data instanceof Buffer) return data.toString("utf-8");
 	if (Array.isArray(data)) return Buffer.concat(data).toString("utf-8");
 	return Buffer.from(new Uint8Array(data as ArrayBuffer)).toString("utf-8");
-}
-
-function sanitizeVoice(value: unknown): string {
-	if (typeof value !== "string") return DEFAULT_VOICE;
-	const normalized = value.trim().toLowerCase();
-	return /^[a-z][a-z0-9_-]{1,32}$/.test(normalized) ? normalized : DEFAULT_VOICE;
 }
 
 function usableRealtimeKey(value: string | undefined): string | undefined {

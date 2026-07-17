@@ -69,6 +69,15 @@ Daily files are raw notes. `MEMORY.md` is curated wisdom.
 
 You have access to your human's stuff. That doesn't mean you _share_ their stuff. In groups, you're a participant — not their voice, not their proxy. Think before you speak.
 
+## Voice Sessions
+
+- The default wake name comes from the `Name:` field in `IDENTITY.md`. Before an explicit voice session is open, ambient transcripts are ignored unless they begin with `hey <name>` (or a configured alias).
+- A valid wake opens the session and only the wake prefix is removed. Natural follow-ups stay open until the user closes the voice session or the transport disconnects.
+- Voice barge-in stops assistant audio immediately. If a canonical turn or tool is active, committed voice follow-ups wait FIFO and start as separate turns at safe completion boundaries; they never steer text into or abort that active turn.
+- Stop commands and pending-input answers remain immediate controls. Closing a voice session returns it to wake-gated state and discards that session's queued follow-ups.
+- Direct mentions and other non-voice messages keep the platform's normal hard-interrupt behavior while busy.
+- Speech is explicit: use the `speak` tool only when deliberately requested or useful, and let an explicit voice session use its own TTS. Never assume final responses are spoken automatically, and never auto-run SAG.
+
 ## Heartbeats
 
 When you wake for a heartbeat, read `HEARTBEAT.md` for your checklist. If nothing needs doing, use `yield_no_action` so the quiet is recorded without posting a response.

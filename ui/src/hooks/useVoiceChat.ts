@@ -622,6 +622,19 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     });
   }, [finishAssistantEntry]);
 
+  const interruptTurnAudio = useCallback(() => {
+    turnAudioChunksRef.current = [];
+    turnPlaybackRef.current?.pause();
+    turnPlaybackRef.current = null;
+    if (turnPlaybackUrlRef.current) {
+      URL.revokeObjectURL(turnPlaybackUrlRef.current);
+      turnPlaybackUrlRef.current = null;
+    }
+    turnSuppressMicRef.current = false;
+    finishAssistantEntry();
+    setState('transcribing');
+  }, [finishAssistantEntry]);
+
   const startRealtimeVoice = useCallback(async (sessionId: number) => {
     if (!('RTCPeerConnection' in window) || !navigator.mediaDevices?.getUserMedia) {
       setError('This browser does not support Realtime voice.');
@@ -809,6 +822,8 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
           setState('speaking');
         } else if (type === 'listening') {
           playTurnAudio();
+        } else if (type === 'interrupt_audio') {
+          interruptTurnAudio();
         } else if (type === 'error') {
           setError(String(event.message || 'Turn-based voice error'));
           setState('error');
@@ -824,7 +839,7 @@ export function useVoiceChat(options: UseVoiceChatOptions = {}): UseVoiceChatRet
     ws.onclose = () => {
       if (sessionIdRef.current === sessionId) stop();
     };
-  }, [playTurnAudio, stop, updateAssistantEntryText, updateUserEntryText]);
+  }, [interruptTurnAudio, playTurnAudio, stop, updateAssistantEntryText, updateUserEntryText]);
 
   const start = useCallback(async () => {
     if (state !== 'idle' && state !== 'error') return;
@@ -1134,14 +1149,14 @@ function createRealtimeSessionUpdate(voice: string, tools: WorkspaceToolDefiniti
       model: REALTIME_MODEL,
       output_modalities: ['audio'],
       instructions: [
-        "You are Zip, TinyFat's live voice agent.",
-        'Speak directly to Alex in a concise, natural voice.',
+        "You are the selected workspace agent's live voice surface.",
+        'Speak directly to the user in a concise, natural voice.',
         'You are running in the TinyFat web workspace voice UI.',
         'You receive a compact current-context handoff when the session starts.',
         'You have the same workspace tool surface as the normal TinyFat agent path.',
-        'Use tools when Alex asks you to inspect, build, edit, send messages, read threads, run commands, or verify workspace state.',
+        'Use tools when the user asks you to inspect, build, edit, send messages, read threads, run commands, or verify workspace state.',
         'Do not claim tool work is unavailable unless the relevant tool call fails.',
-        'Keep answers tight and spoken. Do not mention transcripts, transport, or implementation details unless Alex asks.',
+        'Keep answers tight and spoken. Do not mention transcripts, transport, or implementation details unless the user asks.',
       ].join('\n'),
       tools,
       tool_choice: 'auto',

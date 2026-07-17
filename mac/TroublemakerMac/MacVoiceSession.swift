@@ -21,7 +21,7 @@ enum VoiceProviderKind: String, CaseIterable, Identifiable {
 		switch self {
 		case .localTroublemaker: return "Local socket"
 		case .openAIRealtime: return "OpenAI voice"
-		case .deepgram: return "STT to Zip"
+		case .deepgram: return "STT to agent"
 		}
 	}
 }
@@ -679,7 +679,7 @@ private final class LocalTroublemakerVoiceProvider: VoiceSessionProvider {
 			case "listening":
 				callbacks?.state(.listening, "Listening...")
 			case "thinking":
-				callbacks?.state(.thinking, "Zip is thinking...")
+				callbacks?.state(.thinking, "The agent is thinking...")
 			case "speaking":
 				callbacks?.state(.speaking, "Speaking...")
 			case "partial":
@@ -688,6 +688,8 @@ private final class LocalTroublemakerVoiceProvider: VoiceSessionProvider {
 				callbacks?.finalTranscript(event.string("text") ?? "")
 			case "assistant_text":
 				callbacks?.assistantTextFinal(event.string("text") ?? "")
+			case "interrupt_audio":
+				callbacks?.interruptAudio()
 			case "error":
 				callbacks?.error(event.string("message") ?? "Voice socket error")
 			default:
@@ -802,7 +804,7 @@ private final class DeepgramSTTVoiceProvider: VoiceSessionProvider {
 		finalSegments.removeAll()
 		guard !text.isEmpty else { return }
 		callbacks?.finalTranscript(text)
-		callbacks?.state(.thinking, "Sending to Zip...")
+		callbacks?.state(.thinking, "Sending to the agent...")
 	}
 }
 

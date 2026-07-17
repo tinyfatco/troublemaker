@@ -33,6 +33,14 @@ export interface MomEvent {
 	attachments?: Attachment[];
 }
 
+export type VoiceSessionNotice =
+	| { type: "wake_required"; reason: "wake_phrase_missing" | "wake_name_unconfigured" }
+	| { type: "session_opened"; wakeName: string }
+	| { type: "session_closed" }
+	| { type: "voice_changed"; voice: string }
+	| { type: "voice_change_rejected"; requested?: string; reason: "unsupported" | "ambiguous" | "settings_write_failed" }
+	| { type: "turn_queued"; position: number };
+
 export interface RunResult {
 	stopReason: string;
 	errorMessage?: string;
@@ -180,6 +188,16 @@ export interface MomHandler {
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
 
 	/**
+	 * Accept a committed utterance from an explicit voice session. The resident
+	 * voice contract performs wake/control gating and queues canonical turns at
+	 * safe completion boundaries instead of steering the active model turn.
+	 */
+	handleVoiceEvent?(event: MomEvent, adapter: PlatformAdapter): void;
+
+	/** Reset one transport voice session and discard only its queued turns. */
+	closeVoiceSession?(sessionId: string, adapter: PlatformAdapter): void;
+
+	/**
 	 * Handle stop command (ASYNC)
 	 * Called when user says "stop" while mom is running
 	 */
@@ -244,6 +262,15 @@ export interface PlatformAdapter {
 	// -- Context creation --
 
 	createContext(event: MomEvent, store: ChannelStore, isEvent?: boolean): MomContext;
+
+	// -- Explicit voice session boundary hooks --
+
+	/** Immediately stop currently buffered/playing assistant audio for this session. */
+	interruptOutputAudio?(event: MomEvent): void;
+	/** Apply local voice-session state without creating a canonical agent turn. */
+	handleVoiceSessionNotice?(event: MomEvent, notice: VoiceSessionNotice): void;
+	/** Apply a validated supported Realtime voice to a live transport when possible. */
+	applyRealtimeVoice?(event: MomEvent, voice: string): void;
 
 	// -- Event queue --
 

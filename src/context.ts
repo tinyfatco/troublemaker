@@ -97,11 +97,17 @@ export interface MomSpeakSettings {
 	};
 }
 
+export interface MomVoiceSettings {
+	/** Optional wake names in addition to the Name field in IDENTITY.md. */
+	aliases?: string[];
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
 	realtimeVoice?: string;
+	voice?: MomVoiceSettings;
 	verbose?: VerbosityLevel | MomVerboseSettings;
 	slack?: MomSlackSettings;
 	compaction?: Partial<MomCompactionSettings>;

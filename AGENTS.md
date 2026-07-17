@@ -25,5 +25,19 @@ not here.
 (`203.0.113.x`, `198.51.100.x`), `example.com` addresses, `555` phone
 numbers, and made-up UUIDs — never real infrastructure values.
 
+## Voice-control contract
+
+- Derive the initial `hey <agent name>` wake phrase from the workspace
+  `IDENTITY.md` `Name:` field; do not hardcode deployed identities. Before a
+  session is awake, ambient speech must not become an agent turn.
+- A committed voice utterance immediately interrupts assistant audio, but never
+  aborts an active canonical run or tool. Queue voice follow-ups FIFO as fresh
+  turns and drain them only at safe completion boundaries.
+- Keep stop and pending-input controls immediate. Keep non-voice busy messages
+  on their existing hard-interrupt path.
+- Ordinary final responses are never spoken automatically. Preserve explicit
+  voice-session TTS and the deliberate `speak` tool, but do not add automatic
+  SAG or an equivalent final-response speech mode.
+
 Commit messages count too: describe the change, not the live system it was
 deployed to.
