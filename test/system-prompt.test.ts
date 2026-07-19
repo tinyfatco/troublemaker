@@ -21,6 +21,9 @@ assert(prompt.includes("SMS/iMessage conversation targets"), "system prompt says
 assert(prompt.includes("do not collapse distinct thread roots"), "system prompt preserves Slack thread distinctions");
 assert(prompt.includes("group chat participants"), "system prompt preserves group chat distinctions");
 assert(prompt.includes("read_thread"), "system prompt names read_thread");
+assert(prompt.includes("react_to_message"), "system prompt names react_to_message");
+assert(prompt.includes("exact Slack message target"), "system prompt constrains reactions to exact Slack messages");
+assert(prompt.includes("never treat it as blanket approval"), "system prompt limits inbound reaction approval semantics");
 assert(prompt.includes("previews are not enough to choose"), "system prompt tells agents to inspect conversation nuance");
 assert(prompt.includes("email-thread:<id>"), "system prompt names email thread targets");
 assert(prompt.includes("self_configure"), "system prompt names self_configure");
@@ -52,6 +55,7 @@ assert(claudeCliPrompt.includes("only `ToolSearch` remains"), "Claude CLI prompt
 assert(claudeCliPrompt.includes("`troublemaker` MCP server"), "Claude CLI prompt identifies the runtime tool bridge");
 assert(claudeCliPrompt.includes("mcp__troublemaker__<tool_name>"), "Claude CLI prompt explains namespaced runtime tools");
 assert(claudeCliPrompt.includes("select:mcp__troublemaker__send_message"), "Claude CLI prompt gives the exact deferred send_message selection query");
+assert(claudeCliPrompt.includes("select:mcp__troublemaker__react_to_message"), "Claude CLI prompt gives the exact deferred reaction selection query");
 assert(claudeCliPrompt.includes("select:mcp__troublemaker__yield_no_action"), "Claude CLI prompt gives the exact deferred yield selection query");
 assert(claudeCliPrompt.includes("mcp__troublemaker__bash"), "Claude CLI prompt names MCP-backed core tools instead of native actions");
 assert(claudeCliPrompt.includes("native `SendMessage`"), "Claude CLI prompt distinguishes the unrelated native team tool");

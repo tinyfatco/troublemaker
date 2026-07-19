@@ -16,6 +16,7 @@ export { createCompleteGoalTool } from "./complete-goal.js";
 export { createAbandonGoalTool } from "./abandon-goal.js";
 export { createBlockGoalTool } from "./block-goal.js";
 export { createSendMessageTool } from "./send-message.js";
+export { createReactToMessageTool } from "./react-to-message.js";
 export { createSpeakTool } from "./speak.js";
 export { createSearchToolsTool } from "./search-tools.js";
 

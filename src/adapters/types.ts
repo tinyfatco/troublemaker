@@ -57,6 +57,13 @@ export interface UserInfo {
 	displayName: string;
 }
 
+export interface MessageReactionSummary {
+	emoji: string;
+	count: number;
+	/** Resolved display names or stable Slack user IDs when Slack supplies them. */
+	reactors?: string[];
+}
+
 export interface SendFinalResponseOptions {
 	/** Deliver even when the channel is configured as messages-only. */
 	force?: boolean;
@@ -87,6 +94,7 @@ export interface ThreadTranscriptMessage {
 	isBot?: boolean;
 	directlyAddressed?: boolean;
 	sourceEventType?: string;
+	reactions?: MessageReactionSummary[];
 }
 
 export interface SlackThreadTargetInfo {
@@ -242,6 +250,8 @@ export interface PlatformAdapter {
 	updateMessage(channel: string, ts: string, text: string): Promise<void>;
 	deleteMessage(channel: string, ts: string): Promise<void>;
 	postInThread(channel: string, threadTs: string, text: string): Promise<string>;
+	/** Add an emoji reaction to one exact native message without posting text. */
+	addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>;
 	readThread?(channel: string, threadTs: string, limit?: number): Promise<ThreadTranscriptMessage[]>;
 	listThreads?(limit?: number): Promise<SlackThreadTargetInfo[]>;
 	uploadFile(channel: string, filePath: string, title?: string): Promise<void>;

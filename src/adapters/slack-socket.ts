@@ -2,7 +2,7 @@ import { SocketModeClient } from "@slack/socket-mode";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-addressing.js";
-import { SlackBase, type SlackBaseConfig } from "./slack-base.js";
+import { SlackBase, type SlackBaseConfig, type SlackReactionAddedEvent } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
 
 // ============================================================================
@@ -49,6 +49,17 @@ export class SlackSocketAdapter extends SlackBase {
 	// ==========================================================================
 
 	private setupEventHandlers(): void {
+		// Lightweight reaction steering. Acknowledge synchronously, then let the
+		// shared base enforce message ownership before any other side effect.
+		this.socketClient.on("reaction_added", async ({ event, ack, body }) => {
+			safelyAcknowledge(ack);
+			await this.handleSlackReactionAdded(
+				event as SlackReactionAddedEvent,
+				(body as { team_id?: string }).team_id,
+				(body as { event_id?: string }).event_id,
+			);
+		});
+
 		// Channel @mentions
 		this.socketClient.on("app_mention", async ({ event, ack, body }) => {
 			const e = event as {

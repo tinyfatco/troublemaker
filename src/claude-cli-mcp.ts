@@ -96,7 +96,7 @@ function createProtocolServer(options: ClaudeCliMcpBridgeOptions): McpProtocolSe
 			capabilities: { tools: {} },
 			instructions:
 				"Use these Troublemaker runtime tools for all computer actions and user-visible delivery. " +
-				"Use send_message for visible replies and yield_no_action for silent ambient completion.",
+				"Use send_message for visible replies, react_to_message for exact Slack-message reactions, and yield_no_action for silent ambient completion.",
 		},
 	);
 

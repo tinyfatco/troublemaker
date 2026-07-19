@@ -7,6 +7,7 @@ import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
 import { SlackNativeProgress } from "./slack-native-progress.js";
+import { normalizeSlackEmojiName, parseSlackMessageTarget } from "./slack-reactions.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
@@ -23,6 +24,25 @@ export interface SlackUser {
 export interface SlackChannel {
 	id: string;
 	name: string;
+}
+
+export interface SlackReactionAddedEvent {
+	type: "reaction_added";
+	user?: string;
+	reaction?: string;
+	item_user?: string;
+	event_ts?: string;
+	item?: {
+		type?: string;
+		channel?: string;
+		ts?: string;
+	};
+}
+
+interface SlackReactionMessage {
+	ts?: string;
+	thread_ts?: string;
+	text?: string;
 }
 
 // ============================================================================
@@ -104,6 +124,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	protected channels = new Map<string, SlackChannel>();
 	protected queues = new Map<string, ChannelQueue>();
 	private channelRefreshes = new Set<string>();
+	private recentlyHandledSlackEvents = new Map<string, number>();
 
 	constructor(config: SlackBaseConfig) {
 		this.workingDir = config.workingDir;
@@ -228,6 +249,10 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 		return result.ts as string;
 	}
 
+	async addReaction(channel: string, messageTs: string, emoji: string): Promise<void> {
+		await this.webClient.reactions.add({ channel, timestamp: messageTs, name: emoji });
+	}
+
 	private resolveResponsePlacement(event: MomEvent, settings: MomSettingsManager): {
 		useChannelPlacement: boolean;
 		responseThreadTs?: string;
@@ -251,7 +276,15 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 
 	async readThread(channel: string, threadTs: string, limit = 40): Promise<ThreadTranscriptMessage[]> {
 		const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
-		const rawMessages: Array<{ ts?: string; user?: string; bot_id?: string; username?: string; subtype?: string; text?: string }> = [];
+		const rawMessages: Array<{
+			ts?: string;
+			user?: string;
+			bot_id?: string;
+			username?: string;
+			subtype?: string;
+			text?: string;
+			reactions?: Array<{ name?: string; count?: number; users?: string[] }>;
+		}> = [];
 		let cursor: string | undefined;
 		do {
 			const result = await this.webClient.conversations.replies({
@@ -261,7 +294,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				cursor,
 				inclusive: true,
 			});
-			rawMessages.push(...((result.messages || []) as Array<{ ts?: string; user?: string; bot_id?: string; username?: string; subtype?: string; text?: string }>));
+			rawMessages.push(...((result.messages || []) as typeof rawMessages));
 			cursor = result.response_metadata?.next_cursor || undefined;
 		} while (cursor && rawMessages.length < 500);
 
@@ -287,6 +320,20 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 							: "unknown";
 				const user = this.getUser(userId);
 				const isBot = Boolean(message.bot_id || message.subtype === "bot_message" || userId === this.botUserId);
+				const reactions = (message.reactions || [])
+					.map((reaction) => {
+						const emoji = normalizeSlackEmojiName(reaction.name);
+						const count = Math.max(0, Math.floor(Number(reaction.count) || 0));
+						if (!emoji || count === 0) return null;
+						const reactors = Array.from(new Set((reaction.users || [])
+							.filter((reactorId): reactorId is string => typeof reactorId === "string" && Boolean(reactorId))
+							.map((reactorId) => {
+								const reactor = this.getUser(reactorId);
+								return slackPreview(reactor?.displayName || reactor?.userName || reactorId, 120) || reactorId;
+							})));
+						return { emoji, count, ...(reactors.length > 0 ? { reactors } : {}) };
+					})
+					.filter((reaction): reaction is NonNullable<typeof reaction> => reaction !== null);
 				return {
 					date: slackTimestampToIso(ts),
 					ts,
@@ -298,6 +345,7 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 					isRoot: ts === threadTs,
 					isBot,
 					sourceEventType: "slack_conversations_replies",
+					...(reactions.length > 0 ? { reactions } : {}),
 				};
 			});
 	}
@@ -585,6 +633,193 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			this.queues.set(channelId, queue);
 		}
 		return queue;
+	}
+
+	/** Allow subclasses to expose queued reaction runs to transport-specific tests/lifecycle code. */
+	protected trackSlackReactionRun(_run: Promise<void>): void {}
+
+	/**
+	 * Handle reaction_added after the transport has acknowledged it. Ownership,
+	 * self, and DM checks deliberately precede every lookup, log, pulse, prompt,
+	 * or queue side effect because every app in a workspace can receive it.
+	 */
+	protected async handleSlackReactionAdded(
+		event: SlackReactionAddedEvent,
+		teamId?: string,
+		eventId?: string,
+	): Promise<void> {
+		const rawChannel = event.item?.channel;
+		const rawMessageTs = event.item?.ts;
+		const reactingUserId = event.user;
+		if (
+			event.item?.type !== "message"
+			|| !this.botUserId
+			|| event.item_user !== this.botUserId
+			|| typeof rawChannel !== "string"
+			|| typeof rawMessageTs !== "string"
+			|| typeof reactingUserId !== "string"
+		) return;
+		const parsedTarget = parseSlackMessageTarget(`slack:${rawChannel}:${rawMessageTs}`);
+		if (!parsedTarget || !/^[UW][A-Z0-9]+$/.test(reactingUserId)) return;
+		const channel = parsedTarget.channelId;
+		const messageTs = parsedTarget.messageTs;
+		if (reactingUserId === this.botUserId) return;
+		if (channel.startsWith("D") && !this.acceptsDmFrom(reactingUserId)) return;
+
+		const emoji = normalizeSlackEmojiName(event.reaction);
+		if (!emoji) return;
+		const dedupeKey = eventId?.trim()
+			|| ["reaction_added", channel, messageTs, reactingUserId, emoji, event.event_ts || ""].join(":");
+		if (!this.claimSlackEvent(dedupeKey)) return;
+
+		const resolved = await this.resolveSlackReactionTarget(channel, messageTs);
+		const threadTs = /^\d+\.\d+$/.test(resolved.threadTs) ? resolved.threadTs : messageTs;
+		const exactTarget = `slack:${channel}:${messageTs}`;
+		const threadTarget = `slack:${channel}:${threadTs}`;
+		const user = this.users.get(reactingUserId);
+		const reactorName = slackPreview(user?.displayName || user?.userName || reactingUserId, 120) || reactingUserId;
+		const preview = resolved.preview || "(message text unavailable)";
+		const eventTs = event.event_ts && /^\d+\.\d+$/.test(event.event_ts)
+			? event.event_ts
+			: (Date.now() / 1000).toFixed(6);
+
+		this.logSlackReactionEvidence({
+			channel,
+			messageTs,
+			threadTs,
+			eventTs,
+			reactingUserId,
+			reactorName,
+			emoji,
+			preview,
+		});
+
+		const momEvent: MomEvent = {
+			type: channel.startsWith("D") ? "dm" : "mention",
+			channel,
+			ts: eventTs,
+			user: reactingUserId,
+			teamId,
+			text: [
+				`[Slack reaction steering] ${reactorName} (${reactingUserId}) reacted with :${emoji}: to your exact Slack message ${exactTarget}.`,
+				`Reacted-to message: "${preview}"`,
+				`Thread context/reply target: ${threadTarget}.`,
+				"Treat this as lightweight direct feedback and steering about that specific message. A positive reaction may approve or endorse that message; decide whether a promised or implied next step should now be executed. It is not blanket approval for unrelated consequential actions.",
+			].join("\n"),
+			rawText: `:${emoji}:`,
+			sourceEventType: "slack_reaction_added",
+			directlyAddressed: true,
+			threadTs,
+			replyTarget: threadTarget,
+			replyTargetDescription: "Slack thread containing the agent message that received this reaction",
+			attachments: [],
+		};
+
+		if (this.handler.isRunning(channel)) {
+			this.handler.handleSteer(momEvent, this);
+			return;
+		}
+
+		const run = this.getQueue(channel).enqueue(async () => {
+			await this.handler.handleEvent(momEvent, this);
+		});
+		this.trackSlackReactionRun(run);
+	}
+
+	private claimSlackEvent(key: string): boolean {
+		const now = Date.now();
+		for (const [candidate, expiresAt] of this.recentlyHandledSlackEvents) {
+			if (expiresAt > now) continue;
+			this.recentlyHandledSlackEvents.delete(candidate);
+		}
+		if ((this.recentlyHandledSlackEvents.get(key) || 0) > now) return false;
+		this.recentlyHandledSlackEvents.set(key, now + 10 * 60_000);
+		while (this.recentlyHandledSlackEvents.size > 1024) {
+			const oldest = this.recentlyHandledSlackEvents.keys().next().value as string | undefined;
+			if (!oldest) break;
+			this.recentlyHandledSlackEvents.delete(oldest);
+		}
+		return true;
+	}
+
+	private async resolveSlackReactionTarget(
+		channel: string,
+		messageTs: string,
+	): Promise<{ threadTs: string; preview: string }> {
+		try {
+			const result = await this.webClient.reactions.get({
+				channel,
+				timestamp: messageTs,
+				full: true,
+			});
+			const message = (result as { message?: SlackReactionMessage }).message;
+			if (message) {
+				return {
+					threadTs: message.thread_ts || message.ts || messageTs,
+					preview: slackPreview(message.text, 500),
+				};
+			}
+		} catch (error) {
+			log.logWarning("Slack reaction message lookup failed", error instanceof Error ? error.message : String(error));
+		}
+
+		const local = this.findLoggedSlackMessage(channel, messageTs);
+		return {
+			threadTs: local?.threadTs || messageTs,
+			preview: slackPreview(local?.text, 500),
+		};
+	}
+
+	private findLoggedSlackMessage(channel: string, messageTs: string): { threadTs?: string; text?: string } | undefined {
+		const logPath = join(this.workingDir, "log.jsonl");
+		if (!existsSync(logPath)) return undefined;
+		try {
+			const lines = readFileSync(logPath, "utf-8").split("\n");
+			for (let index = lines.length - 1; index >= 0; index--) {
+				if (!lines[index]?.trim()) continue;
+				const entry = JSON.parse(lines[index]) as {
+					channelId?: string;
+					ts?: string;
+					threadTs?: string;
+					text?: string;
+				};
+				if (entry.channelId === channel && entry.ts === messageTs) return entry;
+			}
+		} catch {
+			return undefined;
+		}
+		return undefined;
+	}
+
+	private logSlackReactionEvidence(input: {
+		channel: string;
+		messageTs: string;
+		threadTs: string;
+		eventTs: string;
+		reactingUserId: string;
+		reactorName: string;
+		emoji: string;
+		preview: string;
+	}): void {
+		const ch = this.channels.get(input.channel);
+		const user = this.users.get(input.reactingUserId);
+		this.logToFile({
+			date: slackTimestampToIso(input.eventTs) || new Date().toISOString(),
+			ts: input.eventTs,
+			threadTs: input.threadTs,
+			channel: ch ? `slack:#${ch.name}` : `slack:${input.channel}`,
+			channelId: input.channel,
+			user: input.reactingUserId,
+			userName: user?.userName,
+			displayName: user?.displayName,
+			text: `${input.reactorName} reacted with :${input.emoji}: to the agent message: ${input.preview}`,
+			attachments: [],
+			isBot: false,
+			sourceEventType: "slack_reaction_added",
+			directlyAddressed: true,
+			reaction: input.emoji,
+			targetMessageTs: input.messageTs,
+		});
 	}
 
 	protected logUserMessage(event: MomEvent): Attachment[] {

@@ -54,6 +54,7 @@ import { createCompleteGoalTool } from "../../tools/complete-goal.js";
 import { createAbandonGoalTool } from "../../tools/abandon-goal.js";
 import { createBlockGoalTool } from "../../tools/block-goal.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
+import { createReactToMessageTool } from "../../tools/react-to-message.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
@@ -820,6 +821,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 		const awarenessDir = join(workingDir, AWARENESS_DIR);
 		const extraTools = [
 			createSendMessageTool(adapters),
+			createReactToMessageTool(adapters),
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),
@@ -1390,6 +1392,7 @@ function realtimeHostTools() {
 		[
 			...createMomTools(hostToolExecutor, workingDir),
 			createSendMessageTool(adapters),
+			createReactToMessageTool(adapters),
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
 			createSelfConfigureTool(workingDir),

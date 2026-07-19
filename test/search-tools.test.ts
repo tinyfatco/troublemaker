@@ -14,6 +14,12 @@ const registry: ToolSearchRegistry = {
 			sourceInfo: { source: "builtin", path: "<builtin:read>" },
 		},
 		{
+			name: "react_to_message",
+			description: "React to one exact Slack message",
+			parameters: { type: "object" },
+			sourceInfo: { source: "runtime", path: "<runtime:react_to_message>" },
+		},
+		{
 			name: "domain_onboard_prepare",
 			description: "Prepare DNS custody for an existing customer-owned domain and return nameserver instructions.",
 			parameters: { type: "object", properties: { domain: { type: "string" } } },
@@ -57,5 +63,10 @@ assert.deepEqual(noCoreData.tools, [], "core tools should be hidden by default")
 const coreResult = await tool.execute("test-call-id", { query: "read", activate: false, includeCore: true, includeActive: true });
 const coreData = JSON.parse(resultText(coreResult));
 assert.equal(coreData.tools[0].name, "read", "includeCore should allow core tool discovery");
+
+const hiddenReactionResult = await tool.execute("test-call-id", { query: "react slack", activate: false });
+assert.deepEqual(JSON.parse(resultText(hiddenReactionResult)).tools, [], "react_to_message is classified as a core tool");
+const coreReactionResult = await tool.execute("test-call-id", { query: "react slack", activate: false, includeCore: true });
+assert.equal(JSON.parse(resultText(coreReactionResult)).tools[0]?.name, "react_to_message", "core discovery can include react_to_message explicitly");
 
 console.log("search_tools discovery ok");

@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-addressing.js";
-import { SlackBase, type SlackBaseConfig } from "./slack-base.js";
+import { SlackBase, type SlackBaseConfig, type SlackReactionAddedEvent } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
 
 // ============================================================================
@@ -111,6 +111,10 @@ export class SlackWebhookAdapter extends SlackBase {
 	/** Promise that resolves when the last enqueued run completes. */
 	public lastRunDone: Promise<void> = Promise.resolve();
 
+	protected override trackSlackReactionRun(run: Promise<void>): void {
+		this.lastRunDone = run;
+	}
+
 	private async dispatchEvent(payload: SlackEventPayload, res: ServerResponse): Promise<void> {
 		// URL verification challenge
 		if (payload.type === "url_verification") {
@@ -128,6 +132,14 @@ export class SlackWebhookAdapter extends SlackBase {
 		}
 
 		const event = payload.event;
+		if (event.type === "reaction_added") {
+			await this.handleSlackReactionAdded(
+				event as SlackReactionAddedEvent,
+				payload.team_id,
+				payload.event_id,
+			);
+			return;
+		}
 		const eventUserId = event.user || event.bot_id || "unknown";
 		if (event.type === "message" && event.channel_type === "im" && !this.acceptsDmFrom(eventUserId)) {
 			log.logInfo(`[${event.channel}] Ignoring Slack DM from non-allowlisted user ${eventUserId}`);
@@ -295,6 +307,7 @@ interface SlackEventPayload {
 	challenge?: string;
 	token?: string;
 	team_id?: string;
+	event_id?: string;
 	event?: SlackEventInner;
 }
 
@@ -309,4 +322,8 @@ interface SlackEventInner {
 	thread_ts?: string;
 	subtype?: string;
 	files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
+	item_user?: string;
+	reaction?: string;
+	event_ts?: string;
+	item?: { type?: string; channel?: string; ts?: string };
 }

@@ -24,7 +24,7 @@ You need **TWO tokens**:
 1. Go to https://api.slack.com/apps
 2. Create app → "From scratch"
 3. Click "OAuth & Permissions" in sidebar
-4. Add **Bot Token Scopes** (all 16):
+4. Add **Bot Token Scopes** (all 18):
    ```
    app_mentions:read
    channels:history
@@ -41,6 +41,8 @@ You need **TWO tokens**:
    mpim:history
    mpim:read
    mpim:write
+   reactions:read
+   reactions:write
    users:read
    ```
 5. Click "Install to Workspace" at top
@@ -91,6 +93,7 @@ You need **TWO tokens**:
    - `message.channels` (required - to log all channel messages for context)
    - `message.groups` (optional - to see private channel messages)
    - `message.im` (required - to see DMs)
+   - `reaction_added` (required - to receive reaction steering on agent-authored messages)
 7. Click **"Save Changes"** at bottom
 
 ---
@@ -344,6 +347,7 @@ You subscribed to these in step 4:
 
 - `app_mention` - Someone @mentioned the bot
 - `message` - Any message in a channel/DM the bot is in
+- `reaction_added` - Someone reacted to a message (Troublemaker filters this to messages authored by this bot)
 
 Event object structure:
 

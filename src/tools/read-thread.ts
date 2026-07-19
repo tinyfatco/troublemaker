@@ -10,7 +10,7 @@
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
-import type { PlatformAdapter, ThreadTranscriptMessage } from "../adapters/types.js";
+import type { MessageReactionSummary, PlatformAdapter, ThreadTranscriptMessage } from "../adapters/types.js";
 import { parseEmailThreadTarget, readEmailThreadById, type EmailThreadLedgerRecord } from "../adapters/email/thread-ledger.js";
 import { displayNameForEntry, readLogEntries, type LogEntry } from "./list-channels.js";
 
@@ -35,6 +35,7 @@ export interface SlackThreadMessage {
 	isBot: boolean;
 	directlyAddressed?: boolean;
 	sourceEventType?: string;
+	reactions?: MessageReactionSummary[];
 }
 
 export interface SlackThreadReadResult {
@@ -59,6 +60,7 @@ export interface ConversationThreadMessage {
 	isBot: boolean;
 	directlyAddressed?: boolean;
 	sourceEventType?: string;
+	reactions?: MessageReactionSummary[];
 }
 
 export interface ConversationThreadReadResult {
@@ -326,7 +328,16 @@ function normalizeThreadTranscriptMessage(message: ThreadTranscriptMessage): Sla
 		isBot: Boolean(message.isBot),
 		directlyAddressed: message.directlyAddressed,
 		sourceEventType: message.sourceEventType,
+		reactions: message.reactions,
 	};
+}
+
+function formatReactionSummary(reactions: MessageReactionSummary[] | undefined): string {
+	if (!reactions?.length) return "";
+	return reactions.map((reaction) => {
+		const reactors = reaction.reactors?.length ? ` (${reaction.reactors.join(", ")})` : "";
+		return `:${reaction.emoji}: ×${reaction.count}${reactors}`;
+	}).join(", ");
 }
 
 export function formatSlackThreadTranscript(
@@ -366,6 +377,8 @@ export function formatSlackThreadTranscript(
 		].filter(Boolean).join(", ");
 		const when = message.date || message.ts;
 		lines.push(`- [${marker}] ${when} ${message.sender}${flags ? ` (${flags})` : ""}: ${message.text || "(no text captured)"}`);
+		const reactions = formatReactionSummary(message.reactions);
+		if (reactions) lines.push(`  Reactions: ${reactions}`);
 	}
 
 	return lines.join("\n");
@@ -420,6 +433,8 @@ export function formatThreadTranscript(result: ConversationThreadReadResult): st
 		].filter(Boolean).join(", ");
 		const when = message.date || message.ts;
 		lines.push(`- [${marker}] ${when} ${message.sender}${flags ? ` (${flags})` : ""}: ${message.text || "(no text captured)"}`);
+		const reactions = formatReactionSummary(message.reactions);
+		if (reactions) lines.push(`  Reactions: ${reactions}`);
 	}
 
 	return lines.join("\n");
@@ -443,6 +458,7 @@ function slackToConversationThread(result: SlackThreadReadResult): ConversationT
 			isBot: message.isBot,
 			directlyAddressed: message.directlyAddressed,
 			sourceEventType: message.sourceEventType,
+			reactions: message.reactions,
 		})),
 		source: result.source,
 		warning: result.warning,

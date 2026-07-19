@@ -30,6 +30,7 @@ const CORE_TOOL_NAMES = new Set([
 	"list_channels",
 	"read",
 	"read_thread",
+	"react_to_message",
 	"search_tools",
 	"self_configure",
 	"send_message",

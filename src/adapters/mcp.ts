@@ -19,6 +19,7 @@ import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
 import { collectChannelsFromLog, collectPhoneConversations, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
+import { resolveSlackReactionTarget } from "../tools/react-to-message.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
 import { collectThreadMessages, formatThreadTranscript } from "../tools/read-thread.js";
 import { collectEmailThreadListings } from "../adapters/email/thread-ledger.js";
@@ -421,6 +422,42 @@ export class McpAdapter implements PlatformAdapter {
 						content: [{ type: "text" as const, text: `Failed to send: ${errMsg}` }],
 						isError: true,
 					};
+				}
+			},
+		);
+
+		// ── react_to_message ─────────────────────────────────────────────
+		server.registerTool(
+			"react_to_message",
+			{
+				description:
+					"Add an emoji reaction to one exact Slack message without posting text. " +
+					"The target must be slack:<channel_id>:<message_ts>; all non-Slack and channel-only targets fail closed.",
+				inputSchema: {
+					label: mcpToolLabelSchema,
+					show: z.boolean().optional().describe("Surface the safe label only when it is a meaningful progress milestone. Default false."),
+					target: z.string().describe("Exact Slack message target: slack:<channel_id>:<message_ts>"),
+					emoji: z.string().describe("Slack emoji name with or without one matching pair of colons, e.g. thumbsup or :thumbsup:"),
+				},
+			},
+			async ({ target, emoji }: { target: string; emoji: string }) => {
+				try {
+					const resolved = resolveSlackReactionTarget(target, emoji, this.peerAdapters);
+					await resolved.adapter.addReaction(resolved.channelId, resolved.messageTs, resolved.emoji);
+					this.logToFile({
+						date: new Date().toISOString(),
+						channel: "mcp",
+						type: "tool_call",
+						tool: "react_to_message",
+						target_channel: resolved.channelId,
+						target_message_ts: resolved.messageTs,
+						emoji: resolved.emoji,
+						success: true,
+					});
+					return { content: [{ type: "text" as const, text: `Added :${resolved.emoji}: to Slack message ${resolved.target}.` }] };
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					return { content: [{ type: "text" as const, text: message }], isError: true };
 				}
 			},
 		);
