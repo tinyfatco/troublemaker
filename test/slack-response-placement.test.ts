@@ -137,6 +137,26 @@ try {
 	assert.equal(defaults.posted.length, 1, "setting-free messages-only Slack emits routine labels in default all mode");
 	assert.equal(defaults.posted[0]?.thread_ts, "1710000000.000001", "setting-free routine label stays in the inbound thread");
 
+	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
+		verbose: { slack: "messages-only" },
+		slack: { toolStreaming: "all", toolStreamPresentation: "split", toolStreamWindowMinutes: 5 },
+	}));
+	const fixedDestination = new TestSlackAdapter(workingDir);
+	const fixedDestinationContext = fixedDestination.createWorkingOutputContext(
+		{ platform: "slack", channelId: "C9999999999" },
+		{} as ChannelStore,
+		{ toolStreaming: "all", presentation: "split", windowMinutes: 5 },
+	);
+	await fixedDestinationContext.setTyping(true);
+	await fixedDestinationContext.respond("_→ Fixed cross-channel label_", false);
+	await fixedDestinationContext.respondInThread("raw fixed detail");
+	await fixedDestinationContext.sendFinalResponse("ordinary fixed final");
+	assert.equal(fixedDestination.posted.length, 1, "fixed working context emits only its safe tool-label message");
+	assert.equal(fixedDestination.posted[0]?.channel, "C9999999999", "fixed working context uses the configured Slack channel");
+	assert.equal(fixedDestination.posted[0]?.thread_ts, undefined, "fixed working output is stable top-level channel output, not a transient thread");
+	assert.match(fixedDestination.posted[0]?.text || "", /Fixed cross-channel label/, "fixed working output preserves the standard label renderer");
+	assert.doesNotMatch(fixedDestination.posted[0]?.text || "", /raw fixed detail|ordinary fixed final/, "fixed working output preserves the messages-only detail boundary");
+
 	const realDateNow = Date.now;
 	let fakeNow = 1_000_000;
 	Date.now = () => fakeNow;

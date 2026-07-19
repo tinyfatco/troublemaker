@@ -54,6 +54,18 @@ export interface MomVerboseSettings {
 export type SlackResponsePlacement = "thread" | "channel";
 export type ToolStreamingMode = "off" | "important" | "all";
 export type WorkingStreamPresentation = "split" | "condensed";
+export type WorkingOutputMode = "off" | "follow" | "fixed";
+
+export interface WorkingOutputTarget {
+	platform: "slack";
+	channelId: string;
+}
+
+export interface MomWorkingOutputSettings {
+	mode: WorkingOutputMode;
+	target?: WorkingOutputTarget;
+}
+
 export type SlackToolStreamPresentation = WorkingStreamPresentation;
 export type DiscordToolStreamPresentation = WorkingStreamPresentation;
 export type VoiceWebhookInputMode = "interrupt" | "steer";
@@ -130,6 +142,8 @@ export interface MomSettings {
 	realtimeVoice?: string;
 	voice?: MomVoiceSettings;
 	verbose?: VerbosityLevel | MomVerboseSettings;
+	/** Route sanitized working/tool labels independently from user-visible delivery. */
+	workingOutput?: MomWorkingOutputSettings;
 	slack?: MomSlackSettings;
 	discord?: MomDiscordSettings;
 	compaction?: Partial<MomCompactionSettings>;
@@ -189,6 +203,14 @@ export function inferPlatformFromChannelId(channelId: string): string | undefine
 export function isSendMessageOnlyPlatform(channelId: string, platform?: string): boolean {
 	const resolved = platform || inferPlatformFromChannelId(channelId);
 	return resolved ? SEND_MESSAGE_ONLY_PLATFORMS.has(resolved) : false;
+}
+
+export function isWorkingOutputTarget(value: unknown): value is WorkingOutputTarget {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const candidate = value as { platform?: unknown; channelId?: unknown };
+	return candidate.platform === "slack"
+		&& typeof candidate.channelId === "string"
+		&& /^[CDG][A-Z0-9]+$/i.test(candidate.channelId);
 }
 
 /**
@@ -469,6 +491,57 @@ export class MomSettingsManager {
 		if (typeof v === "boolean" || v === "messages-only") return v;
 		if (!v) return "messages-only";
 		return v.default ?? "messages-only";
+	}
+
+	getWorkingOutput(): MomWorkingOutputSettings {
+		const configured = this.settings.workingOutput;
+		if (!configured) return { mode: "follow" };
+		if (configured.mode === "off" || configured.mode === "follow") {
+			return { mode: configured.mode };
+		}
+		if (configured.mode === "fixed" && isWorkingOutputTarget(configured.target)) {
+			return {
+				mode: "fixed",
+				target: { ...configured.target },
+			};
+		}
+		// An explicitly malformed route must fail closed instead of leaking
+		// progress back into whichever external conversation triggered the turn.
+		return { mode: "off" };
+	}
+
+	setWorkingOutput(
+		value: MomWorkingOutputSettings,
+		slackPatch: Partial<Pick<MomSlackSettings, "toolStreaming" | "toolStreamPresentation" | "toolStreamWindowMinutes">> = {},
+	): MomWorkingOutputSettings {
+		let normalized: MomWorkingOutputSettings;
+		if (value.mode === "off" || value.mode === "follow") {
+			normalized = { mode: value.mode };
+		} else if (value.mode === "fixed" && isWorkingOutputTarget(value.target)) {
+			normalized = { mode: "fixed", target: { ...value.target } };
+		} else {
+			throw new Error('working output must use mode "off", "follow", or "fixed" with a valid Slack channel/DM target.');
+		}
+
+		if (slackPatch.toolStreaming !== undefined && !["off", "important", "all"].includes(slackPatch.toolStreaming)) {
+			throw new Error('Slack tool streaming must be "off", "important", or "all".');
+		}
+		if (slackPatch.toolStreamPresentation !== undefined && !["split", "condensed"].includes(slackPatch.toolStreamPresentation)) {
+			throw new Error('Slack tool stream presentation must be "split" or "condensed".');
+		}
+		if (slackPatch.toolStreamWindowMinutes !== undefined) {
+			const minutes = slackPatch.toolStreamWindowMinutes;
+			if (!Number.isInteger(minutes) || minutes < MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES || minutes > MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES) {
+				throw new Error(`Slack tool stream window must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
+			}
+		}
+
+		this.settings.workingOutput = normalized;
+		if (Object.keys(slackPatch).length > 0) {
+			this.settings.slack = { ...this.settings.slack, ...slackPatch };
+		}
+		this.save();
+		return this.getWorkingOutput();
 	}
 
 	getSlackResponsePlacement(): SlackResponsePlacement {

@@ -10,9 +10,9 @@ export interface WorkingRolloverToolCompletion {
 }
 
 /**
- * A successful send_message to the current delivery locus is a chronological
- * boundary. Later harness labels should open a fresh working message after the
- * user-visible send instead of continuing to edit an older message above it.
+ * A successful send_message to the visible working locus is a chronological
+ * boundary. In follow mode this is the active reply target; in fixed mode it is
+ * the configured Slack destination. Later labels must not edit above the send.
  */
 export function shouldRolloverWorkingAfterToolCompletion(
 	completion: WorkingRolloverToolCompletion,

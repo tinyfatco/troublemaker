@@ -22,6 +22,7 @@ try {
 	assert.equal(defaults.getDiscordToolStreaming(), "all", "Discord defaults to the complete tool-label stream");
 	assert.equal(defaults.getDiscordToolStreamPresentation(), "split", "Discord defaults to edited event-driven tool-stream windows");
 	assert.equal(defaults.getDiscordToolStreamWindowMinutes(), 1, "Discord defaults to one rolling minute per edited working message");
+	assert.deepEqual(defaults.getWorkingOutput(), { mode: "follow" }, "working output follows the invocation locus by default");
 
 	writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 		slack: { toolStreamPresentation: "batched", toolStreamBatchSize: 20 },
@@ -73,6 +74,12 @@ try {
 	assert.equal(globallyVerbose.getDiscordToolStreamPresentation(), "condensed", "Discord tool-stream presentation can be condensed durably");
 	globallyVerbose.setDiscordToolStreamWindowMinutes(5);
 	assert.equal(globallyVerbose.getDiscordToolStreamWindowMinutes(), 5, "Discord tool-stream window can be changed durably");
+	globallyVerbose.setWorkingOutput({ mode: "fixed", target: { platform: "slack", channelId: "D1234567890" } });
+	assert.deepEqual(
+		globallyVerbose.getWorkingOutput(),
+		{ mode: "fixed", target: { platform: "slack", channelId: "D1234567890" } },
+		"fixed working-output destination persists independently from verbosity",
+	);
 
 	assert.equal(isSendMessageOnlyPlatform("C1234567890"), true, "Slack channel ids retain the send_message-only default policy");
 	assert.equal(isSendMessageOnlyPlatform("abcdefghijklmnopqrstuvwx12"), true, "Mattermost channel ids infer the send_message-only policy");

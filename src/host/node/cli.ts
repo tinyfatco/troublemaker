@@ -32,7 +32,7 @@ import {
 } from "../../adapters/types.js";
 import { type AgentRunner, getOrCreateRunner } from "../../agent.js";
 import { handleSlashCommand as executeSlashCommand, resolvePendingInput } from "../../commands.js";
-import { MomSettingsManager } from "../../context.js";
+import { MomSettingsManager, type WorkingOutputTarget } from "../../context.js";
 import { downloadChannel } from "../../download.js";
 import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
@@ -57,6 +57,7 @@ import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createReactToMessageTool } from "../../tools/react-to-message.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
+import { routeWorkingOutputContext } from "../../streaming/working-output.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
@@ -744,6 +745,12 @@ interface ActiveDeliveryScope {
 let activeRun: ActiveRun | null = null;
 let activeDeliveryScope: ActiveDeliveryScope | null = null;
 let queuedRunCount = 0;
+
+function resolveActiveWorkingOutputTarget(): WorkingOutputTarget | undefined {
+	const scope = activeDeliveryScope;
+	if (!scope || scope.adapter.name !== "slack" || !/^[CDG][A-Z0-9]+$/i.test(scope.channelId)) return undefined;
+	return { platform: "slack", channelId: scope.channelId };
+}
 let runQueueTail: Promise<void> = Promise.resolve();
 let voiceContract: FirstClassVoiceContract | null = null;
 
@@ -824,7 +831,9 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createReactToMessageTool(adapters),
 			createListChannelsTool(workingDir, adapters),
 			createReadThreadTool(workingDir, adapters),
-			createSelfConfigureTool(workingDir),
+			createSelfConfigureTool(workingDir, {
+				resolveWorkingOutputTarget: resolveActiveWorkingOutputTarget,
+			}),
 			createSetGoalTool(workingDir),
 			createCompleteGoalTool(workingDir),
 			createBlockGoalTool(workingDir),
@@ -1026,8 +1035,22 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			}
 
 			// Build a fresh delivery context for each automatic goal turn while
-			// preserving the original channel/thread placement.
-			const ctx = platform.createContext(turnEvent, state.store, isEvent);
+			// preserving the original channel/thread placement. Working labels can
+			// then follow it, disappear, or move to one durable Slack destination.
+			const sourceContext = platform.createContext(turnEvent, state.store, isEvent);
+			const workingSettings = new MomSettingsManager(workingDir);
+			const ctx = routeWorkingOutputContext({
+				policy: workingSettings.getWorkingOutput(),
+				sourceContext,
+				adapters,
+				store: state.store,
+				presentation: {
+					toolStreaming: workingSettings.getSlackToolStreaming(),
+					presentation: workingSettings.getSlackToolStreamPresentation(),
+					windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
+				},
+				warn: (message) => log.logWarning(`[working-output] ${message}`),
+			});
 			if (isGoalContinuationEvent(turnEvent)) applyGoalContinuationIdentity(ctx);
 
 			await ctx.setTyping(true);

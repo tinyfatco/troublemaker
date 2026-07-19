@@ -16,14 +16,18 @@ import {
 	MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES,
 	MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES,
 	MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES,
+	isWorkingOutputTarget,
 	MomSettingsManager,
 	type DiscordToolStreamPresentation,
 	type MomSpontaneitySettings,
+	type MomWorkingOutputSettings,
 	type SlackResponsePlacement,
 	type SlackToolStreamPresentation,
 	type ToolStreamingMode,
 	type VerbosityLevel,
 	type VoiceWebhookInputMode,
+	type WorkingOutputMode,
+	type WorkingOutputTarget,
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { findModel } from "../model-config.js";
@@ -41,6 +45,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"model",
 	"thinking_level",
 	"verbosity",
+	"working_output",
 	"slack.verbosity",
 	"slack.response_placement",
 	"slack.tool_streaming",
@@ -78,6 +83,9 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"realtime.voice": "realtime_voice",
 	"verbose": "verbosity",
 	"verbose.default": "verbosity",
+	"workingOutput": "working_output",
+	"working_messages": "working_output",
+	"workingMessages": "working_output",
 	"slack.verbose": "slack.verbosity",
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
@@ -117,6 +125,11 @@ interface SelfConfigureResult {
 	note: string;
 	schedule?: HeartbeatScheduleResult;
 	path?: string;
+}
+
+export interface SelfConfigureOptions {
+	/** Resolve the active stable channel/DM when the model configures target "here". */
+	resolveWorkingOutputTarget?: () => WorkingOutputTarget | undefined;
 }
 
 function loadSettingsRaw(workingDir: string): Record<string, unknown> {
@@ -329,6 +342,101 @@ function configureSlackToolStreamWindowMinutes(workingDir: string, value: unknow
 		previousValue,
 		newValue: parsed,
 		note: `On the next split Slack turn, each edited working message will cover a rolling ${parsed}-minute window. The first real tool event after that window opens a fresh message.`,
+	};
+}
+
+function parseWorkingOutputMode(value: unknown): WorkingOutputMode {
+	const normalized = parseString(value, "working_output.mode").trim().toLowerCase().replace(/_/g, "-");
+	if (["off", "none", "hidden", "quiet", "disabled"].includes(normalized)) return "off";
+	if (["follow", "where-tagged", "where-contacted", "current", "dynamic"].includes(normalized)) return "follow";
+	if (["fixed", "specific", "pinned", "destination"].includes(normalized)) return "fixed";
+	throw new Error('working_output.mode must be "off", "follow", or "fixed".');
+}
+
+function resolveWorkingOutputTarget(value: unknown, options: SelfConfigureOptions): WorkingOutputTarget {
+	if (typeof value === "string") {
+		const target = value.trim();
+		if (target.toLowerCase() === "here") {
+			const current = options.resolveWorkingOutputTarget?.();
+			if (!current) throw new Error('working_output target "here" requires an active Slack channel or DM turn.');
+			return current;
+		}
+		const direct = { platform: "slack" as const, channelId: target };
+		if (isWorkingOutputTarget(direct)) return direct;
+	}
+	if (isWorkingOutputTarget(value)) return { ...value };
+	throw new Error("working_output fixed target must be 'here' or a Slack C/G/D channel or DM ID.");
+}
+
+function workingOutputSnapshot(manager: MomSettingsManager, policy = manager.getWorkingOutput()): Record<string, unknown> {
+	return {
+		...policy,
+		toolStreaming: manager.getSlackToolStreaming(),
+		presentation: manager.getSlackToolStreamPresentation(),
+		windowMinutes: manager.getSlackToolStreamWindowMinutes(),
+	};
+}
+
+function configureWorkingOutput(
+	workingDir: string,
+	value: unknown,
+	options: SelfConfigureOptions,
+): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = workingOutputSnapshot(manager);
+	let request: Record<string, unknown>;
+	if (typeof value === "string") {
+		const normalized = value.trim().toLowerCase();
+		request = normalized === "here" ? { mode: "fixed", target: "here" } : { mode: value };
+	} else if (value && typeof value === "object" && !Array.isArray(value)) {
+		request = value as Record<string, unknown>;
+	} else {
+		throw new Error("working_output must be a mode string or configuration object.");
+	}
+
+	const mode = parseWorkingOutputMode(request.mode ?? (request.target !== undefined ? "fixed" : "follow"));
+	const policy: MomWorkingOutputSettings = mode === "fixed"
+		? { mode, target: resolveWorkingOutputTarget(request.target, options) }
+		: { mode };
+	const slackPatch: NonNullable<Parameters<MomSettingsManager["setWorkingOutput"]>[1]> = {};
+
+	if (mode !== "off") {
+		if (request.toolStreaming !== undefined) {
+			slackPatch.toolStreaming = parseToolStreamingMode(request.toolStreaming, "working_output.toolStreaming");
+		} else if (manager.getSlackToolStreaming() === "off") {
+			// An explicit request to show working output should not remain invisibly
+			// defeated by an older platform-level off setting.
+			slackPatch.toolStreaming = "all";
+		}
+		if (request.presentation !== undefined) {
+			slackPatch.toolStreamPresentation = parseToolStreamPresentation(
+				request.presentation,
+				"working_output.presentation",
+			);
+		}
+		if (request.windowMinutes !== undefined) {
+			const minutes = parseNumber(request.windowMinutes, "working_output.windowMinutes");
+			if (!Number.isInteger(minutes) || minutes < MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES || minutes > MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES) {
+				throw new Error(`working_output.windowMinutes must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES}.`);
+			}
+			slackPatch.toolStreamWindowMinutes = minutes;
+			slackPatch.toolStreamPresentation ??= "split";
+		}
+	}
+
+	const configured = manager.setWorkingOutput(policy, slackPatch);
+	const newValue = workingOutputSnapshot(manager, configured);
+	const note = mode === "off"
+		? "External working messages are disabled from the next turn; messages-only delivery is unchanged."
+		: mode === "follow"
+			? "From the next turn, working labels follow the Slack channel, thread, or DM where the agent is contacted."
+			: `From the next turn, working labels from every turn go to the configured Slack ${configured.target?.channelId.startsWith("D") ? "DM" : "channel"}.`;
+	return {
+		changed: true,
+		setting: "working_output",
+		previousValue,
+		newValue,
+		note,
 	};
 }
 
@@ -557,6 +665,7 @@ export function applySelfConfiguration(
 	workingDir: string,
 	setting: string,
 	value: unknown,
+	options: SelfConfigureOptions = {},
 ): SelfConfigureResult {
 	const target = SELF_CONFIGURE_ALIASES[setting] ?? setting;
 	if (!SELF_CONFIGURE_SETTINGS.has(target)) {
@@ -565,6 +674,7 @@ export function applySelfConfiguration(
 	if (target === "model") return configureModel(workingDir, value);
 	if (target === "thinking_level") return configureThinkingLevel(workingDir, value);
 	if (target === "verbosity") return configureVerbosity(workingDir, value);
+	if (target === "working_output") return configureWorkingOutput(workingDir, value, options);
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
@@ -595,13 +705,13 @@ function formatResult(result: SelfConfigureResult): string {
 	return lines.join("\n");
 }
 
-export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
+export function createSelfConfigureTool(workingDir: string, options: SelfConfigureOptions = {}): AgentTool<any> {
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of the setting change" }),
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, working_output, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
@@ -614,7 +724,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack channel or DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
@@ -627,7 +737,7 @@ export function createSelfConfigureTool(workingDir: string): AgentTool<any> {
 				throw new Error("self_configure requires a value.");
 			}
 
-			const result = applySelfConfiguration(workingDir, setting, value);
+			const result = applySelfConfiguration(workingDir, setting, value, options);
 			log.logInfo(`[self_configure] ${setting} -> ${JSON.stringify(result.newValue)}`);
 			return {
 				content: [{ type: "text" as const, text: formatResult(result) }],

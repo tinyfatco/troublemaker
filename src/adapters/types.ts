@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import type { WorkingStreamPresentation } from "../context.js";
+import type { ToolStreamingMode, WorkingOutputTarget, WorkingStreamPresentation } from "../context.js";
 import type { Attachment, ChannelStore } from "../store.js";
 
 // ============================================================================
@@ -82,6 +82,12 @@ export interface ToolProgressUpdate {
 	show?: boolean;
 }
 
+export interface WorkingOutputContextOptions {
+	toolStreaming: ToolStreamingMode;
+	presentation: WorkingStreamPresentation;
+	windowMinutes: number;
+}
+
 export interface ThreadTranscriptMessage {
 	date?: string;
 	ts: string;
@@ -158,6 +164,8 @@ export interface MomContext {
 	deleteMessage: () => Promise<void>;
 	/** How this context groups edited progress around deliberate message sends. */
 	workingStreamPresentation?: WorkingStreamPresentation;
+	/** Exact visible locus whose send_message deliveries split this working stream. Null disables rollover. */
+	workingReplyTarget?: string | null;
 	/** Finalize the current working message and start a fresh one (used by steering) */
 	restartWorking: (headerLine?: string) => Promise<void>;
 	/** Emit sanitized tool lifecycle to a platform-native progress surface. */
@@ -272,6 +280,12 @@ export interface PlatformAdapter {
 	// -- Context creation --
 
 	createContext(event: MomEvent, store: ChannelStore, isEvent?: boolean): MomContext;
+	/** Create a progress-only context at a durable destination, when supported. */
+	createWorkingOutputContext?(
+		target: WorkingOutputTarget,
+		store: ChannelStore,
+		options: WorkingOutputContextOptions,
+	): MomContext;
 
 	// -- Explicit voice session boundary hooks --
 

@@ -1,14 +1,14 @@
 import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, readFileSync } from "fs";
 import { basename, join } from "path";
-import { MomSettingsManager } from "../context.js";
+import { MomSettingsManager, type WorkingOutputTarget } from "../context.js";
 import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
 import { SlackNativeProgress } from "./slack-native-progress.js";
 import { normalizeSlackEmojiName, parseSlackMessageTarget } from "./slack-reactions.js";
-import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo } from "./types.js";
+import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo, WorkingOutputContextOptions } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
 
 // ============================================================================
@@ -490,6 +490,50 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	// ==========================================================================
 	// Context creation
 	// ==========================================================================
+
+	createWorkingOutputContext(
+		target: WorkingOutputTarget,
+		_store: ChannelStore,
+		options: WorkingOutputContextOptions,
+	): MomContext {
+		if (target.platform !== "slack" || !/^[CDG][A-Z0-9]+$/i.test(target.channelId)) {
+			throw new Error("Slack working output requires a valid channel or DM ID.");
+		}
+
+		const event: MomEvent = {
+			type: target.channelId.startsWith("D") ? "dm" : "mention",
+			channel: target.channelId,
+			ts: (Date.now() / 1000).toFixed(6),
+			user: "system",
+			text: "",
+			directlyAddressed: false,
+			replyTarget: target.channelId,
+			replyTargetDescription: "Configured Slack working-output destination",
+			attachments: [],
+		};
+		const context = createTwoMessageContext(
+			{
+				post: (channel, text) => this.postMessage(channel, text),
+				update: (channel, id, text) => this.updateMessage(channel, id, text),
+				delete: (channel, id) => this.deleteMessage(channel, id),
+				formatStatus: (text) => `_${text}_`,
+				throttleMs: 0,
+				maxLength: this.maxMessageLength,
+			},
+			{
+				headerLine: "",
+				event,
+				channels: this.getAllChannels(),
+				users: this.getAllUsers(),
+				channelName: this.channels.get(target.channelId)?.name,
+				verbose: "messages-only",
+				toolStreaming: options.toolStreaming,
+				workingStreamPresentation: options.presentation,
+				workingStreamWindowMs: options.windowMinutes * 60_000,
+			},
+		);
+		return { ...context, workingReplyTarget: target.channelId };
+	}
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
 		const user = this.users.get(event.user);

@@ -88,6 +88,37 @@ try {
 	assert(nativeProgress.newValue === true, "native progress alias accepts natural booleans");
 	assert((settings.slack as any).nativeProgress === true, "native progress persists inside the Slack settings block");
 
+	const fixedWorking = applySelfConfiguration(workingDir, "working_output", {
+		mode: "fixed",
+		target: { platform: "slack", channelId: "C0123456789" },
+		windowMinutes: 5,
+	});
+	settings = readSettings(workingDir);
+	assert((fixedWorking.newValue as any).mode === "fixed", "working output reports fixed mode");
+	assert((settings.workingOutput as any).target.channelId === "C0123456789", "fixed working output persists its Slack channel");
+	assert((settings.slack as any).toolStreamPresentation === "split", "working output minute windows select split presentation atomically");
+	assert((settings.slack as any).toolStreamWindowMinutes === 5, "working output minute windows update the Slack renderer atomically");
+
+	const hereWorking = applySelfConfiguration(
+		workingDir,
+		"workingMessages",
+		{ mode: "fixed", target: "here" },
+		{ resolveWorkingOutputTarget: () => ({ platform: "slack", channelId: "D0123456789" }) },
+	);
+	settings = readSettings(workingDir);
+	assert((hereWorking.newValue as any).target.channelId === "D0123456789", "working-output alias resolves here from the active Slack turn");
+	assert((settings.workingOutput as any).target.channelId === "D0123456789", "resolved Slack DM persists without a transient thread");
+
+	const followWorking = applySelfConfiguration(workingDir, "workingOutput", { mode: "follow" });
+	settings = readSettings(workingDir);
+	assert((followWorking.newValue as any).mode === "follow", "working output can follow the invocation locus");
+	assert(!("target" in (settings.workingOutput as any)), "follow mode removes the prior fixed target");
+
+	const offWorking = applySelfConfiguration(workingDir, "working_messages", "off");
+	settings = readSettings(workingDir);
+	assert((offWorking.newValue as any).mode === "off", "working output can disable external labels");
+	assert((settings.slack as any).toolStreaming === "all", "disabling the route preserves the existing label-selection preference");
+
 	const discordSelectiveStreaming = applySelfConfiguration(workingDir, "discord.tool_streaming", "selected");
 	settings = readSettings(workingDir);
 	assert(discordSelectiveStreaming.newValue === "important", "Discord tool streaming normalizes selected to important");
@@ -147,6 +178,8 @@ try {
 	const settingDescription = (tool.parameters as any).properties.setting.description as string;
 	assert(settingDescription.includes("voice.wake_aliases"), "self_configure schema exposes compact wake aliases");
 	assert(settingDescription.includes("voice.webhook_input_mode"), "self_configure schema exposes voice webhook routing");
+	assert(settingDescription.includes("working_output"), "self_configure schema exposes working-output routing");
+	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
 	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
 
@@ -178,6 +211,41 @@ try {
 	settings = readSettings(workingDir);
 	assert(settings.thinking_level === "high", "tool execute applies setting");
 	assert((result.content?.[0]?.text || "").includes("Configured thinking_level"), "tool result summarizes setting");
+
+	const contextualTool = createSelfConfigureTool(workingDir, {
+		resolveWorkingOutputTarget: () => ({ platform: "slack", channelId: "C0987654321" }),
+	});
+	await (contextualTool.execute as any)("call-working-here", {
+		label: "route working labels here",
+		setting: "working_output",
+		value: { mode: "fixed", target: "here" },
+	});
+	settings = readSettings(workingDir);
+	assert((settings.workingOutput as any).target.channelId === "C0987654321", "tool execution resolves working-output here through its turn callback");
+
+	try {
+		applySelfConfiguration(workingDir, "working_output", { mode: "fixed", target: "here" });
+		assert(false, "working output here without an active Slack target throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("active Slack"), "working output here explains its active-turn requirement");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "working_output", {
+			mode: "fixed",
+			target: { platform: "slack", channelId: "not-a-channel" },
+		});
+		assert(false, "invalid fixed working-output target throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("Slack"), "invalid fixed target explains accepted Slack loci");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "working_output", { mode: "follow", windowMinutes: 0 });
+		assert(false, "unsafe working-output window throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("1"), "invalid working-output window explains its safe range");
+	}
 
 	try {
 		applySelfConfiguration(workingDir, "slack.response_placement", "somewhere");

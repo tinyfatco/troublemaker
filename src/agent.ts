@@ -775,7 +775,9 @@ function createRunner(
 				isError: agentEvent.isError || false,
 				args: pending?.args,
 				result: agentEvent.result,
-				activeReplyTarget: ctx.message.replyTarget,
+				activeReplyTarget: ctx.workingReplyTarget === null
+					? undefined
+					: (ctx.workingReplyTarget ?? ctx.message.replyTarget),
 				workingStreamPresentation: ctx.workingStreamPresentation,
 			})) {
 				queue.enqueue(() => ctx.restartWorking(), "restart working after inline send");

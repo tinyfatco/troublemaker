@@ -45,6 +45,7 @@ const telegramPreamble = buildSessionPreamble(
 );
 
 assert(telegramPreamble.includes("Channel delivery policy"), "non-web messages-only channels show the channel delivery policy");
+assert(telegramPreamble.includes("Safe tool-label progress"), "messages-only preamble permits independently routed safe working labels");
 assert(telegramPreamble.includes("Use send_message with an explicit target"), "non-web messages-only channels keep the send_message reminder");
 
 const verboseSlackPreamble = buildSessionPreamble(

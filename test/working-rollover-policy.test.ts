@@ -33,6 +33,15 @@ assert.equal(shouldRolloverWorkingAfterToolCompletion({
 assert.equal(shouldRolloverWorkingAfterToolCompletion({
 	toolName: "send_message",
 	isError: false,
+	args: { target: "D9876543210" },
+	result: delivered,
+	activeReplyTarget: "D9876543210",
+	workingStreamPresentation: "split",
+}), true, "a successful send to a fixed Slack working destination rolls that stream");
+
+assert.equal(shouldRolloverWorkingAfterToolCompletion({
+	toolName: "send_message",
+	isError: false,
 	args: { target: `  ${activeReplyTarget}  ` },
 	result: delivered,
 	activeReplyTarget,

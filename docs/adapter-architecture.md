@@ -92,6 +92,26 @@ Platform API
 
 This is the natural extension point. A Discord adapter might use embeds for tool details. A CLI adapter might print to stderr. A web adapter might use a split pane. The agent code is identical in all cases.
 
+## Working-output routing
+
+User-visible delivery and sanitized working progress are independent policies.
+The source adapter always creates the canonical turn context, preserving its
+message metadata, reply target, final/error delivery, and uploads. The host may
+then decorate that context according to `settings.json` `workingOutput`:
+
+- `follow` keeps the adapter's existing progress locus;
+- `off` suppresses external working progress; and
+- `fixed` routes safe tool labels from every turn to one configured Slack
+  channel or DM through `createWorkingOutputContext()`.
+
+A fixed destination uses a separate messages-only context. Ordinary assistant
+text, raw tool arguments/results, stdout, reasoning, and harness finals never
+move with the working stream. If the configured destination is unavailable,
+progress fails closed instead of falling back to the source conversation.
+
+This routing applies when a run is created, so a `self_configure` change takes
+effect on the next turn and never relocates an in-flight working message.
+
 ## formatInstructions
 
 Each adapter provides `formatInstructions` — a string injected into the agent's system prompt telling it how to format text for that platform:
