@@ -91,7 +91,8 @@ try {
 	const agentsTemplate = readFileSync("src/templates/AGENTS.md", "utf8");
 	assert.match(agentsTemplate, /Voice barge-in stops assistant audio immediately/);
 	assert.match(agentsTemplate, /wait FIFO/);
-	assert.match(agentsTemplate, /non-voice messages keep the platform's normal hard-interrupt behavior/);
+	assert.match(agentsTemplate, /non-voice messages soft-steer active work/);
+	assert.match(agentsTemplate, /never abort an active tool or run/);
 	assert.match(agentsTemplate, /never auto-run SAG/);
 	const repositoryGuidance = readFileSync("AGENTS.md", "utf8");
 	assert.match(repositoryGuidance, /initial `hey <agent name>` wake phrase/);

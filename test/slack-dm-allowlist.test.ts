@@ -8,12 +8,12 @@ import type { ChannelStore } from "../src/store.js";
 
 const workingDir = mkdtempSync(join(tmpdir(), "tm-slack-dm-allowlist-"));
 
-function handler(events: MomEvent[]): MomHandler {
+function handler(events: MomEvent[], steers: MomEvent[] = [], isRunning = () => false): MomHandler {
 	return {
-		isRunning: () => false,
+		isRunning,
 		handleEvent: async (event) => { events.push(event); },
 		handleSlashCommand: async () => false,
-		handleSteer: () => {},
+		handleSteer: (event) => { steers.push(event); },
 		handleStop: async () => {},
 		resolvePendingInput: () => false,
 	};
@@ -43,6 +43,8 @@ function dm(user: string, channel: string, text: string) {
 try {
 	const store = { processAttachments: () => [] } as unknown as ChannelStore;
 	const allowedEvents: MomEvent[] = [];
+	const allowedSteers: MomEvent[] = [];
+	let running = false;
 	const restricted = new SlackSocketAdapter({
 		appToken: "xapp-test",
 		botToken: "xoxb-test",
@@ -50,7 +52,7 @@ try {
 		store,
 		allowedDmUserIds: ["U_ALEX"],
 	});
-	restricted.setHandler(handler(allowedEvents));
+	restricted.setHandler(handler(allowedEvents, allowedSteers, () => running));
 	(restricted as any).botUserId = "U_BATMAN";
 	const restrictedListener = messageListener(restricted);
 
@@ -86,6 +88,16 @@ try {
 	assert.equal(allowedEvents.length, 1, "allowlisted DM reaches the agent handler");
 	assert.equal(allowedEvents[0]?.user, "U_ALEX", "allowed sender identity is preserved");
 	assert.match(readFileSync(join(workingDir, "log.jsonl"), "utf8"), /hello Batman/, "allowed DM is logged normally");
+
+	running = true;
+	await restrictedListener({
+		...dm("U_ALEX", "D_ALLOWED", "fold this into the active run"),
+		ack: () => {},
+	});
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(allowedSteers.length, 1, "an allowlisted busy DM enters the steering path");
+	assert.equal(allowedSteers[0]?.sourceEventType, "slack_dm");
+	assert.equal(allowedEvents.length, 1, "a busy DM does not start a parallel adapter turn");
 
 	const legacyEvents: MomEvent[] = [];
 	const unrestricted = new SlackSocketAdapter({

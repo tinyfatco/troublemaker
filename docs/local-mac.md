@@ -110,7 +110,8 @@ with an exact spoken control such as `switch voice to cedar`.
 A committed utterance interrupts assistant audio immediately. If canonical work
 is already active, the transcript waits FIFO as a fresh turn and starts only
 after a safe completion boundary; it never aborts the active tool/run. Non-voice
-busy messages retain their normal hard-interrupt behavior.
+busy messages soft-steer the active model at its next safe boundary, falling
+back to a queued fresh turn without aborting active work.
 
 OpenAI Realtime is only the audio transport: STT/VAD in, speech out. Final
 transcripts enter Troublemaker's canonical agent runtime, so voice uses the same

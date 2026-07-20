@@ -45,31 +45,31 @@ try {
 			messageId?: string;
 		}): Promise<void>;
 	}).processEmail({
-		from: "alex@example.com",
-		to: "zip@tinyfat.com",
+		from: "sender@example.com",
+		to: "agent@example.com",
 		subject: "Re: Respond here in thread",
 		body: "fresh email during heartbeat",
 		messageId: "<email-busy@example.com>",
 	});
 
 	assert.equal(handled.length, 0, "busy email should not start a parallel handleEvent run");
-	assert.equal(steered.length, 1, "busy email should steer/interrupt the active run");
-	assert.equal(steered[0]?.channel, "email-alex_example_com");
+	assert.equal(steered.length, 1, "busy email should enter the shared steering path");
+	assert.equal(steered[0]?.channel, "email-sender_example_com");
 	assert.match(steered[0]?.text || "", /fresh email during heartbeat/);
 
 	const directEvent: MomEvent = {
 		type: "dm",
-		channel: "email-alex_example_com",
+		channel: "email-sender_example_com",
 		ts: "123",
-		user: "alex@example.com",
+		user: "sender@example.com",
 		text: "direct queued event",
 	};
 
 	assert.equal(adapter.enqueueEvent(directEvent), true, "email enqueueEvent claims email channels");
-	assert.equal(steered.length, 2, "busy enqueueEvent should also steer instead of discard");
+	assert.equal(steered.length, 2, "busy enqueueEvent should also use steering instead of discarding input");
 	assert.equal(steered[1], directEvent);
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });
 }
 
-console.log("email-busy-interrupt ok");
+console.log("email busy steering ok");

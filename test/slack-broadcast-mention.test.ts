@@ -9,6 +9,7 @@ import type { MomEvent, MomHandler, PlatformAdapter } from "../src/adapters/type
 import type { ChannelStore } from "../src/store.js";
 
 const workingDir = mkdtempSync(join(tmpdir(), "tm-slack-broadcast-mention-"));
+const BOT_ID = "U1111111111";
 
 function handler(events: MomEvent[], steers: MomEvent[], runningChannel?: string): MomHandler {
 	return {
@@ -25,6 +26,12 @@ function socketMessageListener(adapter: SlackSocketAdapter): (payload: any) => P
 	(adapter as any).setupEventHandlers();
 	const listeners = (adapter as any).socketClient.listeners("message");
 	assert.equal(listeners.length, 1, "socket adapter registers one message listener");
+	return listeners[0];
+}
+
+function socketAppMentionListener(adapter: SlackSocketAdapter): (payload: any) => Promise<void> {
+	const listeners = (adapter as any).socketClient.listeners("app_mention");
+	assert.equal(listeners.length, 1, "socket adapter registers one app_mention listener");
 	return listeners[0];
 }
 
@@ -65,13 +72,14 @@ try {
 		onAmbientMessage: (channelId, event, origin) => socketAmbient.push({ channelId, event, origin }),
 	});
 	socket.setHandler(handler(socketEvents, socketSteers, "C_RUNNING"));
-	(socket as any).botUserId = "U_BOT";
+	(socket as any).botUserId = BOT_ID;
 	(socket as any).webClient = {
 		conversations: {
 			info: async ({ channel }: { channel: string }) => ({ channel: { id: channel, name: "test-channel" } }),
 		},
 	};
 	const onSocketMessage = socketMessageListener(socket);
+	const onSocketAppMention = socketAppMentionListener(socket);
 
 	let acknowledgements = 0;
 	await onSocketMessage({
@@ -96,6 +104,22 @@ try {
 	assert.equal(socketSteers.length, 1, "a broadcast mention steers an active channel run like a direct mention");
 	assert.equal(socketSteers[0]?.text, "use the latest context");
 
+	await onSocketAppMention({
+		event: {
+			type: "app_mention",
+			channel: "C_RUNNING",
+			user: "U_HUMAN",
+			text: `<@${BOT_ID}> steer this exact instruction`,
+			ts: "1710000001.000200",
+		},
+		body: { team_id: "T_EXAMPLE" },
+		ack: () => { acknowledgements++; },
+	});
+	await settle();
+	assert.equal(socketSteers.length, 2, "a direct app mention enters the busy steering path");
+	assert.equal(socketSteers[1]?.sourceEventType, "slack_app_mention");
+	assert.equal(socketSteers[1]?.text, "steer this exact instruction");
+
 	await onSocketMessage({
 		...channelMessage("C_IDLE", "ordinary channel chatter"),
 		ack: () => { acknowledgements++; },
@@ -104,14 +128,14 @@ try {
 	assert.equal(socketAmbient.length, 1, "ordinary channel text remains ambient");
 
 	await onSocketMessage({
-		...channelMessage("C_IDLE", "<!channel> ignore the bot's own echo", "U_BOT"),
+		...channelMessage("C_IDLE", "<!channel> ignore the bot's own echo", BOT_ID),
 		ack: () => { acknowledgements++; },
 	});
 	await settle();
 	assert.equal(socketEvents.length, 1, "the bot's own broadcast message is still suppressed");
 
 	await onSocketMessage({
-		...channelMessage("C_IDLE", "<!channel> <@U_BOT> only once"),
+		...channelMessage("C_IDLE", `<!channel> <@${BOT_ID}> only once`),
 		ack: () => { acknowledgements++; },
 	});
 	await settle();
@@ -128,7 +152,7 @@ try {
 		onAmbientMessage: (_channelId, event) => webhookAmbient.push(event),
 	});
 	webhook.setHandler(handler(webhookEvents, webhookSteers, "C_WEBHOOK_RUNNING"));
-	(webhook as any).botUserId = "U_BOT";
+	(webhook as any).botUserId = BOT_ID;
 	(webhook as any).webClient = {
 		conversations: {
 			info: async ({ channel }: { channel: string }) => ({ channel: { id: channel, name: "test-channel" } }),

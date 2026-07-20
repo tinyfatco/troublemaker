@@ -106,7 +106,9 @@ const workingDir = mkdtempSync(join(tmpdir(), "mattermost-adapter-test-"));
 const store = new ChannelStore({ workingDir, botToken: TOKEN });
 const pulse = new ChannelPulse("pending");
 const handled: any[] = [];
+const steered: any[] = [];
 const ambient: any[] = [];
+let running = false;
 const adapter = new MattermostSocketAdapter({
 	url: `http://127.0.0.1:${address.port}`,
 	botToken: TOKEN,
@@ -117,10 +119,15 @@ const adapter = new MattermostSocketAdapter({
 	onAmbientMessage: (_channel, event) => ambient.push(event),
 });
 adapter.setHandler({
+	isRunning: () => running,
 	handleEvent: async (event: any) => {
 		handled.push(event);
 		return { yielded: false };
 	},
+	handleSlashCommand: async () => false,
+	handleSteer: (event: any) => { steered.push(event); },
+	handleStop: async () => {},
+	resolvePendingInput: () => false,
 } as any);
 
 function broadcastPost(message: string): string {
@@ -161,7 +168,15 @@ try {
 	const mentionRoot = broadcastPost("@batman please verify the migration");
 	await waitFor(() => handled.length === 1);
 	assert.equal(handled[0]?.directlyAddressed, true, "@username posts directly invoke the agent");
+	assert.equal(handled[0]?.sourceEventType, "mattermost_mention", "Mattermost mentions retain direct-address provenance");
 	assert.equal(handled[0]?.threadTs, mentionRoot, "channel mentions establish a Mattermost root thread");
+
+	running = true;
+	broadcastPost("@batman fold this into your current work");
+	await waitFor(() => steered.length === 1);
+	assert.equal(steered[0]?.sourceEventType, "mattermost_mention", "busy Mattermost mentions steer the active run");
+	assert.equal(handled.length, 1, "busy Mattermost mentions do not start a parallel turn");
+	running = false;
 
 	const context = adapter.createContext(handled[0], store);
 	const beforeHarnessOutput = Object.keys(posts).length;

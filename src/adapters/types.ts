@@ -198,8 +198,9 @@ export interface MomHandler {
 
 	/**
 	 * Handle a message that arrives while the runtime is busy.
-	 * Troublemaker hard-preempts the stale run and restarts from the newer
-	 * message instead of appending it as soft steering after the current turn.
+	 * Troublemaker soft-steers it at Pi's next safe model boundary, or queues a
+	 * fresh canonical turn when the active model cannot currently accept it.
+	 * This path never aborts the active run or tool.
 	 */
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
 

@@ -113,7 +113,9 @@ Events integrate with the existing `ChannelQueue` in `SlackBot`:
 
 - New method: `SlackBot.enqueueEvent(event: SlackEvent)` — always queues, no "already working" rejection
 - Maximum 5 events can be queued per channel. If queue is full, discard and log to console.
-- User @mom mentions retain current behavior: rejected with "Already working" message if agent is busy
+- User @mentions and DMs soft-steer an accepting active model. If steering is
+  temporarily unavailable, they enter the canonical run queue without aborting
+  the active run or tool.
 
 When an event triggers:
 1. Create a synthetic `SlackEvent` with formatted message

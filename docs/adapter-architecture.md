@@ -44,6 +44,7 @@ The handler that adapters call into when messages arrive. Implemented by `main.t
 MomHandler
 ├── isRunning(channelId)  — sync check if channel is busy
 ├── handleEvent(event)    — process a message (async)
+├── handleSteer(event)    — soft-steer active work or queue a fresh turn without aborting
 └── handleStop(channelId, adapter, event?) — abort current run and preserve response placement
 ```
 

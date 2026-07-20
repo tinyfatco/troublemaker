@@ -62,6 +62,7 @@ import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
+import { formatBusyMessageSteer, formatLocalTimestamp, routeBusyMessageWithoutInterrupt } from "../../noninterrupting-steering.js";
 import {
 	applyGoalContinuationIdentity,
 	createGoalContinuationEvent,
@@ -893,16 +894,6 @@ const pendingInterrupts: PendingInterrupt[] = [];
 let interruptRestartScheduled = false;
 const MAX_INTERRUPT_BATCH = 10;
 
-function formatLocalTimestamp(ms = Date.now()): string {
-	const now = new Date(ms);
-	const pad = (n: number) => n.toString().padStart(2, "0");
-	const offset = -now.getTimezoneOffset();
-	const offsetSign = offset >= 0 ? "+" : "-";
-	const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-	const offsetMins = pad(Math.abs(offset) % 60);
-	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-}
-
 function formatInterruptLine(item: PendingInterrupt): string {
 	const channelLabel = getChannelLabel(item.event.channel, adapters);
 	const user = item.adapter.getUser(item.event.user);
@@ -1192,6 +1183,30 @@ function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): vo
 		});
 }
 
+function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): void {
+	const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
+	const disposition = routeBusyMessageWithoutInterrupt({
+		prompt,
+		canSteer: awareness?.running === true,
+		steer: (steeringPrompt) => awareness?.runner.steer(steeringPrompt) ?? false,
+		enqueue: () => {
+			void withGlobalRunSlot(`steer-fallback:${adapter.name}:${event.channel}`, () => runEventInSlot(event, adapter, false))
+				.catch((err) => {
+					log.logWarning(
+						`[steer:${event.channel}] Queued turn failed`,
+						err instanceof Error ? err.message : String(err),
+					);
+				});
+		},
+	});
+
+	if (disposition === "steered") {
+		log.logInfo(`[steer:${event.channel}] Soft-steered message into the active run`);
+	} else {
+		log.logInfo(`[steer:${event.channel}] Active work cannot accept steering; queued a fresh turn`);
+	}
+}
+
 // ============================================================================
 // Handler (shared across all adapters)
 // ============================================================================
@@ -1218,8 +1233,7 @@ const handler: MomHandler = {
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
 		if (!isRunBusy()) {
-			log.logWarning(`[interrupt] handleSteer called but awareness not running`);
-			return;
+			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
 		const sameTerminalRun = activeDeliveryScope?.adapter === adapter
 			&& activeDeliveryScope.channelId === event.channel;
@@ -1233,11 +1247,11 @@ const handler: MomHandler = {
 				steerOrQueueVoiceWebhook(event, adapter);
 				return;
 			}
+			enqueueHardInterrupt(event, adapter);
+			return;
 		}
 
-		// Other busy inbound messages preempt stale generation instead of being
-		// appended as soft steering after the current assistant turn completes.
-		enqueueHardInterrupt(event, adapter);
+		steerOrQueueBusyMessage(event, adapter);
 	},
 
 	handleVoiceEvent(event: MomEvent, adapter: PlatformAdapter): void {

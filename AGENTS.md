@@ -33,8 +33,9 @@ numbers, and made-up UUIDs — never real infrastructure values.
 - A committed voice utterance immediately interrupts assistant audio, but never
   aborts an active canonical run or tool. Queue voice follow-ups FIFO as fresh
   turns and drain them only at safe completion boundaries.
-- Keep stop and pending-input controls immediate. Keep non-voice busy messages
-  on their existing hard-interrupt path.
+- Keep stop and pending-input controls immediate. Busy non-voice messages
+  soft-steer the active model at its next safe boundary, or queue as a fresh
+  turn when steering is temporarily unavailable; they never abort active work.
 - Ordinary final responses are never spoken automatically. Preserve explicit
   voice-session TTS and the deliberate `speak` tool, but do not add automatic
   SAG or an equivalent final-response speech mode.

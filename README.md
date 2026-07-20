@@ -104,6 +104,11 @@ demo-agent
 
 The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, follows the resident's live awareness stream, shows only agent-supplied tool labels, and supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`. Input remains available during active turns so follow-ups can soft-steer the same terminal run, and automatic context compaction is labeled explicitly instead of appearing as continued thinking.
 
+Busy DMs and explicit @mentions use the same non-interrupting contract across
+adapters: the message soft-steers an accepting model at its next safe boundary,
+or queues as a fresh canonical turn. Ordinary user input never aborts an active
+tool or run; `stop` remains the explicit cancellation control.
+
 ## Environment Variables
 
 | Variable | Required For | Description |

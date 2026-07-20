@@ -227,7 +227,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			});
 
 		if (this.handler.isRunning(channelId)) {
-			log.logInfo(`[email] Already running for ${channelId}, interrupting active run`);
+			log.logInfo(`[email] Already running for ${channelId}, steering active run`);
 			this.handler.handleSteer(event, this);
 			return;
 		}
@@ -651,7 +651,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		if (!event.channel.startsWith("email-")) return false;
 
 		if (this.handler.isRunning(event.channel)) {
-			log.logInfo(`[email] Already running for ${event.channel}, interrupting active run`);
+			log.logInfo(`[email] Already running for ${event.channel}, steering active run`);
 			this.handler.handleSteer(event, this);
 			return true; // Claim it so other adapters don't grab it
 		}

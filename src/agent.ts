@@ -18,6 +18,7 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
+import { formatDeliveryContext } from "./delivery-context.js";
 import {
 	buildSessionPreamble,
 	buildSystemPrompt,
@@ -938,29 +939,6 @@ function createRunner(
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	};
 
-	const formatDeliveryContext = (ctx: MomContext): string => {
-		const hasActionableDeliveryContext = Boolean(
-			ctx.message.sourceEventType ||
-			ctx.message.replyTarget ||
-			ctx.message.threadTs ||
-			typeof ctx.message.directlyAddressed === "boolean",
-		);
-		if (!hasActionableDeliveryContext) return "";
-
-		const lines: string[] = [];
-		if (ctx.message.sourceEventType) lines.push(`Source event: ${ctx.message.sourceEventType}`);
-		if (ctx.message.eventType) lines.push(`Message type: ${ctx.message.eventType}`);
-		if (typeof ctx.message.directlyAddressed === "boolean") lines.push(`Directly addressed: ${ctx.message.directlyAddressed ? "yes" : "no"}`);
-		if (ctx.message.threadTs) lines.push(`Thread timestamp: ${ctx.message.threadTs}`);
-		if (ctx.message.replyTarget) {
-			lines.push(`Suggested reply target: ${ctx.message.replyTarget}`);
-			if (ctx.message.replyTargetDescription) lines.push(`Target meaning: ${ctx.message.replyTargetDescription}`);
-			lines.push("Use send_message with this exact target if you choose to reply there. send_message requires a target; never omit it.");
-		}
-		if (lines.length === 0) return "";
-		return `<delivery_context>\n${lines.join("\n")}\n</delivery_context>`;
-	};
-
 	return {
 		async run(
 			ctx: MomContext,
@@ -1119,7 +1097,7 @@ function createRunner(
 
 			// Always tag messages with source channel
 			const channelLabel = ctx.channelName || ctx.message.channel;
-			const deliveryContext = formatDeliveryContext(ctx);
+			const deliveryContext = formatDeliveryContext(ctx.message);
 			const userMessage = `${sessionPreamble}${deliveryContext ? `\n\n${deliveryContext}` : ""}\n\n[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
 
 			const imageAttachments: ImageContent[] = [];

@@ -582,6 +582,7 @@ Mention users with @username.`;
 		const isDirectMessage = channel?.type === "D";
 		const mentioned = this.botUsername ? new RegExp(`(^|\\s)@${escapeRegex(this.botUsername)}\\b`, "i").test(text) : false;
 		const directlyAddressed = isDirectMessage || mentioned;
+		const sourceEventType = isDirectMessage ? "mattermost_dm" : mentioned ? "mattermost_mention" : "mattermost_posted";
 		const rootId = post.root_id || post.id;
 		const threadTs = isDirectMessage ? (post.root_id || undefined) : rootId;
 		const replyTarget = `mattermost:${post.channel_id}:${rootId}`;
@@ -601,13 +602,13 @@ Mention users with @username.`;
 			attachments,
 			isBot: Boolean(user?.isBot),
 			directlyAddressed,
-			sourceEventType: "mattermost_posted",
+			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
 		this.pulse?.record(post.channel_id, post.user_id, text.length, text, metadata);
 
 		if (post.user_id === this.botUserId) return;
 		const event: MomEvent = {
-			type: "mention",
+			type: isDirectMessage ? "dm" : "mention",
 			channel: post.channel_id,
 			ts: post.id,
 			user: post.user_id,
@@ -615,7 +616,7 @@ Mention users with @username.`;
 			text,
 			rawText: text,
 			attachments,
-			sourceEventType: "mattermost_posted",
+			sourceEventType,
 			directlyAddressed,
 			threadTs,
 			replyTarget,
@@ -627,7 +628,17 @@ Mention users with @username.`;
 			return;
 		}
 		if (directlyAddressed) {
-			this.enqueueEvent(event);
+			if (this.handler.resolvePendingInput(post.channel_id, event.text)) return;
+			if (await this.handler.handleSlashCommand(event, this)) return;
+			if (event.text.toLowerCase().trim() === "stop") {
+				await this.handler.handleStop(post.channel_id, this, event);
+				return;
+			}
+			if (this.handler.isRunning(post.channel_id)) {
+				this.handler.handleSteer(event, this);
+			} else {
+				this.getQueue(post.channel_id).enqueue(async () => { await this.handler.handleEvent(event, this); });
+			}
 		} else {
 			this.onAmbientMessage?.(post.channel_id, event, this);
 		}

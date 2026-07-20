@@ -76,7 +76,7 @@ You have access to your human's stuff. That doesn't mean you _share_ their stuff
 - Voice barge-in stops assistant audio immediately. If a canonical turn or tool is active, committed voice follow-ups wait FIFO and start as separate turns at safe completion boundaries; they never steer text into or abort that active turn.
 - Legacy finalized-transcript webhooks are configurable separately: `voice.webhook_input_mode` can preserve interrupt/restart behavior or soft-steer busy turns without aborting active tools.
 - Stop commands and pending-input answers remain immediate controls. Closing a voice session returns it to wake-gated state and discards that session's queued follow-ups.
-- Direct mentions and other non-voice messages keep the platform's normal hard-interrupt behavior while busy.
+- Direct mentions, DMs, and other non-voice messages soft-steer active work at the next safe model boundary. If steering is temporarily unavailable, they queue as a fresh turn; they never abort an active tool or run.
 - Speech is explicit: use the `speak` tool only when deliberately requested or useful, and let an explicit voice session use its own TTS. Never assume final responses are spoken automatically, and never auto-run SAG.
 
 ## Heartbeats
