@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { listModels } from "../src/model-config.js";
+import { findModel, listModels } from "../src/model-config.js";
 
 const curatedRegistry = {
 	getAvailable: () => [],
@@ -62,6 +62,29 @@ assert.ok(
 assert.ok(
 	!curated.some((model) => model.provider === "openrouter"),
 	"does not expose arbitrary long-tail registry models unless they are available or selected",
+);
+
+const duplicateOpenAIRegistry = {
+	refresh: () => {},
+	getAll: () => [
+		{
+			provider: "azure-openai-responses",
+			id: "gpt-5.6-sol",
+			name: "GPT-5.6 Sol",
+			api: "azure-openai-responses",
+		},
+		{
+			provider: "openai-codex",
+			id: "gpt-5.6-sol",
+			name: "GPT-5.6 Sol",
+			api: "openai-codex-responses",
+		},
+	],
+} as any;
+assert.equal(
+	findModel("gpt-5.6-sol", undefined, duplicateOpenAIRegistry)?.provider,
+	"openai-codex",
+	"bare duplicate model IDs use the stable provider preference instead of registry order",
 );
 
 const tempDir = mkdtempSync(join(tmpdir(), "model-list-current-"));

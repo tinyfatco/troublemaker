@@ -149,6 +149,14 @@ const CURATED_MODEL_OPTIONS: Array<{ provider: string; id: string; name: string;
 	},
 ];
 
+const MODEL_PROVIDER_RANK: Record<string, number> = {
+	"openai-codex": 0,
+	fireworks: 1,
+	"claude-cli": 2,
+	anthropic: 3,
+	openai: 4,
+};
+
 function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
 	const authStorage = AuthStorage.create();
 	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
@@ -343,9 +351,13 @@ export function findModel(
 		}
 	}
 
-	// Exact id match across all providers
-	const exact = allModels.find((m) => m.id.toLowerCase() === q);
-	if (exact) return exact;
+	// Exact id match across all providers. Registry order is not a stable or
+	// meaningful provider preference: the same OpenAI model can be registered
+	// for both Azure and subscription-backed Codex. Match the ordering exposed
+	// by the model picker so a bare ID cannot silently select an unconfigured
+	// provider merely because it happened to appear first.
+	const exactMatches = allModels.filter((m) => m.id.toLowerCase() === q);
+	if (exactMatches.length > 0) return exactMatches.sort(compareProviderPreference)[0];
 
 	// Unique substring match on id
 	const idMatches = allModels.filter((m) => m.id.toLowerCase().includes(q));
@@ -410,14 +422,16 @@ function modelKey(provider: string, id: string): string {
 	return `${provider.toLowerCase().trim()}/${id.toLowerCase().trim()}`;
 }
 
+function compareProviderPreference(
+	a: { provider: string; id: string; name: string },
+	b: { provider: string; id: string; name: string },
+): number {
+	const rankDelta = (MODEL_PROVIDER_RANK[a.provider] ?? 10) - (MODEL_PROVIDER_RANK[b.provider] ?? 10);
+	if (rankDelta !== 0) return rankDelta;
+	return a.provider.localeCompare(b.provider) || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+}
+
 function compareModelOptions(currentKey: string) {
-	const providerRank: Record<string, number> = {
-		"openai-codex": 0,
-		fireworks: 1,
-		"claude-cli": 2,
-		anthropic: 3,
-		openai: 4,
-	};
 	return (
 		a: { provider: string; id: string; name: string },
 		b: { provider: string; id: string; name: string },
@@ -426,9 +440,7 @@ function compareModelOptions(currentKey: string) {
 		const bKey = modelKey(b.provider, b.id);
 		if (aKey === currentKey) return -1;
 		if (bKey === currentKey) return 1;
-		const rankDelta = (providerRank[a.provider] ?? 10) - (providerRank[b.provider] ?? 10);
-		if (rankDelta !== 0) return rankDelta;
-		return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+		return compareProviderPreference(a, b);
 	};
 }
 
