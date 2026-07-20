@@ -101,6 +101,10 @@ export interface ExecResult {
 	stdout: string;
 	stderr: string;
 	code: number;
+	/** True when stdout exceeded the executor capture limit. */
+	stdoutTruncated?: boolean;
+	/** True when stderr exceeded the executor capture limit. */
+	stderrTruncated?: boolean;
 }
 
 export interface ExecStartInfo {
@@ -128,6 +132,8 @@ class HostExecutor implements Executor {
 
 			let stdout = "";
 			let stderr = "";
+			let stdoutTruncated = false;
+			let stderrTruncated = false;
 			let timedOut = false;
 
 			const timeoutHandle =
@@ -156,6 +162,7 @@ class HostExecutor implements Executor {
 				options?.onOutput?.({ stream: "stdout", text });
 				if (stdout.length > 10 * 1024 * 1024) {
 					stdout = stdout.slice(0, 10 * 1024 * 1024);
+					stdoutTruncated = true;
 				}
 			});
 
@@ -165,6 +172,7 @@ class HostExecutor implements Executor {
 				options?.onOutput?.({ stream: "stderr", text });
 				if (stderr.length > 10 * 1024 * 1024) {
 					stderr = stderr.slice(0, 10 * 1024 * 1024);
+					stderrTruncated = true;
 				}
 			});
 
@@ -184,7 +192,7 @@ class HostExecutor implements Executor {
 					return;
 				}
 
-				resolve({ stdout, stderr, code: code ?? 0 });
+				resolve({ stdout, stderr, code: code ?? 0, stdoutTruncated, stderrTruncated });
 			});
 		});
 	}

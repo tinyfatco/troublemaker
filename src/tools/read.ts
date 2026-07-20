@@ -3,6 +3,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { extname } from "path";
 import type { Executor } from "../sandbox.js";
+import { isValidImageBase64 } from "../image-content.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateHead } from "./truncate.js";
 
 /**
@@ -15,6 +16,8 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 	".gif": "image/gif",
 	".webp": "image/webp",
 };
+
+export const MAX_READ_IMAGE_BYTES = 5 * 1024 * 1024;
 
 /**
  * Check if a file is an image based on its extension
@@ -40,7 +43,7 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 	return {
 		name: "read",
 		label: "read",
-		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files.`,
+		description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments and must be no larger than ${formatSize(MAX_READ_IMAGE_BYTES)}; resize or compress larger images first. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files.`,
 		parameters: readSchema,
 		execute: async (
 			_toolCallId: string,
@@ -50,12 +53,33 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 			const mimeType = isImageFile(path);
 
 			if (mimeType) {
+				const sizeResult = await executor.exec(`wc -c < ${shellEscape(path)}`, { signal });
+				if (sizeResult.code !== 0) {
+					throw new Error(sizeResult.stderr || `Failed to read file: ${path}`);
+				}
+				const imageBytes = Number.parseInt(sizeResult.stdout.trim(), 10);
+				if (!Number.isSafeInteger(imageBytes) || imageBytes < 0) {
+					throw new Error(`Could not determine image size: ${path}`);
+				}
+				if (imageBytes > MAX_READ_IMAGE_BYTES) {
+					throw new Error(
+						`Image is ${formatSize(imageBytes)}, which exceeds the ${formatSize(MAX_READ_IMAGE_BYTES)} read limit. ` +
+						"Resize or compress it to a smaller copy before reading it.",
+					);
+				}
+
 				// Read as image (binary) - use base64
 				const result = await executor.exec(`base64 < ${shellEscape(path)}`, { signal });
 				if (result.code !== 0) {
 					throw new Error(result.stderr || `Failed to read file: ${path}`);
 				}
+				if (result.stdoutTruncated) {
+					throw new Error(`Image encoding exceeded the executor output limit: ${path}`);
+				}
 				const base64 = result.stdout.replace(/\s/g, ""); // Remove whitespace from base64
+				if (!isValidImageBase64(base64)) {
+					throw new Error(`Image encoding produced invalid base64 data: ${path}`);
+				}
 
 				return {
 					content: [

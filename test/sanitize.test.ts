@@ -48,4 +48,38 @@ import { sanitizeMessages } from "../src/sanitize.js";
 	assert.deepEqual(sanitizeMessages(messages), [messages[0]]);
 }
 
+{
+	const messages = [
+		{
+			role: "assistant",
+			content: [{ type: "toolCall", id: "tool-image", name: "read", arguments: {} }],
+		},
+		{
+			role: "toolResult",
+			toolCallId: "tool-image",
+			content: [
+				{ type: "text", text: "Read image file [image/png]" },
+				{ type: "image", data: "iVBORw0KGgoAAA", mimeType: "image/png" },
+			],
+		},
+	];
+
+	assert.deepEqual(sanitizeMessages(messages), [
+		messages[0],
+		{
+			...messages[1],
+			content: [
+				{ type: "text", text: "Read image file [image/png]" },
+				{ type: "text", text: "[Invalid image attachment omitted during context recovery]" },
+			],
+		},
+	]);
+}
+
+{
+	const validImage = { type: "image", data: "aW1nIGJ5dGVz", mimeType: "image/png" };
+	const messages = [{ role: "user", content: [validImage] }];
+	assert.deepEqual(sanitizeMessages(messages), messages);
+}
+
 console.log("sanitize tests passed");
