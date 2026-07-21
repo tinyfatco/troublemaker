@@ -1,6 +1,7 @@
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
+import { timingSafeEqual } from "crypto";
 import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
@@ -70,6 +71,8 @@ interface WriterScope {
 
 export interface WebAdapterConfig {
 	workingDir: string;
+	/** Optional bearer token required by every POST input route. */
+	inputToken?: string;
 }
 
 /**
@@ -117,6 +120,7 @@ Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: 
 Keep responses concise and helpful.`;
 
 	private workingDir: string;
+	private inputToken?: string;
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
@@ -124,6 +128,7 @@ Keep responses concise and helpful.`;
 
 	constructor(config: WebAdapterConfig) {
 		this.workingDir = config.workingDir;
+		this.inputToken = config.inputToken?.trim() || undefined;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -144,7 +149,21 @@ Keep responses concise and helpful.`;
 	// HTTP request handling — called by Gateway
 	// ==========================================================================
 
+	private authorize(req: IncomingMessage, res: ServerResponse): boolean {
+		if (!this.inputToken) return true;
+		const header = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+		const match = header.match(/^Bearer\s+(.+)$/i);
+		const supplied = Buffer.from(match?.[1] || "", "utf8");
+		const expected = Buffer.from(this.inputToken, "utf8");
+		const authorized = supplied.length === expected.length && timingSafeEqual(supplied, expected);
+		if (authorized) return true;
+		res.writeHead(401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+		res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
+		return false;
+	}
+
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.authorize(req, res)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {
@@ -176,6 +195,7 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatchStop(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.authorize(req, res)) return;
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
@@ -208,6 +228,7 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatchWebhook(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.authorize(req, res)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {

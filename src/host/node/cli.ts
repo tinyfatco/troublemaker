@@ -616,7 +616,7 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new FormWebhookAdapter({ workingDir });
 		}
 		case "web": {
-			return new WebAdapter({ workingDir });
+			return new WebAdapter({ workingDir, inputToken: process.env.MOM_WEB_INPUT_TOKEN });
 		}
 		case "mcp": {
 			return new McpAdapter({ workingDir });
