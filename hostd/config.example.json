@@ -1,0 +1,58 @@
+{
+  "company": {
+    "id": "example-company",
+    "actor": "front-desk"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3099,
+    "operatorTokenEnv": "TROUBLEMAKER_HOSTD_OPERATOR_TOKEN"
+  },
+  "state": {
+    "database": "/var/lib/troublemaker-hostd/state.sqlite",
+    "routingKeyFile": "/etc/troublemaker-hostd/routing.key"
+  },
+  "gmail": {
+    "account": "agent@example.com",
+    "gogPath": "/usr/local/bin/gog",
+    "pollIntervalSeconds": 60,
+    "overlapSeconds": 900
+  },
+  "routing": {
+    "actorTarget": "front-desk",
+    "knownPrincipals": [
+      {
+        "email": "customer@example.com",
+        "projects": [
+          {
+            "slug": "website",
+            "name": "Company website"
+          }
+        ]
+      }
+    ]
+  },
+  "targets": [
+    {
+      "id": "front-desk",
+      "driver": "oci",
+      "protocol": "email-webhook",
+      "engine": "podman",
+      "image": "docker.io/library/node:22-bookworm",
+      "checkout": "/opt/troublemaker",
+      "skills": "/opt/fat-skills",
+      "workspaceTemplate": "/var/lib/troublemaker-hostd/templates/front-desk",
+      "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
+      "basePort": 32000,
+      "maxPort": 32999,
+      "memory": "420m",
+      "stopAfterTurn": true,
+      "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
+      "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
+      "runtimeEnv": {
+        "MOM_MODEL": "openai-codex/gpt-5.6-sol",
+        "MOM_THINKING": "high"
+      }
+    }
+  ]
+}

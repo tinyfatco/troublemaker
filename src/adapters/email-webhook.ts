@@ -30,6 +30,14 @@ interface EmailPayload {
 	subject: string;
 	body: string;
 	messageId?: string;
+	/** Native provider message ID used by a host router for idempotency. */
+	providerMessageId?: string;
+	/** Native provider conversation ID; Gmail replies should use this directly. */
+	providerThreadId?: string;
+	/** Stable host delivery ID used to suppress retry duplicates. */
+	deliveryId?: string;
+	/** Host-assigned isolated context that owns this conversation. */
+	hostContextId?: string;
 	inReplyTo?: string;
 	references?: string;
 	allRecipients?: string[];
@@ -62,6 +70,9 @@ interface ActiveEmailReplyContext {
 	toAddress: string;
 	subject: string;
 	messageId?: string;
+	providerThreadId?: string;
+	deliveryId?: string;
+	hostContextId?: string;
 	references?: string;
 	replyQuote?: EmailReplyQuote;
 	explicitOutboundSent?: boolean;
@@ -106,6 +117,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	private pendingPayloads = new Map<string, EmailPayload>();
 	/** Active reply contexts used by send_message to preserve email threading */
 	private activeReplyContexts = new Map<string, ActiveEmailReplyContext>();
+	private completedDeliveryIds?: Set<string>;
 
 	constructor(config: EmailWebhookAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -158,16 +170,72 @@ Keep responses concise and professional. The user will receive one email with yo
 				return;
 			}
 
+			const waitForCompletion = req.headers["x-troublemaker-wait-for-completion"] === "1";
+			const process = async () => {
+				if (payload.deliveryId && this.isCompletedDelivery(payload.deliveryId)) {
+					return { duplicate: true };
+				}
+				await this.processEmail(payload);
+				if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
+				return { duplicate: false };
+			};
+
+			if (waitForCompletion) {
+				try {
+					const result = await process();
+					res.writeHead(200, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ ok: true, ...result }));
+				} catch (err) {
+					log.logWarning("Email processing error", err instanceof Error ? err.message : String(err));
+					res.writeHead(500, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ error: "email_processing_failed" }));
+				}
+				return;
+			}
+
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ ok: true }));
-
-			// Process email
-			try {
-				await this.processEmail(payload);
-			} catch (err) {
+			process().catch((err) => {
 				log.logWarning("Email processing error", err instanceof Error ? err.message : String(err));
-			}
+			});
 		});
+	}
+
+	private deliveryLedgerPath(): string {
+		return join(this.workingDir, "email-inbound-deliveries.jsonl");
+	}
+
+	private loadCompletedDeliveryIds(): Set<string> {
+		if (this.completedDeliveryIds) return this.completedDeliveryIds;
+		const ids = new Set<string>();
+		try {
+			for (const line of readFileSync(this.deliveryLedgerPath(), "utf8").split("\n")) {
+				if (!line.trim()) continue;
+				const record = JSON.parse(line) as { deliveryId?: unknown };
+				if (typeof record.deliveryId === "string" && record.deliveryId) ids.add(record.deliveryId);
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw new Error("email delivery ledger is unreadable");
+			}
+		}
+		this.completedDeliveryIds = ids;
+		return ids;
+	}
+
+	private isCompletedDelivery(deliveryId: string): boolean {
+		return this.loadCompletedDeliveryIds().has(deliveryId);
+	}
+
+	private markDeliveryCompleted(deliveryId: string): void {
+		const ids = this.loadCompletedDeliveryIds();
+		if (ids.has(deliveryId)) return;
+		appendFileSync(
+			this.deliveryLedgerPath(),
+			`${JSON.stringify({ deliveryId, completedAt: new Date().toISOString() })}\n`,
+			{ mode: 0o600 },
+		);
+		ids.add(deliveryId);
 	}
 
 	// ==========================================================================
@@ -175,9 +243,11 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	private async processEmail(payload: EmailPayload): Promise<void> {
-		// Use a stable channel ID derived from the sender email
-		// This groups all emails from the same sender into one conversation
-		const channelId = `email-${payload.from.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
+		// A native provider thread is the conversation boundary when supplied by
+		// a host router. Legacy webhook callers retain sender-derived grouping.
+		const channelId = payload.providerThreadId
+			? `email-thread-${payload.providerThreadId.toLowerCase().replace(/[^a-z0-9_-]/g, "_")}`
+			: `email-${payload.from.toLowerCase().replace(/[^a-z0-9]/g, "_")}`;
 		const ts = String(Date.now());
 
 		log.logInfo(`[email] Inbound from ${payload.from}: ${payload.subject || "(no subject)"}`);
@@ -195,7 +265,9 @@ Keep responses concise and professional. The user will receive one email with yo
 			sourceEventType: "email_received",
 			directlyAddressed: true,
 			replyTarget: `email-${payload.from}`,
-			replyTargetDescription: `Email reply thread for ${payload.from}`,
+			replyTargetDescription: payload.providerThreadId
+				? `Native email thread ${payload.providerThreadId}`
+				: `Email reply thread for ${payload.from}`,
 		};
 
 		// Store payload for createContext to read (threading metadata)
@@ -221,7 +293,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				to: [payload.to],
 				subject: payload.subject,
 				body: payload.body,
-				messageId: payload.messageId,
+				messageId: payload.messageId || payload.providerMessageId,
 				inReplyTo: payload.inReplyTo,
 				references: payload.references,
 			});
@@ -427,6 +499,9 @@ Keep responses concise and professional. The user will receive one email with yo
 			toAddress,
 			subject: payload.subject || "(no subject)",
 			messageId: payload.messageId,
+			providerThreadId: payload.providerThreadId,
+			deliveryId: payload.deliveryId,
+			hostContextId: payload.hostContextId,
 			references: payload.references,
 			replyQuote: this.buildReplyQuote(channelId, payload, currentTs, fallbackSentAt),
 			threadTarget: `email-thread:${emailThreadIdForEvent({
@@ -509,7 +584,14 @@ Keep responses concise and professional. The user will receive one email with yo
 			to: toAddress,
 			subject: resolvedSubject,
 			body,
+			agent_body: text,
 		};
+		if (replyContext?.providerThreadId) {
+			emailMetadata.provider_thread_id = replyContext.providerThreadId;
+			emailMetadata.delivery_id = replyContext.deliveryId;
+			emailMetadata.context_id = replyContext.hostContextId;
+			emailMetadata.idempotency_key = `${replyContext.deliveryId || "explicit"}:message`;
+		}
 
 		Object.assign(emailMetadata, buildReplyThreadHeaders(replyContext?.messageId, replyContext?.references));
 
@@ -690,6 +772,9 @@ Keep responses concise and professional. The user will receive one email with yo
 			references: payload?.references,
 			allRecipients: payload?.allRecipients || [],
 			replyQuote: activeReplyContext?.replyQuote,
+			providerThreadId: payload?.providerThreadId,
+			deliveryId: payload?.deliveryId,
+			hostContextId: payload?.hostContextId,
 		};
 
 		return {
@@ -801,7 +886,19 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	private async sendEmailReply(
-		meta: { from: string; selfEmail?: string; subject: string; messageId?: string; inReplyTo?: string; references?: string; allRecipients?: string[]; replyQuote?: EmailReplyQuote },
+		meta: {
+			from: string;
+			selfEmail?: string;
+			subject: string;
+			messageId?: string;
+			inReplyTo?: string;
+			references?: string;
+			allRecipients?: string[];
+			replyQuote?: EmailReplyQuote;
+			providerThreadId?: string;
+			deliveryId?: string;
+			hostContextId?: string;
+		},
 		finalText: string,
 		toolLog: string[],
 		attachments: Array<{ filename: string; filePath: string }> = [],
@@ -837,7 +934,14 @@ Keep responses concise and professional. The user will receive one email with yo
 			to: toList,
 			subject: replySubject,
 			body: replyBody,
+			agent_body: finalText,
 		};
+		if (meta.providerThreadId) {
+			emailMetadata.provider_thread_id = meta.providerThreadId;
+			emailMetadata.delivery_id = meta.deliveryId;
+			emailMetadata.context_id = meta.hostContextId;
+			emailMetadata.idempotency_key = `${meta.deliveryId || "delivery"}:final`;
+		}
 
 		// Human-facing email defaults to no inline work log.
 		// Operators can opt back in with MOM_EMAIL_LOG_MODE=inline|attachment.
@@ -889,6 +993,9 @@ Keep responses concise and professional. The user will receive one email with yo
 			if (!response.ok) {
 				const errorText = await response.text();
 				log.logWarning(`[email] Send failed: ${response.status}`, errorText);
+				if (meta.providerThreadId) {
+					throw new Error(`Host-managed email send failed (${response.status})`);
+				}
 			} else {
 				const result = (await response.json()) as { ok: boolean; messageId?: string };
 				log.logInfo(`[email] Reply sent: messageId=${result.messageId}`);
@@ -914,6 +1021,7 @@ Keep responses concise and professional. The user will receive one email with yo
 				}
 		} catch (err) {
 			log.logWarning("[email] Send error", err instanceof Error ? err.message : String(err));
+			if (meta.providerThreadId) throw err;
 		}
 	}
 
