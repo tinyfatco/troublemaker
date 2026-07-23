@@ -75,6 +75,7 @@ interface ActiveEmailReplyContext {
 	hostContextId?: string;
 	references?: string;
 	replyQuote?: EmailReplyQuote;
+	explicitOutboundAttempted?: boolean;
 	explicitOutboundSent?: boolean;
 	threadTarget?: string;
 }
@@ -578,7 +579,8 @@ Keep responses concise and professional. The user will receive one email with yo
 		const resolvedSubject = replyContext
 			? (subject || this.buildReplySubject(replyContext.subject))
 			: (subject || "Message from your agent");
-		log.logInfo(`[email] Sending ${replyContext ? "threaded " : ""}outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
+			log.logInfo(`[email] Sending ${replyContext ? "threaded " : ""}outbound to ${toAddress}${attachments?.length ? ` with ${attachments.length} attachment(s)` : ""}`);
+			if (replyContext) replyContext.explicitOutboundAttempted = true;
 
 		const emailMetadata: Record<string, unknown> = {
 			to: toAddress,
@@ -860,11 +862,19 @@ Keep responses concise and professional. The user will receive one email with yo
 				if (!working) {
 					// Run complete — send the email reply
 					try {
-						if (activeReplyContext?.explicitOutboundSent && !forceFinalResponse) {
-							log.logInfo(`[email] Explicit outbound already sent for ${event.channel}; suppressing adapter final reply`);
-							return;
-						}
-						await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments, event.channel);
+							if (activeReplyContext?.explicitOutboundSent && !forceFinalResponse) {
+								log.logInfo(`[email] Explicit outbound already sent for ${event.channel}; suppressing adapter final reply`);
+								return;
+							}
+							if (
+								activeReplyContext?.providerThreadId
+								&& activeReplyContext.explicitOutboundAttempted
+								&& !activeReplyContext.explicitOutboundSent
+								&& !finalText.trim()
+							) {
+								throw new Error("Host-managed email outbound was attempted but never delivered.");
+							}
+							await this.sendEmailReply(emailMeta, finalText, toolLog, pendingAttachments, event.channel);
 					} finally {
 						this.clearActiveReplyContext(activeReplyContext);
 					}

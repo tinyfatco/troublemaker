@@ -70,10 +70,14 @@ async function run() {
 			{ status: 403, headers: { "content-type": "application/json" } },
 		)) as typeof fetch;
 		const failure = adapterWithPayload();
-		failure.adapter.createContext(failure.event, {} as ChannelStore);
+		const failedContext = failure.adapter.createContext(failure.event, {} as ChannelStore);
 		await assert.rejects(
 			failure.adapter.postMessage(failure.channelId, "This must not be acknowledged as delivered."),
 			/Email send failed/,
+		);
+		await assert.rejects(
+			failedContext.setWorking(false),
+			/attempted but never delivered/,
 		);
 		globalThis.fetch = originalFetch;
 

@@ -29,7 +29,9 @@ export class GogGmail {
 			env: this.environment,
 		});
 		if (result.error) throw new Error(`gog command failed: ${result.error.message}`);
-		if (result.status !== 0) throw new Error(`gog command exited ${result.status}`);
+		if (result.status !== 0) {
+			throw new Error(`gog command exited ${result.status}: ${String(result.stderr || "").trim().slice(0, 1000)}`);
+		}
 		try {
 			return JSON.parse(result.stdout);
 		} catch {
