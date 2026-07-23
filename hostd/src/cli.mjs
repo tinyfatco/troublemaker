@@ -5,6 +5,7 @@ import { loadConfig } from "./config.mjs";
 import { InboxDaemon } from "./daemon.mjs";
 import { GogGmail } from "./gmail.mjs";
 import { importLegacyCheckpoint } from "./legacy.mjs";
+import { MattermostProvisioner } from "./mattermost.mjs";
 import { ContextRouter } from "./router.mjs";
 import { RuntimeManager } from "./runtime.mjs";
 import { readRoutingKey } from "./security.mjs";
@@ -16,6 +17,7 @@ function usage() {
   troublemaker-hostd serve --config <path>
   troublemaker-hostd poll-once --config <path>
   troublemaker-hostd baseline --config <path>
+  troublemaker-hostd provision-mattermost --config <path>
   troublemaker-hostd import-legacy-checkpoint --config <path> --checkpoint <path> --key-file <path>
   troublemaker-hostd status --config <path>`);
 	process.exit(2);
@@ -33,9 +35,10 @@ async function components(configPath) {
 	const routingKey = await readRoutingKey(config.state.routingKeyFile);
 	const gmail = new GogGmail(config.gmail);
 	const router = new ContextRouter(config, store, routingKey);
-	const runtime = new RuntimeManager(config, store);
+	const mattermost = config.mattermost ? new MattermostProvisioner(config.mattermost, store) : undefined;
+	const runtime = new RuntimeManager(config, store, mattermost);
 	const daemon = new InboxDaemon({ config, store, gmail, router, runtime });
-	return { config, store, gmail, router, runtime, daemon };
+	return { config, store, gmail, router, runtime, mattermost, daemon };
 }
 
 async function serve(configPath) {
@@ -103,6 +106,15 @@ async function main() {
 		}
 		if (command === "baseline") {
 			console.log(JSON.stringify(await state.daemon.baseline()));
+			return;
+		}
+		if (command === "provision-mattermost") {
+			if (!state.mattermost) throw new Error("Mattermost is not configured");
+			const bindings = await state.mattermost.provisionAll();
+			console.log(JSON.stringify({
+				provisioned: bindings.length,
+				channels: bindings.map((binding) => binding.channelId),
+			}));
 			return;
 		}
 		if (command === "import-legacy-checkpoint") {

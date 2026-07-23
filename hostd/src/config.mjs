@@ -52,6 +52,45 @@ function host(value, fallback, label) {
 	return candidate;
 }
 
+function httpUrl(value, label) {
+	const candidate = text(value, label);
+	let parsed;
+	try {
+		parsed = new URL(candidate);
+	} catch {
+		throw new Error(`${label} must be an http or https URL`);
+	}
+	if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password) {
+		throw new Error(`${label} must be an http or https URL without embedded credentials`);
+	}
+	return parsed.toString().replace(/\/$/, "");
+}
+
+function mattermostId(value, label) {
+	const candidate = text(value, label);
+	if (!/^[a-z0-9]{26}$/.test(candidate)) throw new Error(`${label} must be a Mattermost ID`);
+	return candidate;
+}
+
+function mattermostConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const mattermost = object(raw, "mattermost");
+	return {
+		url: httpUrl(mattermost.url, "mattermost.url"),
+		runtimeUrl: httpUrl(mattermost.runtimeUrl, "mattermost.runtimeUrl"),
+		teamId: mattermostId(mattermost.teamId, "mattermost.teamId"),
+		batmanUserId: mattermostId(mattermost.batmanUserId, "mattermost.batmanUserId"),
+		adminToken: envSecret(mattermost.adminTokenEnv, "mattermost.adminTokenEnv", environment),
+		credentialsDirectory: resolve(text(
+			mattermost.credentialsDirectory,
+			"mattermost.credentialsDirectory",
+		)),
+		botDisplayName: mattermost.botDisplayName === undefined
+			? "Manny"
+			: text(mattermost.botDisplayName, "mattermost.botDisplayName"),
+	};
+}
+
 function targetConfig(raw, index, environment) {
 	const target = object(raw, `targets[${index}]`);
 	const id = text(target.id, `targets[${index}].id`);
@@ -151,6 +190,7 @@ export async function loadConfig(path, environment = process.env) {
 			pollIntervalSeconds: integer(gmail.pollIntervalSeconds, 60, "gmail.pollIntervalSeconds", 15, 3600),
 			overlapSeconds: integer(gmail.overlapSeconds, 900, "gmail.overlapSeconds", 60, 86400),
 		},
+		mattermost: mattermostConfig(raw.mattermost, environment),
 		routing: {
 			actorTarget,
 			knownPrincipals: knownPrincipals.map((candidate, index) => {

@@ -72,6 +72,17 @@ export class HostStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS contexts_port_unique
 				ON contexts(port) WHERE port IS NOT NULL;
 
+			CREATE TABLE IF NOT EXISTS mattermost_bindings (
+				context_id TEXT PRIMARY KEY,
+				team_id TEXT NOT NULL,
+				channel_id TEXT NOT NULL UNIQUE,
+				bot_user_id TEXT NOT NULL UNIQUE,
+				bot_username TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				last_seen_at TEXT NOT NULL,
+				FOREIGN KEY (context_id) REFERENCES contexts(id)
+			);
+
 			CREATE TABLE IF NOT EXISTS events (
 				id TEXT PRIMARY KEY,
 				source TEXT NOT NULL,
@@ -233,6 +244,14 @@ export class HostStore {
 		`).get(id);
 	}
 
+	listContexts() {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, driver, runtime_name AS runtimeName,
+				port, status, created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM contexts ORDER BY created_at
+		`).all();
+	}
+
 	createContext({ id, targetId, driver, runtimeName, port, status = "stopped" }) {
 		const timestamp = now();
 		this.database.prepare(`
@@ -255,6 +274,40 @@ export class HostStore {
 			id,
 		);
 		return this.getContext(id);
+	}
+
+	getMattermostBinding(contextId) {
+		return this.database.prepare(`
+			SELECT context_id AS contextId, team_id AS teamId, channel_id AS channelId,
+				bot_user_id AS botUserId, bot_username AS botUsername,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM mattermost_bindings WHERE context_id = ?
+		`).get(contextId);
+	}
+
+	upsertMattermostBinding({ contextId, teamId, channelId, botUserId, botUsername }) {
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO mattermost_bindings(
+				context_id, team_id, channel_id, bot_user_id, bot_username,
+				created_at, last_seen_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(context_id) DO UPDATE SET
+				team_id = excluded.team_id,
+				channel_id = excluded.channel_id,
+				bot_user_id = excluded.bot_user_id,
+				bot_username = excluded.bot_username,
+				last_seen_at = excluded.last_seen_at
+		`).run(
+			contextId,
+			teamId,
+			channelId,
+			botUserId,
+			botUsername,
+			timestamp,
+			timestamp,
+		);
+		return this.getMattermostBinding(contextId);
 	}
 
 	nextAvailablePort(basePort, maxPort) {
@@ -370,6 +423,7 @@ export class HostStore {
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,
 			contexts: this.database.prepare("SELECT COUNT(*) AS count FROM contexts").get().count,
+			mattermostBindings: this.database.prepare("SELECT COUNT(*) AS count FROM mattermost_bindings").get().count,
 			pendingEvents: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM events WHERE status IN ('pending', 'delivering', 'failed')
 			`).get().count,

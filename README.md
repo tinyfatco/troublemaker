@@ -122,6 +122,8 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_MATTERMOST_URL` | mattermost:* | Mattermost base URL, for example `https://mattermost.example.com` |
 | `MOM_MATTERMOST_BOT_TOKEN` | mattermost:* | Mattermost bot personal access token |
 | `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |
+| `MOM_MATTERMOST_ALLOWED_CHANNELS` | mattermost:* | Optional comma-separated channel IDs; inbound, outbound, files, and thread reads fail closed outside them |
+| `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT` | mattermost:* | When `true`, every non-self post in an allowed channel directly wakes the agent |
 | `MOM_TELEGRAM_BOT_TOKEN` | telegram:* | Telegram bot token from @BotFather |
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |

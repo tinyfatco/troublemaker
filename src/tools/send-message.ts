@@ -112,7 +112,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, mattermost:<channel>[:<root>], discord:<channel id>, email-thread:<id>, email-user@example.com, phone-...",
 		}),
 		text: Type.String({ description: "Message text to send" }),
-		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email only). Each path should be an absolute path to a file on disk." })),
+		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email or Mattermost root message). Each path should be an absolute path to a file on disk." })),
 		subject: Type.Optional(Type.String({ description: "Subject line (email only - ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
 		recipients: Type.Optional(Type.Array(Type.String(), { description: "Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group." })),
 	});
@@ -124,7 +124,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			"Send a user-visible message. This is the only normal way to deliver text to people on Telegram, Slack, Discord, Email, or SMS/iMessage. " +
 			"`target` is required; never omit it. If you do not know where to send, use list_channels or ask for clarification. " +
 			"Target formats: discord:<17-20 digit ID> or raw 17-20 digit snowflake -> Discord, shorter numeric IDs -> Telegram, C/D/G-prefixed -> Slack, slack:<channel>:<thread_ts> -> Slack thread, mattermost:<channel>[:<root>] -> Mattermost channel/thread, email-thread:<id> -> existing Email thread, email-{address} -> Email address, phone-{hash} -> SMS/iMessage conversation. " +
-			"For email, you can include file attachments and an optional subject line. " +
+			"For email and Mattermost root messages, you can include file attachments. Email also accepts an optional subject line. " +
 			"If you send to an email-thread target, the adapter preserves native Gmail/Outlook threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
 		parameters: schema,

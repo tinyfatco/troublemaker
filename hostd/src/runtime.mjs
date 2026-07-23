@@ -80,9 +80,10 @@ async function waitForHealth(url, timeout = 90_000) {
 }
 
 export class RuntimeManager {
-	constructor(config, store) {
+	constructor(config, store, mattermost) {
 		this.config = config;
 		this.store = store;
+		this.mattermost = mattermost;
 	}
 
 	async deliver({ event, route, message, metadata, sender, thread }) {
@@ -140,6 +141,9 @@ export class RuntimeManager {
 				port,
 			});
 		}
+		const mattermost = this.mattermost
+			? await this.mattermost.ensureContext(contextId)
+			: null;
 
 		const contextDirectory = resolve(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"));
 		const workspace = join(contextDirectory, "workspace");
@@ -167,6 +171,13 @@ export class RuntimeManager {
 				MOM_EMAIL_SEND_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/outbound/gmail`,
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
+				...(mattermost ? {
+					MOM_MATTERMOST_URL: mattermost.runtimeUrl,
+					MOM_MATTERMOST_BOT_TOKEN: mattermost.botToken,
+					MOM_MATTERMOST_ALLOWED_CHANNELS: mattermost.channelId,
+					MOM_MATTERMOST_ALLOWED_DM_USERS: "",
+					MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT: "true",
+				} : {}),
 				...target.runtimeEnv,
 			};
 			await writePrivateFile(
@@ -204,7 +215,7 @@ export class RuntimeManager {
 				"node",
 				"/opt/troublemaker/dist/main.js",
 				"--sandbox=host",
-				"--adapter=email:webhook",
+				`--adapter=email:webhook${mattermost ? ",mattermost" : ""}`,
 				...target.skills.flatMap((_skillsPath, index) => [
 					"--skills",
 					`/opt/troublemaker-skills/${index}`,

@@ -14,6 +14,7 @@ is involved.
 ```bash
 troublemaker-hostd serve --config /etc/troublemaker-hostd/config.json
 troublemaker-hostd poll-once --config /etc/troublemaker-hostd/config.json
+troublemaker-hostd provision-mattermost --config /etc/troublemaker-hostd/config.json
 troublemaker-hostd import-legacy-checkpoint \
   --config /etc/troublemaker-hostd/config.json \
   --checkpoint /var/lib/legacy-inbox/checkpoint.json \
@@ -61,5 +62,21 @@ workspaces.
 Set `hostGateway` to the address containers use for the host loopback proxy.
 Docker commonly provides `host.containers.internal`; rootless Podman with
 slirp4netns commonly uses `10.0.2.2`.
+
+## Private Mattermost rooms
+
+When `mattermost` is configured, the host deterministically provisions one
+private Mattermost channel and one Manny bot account per context. Only that
+Manny and the configured Batman user are added to the channel. Each bot token is
+stored in a host-only `0600` credential file and passed only to its owning
+container. The runtime also receives `MOM_MATTERMOST_ALLOWED_CHANNELS` for the
+single channel, so inbound events and outbound operations fail closed outside
+the context even if server membership is accidentally broadened.
+
+The host URL may be a loopback tunnel, while `runtimeUrl` is the corresponding
+address visible from the rootless container network. Keep `stopAfterTurn`
+disabled while a direct Mattermost WebSocket adapter is expected to receive
+Batman replies. `provision-mattermost` eagerly provisions rooms for existing
+contexts; new contexts are provisioned lazily on their first wake.
 
 See `config.example.json` for the complete shape.

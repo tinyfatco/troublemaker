@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
@@ -12,6 +12,8 @@ import { ChannelStore } from "../src/store.js";
 const BOT_ID = "aaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HUMAN_ID = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CHANNEL_ID = "cccccccccccccccccccccccccc";
+const OTHER_CHANNEL_ID = "eeeeeeeeeeeeeeeeeeeeeeeeee";
+const FILE_ID = "ffffffffffffffffffffffffff";
 const TEAM_ID = "dddddddddddddddddddddddddd";
 const TOKEN = "mattermost-test-token";
 let sequence = 0;
@@ -43,10 +45,15 @@ const server = createServer(async (req, res) => {
 		{ id: BOT_ID, username: "batman", is_bot: true },
 		{ id: HUMAN_ID, username: "alex", first_name: "Alex", last_name: "Garcia", is_bot: false },
 	]);
+	if (req.method === "GET" && url.pathname === `/api/v4/users/${HUMAN_ID}`) return json(200,
+		{ id: HUMAN_ID, username: "alex", first_name: "Alex", last_name: "Garcia", is_bot: false });
 	if (req.method === "GET" && url.pathname === "/api/v4/users/me/teams") return json(200, [{ id: TEAM_ID, name: "tinyfat" }]);
 	if (req.method === "GET" && url.pathname === `/api/v4/users/me/teams/${TEAM_ID}/channels`) return json(200, [
 		{ id: CHANNEL_ID, name: "agents", display_name: "Agents", type: "O", team_id: TEAM_ID },
 	]);
+	if (req.method === "POST" && url.pathname === "/api/v4/files") {
+		return json(201, { file_infos: [{ id: FILE_ID, name: "site.zip" }] });
+	}
 	if (req.method === "POST" && url.pathname === "/api/v4/posts") {
 		const body = await readJson(req);
 		const id = nextPostId();
@@ -115,6 +122,7 @@ const adapter = new MattermostSocketAdapter({
 	workingDir,
 	store,
 	pulse,
+	allowedChannelIds: [CHANNEL_ID],
 	allowedDmUsers: [HUMAN_ID],
 	onAmbientMessage: (_channel, event) => ambient.push(event),
 });
@@ -130,19 +138,19 @@ adapter.setHandler({
 	resolvePendingInput: () => false,
 } as any);
 
-function broadcastPost(message: string): string {
+function broadcastPost(message: string, channelId = CHANNEL_ID): string {
 	const id = nextPostId();
 	const post = {
 		id,
 		create_at: Date.now(),
 		user_id: HUMAN_ID,
-		channel_id: CHANNEL_ID,
+		channel_id: channelId,
 		root_id: "",
 		message,
 	};
 	posts[id] = post;
 	for (const client of wss.clients) {
-		client.send(JSON.stringify({ event: "posted", data: { post: JSON.stringify(post) }, broadcast: { channel_id: CHANNEL_ID, user_id: HUMAN_ID } }));
+		client.send(JSON.stringify({ event: "posted", data: { post: JSON.stringify(post) }, broadcast: { channel_id: channelId, user_id: HUMAN_ID } }));
 	}
 	return id;
 }
@@ -157,11 +165,20 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 
 try {
 	await adapter.start();
-	assert.equal(adapter.getUser(HUMAN_ID)?.userName, "alex", "metadata loads Mattermost users");
 	assert.equal(adapter.getChannel(CHANNEL_ID)?.name, "Agents", "metadata loads Mattermost channels");
+	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID), undefined, "channels outside the allowlist stay undiscoverable");
+	broadcastPost("@batman this belongs to another private context", OTHER_CHANNEL_ID);
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	assert.equal(handled.length, 0, "posts outside the allowlist cannot invoke the agent");
+	await assert.rejects(
+		adapter.postMessage(OTHER_CHANNEL_ID, "cross-context attempt"),
+		/outside this agent's allowed scope/,
+		"outbound posts outside the allowlist fail closed",
+	);
 
 	const ambientRoot = broadcastPost("ambient room message");
 	await waitFor(() => ambient.length === 1);
+	assert.equal(adapter.getUser(HUMAN_ID)?.userName, "alex", "allowed-channel senders load lazily");
 	assert.equal(ambient[0]?.directlyAddressed, false, "ordinary channel posts are ambient");
 	assert.equal(ambient[0]?.replyTarget, `mattermost:${CHANNEL_ID}:${ambientRoot}`, "ambient posts carry an exact Mattermost reply target");
 
@@ -191,6 +208,14 @@ try {
 	);
 
 	const root = await adapter.postMessage(CHANNEL_ID, "outbound root");
+	const attachmentPath = join(workingDir, "site.zip");
+	writeFileSync(attachmentPath, "test artifact");
+	const attachmentPost = await adapter.postMessage(
+		CHANNEL_ID,
+		"deploy attached",
+		[{ filePath: attachmentPath, filename: "site.zip" }],
+	);
+	assert.deepEqual(posts[attachmentPost]?.file_ids, [FILE_ID], "Mattermost root sends include uploaded artifacts");
 	await adapter.updateMessage(CHANNEL_ID, root, "outbound root updated");
 	const reply = await adapter.postInThread(CHANNEL_ID, root, "outbound reply");
 	const transcript = await adapter.readThread(CHANNEL_ID, root, 10);

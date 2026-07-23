@@ -477,6 +477,17 @@ function createAdapter(name: string): AdapterWithHandler {
 	const allowedMattermostDmUsers = process.env.MOM_MATTERMOST_ALLOWED_DM_USERS === undefined
 		? undefined
 		: process.env.MOM_MATTERMOST_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+	const allowedMattermostChannelIds = process.env.MOM_MATTERMOST_ALLOWED_CHANNELS === undefined
+		? undefined
+		: process.env.MOM_MATTERMOST_ALLOWED_CHANNELS.split(",").map((id) => id.trim()).filter(Boolean);
+	const mattermostChannelMessagesDirect = process.env.MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT;
+	if (
+		mattermostChannelMessagesDirect !== undefined
+		&& mattermostChannelMessagesDirect !== "true"
+		&& mattermostChannelMessagesDirect !== "false"
+	) {
+		throw new Error("MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT must be true or false");
+	}
 
 	switch (name) {
 		case "slack":
@@ -516,7 +527,9 @@ function createAdapter(name: string): AdapterWithHandler {
 				workingDir,
 				store,
 				pulse,
+				allowedChannelIds: allowedMattermostChannelIds,
 				allowedDmUsers: allowedMattermostDmUsers,
+				directChannelMessages: mattermostChannelMessagesDirect === "true",
 				onAmbientMessage: handleAmbientMessage,
 			});
 		}

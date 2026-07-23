@@ -119,7 +119,9 @@ export interface MattermostSocketConfig {
 	workingDir: string;
 	store: ChannelStore;
 	pulse?: ChannelPulse;
+	allowedChannelIds?: Iterable<string>;
 	allowedDmUsers?: Iterable<string>;
+	directChannelMessages?: boolean;
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
 
@@ -137,7 +139,9 @@ Mention users with @username.`;
 	private readonly workingDir: string;
 	private readonly store: ChannelStore;
 	private readonly pulse?: ChannelPulse;
+	private readonly allowedChannelIds?: ReadonlySet<string>;
 	private readonly allowedDmUsers?: ReadonlySet<string>;
+	private readonly directChannelMessages: boolean;
 	private readonly onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 	private readonly users = new Map<string, MattermostUser>();
 	private readonly channels = new Map<string, MattermostChannel>();
@@ -164,9 +168,13 @@ Mention users with @username.`;
 		this.workingDir = config.workingDir;
 		this.store = config.store;
 		this.pulse = config.pulse;
+		this.allowedChannelIds = config.allowedChannelIds === undefined
+			? undefined
+			: new Set(Array.from(config.allowedChannelIds, (entry) => entry.trim()).filter(Boolean));
 		this.allowedDmUsers = config.allowedDmUsers === undefined
 			? undefined
 			: new Set(Array.from(config.allowedDmUsers, (entry) => entry.trim().toLowerCase()).filter(Boolean));
+		this.directChannelMessages = config.directChannelMessages ?? false;
 		this.onAmbientMessage = config.onAmbientMessage;
 	}
 
@@ -218,6 +226,7 @@ Mention users with @username.`;
 	}
 
 	getChannel(channelId: string): ChannelInfo | undefined {
+		if (!this.acceptsChannel(channelId)) return undefined;
 		return this.channels.get(channelId);
 	}
 
@@ -226,29 +235,42 @@ Mention users with @username.`;
 	}
 
 	getAllChannels(): ChannelInfo[] {
-		return Array.from(this.channels.values());
+		return Array.from(this.channels.values()).filter((channel) => this.acceptsChannel(channel.id));
 	}
 
-	async postMessage(channel: string, text: string): Promise<string> {
+	async postMessage(
+		channel: string,
+		text: string,
+		attachments: Array<{ filePath: string; filename: string }> = [],
+	): Promise<string> {
+		this.requireAllowedChannel(channel);
+		const fileIds = await this.uploadFiles(channel, attachments);
 		const post = await this.api<MattermostPost>("/posts", {
 			method: "POST",
-			body: JSON.stringify({ channel_id: channel, message: text }),
+			body: JSON.stringify({
+				channel_id: channel,
+				message: text,
+				...(fileIds.length > 0 ? { file_ids: fileIds } : {}),
+			}),
 		});
 		return post.id;
 	}
 
-	async updateMessage(_channel: string, id: string, text: string): Promise<void> {
+	async updateMessage(channel: string, id: string, text: string): Promise<void> {
+		this.requireAllowedChannel(channel);
 		await this.api(`/posts/${encodeURIComponent(id)}`, {
 			method: "PUT",
 			body: JSON.stringify({ id, message: text }),
 		});
 	}
 
-	async deleteMessage(_channel: string, id: string): Promise<void> {
+	async deleteMessage(channel: string, id: string): Promise<void> {
+		this.requireAllowedChannel(channel);
 		await this.api(`/posts/${encodeURIComponent(id)}`, { method: "DELETE" });
 	}
 
 	async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
+		this.requireAllowedChannel(channel);
 		const post = await this.api<MattermostPost>("/posts", {
 			method: "POST",
 			body: JSON.stringify({ channel_id: channel, root_id: threadTs, message: text }),
@@ -263,15 +285,9 @@ Mention users with @username.`;
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string, threadTs?: string): Promise<void> {
-		const form = new FormData();
+		this.requireAllowedChannel(channel);
 		const filename = title || basename(filePath);
-		form.append("channel_id", channel);
-		form.append("files", new Blob([readFileSync(filePath)]), filename);
-		const upload = await this.api<{ file_infos?: MattermostFileInfo[] }>("/files", {
-			method: "POST",
-			body: form,
-		});
-		const fileIds = (upload.file_infos || []).map((file) => file.id).filter(Boolean);
+		const fileIds = await this.uploadFiles(channel, [{ filePath, filename }]);
 		if (fileIds.length === 0) throw new Error("Mattermost upload returned no file IDs");
 		await this.api("/posts", {
 			method: "POST",
@@ -284,7 +300,26 @@ Mention users with @username.`;
 		});
 	}
 
+	private async uploadFiles(
+		channel: string,
+		attachments: Array<{ filePath: string; filename: string }>,
+	): Promise<string[]> {
+		const fileIds: string[] = [];
+		for (const attachment of attachments) {
+			const form = new FormData();
+			form.append("channel_id", channel);
+			form.append("files", new Blob([readFileSync(attachment.filePath)]), attachment.filename);
+			const upload = await this.api<{ file_infos?: MattermostFileInfo[] }>("/files", {
+				method: "POST",
+				body: form,
+			});
+			fileIds.push(...(upload.file_infos || []).map((file) => file.id).filter(Boolean));
+		}
+		return fileIds;
+	}
+
 	async readThread(channel: string, threadTs: string, limit = 40): Promise<ThreadTranscriptMessage[]> {
+		this.requireAllowedChannel(channel);
 		const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
 		const response = await this.api<MattermostPostsResponse>(`/posts/${encodeURIComponent(threadTs)}/thread?perPage=100`);
 		const posts = response.posts || {};
@@ -340,7 +375,7 @@ Mention users with @username.`;
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
-		if (!/^[a-z0-9]{26}$/.test(event.channel)) return false;
+		if (!/^[a-z0-9]{26}$/.test(event.channel) || !this.acceptsChannel(event.channel)) return false;
 		const queue = this.getQueue(event.channel);
 		if (queue.size() >= 5) {
 			log.logWarning(`Mattermost event queue full for ${event.channel}`, event.text.substring(0, 80));
@@ -422,10 +457,12 @@ Mention users with @username.`;
 		this.rememberUser(me);
 		this.pulse?.setSelfId(me.id);
 
-		for (let page = 0; page < 20; page++) {
-			const users = await this.api<MattermostUserResponse[]>(`/users?page=${page}&per_page=200`);
-			for (const user of users) this.rememberUser(user);
-			if (users.length < 200) break;
+		if (this.allowedChannelIds === undefined) {
+			for (let page = 0; page < 20; page++) {
+				const users = await this.api<MattermostUserResponse[]>(`/users?page=${page}&per_page=200`);
+				for (const user of users) this.rememberUser(user);
+				if (users.length < 200) break;
+			}
 		}
 
 		const teams = await this.api<MattermostTeamResponse[]>("/users/me/teams");
@@ -447,6 +484,7 @@ Mention users with @username.`;
 	}
 
 	private rememberChannel(channel: MattermostChannelResponse): void {
+		if (!this.acceptsChannel(channel.id)) return;
 		let name = channel.display_name || channel.name || channel.id;
 		if (channel.type === "D" && this.botUserId) {
 			const peerId = channel.name.split("__").find((id) => id !== this.botUserId);
@@ -566,6 +604,7 @@ Mention users with @username.`;
 
 	private async handlePost(post: MattermostPost): Promise<void> {
 		if (!post.id || !post.channel_id || !post.user_id || post.delete_at) return;
+		if (!this.acceptsChannel(post.channel_id)) return;
 		const prior = this.seenPosts.get(post.id);
 		if (prior && Date.now() - prior < 10 * 60_000) return;
 		this.seenPosts.set(post.id, Date.now());
@@ -581,8 +620,14 @@ Mention users with @username.`;
 		const text = post.message || "";
 		const isDirectMessage = channel?.type === "D";
 		const mentioned = this.botUsername ? new RegExp(`(^|\\s)@${escapeRegex(this.botUsername)}\\b`, "i").test(text) : false;
-		const directlyAddressed = isDirectMessage || mentioned;
-		const sourceEventType = isDirectMessage ? "mattermost_dm" : mentioned ? "mattermost_mention" : "mattermost_posted";
+		const directlyAddressed = isDirectMessage || mentioned || this.directChannelMessages;
+		const sourceEventType = isDirectMessage
+			? "mattermost_dm"
+			: mentioned
+				? "mattermost_mention"
+				: this.directChannelMessages
+					? "mattermost_channel_direct"
+					: "mattermost_posted";
 		const rootId = post.root_id || post.id;
 		const threadTs = isDirectMessage ? (post.root_id || undefined) : rootId;
 		const replyTarget = `mattermost:${post.channel_id}:${rootId}`;
@@ -648,6 +693,16 @@ Mention users with @username.`;
 		if (this.allowedDmUsers === undefined) return true;
 		const username = this.users.get(userId)?.userName.toLowerCase();
 		return this.allowedDmUsers.has(userId.toLowerCase()) || Boolean(username && this.allowedDmUsers.has(username));
+	}
+
+	private acceptsChannel(channelId: string): boolean {
+		return this.allowedChannelIds === undefined || this.allowedChannelIds.has(channelId);
+	}
+
+	private requireAllowedChannel(channelId: string): void {
+		if (!this.acceptsChannel(channelId)) {
+			throw new Error(`Mattermost channel ${channelId} is outside this agent's allowed scope`);
+		}
 	}
 
 	private async processAttachments(post: MattermostPost): Promise<Attachment[]> {

@@ -18,6 +18,15 @@
     "pollIntervalSeconds": 60,
     "overlapSeconds": 900
   },
+  "mattermost": {
+    "url": "http://127.0.0.1:18065",
+    "runtimeUrl": "http://host.containers.internal:18065",
+    "teamId": "aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "batmanUserId": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "adminTokenEnv": "MATTERMOST_HOSTD_ADMIN_TOKEN",
+    "credentialsDirectory": "/var/lib/troublemaker-hostd/mattermost",
+    "botDisplayName": "Manny"
+  },
   "routing": {
     "actorTarget": "front-desk",
     "knownPrincipals": [
@@ -49,7 +58,7 @@
       "basePort": 32000,
       "maxPort": 32999,
       "memory": "420m",
-      "stopAfterTurn": true,
+      "stopAfterTurn": false,
       "hostGateway": "host.containers.internal",
       "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
       "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",

@@ -151,7 +151,7 @@ Socket Mode and HTTP Events API are **mutually exclusive per Slack app** — you
 |------|----------|----------|------------|
 | **WebSocket + REST** | `--adapter=mattermost` or `mattermost:socket` | `MOM_MATTERMOST_URL` + `MOM_MATTERMOST_BOT_TOKEN` | Outbound WebSocket events with REST sends, threads, edits, deletes, and file uploads. Always-on. |
 
-Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root_post_id>]` targets. `MOM_MATTERMOST_ALLOWED_DM_USERS` optionally limits DM invocation to comma-separated user IDs or usernames.
+Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root_post_id>]` targets. `MOM_MATTERMOST_ALLOWED_DM_USERS` optionally limits DM invocation to comma-separated user IDs or usernames. `MOM_MATTERMOST_ALLOWED_CHANNELS` limits all inbound posts, outbound posts, file operations, and thread reads to an explicit comma-separated channel-ID allowlist. `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT=true` treats every non-self post in those channels as direct input, which is appropriate for a two-agent private room.
 
 ### Telegram
 
