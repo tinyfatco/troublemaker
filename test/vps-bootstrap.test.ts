@@ -15,6 +15,9 @@ const bundle = {
 		slack_bot_token: "xoxb-test",
 		slack_app_token: "xapp-test",
 		telegram_bot_token: "telegram-test",
+		loopmessage_api_key: "loop-key",
+		loopmessage_base_url: "https://a.loopmessage.com",
+		loopmessage_sender_id: "loop-sender",
 		codex_credentials: JSON.stringify({ access: "codex-test", refresh: "refresh-test" }),
 	},
 };
@@ -58,7 +61,11 @@ assert.equal(result.status, 0, result.stderr);
 assert.equal(await readFile(join(outputPath, "workspace.key"), "utf8"), `${bundle.workspace_key_hex}\n`);
 assert.equal(await readFile(join(outputPath, "tools-token"), "utf8"), "tools-secret\n");
 assert.match(await readFile(join(outputPath, "agent.env"), "utf8"), /MOM_MODEL_ID="gpt-5\.6-sol"/);
-assert.match(await readFile(join(outputPath, "agent.env"), "utf8"), /HOME="\/srv\/gus\/workspace"/);
+const renderedEnv = await readFile(join(outputPath, "agent.env"), "utf8");
+assert.match(renderedEnv, /HOME="\/srv\/gus\/workspace"/);
+assert.match(renderedEnv, /LOOPMESSAGE_API_KEY="loop-key"/);
+assert.match(renderedEnv, /LOOPMESSAGE_BASE_URL="https:\/\/a\.loopmessage\.com"/);
+assert.match(renderedEnv, /LOOPMESSAGE_SENDER_ID="loop-sender"/);
 assert.match(await readFile(join(outputPath, "rclone.conf"), "utf8"), /session_token = session-test/);
 assert.match(await readFile(join(outputPath, "rclone.conf"), "utf8"), /^\[gus-r2\]/);
 assert.deepEqual(JSON.parse(await readFile(join(outputPath, "codex-auth.json"), "utf8")), {
