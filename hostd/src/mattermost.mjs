@@ -70,9 +70,6 @@ export class MattermostProvisioner {
 		await this.ensureTeamMember(this.config.batmanUserId);
 		await this.ensureChannelMember(channel.id, bot.id);
 		await this.ensureChannelMember(channel.id, this.config.batmanUserId);
-		if (ownerId !== bot.id && ownerId !== this.config.batmanUserId) {
-			await this.removeChannelMember(channel.id, ownerId);
-		}
 
 		const botToken = await this.ensureBotToken(contextId, bot.id);
 		const binding = this.store.upsertMattermostBinding({
@@ -159,12 +156,6 @@ export class MattermostProvisioner {
 			method: "POST",
 			body: { user_id: userId },
 		});
-	}
-
-	async removeChannelMember(channelId, userId) {
-		const path = `/channels/${encodeURIComponent(channelId)}/members/${encodeURIComponent(userId)}`;
-		if (!await this.request(path, { allow404: true })) return;
-		await this.request(path, { method: "DELETE" });
 	}
 
 	secretPath(contextId) {

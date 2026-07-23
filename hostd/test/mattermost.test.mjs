@@ -76,7 +76,6 @@ test("provisions one private Manny channel and keeps its bot token outside SQLit
 		if (request.method === "POST" && url.pathname === "/api/v4/channels") {
 			const input = await body(request);
 			channel = { id: CHANNEL_ID, name: input.name, type: input.type, team_id: input.team_id };
-			channelMembers.add(ADMIN_ID);
 			send(201, channel);
 			return;
 		}
@@ -104,11 +103,6 @@ test("provisions one private Manny channel and keeps its bot token outside SQLit
 			const input = await body(request);
 			channelMembers.add(input.user_id);
 			send(201, { channel_id: CHANNEL_ID, user_id: input.user_id });
-			return;
-		}
-		if (request.method === "DELETE" && channelMember) {
-			channelMembers.delete(channelMember[1]);
-			send(200, { status: "OK" });
 			return;
 		}
 		if (request.method === "POST" && url.pathname === `/api/v4/users/${BOT_ID}/tokens`) {
