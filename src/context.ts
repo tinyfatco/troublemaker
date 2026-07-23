@@ -57,7 +57,7 @@ export type WorkingStreamPresentation = "split" | "condensed";
 export type WorkingOutputMode = "off" | "follow" | "fixed";
 
 export interface WorkingOutputTarget {
-	platform: "slack";
+	platform: "slack" | "mattermost";
 	channelId: string;
 }
 
@@ -96,6 +96,14 @@ export interface MomDiscordSettings {
 	toolStreamPresentation?: DiscordToolStreamPresentation;
 	/** Rolling minutes per edited working message in split presentation. */
 	toolStreamWindowMinutes?: number;
+}
+
+export interface MomMattermostSettings {
+	/**
+	 * Channels that remain readable and mention-addressable without scheduling
+	 * ambient evaluation for every ordinary post.
+	 */
+	mentionsOnlyChannelIds?: string[];
 }
 
 export type MomSpeakBackend = "macos-say" | "command" | "http" | "elevenlabs" | "sag" | "noop" | "disabled";
@@ -145,6 +153,7 @@ export interface MomSettings {
 	/** Route sanitized working/tool labels independently from user-visible delivery. */
 	workingOutput?: MomWorkingOutputSettings;
 	slack?: MomSlackSettings;
+	mattermost?: MomMattermostSettings;
 	discord?: MomDiscordSettings;
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
@@ -208,9 +217,10 @@ export function isSendMessageOnlyPlatform(channelId: string, platform?: string):
 export function isWorkingOutputTarget(value: unknown): value is WorkingOutputTarget {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
 	const candidate = value as { platform?: unknown; channelId?: unknown };
-	return candidate.platform === "slack"
-		&& typeof candidate.channelId === "string"
-		&& /^[CDG][A-Z0-9]+$/i.test(candidate.channelId);
+	if (typeof candidate.channelId !== "string") return false;
+	if (candidate.platform === "slack") return /^[CDG][A-Z0-9]+$/i.test(candidate.channelId);
+	if (candidate.platform === "mattermost") return /^[a-z0-9]{26}$/.test(candidate.channelId);
+	return false;
 }
 
 /**
@@ -520,7 +530,7 @@ export class MomSettingsManager {
 		} else if (value.mode === "fixed" && isWorkingOutputTarget(value.target)) {
 			normalized = { mode: "fixed", target: { ...value.target } };
 		} else {
-			throw new Error('working output must use mode "off", "follow", or "fixed" with a valid Slack channel/DM target.');
+			throw new Error('working output must use mode "off", "follow", or "fixed" with a valid Slack or Mattermost target.');
 		}
 
 		if (slackPatch.toolStreaming !== undefined && !["off", "important", "all"].includes(slackPatch.toolStreaming)) {
@@ -542,6 +552,38 @@ export class MomSettingsManager {
 		}
 		this.save();
 		return this.getWorkingOutput();
+	}
+
+	getMattermostMentionsOnlyChannelIds(): string[] {
+		const configured = this.settings.mattermost?.mentionsOnlyChannelIds;
+		if (!Array.isArray(configured)) return [];
+		return [...new Set(configured.filter((channelId): channelId is string =>
+			typeof channelId === "string" && /^[a-z0-9]{26}$/.test(channelId),
+		))];
+	}
+
+	getMattermostChannelAttention(channelId: string): "ambient" | "mentions-only" {
+		return this.getMattermostMentionsOnlyChannelIds().includes(channelId)
+			? "mentions-only"
+			: "ambient";
+	}
+
+	setMattermostChannelAttention(
+		channelId: string,
+		mode: "ambient" | "mentions-only",
+	): "ambient" | "mentions-only" {
+		if (!/^[a-z0-9]{26}$/.test(channelId)) {
+			throw new Error("Mattermost channel attention requires a valid channel ID.");
+		}
+		const mentionsOnly = new Set(this.getMattermostMentionsOnlyChannelIds());
+		if (mode === "mentions-only") mentionsOnly.add(channelId);
+		else mentionsOnly.delete(channelId);
+		this.settings.mattermost = {
+			...this.settings.mattermost,
+			mentionsOnlyChannelIds: [...mentionsOnly].sort(),
+		};
+		this.save();
+		return this.getMattermostChannelAttention(channelId);
 	}
 
 	getSlackResponsePlacement(): SlackResponsePlacement {

@@ -99,6 +99,15 @@ try {
 	assert((settings.slack as any).toolStreamPresentation === "split", "working output minute windows select split presentation atomically");
 	assert((settings.slack as any).toolStreamWindowMinutes === 5, "working output minute windows update the Slack renderer atomically");
 
+	const mattermostChannelId = "mmmmmmmmmmmmmmmmmmmmmmmmmm";
+	const mattermostWorking = applySelfConfiguration(workingDir, "working_output", {
+		mode: "fixed",
+		target: { platform: "mattermost", channelId: mattermostChannelId },
+	});
+	settings = readSettings(workingDir);
+	assert((mattermostWorking.newValue as any).target.platform === "mattermost", "working output accepts a fixed Mattermost channel");
+	assert((settings.workingOutput as any).target.channelId === mattermostChannelId, "fixed Mattermost working output persists durably");
+
 	const hereWorking = applySelfConfiguration(
 		workingDir,
 		"workingMessages",
@@ -106,7 +115,7 @@ try {
 		{ resolveWorkingOutputTarget: () => ({ platform: "slack", channelId: "D0123456789" }) },
 	);
 	settings = readSettings(workingDir);
-	assert((hereWorking.newValue as any).target.channelId === "D0123456789", "working-output alias resolves here from the active Slack turn");
+	assert((hereWorking.newValue as any).target.channelId === "D0123456789", "working-output alias resolves here from the active supported turn");
 	assert((settings.workingOutput as any).target.channelId === "D0123456789", "resolved Slack DM persists without a transient thread");
 
 	const followWorking = applySelfConfiguration(workingDir, "workingOutput", { mode: "follow" });
@@ -179,7 +188,9 @@ try {
 	assert(settingDescription.includes("voice.wake_aliases"), "self_configure schema exposes compact wake aliases");
 	assert(settingDescription.includes("voice.webhook_input_mode"), "self_configure schema exposes voice webhook routing");
 	assert(settingDescription.includes("working_output"), "self_configure schema exposes working-output routing");
+	assert(settingDescription.includes("mattermost.channel_attention"), "self_configure schema exposes per-channel Mattermost attention");
 	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");
+	assert(tool.description.includes("mentions-only"), "self_configure metadata explains mentions-only Mattermost attention");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
 	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
 
@@ -213,7 +224,7 @@ try {
 	assert((result.content?.[0]?.text || "").includes("Configured thinking_level"), "tool result summarizes setting");
 
 	const contextualTool = createSelfConfigureTool(workingDir, {
-		resolveWorkingOutputTarget: () => ({ platform: "slack", channelId: "C0987654321" }),
+		resolveWorkingOutputTarget: () => ({ platform: "mattermost", channelId: mattermostChannelId }),
 	});
 	await (contextualTool.execute as any)("call-working-here", {
 		label: "route working labels here",
@@ -221,13 +232,29 @@ try {
 		value: { mode: "fixed", target: "here" },
 	});
 	settings = readSettings(workingDir);
-	assert((settings.workingOutput as any).target.channelId === "C0987654321", "tool execution resolves working-output here through its turn callback");
+	assert((settings.workingOutput as any).target.channelId === mattermostChannelId, "tool execution resolves working-output here through its Mattermost turn callback");
+
+	await (contextualTool.execute as any)("call-mattermost-attention", {
+		label: "only wake me on mentions here",
+		setting: "mattermost.channel_attention",
+		value: { mode: "ignore", channel: "here" },
+	});
+	settings = readSettings(workingDir);
+	assert((settings.mattermost as any).mentionsOnlyChannelIds.includes(mattermostChannelId), "Mattermost ignore language persists mentions-only attention");
+	const resumeAttention = applySelfConfiguration(
+		workingDir,
+		"mattermost.channelAttention",
+		{ mode: "ambient", channel: mattermostChannelId },
+	);
+	settings = readSettings(workingDir);
+	assert((resumeAttention.newValue as any).mode === "ambient", "Mattermost attention alias resumes ambient observation");
+	assert(!(settings.mattermost as any).mentionsOnlyChannelIds.includes(mattermostChannelId), "ambient attention removes the channel from the mentions-only set");
 
 	try {
 		applySelfConfiguration(workingDir, "working_output", { mode: "fixed", target: "here" });
-		assert(false, "working output here without an active Slack target throws");
+		assert(false, "working output here without an active supported target throws");
 	} catch (err) {
-		assert(err instanceof Error && err.message.includes("active Slack"), "working output here explains its active-turn requirement");
+		assert(err instanceof Error && err.message.includes("active Slack or Mattermost"), "working output here explains its active-turn requirement");
 	}
 
 	try {
@@ -237,7 +264,7 @@ try {
 		});
 		assert(false, "invalid fixed working-output target throws");
 	} catch (err) {
-		assert(err instanceof Error && err.message.includes("Slack"), "invalid fixed target explains accepted Slack loci");
+		assert(err instanceof Error && err.message.toLowerCase().includes("mattermost"), "invalid fixed target explains accepted Slack and Mattermost loci");
 	}
 
 	try {

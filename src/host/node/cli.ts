@@ -762,8 +762,14 @@ let queuedRunCount = 0;
 
 function resolveActiveWorkingOutputTarget(): WorkingOutputTarget | undefined {
 	const scope = activeDeliveryScope;
-	if (!scope || scope.adapter.name !== "slack" || !/^[CDG][A-Z0-9]+$/i.test(scope.channelId)) return undefined;
-	return { platform: "slack", channelId: scope.channelId };
+	if (!scope) return undefined;
+	if (scope.adapter.name === "slack" && /^[CDG][A-Z0-9]+$/i.test(scope.channelId)) {
+		return { platform: "slack", channelId: scope.channelId };
+	}
+	if (scope.adapter.name === "mattermost" && /^[a-z0-9]{26}$/.test(scope.channelId)) {
+		return { platform: "mattermost", channelId: scope.channelId };
+	}
+	return undefined;
 }
 let runQueueTail: Promise<void> = Promise.resolve();
 let voiceContract: FirstClassVoiceContract | null = null;

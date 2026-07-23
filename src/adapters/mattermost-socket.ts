@@ -1,6 +1,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import WebSocket from "ws";
+import { MomSettingsManager, type WorkingOutputTarget } from "../context.js";
 import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
@@ -13,6 +14,7 @@ import type {
 	PlatformAdapter,
 	ThreadTranscriptMessage,
 	UserInfo,
+	WorkingOutputContextOptions,
 } from "./types.js";
 
 interface MattermostUserResponse {
@@ -385,6 +387,50 @@ Mention users with @username.`;
 		return true;
 	}
 
+	createWorkingOutputContext(
+		target: WorkingOutputTarget,
+		_store: ChannelStore,
+		options: WorkingOutputContextOptions,
+	): MomContext {
+		if (target.platform !== "mattermost" || !/^[a-z0-9]{26}$/.test(target.channelId)) {
+			throw new Error("Mattermost working output requires a valid channel ID.");
+		}
+		this.requireAllowedChannel(target.channelId);
+		const event: MomEvent = {
+			type: "mention",
+			channel: target.channelId,
+			ts: `working-${Date.now()}`,
+			user: "system",
+			text: "",
+			directlyAddressed: false,
+			replyTarget: `mattermost:${target.channelId}`,
+			replyTargetDescription: "Configured Mattermost working-output destination",
+			attachments: [],
+		};
+		const context = createTwoMessageContext(
+			{
+				post: (channel, text) => this.postMessage(channel, text),
+				update: (channel, id, text) => this.updateMessage(channel, id, text),
+				delete: (channel, id) => this.deleteMessage(channel, id),
+				formatStatus: (text) => `_${text}_`,
+				throttleMs: 0,
+				maxLength: this.maxMessageLength,
+			},
+			{
+				headerLine: "",
+				event,
+				channels: this.getAllChannels(),
+				users: this.getAllUsers(),
+				channelName: this.channels.get(target.channelId)?.name,
+				verbose: "messages-only",
+				toolStreaming: options.toolStreaming,
+				workingStreamPresentation: options.presentation,
+				workingStreamWindowMs: options.windowMinutes * 60_000,
+			},
+		);
+		return { ...context, workingReplyTarget: target.channelId };
+	}
+
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
 		const user = this.users.get(event.user);
 		const eventFilename = isEvent ? event.text.match(/^\[(?:EVENT|ATTENTION):([^:]+):/)?.[1] : undefined;
@@ -685,7 +731,11 @@ Mention users with @username.`;
 				this.getQueue(post.channel_id).enqueue(async () => { await this.handler.handleEvent(event, this); });
 			}
 		} else {
-			this.onAmbientMessage?.(post.channel_id, event, this);
+			const attention = new MomSettingsManager(this.workingDir)
+				.getMattermostChannelAttention(post.channel_id);
+			if (attention === "ambient") {
+				this.onAmbientMessage?.(post.channel_id, event, this);
+			}
 		}
 	}
 

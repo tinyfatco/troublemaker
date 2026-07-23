@@ -102,8 +102,8 @@ then decorate that context according to `settings.json` `workingOutput`:
 
 - `follow` keeps the adapter's existing progress locus;
 - `off` suppresses external working progress; and
-- `fixed` routes safe tool labels from every turn to one configured Slack
-  channel or DM through `createWorkingOutputContext()`.
+- `fixed` routes safe tool labels from every turn to one configured Slack or
+  Mattermost channel/DM through `createWorkingOutputContext()`.
 
 A fixed destination uses a separate messages-only context. Ordinary assistant
 text, raw tool arguments/results, stdout, reasoning, and harness finals never
@@ -151,7 +151,14 @@ Socket Mode and HTTP Events API are **mutually exclusive per Slack app** — you
 |------|----------|----------|------------|
 | **WebSocket + REST** | `--adapter=mattermost` or `mattermost:socket` | `MOM_MATTERMOST_URL` + `MOM_MATTERMOST_BOT_TOKEN` | Outbound WebSocket events with REST sends, threads, edits, deletes, and file uploads. Always-on. |
 
-Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root_post_id>]` targets. `MOM_MATTERMOST_ALLOWED_DM_USERS` optionally limits DM invocation to comma-separated user IDs or usernames. `MOM_MATTERMOST_ALLOWED_CHANNELS` limits all inbound posts, outbound posts, file operations, and thread reads to an explicit comma-separated channel-ID allowlist. `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT=true` treats every non-self post in those channels as direct input, which is appropriate for a two-agent private room.
+Mattermost channel/thread delivery uses explicit `mattermost:<channel_id>[:<root_post_id>]` targets. `MOM_MATTERMOST_ALLOWED_DM_USERS` optionally limits DM invocation to comma-separated user IDs or usernames. `MOM_MATTERMOST_ALLOWED_CHANNELS` limits all inbound posts, outbound posts, file operations, and thread reads to an explicit comma-separated channel-ID allowlist. `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT=true` treats every non-self post in those channels as direct input, which is appropriate for a private Manny room.
+
+Per-agent `settings.json` can route fixed `workingOutput` to a Mattermost
+channel. `mattermost.mentionsOnlyChannelIds` is an attention policy, not an
+access policy: ordinary posts in those rooms are logged but do not schedule
+ambient evaluation, while explicit @mentions still wake the agent and
+`read_thread` continues to use the live Mattermost API. Agents may update this
+through `self_configure` setting `mattermost.channel_attention`.
 
 ### Telegram
 

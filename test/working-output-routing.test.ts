@@ -161,6 +161,34 @@ assert.deepEqual(fixedHarness.working, [true, false], "fixed destination follows
 assert.deepEqual(sourceHarness.working, [true, false], "source finalization remains intact");
 assert.equal(fixedHarness.restarts, 1, "fixed destination rolls chronologically");
 
+const mattermostHarness = createHarness();
+let mattermostTarget: WorkingOutputTarget | undefined;
+const mattermost = createAdapter("mattermost", (target) => {
+	mattermostTarget = target;
+	return createContext(target.channelId, mattermostHarness);
+});
+const mattermostFixed = routeWorkingOutputContext({
+	policy: {
+		mode: "fixed",
+		target: { platform: "mattermost", channelId: "mmmmmmmmmmmmmmmmmmmmmmmmmm" },
+	},
+	sourceContext: createContext("email-user@example.com", createHarness()),
+	adapters: [mattermost],
+	store,
+	presentation,
+});
+await mattermostFixed.respond("_→ Mattermost-routed label_", false, { show: true });
+assert.deepEqual(
+	mattermostTarget,
+	{ platform: "mattermost", channelId: "mmmmmmmmmmmmmmmmmmmmmmmmmm" },
+	"fixed resolves a configured Mattermost work room",
+);
+assert.deepEqual(
+	mattermostHarness.responds,
+	[{ text: "_→ Mattermost-routed label_", shouldLog: false }],
+	"fixed sends working lifecycle to Mattermost without changing the source channel",
+);
+
 const warnings: string[] = [];
 const unavailableHarness = createHarness();
 const unavailable = routeWorkingOutputContext({

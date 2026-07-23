@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { MattermostSocketAdapter } from "../src/adapters/mattermost-socket.js";
+import { MomSettingsManager } from "../src/context.js";
 import { ChannelPulse } from "../src/engagement/channel-pulse.js";
 import { ChannelStore } from "../src/store.js";
 
@@ -188,11 +189,24 @@ try {
 	assert.equal(handled[0]?.sourceEventType, "mattermost_mention", "Mattermost mentions retain direct-address provenance");
 	assert.equal(handled[0]?.threadTs, mentionRoot, "channel mentions establish a Mattermost root thread");
 
+	const settings = new MomSettingsManager(workingDir);
+	settings.setMattermostChannelAttention(CHANNEL_ID, "mentions-only");
+	const ambientCount = ambient.length;
+	const ignoredRoot = broadcastPost("ordinary work stream Batman should not continuously ingest");
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(ambient.length, ambientCount, "mentions-only attention suppresses Mattermost ambient evaluation");
+	const ignoredTranscript = await adapter.readThread(CHANNEL_ID, ignoredRoot);
+	assert.equal(ignoredTranscript[0]?.text, "ordinary work stream Batman should not continuously ingest", "mentions-only channels remain readable through live thread access");
+	broadcastPost("@batman explicit work still wakes you");
+	await waitFor(() => handled.length === 2);
+	assert.equal(handled[1]?.sourceEventType, "mattermost_mention", "mentions-only attention preserves direct @mention wakeups");
+	settings.setMattermostChannelAttention(CHANNEL_ID, "ambient");
+
 	running = true;
 	broadcastPost("@batman fold this into your current work");
 	await waitFor(() => steered.length === 1);
 	assert.equal(steered[0]?.sourceEventType, "mattermost_mention", "busy Mattermost mentions steer the active run");
-	assert.equal(handled.length, 1, "busy Mattermost mentions do not start a parallel turn");
+	assert.equal(handled.length, 2, "busy Mattermost mentions do not start a parallel turn");
 	running = false;
 
 	const context = adapter.createContext(handled[0], store);
@@ -205,6 +219,27 @@ try {
 		Object.keys(posts).length,
 		beforeHarnessOutput,
 		"Mattermost messages-only contexts never expose labels, thinking, tool results, or ordinary final output",
+	);
+
+	const beforeFixedWorking = Object.keys(posts).length;
+	const working = adapter.createWorkingOutputContext(
+		{ platform: "mattermost", channelId: CHANNEL_ID },
+		store,
+		{ toolStreaming: "all", presentation: "split", windowMinutes: 1 },
+	);
+	await working.setWorking(true);
+	await working.respond("_→ Manny is assembling the preview_", false, { show: true });
+	await working.setWorking(false);
+	const workingPosts = Object.values(posts).slice(beforeFixedWorking);
+	assert(workingPosts.some((post: any) => post.message.includes("Manny is assembling the preview")), "fixed Mattermost working output surfaces sanitized work labels");
+	await assert.rejects(
+		Promise.resolve().then(() => adapter.createWorkingOutputContext(
+			{ platform: "mattermost", channelId: OTHER_CHANNEL_ID },
+			store,
+			{ toolStreaming: "all", presentation: "split", windowMinutes: 1 },
+		)),
+		/outside this agent's allowed scope/,
+		"fixed Mattermost working output cannot escape the adapter channel allowlist",
 	);
 
 	const root = await adapter.postMessage(CHANNEL_ID, "outbound root");

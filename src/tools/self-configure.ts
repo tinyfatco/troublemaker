@@ -46,6 +46,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"thinking_level",
 	"verbosity",
 	"working_output",
+	"mattermost.channel_attention",
 	"slack.verbosity",
 	"slack.response_placement",
 	"slack.tool_streaming",
@@ -86,6 +87,8 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"workingOutput": "working_output",
 	"working_messages": "working_output",
 	"workingMessages": "working_output",
+	"mattermost.channelAttention": "mattermost.channel_attention",
+	"mattermost.attention": "mattermost.channel_attention",
 	"slack.verbose": "slack.verbosity",
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
@@ -128,7 +131,7 @@ interface SelfConfigureResult {
 }
 
 export interface SelfConfigureOptions {
-	/** Resolve the active stable channel/DM when the model configures target "here". */
+	/** Resolve the active stable channel/DM when the model configures a target as "here". */
 	resolveWorkingOutputTarget?: () => WorkingOutputTarget | undefined;
 }
 
@@ -358,14 +361,14 @@ function resolveWorkingOutputTarget(value: unknown, options: SelfConfigureOption
 		const target = value.trim();
 		if (target.toLowerCase() === "here") {
 			const current = options.resolveWorkingOutputTarget?.();
-			if (!current) throw new Error('working_output target "here" requires an active Slack channel or DM turn.');
+			if (!current) throw new Error('working_output target "here" requires an active Slack or Mattermost channel/DM turn.');
 			return current;
 		}
 		const direct = { platform: "slack" as const, channelId: target };
 		if (isWorkingOutputTarget(direct)) return direct;
 	}
 	if (isWorkingOutputTarget(value)) return { ...value };
-	throw new Error("working_output fixed target must be 'here' or a Slack C/G/D channel or DM ID.");
+	throw new Error("working_output fixed target must be 'here', a Slack C/G/D channel or DM ID, or {platform:'mattermost', channelId:'<26-character ID>'}.");
 }
 
 function workingOutputSnapshot(manager: MomSettingsManager, policy = manager.getWorkingOutput()): Record<string, unknown> {
@@ -429,14 +432,65 @@ function configureWorkingOutput(
 	const note = mode === "off"
 		? "External working messages are disabled from the next turn; messages-only delivery is unchanged."
 		: mode === "follow"
-			? "From the next turn, working labels follow the Slack channel, thread, or DM where the agent is contacted."
-			: `From the next turn, working labels from every turn go to the configured Slack ${configured.target?.channelId.startsWith("D") ? "DM" : "channel"}.`;
+			? "From the next turn, working labels follow the supported channel, thread, or DM where the agent is contacted."
+			: `From the next turn, working labels from every turn go to the configured ${configured.target?.platform === "mattermost" ? "Mattermost channel" : `Slack ${configured.target?.channelId.startsWith("D") ? "DM" : "channel"}`}.`;
 	return {
 		changed: true,
 		setting: "working_output",
 		previousValue,
 		newValue,
 		note,
+	};
+}
+
+function parseMattermostChannelAttention(value: unknown): "ambient" | "mentions-only" {
+	const normalized = parseString(value, "mattermost.channel_attention.mode")
+		.trim()
+		.toLowerCase()
+		.replace(/_/g, "-");
+	if (["ambient", "watch", "observe", "on", "enabled"].includes(normalized)) return "ambient";
+	if (["mentions-only", "mention-only", "ignore", "ignored", "off", "muted", "mute"].includes(normalized)) {
+		return "mentions-only";
+	}
+	throw new Error('mattermost.channel_attention mode must be "ambient" or "mentions-only".');
+}
+
+function configureMattermostChannelAttention(
+	workingDir: string,
+	value: unknown,
+	options: SelfConfigureOptions,
+): SelfConfigureResult {
+	const request = value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: { mode: value, channel: "here" };
+	const mode = parseMattermostChannelAttention(request.mode);
+	let channelId: string;
+	if (request.channel === undefined || (typeof request.channel === "string" && request.channel.trim().toLowerCase() === "here")) {
+		const current = options.resolveWorkingOutputTarget?.();
+		if (!current || current.platform !== "mattermost") {
+			throw new Error('mattermost.channel_attention channel "here" requires an active Mattermost channel turn.');
+		}
+		channelId = current.channelId;
+	} else {
+		channelId = parseString(request.channel, "mattermost.channel_attention.channel").trim();
+		if (!/^[a-z0-9]{26}$/.test(channelId)) {
+			throw new Error("mattermost.channel_attention channel must be 'here' or a valid 26-character Mattermost channel ID.");
+		}
+	}
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = {
+		channelId,
+		mode: manager.getMattermostChannelAttention(channelId),
+	};
+	manager.setMattermostChannelAttention(channelId, mode);
+	return {
+		changed: true,
+		setting: "mattermost.channel_attention",
+		previousValue,
+		newValue: { channelId, mode },
+		note: mode === "mentions-only"
+			? "Ordinary posts in this channel remain logged and readable, but no longer schedule ambient evaluation. Direct @mentions still wake the agent."
+			: "Ordinary posts in this channel will again participate in ambient evaluation; direct @mentions continue to wake the agent.",
 	};
 }
 
@@ -675,6 +729,7 @@ export function applySelfConfiguration(
 	if (target === "thinking_level") return configureThinkingLevel(workingDir, value);
 	if (target === "verbosity") return configureVerbosity(workingDir, value);
 	if (target === "working_output") return configureWorkingOutput(workingDir, value, options);
+	if (target === "mattermost.channel_attention") return configureMattermostChannelAttention(workingDir, value, options);
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
@@ -711,7 +766,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, working_output, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, working_output, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
@@ -724,7 +779,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack channel or DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack or Mattermost channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'} or {platform:'mattermost', channelId:'<26-character ID>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

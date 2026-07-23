@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, open, stat } from "node:fs/promises";
+import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
@@ -27,6 +27,32 @@ async function writePrivateFile(path, content) {
 	} finally {
 		await file.close();
 	}
+}
+
+export async function initializeMattermostWorkingOutput(workspace, channelId) {
+	if (!/^[a-z0-9]{26}$/.test(channelId)) {
+		throw new Error("Mattermost working-output channel ID is invalid");
+	}
+	const settingsPath = join(workspace, "settings.json");
+	let settings = {};
+	try {
+		const parsed = JSON.parse(await readFile(settingsPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("settings.json must contain an object");
+		}
+		settings = parsed;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	// The room is the private Manny's initial work surface, but self_configure
+	// remains authoritative after initialization.
+	if (settings.workingOutput !== undefined) return false;
+	settings.workingOutput = {
+		mode: "fixed",
+		target: { platform: "mattermost", channelId },
+	};
+	await writePrivateFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+	return true;
 }
 
 async function run(command, args, { timeout = 120_000, allowFailure = false } = {}) {
@@ -154,6 +180,9 @@ export class RuntimeManager {
 				errorOnExist: true,
 				preserveTimestamps: true,
 			});
+		}
+		if (mattermost) {
+			await initializeMattermostWorkingOutput(workspace, mattermost.channelId);
 		}
 
 		const inspect = await run(

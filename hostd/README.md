@@ -66,12 +66,18 @@ slirp4netns commonly uses `10.0.2.2`.
 ## Private Mattermost rooms
 
 When `mattermost` is configured, the host deterministically provisions one
-private Mattermost channel and one Manny bot account per context. Only that
-Manny and the configured Batman user are added to the channel. Each bot token is
-stored in a host-only `0600` credential file and passed only to its owning
-container. The runtime also receives `MOM_MATTERMOST_ALLOWED_CHANNELS` for the
-single channel, so inbound events and outbound operations fail closed outside
-the context even if server membership is accidentally broadened.
+private Mattermost channel and one Manny bot account per context. The
+provisioning admin remains a human member, and the host adds that Manny plus the
+configured Batman user. Each bot token is stored in a host-only `0600`
+credential file and passed only to its owning container. The runtime also
+receives `MOM_MATTERMOST_ALLOWED_CHANNELS` for the single channel, so inbound
+events and outbound operations fail closed outside the context even if server
+membership is accidentally broadened.
+
+On first initialization, hostd fixes the private Manny's sanitized working
+output to that room. The setting remains agent-configurable afterward. Batman
+can independently mark the room `mentions-only`, which suppresses ambient
+evaluation while preserving explicit @mentions and live `read_thread` access.
 
 The host URL may be a loopback tunnel, while `runtimeUrl` is the corresponding
 address visible from the rootless container network. Keep `stopAfterTurn`
