@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -64,6 +64,36 @@ async function run() {
 		assert.equal(body.idempotency_key, "delivery-123:message");
 		assert.equal(body.agent_body, "I’ll handle the homepage update.");
 		assert.match(String(body.body), /Please update the homepage/);
+
+		calls.length = 0;
+		writeFileSync(join(workingDir, "email-thread-events.jsonl"), `${JSON.stringify({
+			type: "inbound",
+			at: "2026-07-23T20:59:51.410Z",
+			channelId: "email-thread-deadbeefcafebabe",
+			from: "customer@example.com",
+			to: ["agent@example.com"],
+			subject: "Website update",
+			body: "Please update the homepage.",
+			messageId: "0123456789abcdef",
+		})}\n`);
+		const storedThreadAdapter = new EmailWebhookAdapter({
+			workingDir,
+			toolsToken: "context-scoped-token",
+			sendUrl: "http://host.containers.internal:3099/v1/outbound/gmail",
+			hostContextId: "front-desk:private-principal:intake",
+		});
+		await storedThreadAdapter.postMessage(
+			"email-thread:deadbeefcafebabe",
+			"Following up in the native Gmail thread.",
+		);
+		assert.equal(calls.length, 1);
+		const storedBody = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+		assert.equal(storedBody.provider_thread_id, "deadbeefcafebabe");
+		assert.equal(storedBody.context_id, "front-desk:private-principal:intake");
+		assert.match(String(storedBody.delivery_id), /^explicit-[0-9a-f-]{36}$/);
+		assert.match(String(storedBody.idempotency_key), /^explicit-[0-9a-f-]{36}:message$/);
+		assert.equal(storedBody.agent_body, "Following up in the native Gmail thread.");
+		assert.match(String(storedBody.body), /Please update the homepage/);
 
 		globalThis.fetch = (async () => new Response(
 			JSON.stringify({ error: "conversation_scope_denied" }),

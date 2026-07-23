@@ -13,12 +13,16 @@ export interface EmailThreadLedgerEvent {
 	body?: string;
 	messageId?: string;
 	providerMessageId?: string;
+	providerThreadId?: string;
+	deliveryId?: string;
+	hostContextId?: string;
 	inReplyTo?: string;
 	references?: string;
 }
 
 const LEDGER_FILE = "email-thread-events.jsonl";
 const EMAIL_THREAD_TARGET_RE = /^email-thread:([a-f0-9]{16})$/i;
+const EMAIL_PROVIDER_CHANNEL_RE = /^email-thread-([a-f0-9]{16})$/i;
 
 export function appendEmailThreadEvent(workingDir: string, event: EmailThreadLedgerEvent): void {
 	appendFileSync(join(workingDir, LEDGER_FILE), `${JSON.stringify(event)}\n`);
@@ -74,8 +78,15 @@ export function emailThreadIdForKey(threadKey: string): string {
 	return createHash("sha256").update(threadKey).digest("hex").slice(0, 16);
 }
 
-export function emailThreadIdForEvent(event: Pick<EmailThreadLedgerEvent, "channelId" | "subject" | "messageId" | "inReplyTo" | "references">): string {
-	return emailThreadIdForKey(emailThreadKeyForEvent(event));
+export function emailThreadIdForEvent(event: Pick<EmailThreadLedgerEvent, "channelId" | "subject" | "messageId" | "providerThreadId" | "inReplyTo" | "references">): string {
+	const providerThreadId = nativeProviderThreadId(event);
+	return providerThreadId || emailThreadIdForKey(emailThreadKeyForEvent(event));
+}
+
+function nativeProviderThreadId(event: Pick<EmailThreadLedgerEvent, "channelId" | "providerThreadId">): string | undefined {
+	const explicit = event.providerThreadId?.trim().toLowerCase();
+	if (explicit && /^[a-f0-9]{16}$/.test(explicit)) return explicit;
+	return event.channelId.match(EMAIL_PROVIDER_CHANNEL_RE)?.[1].toLowerCase();
 }
 
 export function readEmailThreadLedger(workingDir: string): EmailThreadLedgerRecord[] {
@@ -99,7 +110,7 @@ export function readEmailThreadLedger(workingDir: string): EmailThreadLedgerReco
 			records.push({
 				...event,
 				threadKey,
-				threadId: emailThreadIdForKey(threadKey),
+				threadId: emailThreadIdForEvent(event),
 			});
 		} catch {
 			// Ignore malformed historical rows.

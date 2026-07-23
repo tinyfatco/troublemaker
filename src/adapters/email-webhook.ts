@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { timingSafeEqual } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
@@ -62,6 +62,8 @@ export interface EmailWebhookAdapterConfig {
 	sendUrl: string;
 	/** Optional bearer token required for trusted upstream webhook delivery. */
 	inboundToken?: string;
+	/** Host-assigned isolated context allowed to reply through the host router. */
+	hostContextId?: string;
 }
 
 interface ActiveEmailReplyContext {
@@ -113,6 +115,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	private toolsToken: string;
 	private sendUrl: string;
 	private inboundToken?: string;
+	private hostContextId?: string;
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
@@ -125,6 +128,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		this.toolsToken = config.toolsToken;
 		this.sendUrl = config.sendUrl;
 		this.inboundToken = config.inboundToken;
+		this.hostContextId = config.hostContextId;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -295,6 +299,9 @@ Keep responses concise and professional. The user will receive one email with yo
 				subject: payload.subject,
 				body: payload.body,
 				messageId: payload.messageId || payload.providerMessageId,
+				providerThreadId: payload.providerThreadId,
+				deliveryId: payload.deliveryId,
+				hostContextId: payload.hostContextId,
 				inReplyTo: payload.inReplyTo,
 				references: payload.references,
 			});
@@ -540,12 +547,17 @@ Keep responses concise and professional. The user will receive one email with yo
 		const latestInbound = latestInboundEmailThreadEvent(this.workingDir, parsed.threadId);
 		if (!latestInbound?.from) return undefined;
 		const toAddress = this.normalizeEmailAddress(latestInbound.from);
+		const providerThreadId = latestInbound.providerThreadId
+			|| (latestInbound.channelId.toLowerCase() === `email-thread-${parsed.threadId}` ? parsed.threadId : undefined);
 		return {
 			channelId: latestInbound.channelId,
 			canonicalChannel: `email-${toAddress}`,
 			toAddress,
 			subject: latestInbound.subject || "(no subject)",
 			messageId: latestInbound.messageId,
+			providerThreadId,
+			deliveryId: providerThreadId ? `explicit-${randomUUID()}` : undefined,
+			hostContextId: providerThreadId ? (latestInbound.hostContextId || this.hostContextId) : undefined,
 			references: latestInbound.references,
 			replyQuote: latestInbound.body?.trim()
 				? {
@@ -649,6 +661,9 @@ Keep responses concise and professional. The user will receive one email with yo
 			subject: resolvedSubject,
 			body: text,
 			providerMessageId: result.messageId,
+			providerThreadId: replyContext?.providerThreadId,
+			deliveryId: replyContext?.deliveryId,
+			hostContextId: replyContext?.hostContextId,
 			inReplyTo: typeof emailMetadata.in_reply_to === "string" ? emailMetadata.in_reply_to : undefined,
 			references: typeof emailMetadata.references === "string" ? emailMetadata.references : undefined,
 		});
@@ -1025,6 +1040,9 @@ Keep responses concise and professional. The user will receive one email with yo
 						subject: replySubject,
 						body: finalText,
 						providerMessageId: result.messageId,
+						providerThreadId: meta.providerThreadId,
+						deliveryId: meta.deliveryId,
+						hostContextId: meta.hostContextId,
 						inReplyTo: typeof emailMetadata.in_reply_to === "string" ? emailMetadata.in_reply_to : undefined,
 						references: typeof emailMetadata.references === "string" ? emailMetadata.references : undefined,
 					});
