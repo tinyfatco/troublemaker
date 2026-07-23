@@ -29,8 +29,9 @@ on loopback only. Do not expose the host API or child gateway ports publicly.
 Existing native thread bindings always win. A new sender becomes a private
 principal. A new thread routes to that principal's sole known project when
 there is exactly one, otherwise it routes to the principal's private `intake`
-scope until the actor associates it with a project. There is no global customer
-context and no privileged master runtime.
+scope. Project membership is control-plane configuration: runtimes cannot name,
+move, or merge their own scope. There is no global customer context and no
+privileged master runtime.
 
 ```json
 {
@@ -53,5 +54,8 @@ external mailbox identity.
 On small hosts, `stopAfterTurn` can stop the process after a completed turn
 while retaining its private workspace for the next wake. This preserves
 context isolation without keeping every customer runtime resident in memory.
+Target `skills` accepts one path or an ordered array of read-only skill roots;
+the host mounts each root into every context without copying it into customer
+workspaces.
 
 See `config.example.json` for the complete shape.

@@ -57,7 +57,6 @@ import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createReactToMessageTool } from "../../tools/react-to-message.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
-import { createBindEmailProjectTool } from "../../tools/bind-email-project.js";
 import { routeWorkingOutputContext } from "../../streaming/working-output.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
@@ -841,7 +840,6 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
-			...[createBindEmailProjectTool()].filter((tool): tool is NonNullable<typeof tool> => tool !== null),
 			...mcpBridge.tools(),
 		];
 
@@ -1446,7 +1444,6 @@ function realtimeHostTools() {
 			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
-			...[createBindEmailProjectTool()].filter((tool): tool is NonNullable<typeof tool> => tool !== null),
 			...mcpBridge.tools(),
 		]
 			.filter((tool) => tool.name !== "speak")

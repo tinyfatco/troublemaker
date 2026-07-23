@@ -8,7 +8,7 @@ import { createHostServer } from "../src/server.mjs";
 import { contextCapability } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
 
-test("outbound Gmail and project binding are confined to the owning context", async () => {
+test("outbound Gmail is confined to the owning context", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-server-"));
 	const store = new HostStore(join(directory, "state.sqlite"));
 	const target = {
@@ -37,7 +37,6 @@ test("outbound Gmail and project binding are confined to the owning context", as
 	const server = createHostServer({
 		config,
 		store,
-		router,
 		daemon: { polling: false },
 		gmail: {
 			sendThreadReply(threadId, body) {
@@ -101,45 +100,6 @@ test("outbound Gmail and project binding are confined to the owning context", as
 		assert.equal(duplicate.status, 200);
 		assert.equal(sends.length, 1);
 
-		const bound = await fetch(`${base}/v1/context/bind-project`, {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${ownerToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({
-				context_id: owner.contextId,
-				provider_thread_id: owner.providerThreadId,
-				project_slug: "site-redesign",
-				project_name: "Site redesign",
-			}),
-		});
-		assert.equal(bound.status, 200);
-		const staged = store.getRoute("gmail", "thread-owner");
-		assert.equal(staged.contextId, owner.contextId);
-		assert.match(staged.nextContextId, /:site-redesign$/);
-
-		const stillAllowed = await fetch(`${base}/v1/outbound/gmail`, {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${ownerToken}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({
-				context_id: owner.contextId,
-				provider_thread_id: owner.providerThreadId,
-				agent_body: "reply after staging the project handoff",
-				idempotency_key: "owner-reply-after-bind",
-			}),
-		});
-		assert.equal(stillAllowed.status, 200);
-
-		const activated = router.resolve({
-			source: "gmail",
-			threadId: "thread-owner",
-			sender: "owner@example.com",
-		});
-		assert.match(activated.contextId, /:site-redesign$/);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();

@@ -10,7 +10,6 @@ export class ContextRouter {
 	resolve({ source, threadId, sender }) {
 		const existing = this.store.getRoute(source, threadId);
 		if (existing) {
-			if (existing.nextContextId) return this.store.activatePendingRoute(source, threadId);
 			this.store.touchRoute(source, threadId);
 			return this.store.getRoute(source, threadId);
 		}
@@ -44,17 +43,4 @@ export class ContextRouter {
 		});
 	}
 
-	bindProject({ source, threadId, principalHash, projectSlug, projectName }) {
-		const route = this.store.getRoute(source, threadId);
-		if (!route || route.principalHash !== principalHash) {
-			throw new Error("conversation does not belong to this principal");
-		}
-		const normalizedSlug = projectSlug.trim().toLowerCase();
-		if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(normalizedSlug) || normalizedSlug === "intake") {
-			throw new Error("project slug is invalid or reserved");
-		}
-		this.store.ensureProject(principalHash, normalizedSlug, projectName || normalizedSlug);
-		const contextId = `${route.targetId}:${principalHash.slice(0, 24)}:${normalizedSlug}`;
-		return this.store.scheduleRouteProject(source, threadId, normalizedSlug, contextId);
-	}
 }

@@ -196,14 +196,19 @@ export class RuntimeManager {
 				"--volume",
 				`${workspace}:/data:rw`,
 			];
-			if (target.skills) args.push("--volume", `${target.skills}:/opt/fat-skills:ro`);
+			for (const [index, skillsPath] of target.skills.entries()) {
+				args.push("--volume", `${skillsPath}:/opt/troublemaker-skills/${index}:ro`);
+			}
 			args.push(
 				target.image,
 				"node",
 				"/opt/troublemaker/dist/main.js",
 				"--sandbox=host",
 				"--adapter=email:webhook",
-				...(target.skills ? ["--skills", "/opt/fat-skills"] : []),
+				...target.skills.flatMap((_skillsPath, index) => [
+					"--skills",
+					`/opt/troublemaker-skills/${index}`,
+				]),
 				"--host=0.0.0.0",
 				"--port=3002",
 				"/data",

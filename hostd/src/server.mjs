@@ -29,7 +29,7 @@ function authenticateContext(request, config, contextId, purpose) {
 	return bearerMatches(request.headers.authorization, expected) ? target : null;
 }
 
-export function createHostServer({ config, store, gmail, router, daemon }) {
+export function createHostServer({ config, store, gmail, daemon }) {
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {
@@ -90,35 +90,6 @@ export function createHostServer({ config, store, gmail, router, daemon }) {
 					store.failOutbox(idempotencyKey, error instanceof Error ? error.message : String(error));
 					throw error;
 				}
-				return;
-			}
-			if (request.method === "POST" && url.pathname === "/v1/context/bind-project") {
-				const body = await readJson(request);
-				const contextId = typeof body.context_id === "string" ? body.context_id : "";
-				const target = authenticateContext(request, config, contextId, "outbound");
-				if (!target) {
-					json(response, 401, { error: "unauthorized" });
-					return;
-				}
-				const threadId = typeof body.provider_thread_id === "string" ? body.provider_thread_id : "";
-				const route = store.getRoute("gmail", threadId);
-				if (!route || route.contextId !== contextId || route.targetId !== target.id) {
-					json(response, 403, { error: "conversation_scope_denied" });
-					return;
-				}
-				const updated = router.bindProject({
-					source: "gmail",
-					threadId,
-					principalHash: route.principalHash,
-					projectSlug: typeof body.project_slug === "string" ? body.project_slug : "",
-					projectName: typeof body.project_name === "string" ? body.project_name : undefined,
-				});
-				json(response, 200, {
-					ok: true,
-					project: updated.nextProjectSlug,
-					context: updated.nextContextId,
-					appliesTo: "future turns in this Gmail thread",
-				});
 				return;
 			}
 			json(response, 404, { error: "not_found" });

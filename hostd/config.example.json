@@ -40,7 +40,10 @@
       "engine": "podman",
       "image": "docker.io/library/node:22-bookworm",
       "checkout": "/opt/troublemaker",
-      "skills": "/opt/fat-skills",
+      "skills": [
+        "/opt/company-skills",
+        "/opt/vendor-skills"
+      ],
       "workspaceTemplate": "/var/lib/troublemaker-hostd/templates/front-desk",
       "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
       "basePort": 32000,

@@ -50,10 +50,8 @@ export class HostStore {
 				provider_thread_id TEXT NOT NULL,
 				principal_hash TEXT NOT NULL,
 				project_slug TEXT NOT NULL,
-				next_project_slug TEXT,
 				target_id TEXT NOT NULL,
 				context_id TEXT NOT NULL,
-				next_context_id TEXT,
 				created_at TEXT NOT NULL,
 				last_seen_at TEXT NOT NULL,
 				PRIMARY KEY (source, provider_thread_id),
@@ -192,10 +190,8 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT source, provider_thread_id AS providerThreadId,
 				principal_hash AS principalHash, project_slug AS projectSlug,
-				next_project_slug AS nextProjectSlug,
 				target_id AS targetId,
-				context_id AS contextId, next_context_id AS nextContextId,
-				created_at AS createdAt,
+				context_id AS contextId, created_at AS createdAt,
 				last_seen_at AS lastSeenAt
 			FROM routes WHERE source = ? AND provider_thread_id = ?
 		`).get(source, threadId);
@@ -221,27 +217,6 @@ export class HostStore {
 			timestamp,
 		);
 		return this.getRoute(source, providerThreadId);
-	}
-
-	scheduleRouteProject(source, threadId, projectSlug, contextId) {
-		this.database.prepare(`
-			UPDATE routes SET next_project_slug = ?, next_context_id = ?, last_seen_at = ?
-			WHERE source = ? AND provider_thread_id = ?
-		`).run(projectSlug, contextId, now(), source, threadId);
-		return this.getRoute(source, threadId);
-	}
-
-	activatePendingRoute(source, threadId) {
-		this.database.prepare(`
-			UPDATE routes SET
-				project_slug = COALESCE(next_project_slug, project_slug),
-				context_id = COALESCE(next_context_id, context_id),
-				next_project_slug = NULL,
-				next_context_id = NULL,
-				last_seen_at = ?
-			WHERE source = ? AND provider_thread_id = ?
-		`).run(now(), source, threadId);
-		return this.getRoute(source, threadId);
 	}
 
 	touchRoute(source, threadId) {

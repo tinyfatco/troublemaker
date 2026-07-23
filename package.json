@@ -68,7 +68,6 @@
 		"test:email-thread-headers": "npx tsx test/email-thread-headers.test.ts",
 		"test:email-webhook-auth": "npx tsx test/email-webhook-auth.test.ts",
 		"test:email-host-managed": "npx tsx test/email-host-managed.test.ts",
-		"test:bind-email-project": "npx tsx test/bind-email-project.test.ts",
 		"test:vps-bootstrap": "npx tsx test/vps-bootstrap.test.ts",
 		"test:vps-self-update": "npx tsx test/vps-self-update.test.ts",
 		"test:mac-ghost-install": "npx tsx test/mac-ghost-install.test.ts",

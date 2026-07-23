@@ -74,12 +74,17 @@ function targetConfig(raw, index, environment) {
 				text(value, `targets[${index}].runtimeEnv.${key}`),
 			]),
 		);
+	const rawSkills = target.skills === undefined
+		? []
+		: (Array.isArray(target.skills) ? target.skills : [target.skills]);
 	return {
 		...common,
 		engine: target.engine === undefined ? "docker" : text(target.engine, `targets[${index}].engine`),
 		image: text(target.image, `targets[${index}].image`),
 		checkout: resolve(text(target.checkout, `targets[${index}].checkout`)),
-		skills: target.skills ? resolve(text(target.skills, `targets[${index}].skills`)) : undefined,
+		skills: rawSkills.map((path, skillIndex) => resolve(
+			text(path, `targets[${index}].skills[${skillIndex}]`),
+		)),
 		workspaceTemplate: resolve(text(target.workspaceTemplate, `targets[${index}].workspaceTemplate`)),
 		contextsDirectory: resolve(text(target.contextsDirectory, `targets[${index}].contextsDirectory`)),
 		basePort,
