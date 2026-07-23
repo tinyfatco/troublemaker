@@ -58,4 +58,8 @@ Target `skills` accepts one path or an ordered array of read-only skill roots;
 the host mounts each root into every context without copying it into customer
 workspaces.
 
+Set `hostGateway` to the address containers use for the host loopback proxy.
+Docker commonly provides `host.containers.internal`; rootless Podman with
+slirp4netns commonly uses `10.0.2.2`.
+
 See `config.example.json` for the complete shape.

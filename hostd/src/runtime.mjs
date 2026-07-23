@@ -164,8 +164,8 @@ export class RuntimeManager {
 				HOME: "/data",
 				MOM_EMAIL_INBOUND_TOKEN: contextCapability(target.inboundToken, "inbound", contextId),
 				MOM_EMAIL_TOOLS_TOKEN: contextCapability(target.outboundToken, "outbound", contextId),
-				MOM_EMAIL_SEND_URL: `http://host.containers.internal:${this.config.server.port}/v1/outbound/gmail`,
-				TROUBLEMAKER_HOSTD_URL: `http://host.containers.internal:${this.config.server.port}`,
+				MOM_EMAIL_SEND_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/outbound/gmail`,
+				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
 				...target.runtimeEnv,
 			};

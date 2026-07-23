@@ -44,6 +44,14 @@ function normalizeAddress(value, label) {
 	return address;
 }
 
+function host(value, fallback, label) {
+	const candidate = value === undefined ? fallback : text(value, label);
+	if (!/^(?:[a-z0-9.-]+|\[[a-f0-9:]+\])$/i.test(candidate)) {
+		throw new Error(`${label} must be a hostname or IP address`);
+	}
+	return candidate;
+}
+
 function targetConfig(raw, index, environment) {
 	const target = object(raw, `targets[${index}]`);
 	const id = text(target.id, `targets[${index}].id`);
@@ -91,6 +99,11 @@ function targetConfig(raw, index, environment) {
 		maxPort,
 		memory: target.memory === undefined ? "420m" : text(target.memory, `targets[${index}].memory`),
 		stopAfterTurn: boolean(target.stopAfterTurn, false, `targets[${index}].stopAfterTurn`),
+		hostGateway: host(
+			target.hostGateway,
+			"host.containers.internal",
+			`targets[${index}].hostGateway`,
+		),
 		outboundToken: envSecret(target.outboundTokenEnv, `targets[${index}].outboundTokenEnv`, environment),
 		runtimeEnv,
 	};
