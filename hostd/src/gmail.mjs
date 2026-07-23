@@ -114,7 +114,7 @@ export class GogGmail {
 		this.json(["gmail", "mark-read", "--account", this.account, messageId]);
 	}
 
-	sendThreadReply(threadId, body) {
+	sendThreadReply(threadId, subject, body) {
 		const parsed = this.json([
 			"gmail",
 			"send",
@@ -123,6 +123,8 @@ export class GogGmail {
 			"--thread-id",
 			threadId,
 			"--reply-all",
+			"--subject",
+			subject,
 			"--quote",
 			"--body-file",
 			"-",

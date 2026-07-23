@@ -39,8 +39,8 @@ test("outbound Gmail is confined to the owning context", async () => {
 		store,
 		daemon: { polling: false },
 		gmail: {
-			sendThreadReply(threadId, body) {
-				sends.push({ threadId, body });
+			sendThreadReply(threadId, subject, body) {
+				sends.push({ threadId, subject, body });
 				return { messageId: `sent-${sends.length}` };
 			},
 		},
@@ -61,6 +61,7 @@ test("outbound Gmail is confined to the owning context", async () => {
 			body: JSON.stringify({
 				context_id: owner.contextId,
 				provider_thread_id: stranger.providerThreadId,
+				subject: "Re: Scope test",
 				agent_body: "cross-context attempt",
 				idempotency_key: "denied",
 			}),
@@ -77,12 +78,17 @@ test("outbound Gmail is confined to the owning context", async () => {
 			body: JSON.stringify({
 				context_id: owner.contextId,
 				provider_thread_id: owner.providerThreadId,
+				subject: "Re: Scope test",
 				agent_body: "native Gmail reply",
 				idempotency_key: "owner-reply",
 			}),
 		});
 		assert.equal(sent.status, 200);
-		assert.deepEqual(sends, [{ threadId: "thread-owner", body: "native Gmail reply" }]);
+		assert.deepEqual(sends, [{
+			threadId: "thread-owner",
+			subject: "Re: Scope test",
+			body: "native Gmail reply",
+		}]);
 
 		const duplicate = await fetch(`${base}/v1/outbound/gmail`, {
 			method: "POST",
@@ -93,6 +99,7 @@ test("outbound Gmail is confined to the owning context", async () => {
 			body: JSON.stringify({
 				context_id: owner.contextId,
 				provider_thread_id: owner.providerThreadId,
+				subject: "Re: Scope test",
 				agent_body: "must not send twice",
 				idempotency_key: "owner-reply",
 			}),

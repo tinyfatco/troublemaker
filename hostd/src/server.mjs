@@ -69,6 +69,11 @@ export function createHostServer({ config, store, gmail, daemon }) {
 					json(response, 400, { error: "agent_body_required" });
 					return;
 				}
+				const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+				if (!subject) {
+					json(response, 400, { error: "subject_required" });
+					return;
+				}
 				const idempotencyKey = typeof body.idempotency_key === "string" && body.idempotency_key
 					? body.idempotency_key
 					: `${contextId}:${threadId}:${body.delivery_id || "unknown"}`;
@@ -83,7 +88,7 @@ export function createHostServer({ config, store, gmail, daemon }) {
 					return;
 				}
 				try {
-					const receipt = gmail.sendThreadReply(threadId, message);
+					const receipt = gmail.sendThreadReply(threadId, subject, message);
 					outbox = store.completeOutbox(idempotencyKey, receipt.messageId);
 					json(response, 200, { ok: true, messageId: outbox.providerMessageId });
 				} catch (error) {
