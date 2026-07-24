@@ -5,9 +5,31 @@ singular Troublemaker runtimes. It keeps provider credentials outside agent
 containers, journals delivery in SQLite, and binds native conversations to
 durable isolated OCI contexts.
 
-The initial connector uses `gog` for native Gmail reads and replies. Normal
-mail remains in Gmail; no forwarding mailbox or reconstructed email transport
-is involved.
+The initial connector uses `gog` for native Gmail reads, drafts, and delivery.
+Normal mail remains in Gmail; no forwarding mailbox or reconstructed email
+transport is involved.
+
+## Scoped Gmail tools
+
+A target with `gmailToolsOnly: true` exposes four short runtime tools:
+
+- `gmail_search` searches threads available to the current context.
+- `gmail_read` returns one sanitized thread after the same context check.
+- `gmail_draft` creates a reply or new-message draft, or updates only the body
+  of a previously returned draft.
+- `gmail_send` sends only a previously returned draft.
+
+The host keeps OAuth outside the runtime. New messages accept one exact verified
+contact and do not expose CC or BCC. Reply subjects come from the provider
+thread. Draft recipient and thread bindings cannot be changed after creation,
+and delivery rechecks recipient, subject, thread, body digest, and attachment
+absence before sending. Provider message and thread IDs are stored with an
+idempotent receipt. Ambiguous delivery outcomes stop for operator review rather
+than retrying automatically.
+
+When this setting is enabled, generic email adapter delivery fails closed; the
+runtime must save a draft and then send that exact draft after the required
+approval.
 
 ## Commands
 

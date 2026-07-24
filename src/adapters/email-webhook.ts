@@ -64,6 +64,8 @@ export interface EmailWebhookAdapterConfig {
 	inboundToken?: string;
 	/** Host-assigned isolated context allowed to reply through the host router. */
 	hostContextId?: string;
+	/** Require explicit Gmail draft tools instead of generic adapter delivery. */
+	toolsOnly?: boolean;
 }
 
 interface ActiveEmailReplyContext {
@@ -116,6 +118,7 @@ Keep responses concise and professional. The user will receive one email with yo
 	private sendUrl: string;
 	private inboundToken?: string;
 	private hostContextId?: string;
+	private toolsOnly: boolean;
 	private handler!: MomHandler;
 	/** Per-channel email metadata for threading (set in processEmail, read in createContext) */
 	private pendingPayloads = new Map<string, EmailPayload>();
@@ -129,6 +132,7 @@ Keep responses concise and professional. The user will receive one email with yo
 		this.sendUrl = config.sendUrl;
 		this.inboundToken = config.inboundToken;
 		this.hostContextId = config.hostContextId;
+		this.toolsOnly = config.toolsOnly === true;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -575,6 +579,9 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string> {
+		if (this.toolsOnly) {
+			throw new Error("Generic email delivery is disabled. Use gmail_draft, then gmail_send after approval.");
+		}
 		// Cross-channel send: channel format is "email-{address}" or "email-thread:{id}"
 		const emailMatch = channel.match(/^email-(.+)$/);
 		const threadTarget = parseEmailThreadTarget(channel);
@@ -932,6 +939,9 @@ Keep responses concise and professional. The user will receive one email with yo
 		if (!finalText.trim()) {
 			log.logInfo("[email] No response text to send");
 			return;
+		}
+		if (this.toolsOnly) {
+			throw new Error("Automatic email delivery is disabled. Use gmail_draft, then gmail_send after approval.");
 		}
 
 		// Build the concise work log

@@ -31,6 +31,7 @@ export class HostStore {
 
 			CREATE TABLE IF NOT EXISTS principals (
 				id TEXT PRIMARY KEY,
+				email_address TEXT,
 				created_at TEXT NOT NULL,
 				last_seen_at TEXT NOT NULL
 			);
@@ -111,7 +112,46 @@ export class HostStore {
 				created_at TEXT NOT NULL,
 				completed_at TEXT
 			);
+
+			CREATE TABLE IF NOT EXISTS gmail_drafts (
+				provider_draft_id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				principal_hash TEXT NOT NULL,
+				contact_address TEXT NOT NULL,
+				mode TEXT NOT NULL,
+				provider_thread_id TEXT NOT NULL,
+				reply_to_message_id TEXT,
+				subject TEXT NOT NULL,
+				body_sha256 TEXT NOT NULL,
+				status TEXT NOT NULL,
+				provider_message_id TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				sent_at TEXT
+			);
+
+			CREATE INDEX IF NOT EXISTS gmail_drafts_context
+				ON gmail_drafts(context_id, status, updated_at);
+
+			CREATE TABLE IF NOT EXISTS gmail_tool_requests (
+				idempotency_key TEXT PRIMARY KEY,
+				action TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				provider_draft_id TEXT,
+				status TEXT NOT NULL,
+				provider_message_id TEXT,
+				provider_thread_id TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				completed_at TEXT
+			);
 		`);
+		const principalColumns = this.database.prepare("PRAGMA table_info(principals)").all();
+		if (!principalColumns.some((column) => column.name === "email_address")) {
+			this.database.exec("ALTER TABLE principals ADD COLUMN email_address TEXT");
+		}
 	}
 
 	close() {
@@ -161,16 +201,30 @@ export class HostStore {
 		}
 	}
 
-	ensurePrincipal(principalHash) {
+	ensurePrincipal(principalHash, emailAddress) {
 		const timestamp = now();
 		this.database.prepare(`
-			INSERT INTO principals(id, created_at, last_seen_at) VALUES (?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET last_seen_at = excluded.last_seen_at
-		`).run(principalHash, timestamp, timestamp);
+			INSERT INTO principals(id, email_address, created_at, last_seen_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(id) DO UPDATE SET
+				email_address = COALESCE(principals.email_address, excluded.email_address),
+				last_seen_at = excluded.last_seen_at
+		`).run(principalHash, emailAddress ?? null, timestamp, timestamp);
 		return this.database.prepare(`
-			SELECT id, created_at AS createdAt, last_seen_at AS lastSeenAt
+			SELECT id, email_address AS emailAddress,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
 			FROM principals WHERE id = ?
 		`).get(principalHash);
+	}
+
+	setPrincipalEmail(principalHash, emailAddress) {
+		const current = this.ensurePrincipal(principalHash);
+		if (current.emailAddress && current.emailAddress !== emailAddress) {
+			throw new Error("principal contact cannot be changed");
+		}
+		this.database.prepare(`
+			UPDATE principals SET email_address = ?, last_seen_at = ? WHERE id = ?
+		`).run(emailAddress, now(), principalHash);
+		return this.ensurePrincipal(principalHash);
 	}
 
 	ensureProject(principalHash, slug, name) {
@@ -195,6 +249,32 @@ export class HostStore {
 				created_at AS createdAt, last_seen_at AS lastSeenAt
 			FROM projects WHERE principal_hash = ? ORDER BY slug
 		`).all(principalHash);
+	}
+
+	getContextScope(contextId, targetId) {
+		const rows = this.database.prepare(`
+			SELECT DISTINCT r.principal_hash AS principalHash,
+				p.email_address AS emailAddress, r.project_slug AS projectSlug
+			FROM routes r
+			JOIN principals p ON p.id = r.principal_hash
+			WHERE r.context_id = ? AND r.target_id = ?
+			ORDER BY r.principal_hash, r.project_slug
+		`).all(contextId, targetId);
+		if (rows.length === 0) return undefined;
+		const principalHashes = new Set(rows.map((row) => row.principalHash));
+		if (principalHashes.size !== 1) throw new Error("context has inconsistent principal scope");
+		return rows[0];
+	}
+
+	listRoutesForContext(contextId, targetId) {
+		return this.database.prepare(`
+			SELECT source, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, project_slug AS projectSlug,
+				target_id AS targetId, context_id AS contextId,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM routes WHERE context_id = ? AND target_id = ?
+			ORDER BY last_seen_at DESC
+		`).all(contextId, targetId);
 	}
 
 	getRoute(source, threadId) {
@@ -416,6 +496,152 @@ export class HostStore {
 		`).run(String(error).slice(0, 1000), idempotencyKey);
 	}
 
+	getGmailDraft(providerDraftId) {
+		return this.database.prepare(`
+			SELECT provider_draft_id AS providerDraftId, target_id AS targetId,
+				context_id AS contextId, principal_hash AS principalHash,
+				contact_address AS contactAddress, mode,
+				provider_thread_id AS providerThreadId,
+				reply_to_message_id AS replyToMessageId, subject,
+				body_sha256 AS bodySha256, status,
+				provider_message_id AS providerMessageId,
+				created_at AS createdAt, updated_at AS updatedAt, sent_at AS sentAt
+			FROM gmail_drafts WHERE provider_draft_id = ?
+		`).get(providerDraftId);
+	}
+
+	getGmailRequest(idempotencyKey) {
+		return this.database.prepare(`
+			SELECT idempotency_key AS idempotencyKey, action,
+				target_id AS targetId, context_id AS contextId,
+				provider_draft_id AS providerDraftId, status,
+				provider_message_id AS providerMessageId,
+				provider_thread_id AS providerThreadId,
+				last_error AS lastError, created_at AS createdAt,
+				completed_at AS completedAt
+			FROM gmail_tool_requests WHERE idempotency_key = ?
+		`).get(idempotencyKey);
+	}
+
+	startGmailRequest({ idempotencyKey, action, targetId, contextId, providerDraftId }) {
+		this.database.prepare(`
+			INSERT INTO gmail_tool_requests(
+				idempotency_key, action, target_id, context_id,
+				provider_draft_id, status, created_at
+			) VALUES (?, ?, ?, ?, ?, 'running', ?)
+			ON CONFLICT(idempotency_key) DO NOTHING
+		`).run(idempotencyKey, action, targetId, contextId, providerDraftId ?? null, now());
+		return this.getGmailRequest(idempotencyKey);
+	}
+
+	completeGmailDraftCreate(idempotencyKey, draft) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				INSERT INTO gmail_drafts(
+					provider_draft_id, target_id, context_id, principal_hash,
+					contact_address, mode, provider_thread_id,
+					reply_to_message_id, subject, body_sha256, status,
+					created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+			`).run(
+				draft.providerDraftId,
+				draft.targetId,
+				draft.contextId,
+				draft.principalHash,
+				draft.contactAddress,
+				draft.mode,
+				draft.providerThreadId,
+				draft.replyToMessageId ?? null,
+				draft.subject,
+				draft.bodySha256,
+				timestamp,
+				timestamp,
+			);
+			this.database.prepare(`
+				UPDATE gmail_tool_requests SET status = 'completed',
+					provider_draft_id = ?, provider_thread_id = ?,
+					completed_at = ?, last_error = NULL
+				WHERE idempotency_key = ?
+			`).run(draft.providerDraftId, draft.providerThreadId, timestamp, idempotencyKey);
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+		return this.getGmailDraft(draft.providerDraftId);
+	}
+
+	completeGmailDraftUpdate(idempotencyKey, providerDraftId, bodySha256, providerThreadId) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE gmail_drafts SET body_sha256 = ?, provider_thread_id = ?,
+					updated_at = ?
+				WHERE provider_draft_id = ? AND status = 'draft'
+			`).run(bodySha256, providerThreadId, timestamp, providerDraftId);
+			this.database.prepare(`
+				UPDATE gmail_tool_requests SET status = 'completed',
+					provider_draft_id = ?, provider_thread_id = ?,
+					completed_at = ?, last_error = NULL
+				WHERE idempotency_key = ?
+			`).run(providerDraftId, providerThreadId, timestamp, idempotencyKey);
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+		return this.getGmailDraft(providerDraftId);
+	}
+
+	markGmailDraftSending(providerDraftId) {
+		const result = this.database.prepare(`
+			UPDATE gmail_drafts SET status = 'sending', updated_at = ?
+			WHERE provider_draft_id = ? AND status = 'draft'
+		`).run(now(), providerDraftId);
+		return result.changes === 1 ? this.getGmailDraft(providerDraftId) : undefined;
+	}
+
+	completeGmailDraftSend(idempotencyKey, providerDraftId, providerMessageId, providerThreadId) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE gmail_drafts SET status = 'sent', provider_message_id = ?,
+					provider_thread_id = ?, updated_at = ?, sent_at = ?
+				WHERE provider_draft_id = ?
+			`).run(providerMessageId, providerThreadId, timestamp, timestamp, providerDraftId);
+			this.database.prepare(`
+				UPDATE gmail_tool_requests SET status = 'completed',
+					provider_draft_id = ?, provider_message_id = ?,
+					provider_thread_id = ?, completed_at = ?, last_error = NULL
+				WHERE idempotency_key = ?
+			`).run(providerDraftId, providerMessageId, providerThreadId, timestamp, idempotencyKey);
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+		return this.getGmailDraft(providerDraftId);
+	}
+
+	failGmailRequest(idempotencyKey, error) {
+		this.database.prepare(`
+			UPDATE gmail_tool_requests SET status = 'failed', last_error = ?
+			WHERE idempotency_key = ?
+		`).run(String(error).slice(0, 1000), idempotencyKey);
+	}
+
+	markGmailDraftUncertain(providerDraftId) {
+		this.database.prepare(`
+			UPDATE gmail_drafts SET status = 'uncertain', updated_at = ?
+			WHERE provider_draft_id = ? AND status = 'sending'
+		`).run(now(), providerDraftId);
+		return this.getGmailDraft(providerDraftId);
+	}
+
 	status() {
 		return {
 			lastSuccessfulPollAt: this.getMeta("gmail:last_successful_poll_at") ?? null,
@@ -432,6 +658,12 @@ export class HostStore {
 			`).get().count,
 			completedOutbox: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM outbox WHERE status = 'completed'
+			`).get().count,
+			gmailDrafts: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM gmail_drafts WHERE status = 'draft'
+			`).get().count,
+			gmailSentDrafts: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM gmail_drafts WHERE status = 'sent'
 			`).get().count,
 		};
 	}

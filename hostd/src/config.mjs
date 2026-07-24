@@ -138,6 +138,7 @@ function targetConfig(raw, index, environment) {
 		maxPort,
 		memory: target.memory === undefined ? "420m" : text(target.memory, `targets[${index}].memory`),
 		stopAfterTurn: boolean(target.stopAfterTurn, false, `targets[${index}].stopAfterTurn`),
+		gmailToolsOnly: boolean(target.gmailToolsOnly, false, `targets[${index}].gmailToolsOnly`),
 		hostGateway: host(
 			target.hostGateway,
 			"host.containers.internal",

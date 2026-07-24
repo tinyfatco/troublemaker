@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
 
 async function readJson(request, maximumBytes = 2 * 1024 * 1024) {
@@ -29,7 +30,8 @@ function authenticateContext(request, config, contextId, purpose) {
 	return bearerMatches(request.headers.authorization, expected) ? target : null;
 }
 
-export function createHostServer({ config, store, gmail, daemon }) {
+export function createHostServer({ config, store, gmail, daemon, routingKey }) {
+	const gmailTools = routingKey ? new HostGmailTools({ config, store, gmail, routingKey }) : null;
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {
@@ -46,6 +48,36 @@ export function createHostServer({ config, store, gmail, daemon }) {
 				json(response, 200, { ok: true, polling: daemon.polling, ...store.status() });
 				return;
 			}
+			if (request.method === "POST" && [
+				"/v1/gmail/search",
+				"/v1/gmail/read",
+				"/v1/gmail/draft",
+				"/v1/gmail/send",
+			].includes(url.pathname)) {
+				if (!gmailTools) {
+					json(response, 503, { error: "gmail_tools_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const body = await readJson(request);
+				const contextId = typeof body.context_id === "string" ? body.context_id : "";
+				const target = authenticateContext(request, config, contextId, "outbound");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				const handlers = {
+					"/v1/gmail/search": () => gmailTools.search(target, contextId, body),
+					"/v1/gmail/read": () => gmailTools.read(target, contextId, body),
+					"/v1/gmail/draft": () => gmailTools.draft(target, contextId, body),
+					"/v1/gmail/send": () => gmailTools.send(target, contextId, body),
+				};
+				json(response, 200, handlers[url.pathname]());
+				return;
+			}
 			if (request.method === "POST" && url.pathname === "/v1/outbound/gmail") {
 				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
 					json(response, 415, { error: "json_required" });
@@ -56,6 +88,10 @@ export function createHostServer({ config, store, gmail, daemon }) {
 				const target = authenticateContext(request, config, contextId, "outbound");
 				if (!target) {
 					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				if (target.gmailToolsOnly) {
+					json(response, 409, { error: "gmail_draft_required" });
 					return;
 				}
 				const threadId = typeof body.provider_thread_id === "string" ? body.provider_thread_id : "";
@@ -99,6 +135,10 @@ export function createHostServer({ config, store, gmail, daemon }) {
 			}
 			json(response, 404, { error: "not_found" });
 		} catch (error) {
+			if (error instanceof GmailToolError) {
+				json(response, error.status, { error: error.code });
+				return;
+			}
 			console.error(`troublemaker-hostd: request failed (${url.pathname}):`, error);
 			json(response, 500, { error: "internal_error" });
 		}

@@ -8,19 +8,23 @@ export class ContextRouter {
 	}
 
 	resolve({ source, threadId, sender }) {
+		const normalizedSender = sender.toLowerCase();
+		const senderHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
 		const existing = this.store.getRoute(source, threadId);
 		if (existing) {
+			if (existing.principalHash === senderHash) {
+				this.store.ensurePrincipal(existing.principalHash, normalizedSender);
+			}
 			this.store.touchRoute(source, threadId);
 			return this.store.getRoute(source, threadId);
 		}
 
-		const normalizedSender = sender.toLowerCase();
 		const targetId = this.config.routing.actorTarget;
 		const target = this.config.targetsById.get(targetId);
 		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
 
-		const principalHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
-		this.store.ensurePrincipal(principalHash);
+		const principalHash = senderHash;
+		this.store.ensurePrincipal(principalHash, normalizedSender);
 		const known = this.config.routing.knownPrincipals.find((principal) => principal.email === normalizedSender);
 		for (const project of known?.projects ?? []) {
 			this.store.ensureProject(principalHash, project.slug, project.name);

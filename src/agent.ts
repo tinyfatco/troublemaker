@@ -48,6 +48,7 @@ import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-t
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
+import hostGmailExtension from "./extensions/host-gmail.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
 import {
 	createClaudeCliStream,
@@ -451,7 +452,7 @@ function createRunner(
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
-		extensionFactories: [tinyfatDomainsExtension],
+		extensionFactories: [hostGmailExtension, tinyfatDomainsExtension],
 		extensionsOverride: (base) => {
 			for (const extension of base.extensions) {
 				for (const registered of extension.tools.values()) {
