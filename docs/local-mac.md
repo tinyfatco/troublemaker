@@ -82,6 +82,13 @@ npm run doctor:local-mac
 npm run smoke:mac-app
 ```
 
+## Compaction cue
+
+On macOS, Troublemaker plays a quiet built-in system sound when context
+compaction begins. Playback is best-effort and never blocks the agent. Set
+`MOM_COMPACTION_SOUND=off` to disable it, use an absolute audio-file path to
+replace it, or tune `MOM_COMPACTION_SOUND_VOLUME` between `0` and `1`.
+
 ## Realtime Voice WebSocket
 
 For integrated voice, connect your app to:
