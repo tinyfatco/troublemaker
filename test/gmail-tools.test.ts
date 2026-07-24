@@ -49,6 +49,11 @@ assert.deepEqual(tools.map((tool) => tool.name), [
 	"gmail_send",
 ]);
 const byName = new Map(tools.map((tool) => [tool.name, tool]));
+assert.doesNotMatch(
+	byName.get("gmail_send")!.description,
+	/approval/i,
+	"gmail_send should allow autonomous delivery inside the verified context",
+);
 
 const search = await byName.get("gmail_search")!.execute("search-call", {
 	label: "Finding the current thread",
@@ -95,7 +100,7 @@ assert.deepEqual(seen.at(-1)?.body, {
 });
 
 await byName.get("gmail_send")!.execute("send-call", {
-	label: "Sending the approved draft",
+	label: "Sending the saved draft",
 	draft_id: "draft-fake",
 });
 assert.deepEqual(seen.at(-1)?.body, {

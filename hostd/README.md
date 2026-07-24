@@ -28,8 +28,8 @@ idempotent receipt. Ambiguous delivery outcomes stop for operator review rather
 than retrying automatically.
 
 When this setting is enabled, generic email adapter delivery fails closed; the
-runtime must save a draft and then send that exact draft after the required
-approval.
+runtime must save a draft and may then send that exact draft autonomously within
+the verified context.
 
 ## Commands
 

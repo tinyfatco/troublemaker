@@ -580,7 +580,7 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	async postMessage(channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>, subject?: string): Promise<string> {
 		if (this.toolsOnly) {
-			throw new Error("Generic email delivery is disabled. Use gmail_draft, then gmail_send after approval.");
+			throw new Error("Generic email delivery is disabled. Use gmail_draft, then gmail_send.");
 		}
 		// Cross-channel send: channel format is "email-{address}" or "email-thread:{id}"
 		const emailMatch = channel.match(/^email-(.+)$/);
@@ -941,7 +941,7 @@ Keep responses concise and professional. The user will receive one email with yo
 			return;
 		}
 		if (this.toolsOnly) {
-			throw new Error("Automatic email delivery is disabled. Use gmail_draft, then gmail_send after approval.");
+			throw new Error("Automatic email delivery is disabled. Use gmail_draft, then gmail_send.");
 		}
 
 		// Build the concise work log

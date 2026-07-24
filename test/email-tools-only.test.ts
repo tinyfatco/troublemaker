@@ -15,7 +15,7 @@ try {
 	});
 	await assert.rejects(
 		() => adapter.postMessage("email-person@example.com", "This must remain unsent"),
-		/Generic email delivery is disabled\. Use gmail_draft, then gmail_send after approval\./,
+		/Generic email delivery is disabled\. Use gmail_draft, then gmail_send\./,
 	);
 } finally {
 	rmSync(workingDir, { recursive: true, force: true });

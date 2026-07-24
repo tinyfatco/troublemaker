@@ -125,7 +125,7 @@ export function createGmailToolDefinitions(options: GmailToolOptions = {}): Tool
 		defineTool({
 			name: "gmail_send",
 			label: "gmail_send",
-			description: "Send one previously saved Gmail draft after explicit approval of that exact draft. Accepts only a draft ID; addressing and content cannot be supplied or changed here. Returns durable Gmail message and thread IDs.",
+			description: "Send one previously saved Gmail draft within the current verified context. Accepts only a draft ID; addressing and content cannot be supplied or changed here. Returns durable Gmail message and thread IDs.",
 			parameters: Type.Object({
 				draft_id: Type.String({ description: "Draft ID returned by gmail_draft.", minLength: 1, maxLength: 256 }),
 			}),
