@@ -336,7 +336,7 @@ Use standard Markdown. Mention operators with @username only when the message ge
 			response.end(JSON.stringify({ ok: true, accepted: true }));
 			void withHostReceipt(payload.hostReceipt, async () => {
 				if (payload.deliveryId && this.deliveryLedger.has(payload.deliveryId)) return;
-				await this.handleMessage(payload.message!);
+				await this.handleMessage(payload.message!, true);
 				if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
 			}).catch((error) => {
 				log.logWarning("Rocket.Chat webhook processing error", error instanceof Error ? error.message : String(error));
@@ -463,7 +463,7 @@ Use standard Markdown. Mention operators with @username only when the message ge
 		return confirmed.message._id;
 	}
 
-	private async handleMessage(message: RocketChatMessage): Promise<void> {
+	private async handleMessage(message: RocketChatMessage, awaitCompletion = false): Promise<void> {
 		if (message.t || message.customFields?.tinyfat?.eventId) return;
 		this.requireAllowedRoom(message.rid);
 		this.rememberUser(message.u);
@@ -504,6 +504,7 @@ Use standard Markdown. Mention operators with @username only when the message ge
 			adapter: this,
 			event,
 			queue: this.getQueue(message.rid),
+			awaitCompletion,
 		});
 	}
 

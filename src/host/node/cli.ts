@@ -1293,36 +1293,47 @@ function isConfigurableVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): 
 		|| event.channel.startsWith("voice-");
 }
 
-function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): void {
-	if (awareness?.running && awareness.runner.steer(event.text)) {
+function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
+	const steering = awareness?.running ? awareness.runner.steer(event.text) : null;
+	if (steering) {
 		log.logInfo(`[voice-webhook:${event.channel}] Soft-steered transcript into the active run`);
-		return;
+		return steering;
 	}
 
 	log.logInfo(`[voice-webhook:${event.channel}] Active work cannot accept steering; queued a fresh turn`);
-	void withGlobalRunSlot(`voice-webhook:${event.channel}`, () => runEventInSlot(event, adapter, false))
-		.catch((err) => {
-			log.logWarning(
-				`[voice-webhook:${event.channel}] Queued turn failed`,
-				err instanceof Error ? err.message : String(err),
-			);
-		});
+	const queued = withGlobalRunSlot(`voice-webhook:${event.channel}`, () => runEventInSlot(event, adapter, false))
+		.then(() => undefined);
+	void queued.catch((err) => {
+		log.logWarning(
+			`[voice-webhook:${event.channel}] Queued turn failed`,
+			err instanceof Error ? err.message : String(err),
+		);
+	});
+	return queued;
 }
 
-function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): void {
+function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 	const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
+	let steering: Promise<void> | null = null;
+	let queued: Promise<void> | null = null;
 	const disposition = routeBusyMessageWithoutInterrupt({
 		prompt,
 		canSteer: awareness?.running === true,
-		steer: (steeringPrompt) => awareness?.runner.steer(steeringPrompt) ?? false,
+		steer: (steeringPrompt) => {
+			steering = awareness?.runner.steer(steeringPrompt) ?? null;
+			return steering !== null;
+		},
 		enqueue: () => {
-			void withGlobalRunSlot(`steer-fallback:${adapter.name}:${event.channel}`, () => runEventInSlot(event, adapter, false))
-				.catch((err) => {
-					log.logWarning(
-						`[steer:${event.channel}] Queued turn failed`,
-						err instanceof Error ? err.message : String(err),
-					);
-				});
+			queued = withGlobalRunSlot(
+				`steer-fallback:${adapter.name}:${event.channel}`,
+				() => runEventInSlot(event, adapter, false),
+			).then(() => undefined);
+			void queued.catch((err) => {
+				log.logWarning(
+					`[steer:${event.channel}] Queued turn failed`,
+					err instanceof Error ? err.message : String(err),
+				);
+			});
 		},
 	});
 
@@ -1331,6 +1342,7 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): voi
 	} else {
 		log.logInfo(`[steer:${event.channel}] Active work cannot accept steering; queued a fresh turn`);
 	}
+	return steering ?? queued ?? Promise.resolve();
 }
 
 // ============================================================================
@@ -1357,7 +1369,7 @@ const handler: MomHandler = {
 		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
 	},
 
-	handleSteer(event: MomEvent, adapter: PlatformAdapter): void {
+	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
@@ -1365,19 +1377,18 @@ const handler: MomHandler = {
 			&& activeDeliveryScope.channelId === event.channel;
 		if (sameTerminalRun && awareness && tryTerminalTuiSoftSteer(event, awareness.runner)) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
-			return;
+			return Promise.resolve();
 		}
 		if (isConfigurableVoiceWebhook(event, adapter)) {
 			liveSettings.reload();
 			if (liveSettings.getVoiceWebhookInputMode() === "steer") {
-				steerOrQueueVoiceWebhook(event, adapter);
-				return;
+				return steerOrQueueVoiceWebhook(event, adapter);
 			}
 			enqueueHardInterrupt(event, adapter);
-			return;
+			return Promise.resolve();
 		}
 
-		steerOrQueueBusyMessage(event, adapter);
+		return steerOrQueueBusyMessage(event, adapter);
 	},
 
 	handleVoiceEvent(event: MomEvent, adapter: PlatformAdapter): void {

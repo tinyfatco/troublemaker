@@ -202,7 +202,7 @@ export interface MomHandler {
 	 * fresh canonical turn when the active model cannot currently accept it.
 	 * This path never aborts the active run or tool.
 	 */
-	handleSteer(event: MomEvent, adapter: PlatformAdapter): void;
+	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> | void;
 
 	/**
 	 * Accept a committed utterance from an explicit voice session. The resident
