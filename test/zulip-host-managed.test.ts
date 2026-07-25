@@ -256,6 +256,48 @@ try {
 	assert.equal(handled[1].directlyAddressed, true);
 	assert.equal(pulseRecords.length, 3, "Zulip DMs reach direct pulse accounting");
 
+	const groupDmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-group-dm",
+			message: {
+				id: 94,
+				type: "private",
+				recipient_id: 19,
+				display_recipient: [
+					{ id: 12, email: "teammate@example.com", full_name: "Teammate" },
+					{ id: 9, email: "agent@example.com", full_name: "Operator" },
+					{ id: 8, email: "casey@example.com", full_name: "Casey" },
+				],
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				sender_is_bot: false,
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>Hello group.</p>",
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-group-dm",
+			},
+		}),
+	});
+	assert.equal(groupDmResponse.status, 202);
+	for (let index = 0; index < 100 && handled.length < 3; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(adapter.getChannel("dm:8,12")?.name, "Group DM: Casey, Teammate");
+	assert.equal(handled[2].type, "dm");
+	assert.equal(handled[2].channel, "dm:8,12");
+	assert.equal(handled[2].replyTarget, "zulip:dm:8,12");
+	assert.equal(handled[2].directlyAddressed, true);
+	assert.equal(pulseRecords.length, 4, "Zulip group DMs reach direct pulse accounting");
+
 	const topicResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",
 		headers: {
@@ -286,13 +328,13 @@ try {
 		}),
 	});
 	assert.equal(topicResponse.status, 202);
-	for (let index = 0; index < 100 && handled.length < 3; index++) {
+	for (let index = 0; index < 100 && handled.length < 4; index++) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
-	assert.equal(handled[2].threadTs, "Road map / alpha");
-	assert.equal(handled[2].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
-	assert.equal(handled[2].replyTargetDescription, "Zulip channel topic Road map / alpha");
-	assert.equal(pulseRecords.length, 4, "topic mentions retain direct pulse accounting");
+	assert.equal(handled[3].threadTs, "Road map / alpha");
+	assert.equal(handled[3].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
+	assert.equal(handled[3].replyTargetDescription, "Zulip channel topic Road map / alpha");
+	assert.equal(pulseRecords.length, 5, "topic mentions retain direct pulse accounting");
 
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
@@ -330,10 +372,10 @@ try {
 		});
 		assert.equal(response.status, 202);
 	}
-	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 6; index++) {
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 7; index++) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
-	assert.equal(receipts.filter((status) => status === "completed").length, 6);
+	assert.equal(receipts.filter((status) => status === "completed").length, 7);
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
@@ -341,11 +383,11 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 5, "explicit other-bot mentions reach direct pulse accounting");
+	assert.equal(pulseRecords.length, 6, "explicit other-bot mentions reach direct pulse accounting");
 	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
-	assert.equal(handled.length, 4, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[3].directlyAddressed, true);
-	assert.equal(handled[3].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[4].directlyAddressed, true);
+	assert.equal(handled[4].sourceEventType, "zulip_mention");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");
@@ -362,6 +404,11 @@ try {
 	assert.equal(outboundBodies[2].get("type"), "channel");
 	assert.equal(outboundBodies[2].get("to"), OTHER_CHANNEL_ID);
 	assert.equal(outboundBodies[2].get("topic"), "Roadmap");
+	const groupDirectPosted = await adapter.postMessage("dm:8,12", "Group direct review is ready.");
+	assert.equal(groupDirectPosted, "103");
+	assert.equal(outboundBodies[3].get("type"), "direct");
+	assert.equal(outboundBodies[3].get("to"), "[8,12]");
+	assert.equal(outboundBodies[3].get("content"), "Group direct review is ready.");
 
 	const working = adapter.createWorkingOutputContext(
 		{ platform: "zulip", channelId: CHANNEL_ID },
