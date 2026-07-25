@@ -241,13 +241,14 @@ try {
 		id: 101,
 		content: "<p>@Agent please reply.</p>",
 		raw_content: "@**Agent** please reply.",
-		is_mentioned: true,
+		flags: ["mentioned"],
 	};
 	messages.set(mentionMessage.id, mentionMessage);
-	events.push({ id: 2, type: "message", message: mentionMessage });
+	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
+	events.push({ id: 2, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:101"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:101");
-	assert.equal(mentionDelivery.message.is_mentioned, true);
+	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
 	await waitFor(
 		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 101,
 		"durable recovered cursor",

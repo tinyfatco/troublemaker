@@ -377,9 +377,15 @@ export class ZulipResidentBridge {
 		const rawContent = typeof detail.message?.raw_content === "string"
 			? detail.message.raw_content
 			: undefined;
+		const flags = Array.isArray(detail.message?.flags)
+			? detail.message.flags.filter((flag) => typeof flag === "string")
+			: undefined;
+		const isMentioned = detail.message?.is_mentioned === true ? true : undefined;
 		await this.deliver({
 			...message,
 			...(rawContent === undefined ? {} : { raw_content: rawContent }),
+			...(flags === undefined ? {} : { flags }),
+			...(isMentioned === undefined ? {} : { is_mentioned: isMentioned }),
 		});
 		this.advanceMessageCursor(messageId);
 	}

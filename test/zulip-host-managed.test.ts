@@ -143,7 +143,7 @@ try {
 				timestamp: Math.floor(Date.now() / 1000),
 				content: "<p>Please review the customer note.</p>",
 				raw_content: "Please review the customer note.",
-				is_mentioned: true,
+				flags: ["mentioned"],
 			},
 			hostReceipt: {
 				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
