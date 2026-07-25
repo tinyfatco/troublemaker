@@ -406,7 +406,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
-		if (senderIsBot) return;
+		if (senderIsBot && !directlyAddressed) return;
 		this.pulse?.record(
 			channel,
 			senderId,

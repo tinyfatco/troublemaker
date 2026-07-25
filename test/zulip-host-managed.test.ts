@@ -259,9 +259,11 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 2, "other-bot traffic never reaches pulse accounting");
-	assert.equal(ambient.length, 1, "other-bot ambient traffic never reaches ambient evaluation");
-	assert.equal(handled.length, 1, "other-bot mentions never reach direct handling");
+	assert.equal(pulseRecords.length, 3, "explicit other-bot mentions reach direct pulse accounting");
+	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
+	assert.equal(handled.length, 2, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[1].directlyAddressed, true);
+	assert.equal(handled[1].sourceEventType, "zulip_mention");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");
