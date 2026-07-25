@@ -8,11 +8,22 @@ function required(name) {
 	return value.trim();
 }
 
+function optionalList(name) {
+	const value = process.env[name];
+	return value === undefined
+		? undefined
+		: value.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+const allowedChannelIds = optionalList("ZULIP_ALLOWED_CHANNELS")
+	?? (process.env.ZULIP_CHANNEL_ID?.trim() ? [process.env.ZULIP_CHANNEL_ID.trim()] : undefined);
+
 const bridge = new ZulipResidentBridge({
 	zulipUrl: required("ZULIP_NATIVE_URL"),
 	zulipEmail: required("ZULIP_NATIVE_EMAIL"),
 	zulipApiKey: required("ZULIP_NATIVE_API_KEY"),
-	channelId: required("ZULIP_CHANNEL_ID"),
+	allowedChannelIds,
+	allowedDmUserIds: optionalList("ZULIP_ALLOWED_DM_USERS"),
 	proxyToken: required("ZULIP_PROXY_TOKEN"),
 	inboundUrl: required("ZULIP_INBOUND_URL"),
 	inboundToken: required("ZULIP_INBOUND_TOKEN"),

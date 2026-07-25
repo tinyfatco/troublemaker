@@ -189,6 +189,29 @@ try {
 			text: "Phone group reply",
 			isBot: true,
 		},
+		{
+			date: "2026-05-26T11:20:00.000Z",
+			ts: "201",
+			threadTs: "Road map / alpha",
+			channel: "zulip:projects",
+			channelId: "4",
+			displayName: "Casey",
+			text: "Zulip topic root",
+			isBot: false,
+			directlyAddressed: true,
+			sourceEventType: "zulip_mention",
+		},
+		{
+			date: "2026-05-26T11:21:00.000Z",
+			ts: "202",
+			channel: "zulip:DM: Casey",
+			channelId: "dm:8",
+			displayName: "Casey",
+			text: "Zulip direct hello",
+			isBot: false,
+			directlyAddressed: true,
+			sourceEventType: "zulip_dm",
+		},
 	].map((row) => JSON.stringify(row)).join("\n") + "\n");
 
 	assert(parseSlackThreadTarget("slack:C0123456789:1700000010.000100")?.channelId === "C0123456789", "valid Slack thread target parses");
@@ -322,6 +345,18 @@ try {
 	);
 	assert(rocketFallback?.source === "log", "Rocket.Chat transcript falls back to the local log");
 	assert(rocketFallback?.messages.length === 2, "Rocket.Chat log fallback keeps root and replies together");
+
+	const zulipTopic = await collectThreadMessages(
+		workingDir,
+		"zulip:4:topic:Road%20map%20%2F%20alpha",
+		[],
+	);
+	assert(zulipTopic?.source === "zulip-log", "generic read_thread reads Zulip topic targets");
+	assert(zulipTopic?.messages[0]?.text === "Zulip topic root", "Zulip topic transcript preserves exact topic context");
+	assert(formatThreadTranscript(zulipTopic!).includes("Zulip conversation"), "generic formatter labels Zulip conversations");
+	const zulipDm = await collectThreadMessages(workingDir, "zulip:dm:8", []);
+	assert(zulipDm?.source === "zulip-log", "generic read_thread reads Zulip DM targets");
+	assert(zulipDm?.messages[0]?.text === "Zulip direct hello", "Zulip DM transcript preserves direct-message context");
 
 	const emailTarget = collectEmailThreadListings(workingDir)[0]?.sendTarget;
 	assert(Boolean(emailTarget), "email thread target is discoverable for read_thread");
