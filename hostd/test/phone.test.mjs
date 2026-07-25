@@ -157,6 +157,41 @@ test("quarantines group and media evidence before creating a route", async () =>
 	}
 });
 
+test("accepts provider-inferred two-party markers but keeps independent group evidence quarantined", async () => {
+	const inferredDirect = subject();
+	try {
+		assert.equal(await inferredDirect.gateway.acceptWebhook(inbound({
+			metadata: {
+				group: true,
+				groupInferred: true,
+				groupKey: "inferred-two-party-example",
+			},
+		})), "queued");
+		assert.equal(inferredDirect.store.listRetryableEvents().length, 1);
+		assert.equal(inferredDirect.store.database.prepare(`
+			SELECT COUNT(*) AS count FROM phone_conversations
+		`).get().count, 1);
+	} finally {
+		inferredDirect.close();
+	}
+
+	const inferredWithRoster = subject();
+	try {
+		assert.equal(await inferredWithRoster.gateway.acceptWebhook(inbound({
+			metadata: {
+				group: true,
+				groupInferred: true,
+				groupKey: "inferred-with-roster-example",
+				participants: [CONTACT_NUMBER, BUSINESS_NUMBER, "+15555550124"],
+			},
+		})), "quarantined:non_direct_text");
+		assert.equal(inferredWithRoster.store.listRetryableEvents().length, 0);
+		assert.equal(inferredWithRoster.store.listContexts().length, 0);
+	} finally {
+		inferredWithRoster.close();
+	}
+});
+
 test("host-owned direct delivery resolves the encrypted contact and never accepts recipients", async () => {
 	let providerBody;
 	const state = subject(async (_url, init) => {
