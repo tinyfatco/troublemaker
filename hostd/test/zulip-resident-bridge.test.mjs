@@ -285,10 +285,30 @@ try {
 	assert.equal(inboundDeliveries[2].message.sender_is_bot, false);
 	assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")).knownDirectConversations, ["dm:8"]);
 
+	const groupDirectMessage = {
+		...directMessage,
+		id: 54,
+		recipient_id: 13,
+		display_recipient: [
+			{ id: 8, email: "alex@example.com", full_name: "Alex" },
+			{ id: 12, email: "teammate@example.com", full_name: "Teammate" },
+			{ id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent" },
+		],
+		content: "<p>Group direct hello.</p>",
+	};
+	messages.set(groupDirectMessage.id, groupDirectMessage);
+	events.push({ id: 4, type: "message", message: groupDirectMessage });
+	await waitFor(() => inboundDeliveries.length === 4, "group direct-message delivery");
+	assert.equal(inboundDeliveries[3].message.type, "private");
+	assert.deepEqual(
+		JSON.parse(readFileSync(statePath, "utf8")).knownDirectConversations,
+		["dm:8", "dm:8,12"],
+	);
+
 	subscriptions.push({ stream_id: 5, name: "Projects", topics_policy: "disable_empty_topic" });
 	const newlySubscribedMessage = {
 		...ambientMessage,
-		id: 54,
+		id: 55,
 		stream_id: 5,
 		display_recipient: "Projects",
 		subject: "Roadmap",
@@ -296,10 +316,10 @@ try {
 		raw_content: "New channel update.",
 	};
 	messages.set(newlySubscribedMessage.id, newlySubscribedMessage);
-	events.push({ id: 4, type: "message", message: newlySubscribedMessage });
-	await waitFor(() => inboundDeliveries.length === 4, "newly subscribed channel delivery");
-	assert.equal(inboundDeliveries[3].message.stream_id, 5);
-	assert.equal(inboundDeliveries[3].message.subject, "Roadmap");
+	events.push({ id: 5, type: "message", message: newlySubscribedMessage });
+	await waitFor(() => inboundDeliveries.length === 5, "newly subscribed channel delivery");
+	assert.equal(inboundDeliveries[4].message.stream_id, 5);
+	assert.equal(inboundDeliveries[4].message.subject, "Roadmap");
 
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
 	const meResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, { headers: proxyAuthorization });
@@ -331,28 +351,36 @@ try {
 	assert.equal(directSent.status, 200);
 	assert.equal(outbound.at(-1).type, "direct");
 	assert.equal(outbound.at(-1).to, "[8]");
+	const groupDirectSent = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
+		method: "POST",
+		headers: proxyAuthorization,
+		body: new URLSearchParams({ type: "direct", to: JSON.stringify([12, 8]), content: "Group reply" }),
+	});
+	assert.equal(groupDirectSent.status, 200);
+	assert.equal(outbound.at(-1).type, "direct");
+	assert.equal(outbound.at(-1).to, "[8,12]");
 
 	expireNextPoll = true;
 	await waitFor(() => registerCount >= 2, "expired queue recovery");
 	const mentionMessage = {
 		...ambientMessage,
-		id: 101,
+		id: 201,
 		content: "<p>@Agent please reply.</p>",
 		raw_content: "@**Agent** please reply.",
 		flags: ["mentioned"],
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 5, type: "message", message: mentionEventMessage });
-	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:101"), "mention delivery after recovery");
-	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:101");
+	events.push({ id: 6, type: "message", message: mentionEventMessage });
+	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:201"), "mention delivery after recovery");
+	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:201");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
 	assert.equal(mentionDelivery.message.sender_is_bot, false);
 	await waitFor(
-		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 101,
+		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 201,
 		"durable recovered cursor",
 	);
-	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 101);
+	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 201);
 } finally {
 	await bridge.stop();
 	await new Promise((resolve) => inboundServer.close(() => resolve()));
