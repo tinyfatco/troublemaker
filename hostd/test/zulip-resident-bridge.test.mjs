@@ -80,7 +80,8 @@ const nativeServer = createServer(async (request, response) => {
 	if (request.method === "GET" && url.pathname === "/api/v1/events") {
 		if (expireNextPoll) {
 			expireNextPoll = false;
-			sendJson(response, 400, { result: "error", msg: "Bad event queue id" });
+			response.writeHead(400, { "content-type": "text/html" });
+			response.end();
 			return;
 		}
 		const lastEventId = Number(url.searchParams.get("last_event_id") || -1);

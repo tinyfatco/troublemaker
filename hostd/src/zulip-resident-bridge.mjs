@@ -62,7 +62,7 @@ async function readRawBody(request, maximum = MAX_PROXY_BODY_BYTES) {
 
 function isExpiredQueueError(error) {
 	const message = error instanceof Error ? error.message : String(error);
-	return /bad event queue id|bad_event_queue_id|event queue.*(?:expired|invalid|not found)/i.test(message);
+	return /bad event queue id|bad_event_queue_id|event queue.*(?:expired|invalid|not found)|zulip get events returned http 400/i.test(message);
 }
 
 function sleep(milliseconds) {
@@ -495,6 +495,9 @@ export class ZulipResidentBridge {
 		try {
 			payload = text ? JSON.parse(text) : {};
 		} catch {
+			if (!response.ok) {
+				throw new Error(`Zulip ${method} ${path} returned HTTP ${response.status}: invalid JSON response`);
+			}
 			throw new Error(`Zulip ${method} ${path} returned invalid JSON`);
 		}
 		if (!response.ok || payload?.result === "error") {
