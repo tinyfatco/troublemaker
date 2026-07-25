@@ -85,6 +85,7 @@ const upstreamAddress = upstream.address() as AddressInfo;
 const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
+const ambient: any[] = [];
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -93,6 +94,8 @@ const adapter = new ZulipWebhookAdapter({
 	workingDir,
 	store,
 	allowedChannelIds: [CHANNEL_ID],
+	directChannelMessages: false,
+	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
 adapter.setHandler({
 	isRunning: () => false,
@@ -140,6 +143,7 @@ try {
 				timestamp: Math.floor(Date.now() / 1000),
 				content: "<p>Please review the customer note.</p>",
 				raw_content: "Please review the customer note.",
+				is_mentioned: true,
 			},
 			hostReceipt: {
 				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
@@ -158,6 +162,47 @@ try {
 	assert.equal(handled[0].text, "Please review the customer note.");
 	assert.equal(handled[0].threadTs, undefined);
 	assert.equal(handled[0].replyTarget, `zulip:${CHANNEL_ID}`);
+	assert.equal(handled[0].directlyAddressed, true);
+	assert.equal(handled[0].sourceEventType, "zulip_mention");
+
+	const ambientResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-two",
+			message: {
+				id: 89,
+				type: "stream",
+				stream_id: Number(CHANNEL_ID),
+				display_recipient: "customer · Casey",
+				subject: "",
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>Ambient crew update.</p>",
+				raw_content: "Ambient crew update.",
+				is_mentioned: false,
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-two",
+			},
+		}),
+	});
+	assert.equal(ambientResponse.status, 202);
+	for (let index = 0; index < 100 && ambient.length === 0; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(ambient.length, 1);
+	assert.equal(ambient[0].directlyAddressed, false);
+	assert.equal(ambient[0].sourceEventType, "zulip_channel_message");
+	assert.equal(ambient[0].replyTarget, `zulip:${CHANNEL_ID}`);
+	assert.equal(handled.length, 1, "ordinary Zulip messages do not bypass ambient evaluation");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");

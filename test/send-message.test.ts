@@ -78,7 +78,8 @@ async function run() {
 	const phone = makeAdapter("phone");
 	const mattermost = makeAdapter("mattermost");
 	const rocketChat = makeAdapter("rocket-chat");
-	const adapters = [telegram.adapter, discord.adapter, slack.adapter, mattermost.adapter, rocketChat.adapter, email.adapter, phone.adapter];
+	const zulip = makeAdapter("zulip");
+	const adapters = [telegram.adapter, discord.adapter, slack.adapter, mattermost.adapter, rocketChat.adapter, zulip.adapter, email.adapter, phone.adapter];
 
 	assertEqual(normalizeDiscordChannel(`discord:${snowflake}`), snowflake, "normalizes discord: snowflake");
 	assertEqual(normalizeDiscordChannel(`discord-${snowflake}`), snowflake, "normalizes discord- snowflake");
@@ -112,6 +113,10 @@ async function run() {
 	assertEqual(rocketTarget?.threadTs, rocketRoot, "Rocket.Chat thread target resolves root message ID");
 	assertEqual(resolveMessageTarget(`rocket-chat:${rocketRoom}`, adapters)?.threadTs, undefined, "Rocket.Chat room target remains top-level");
 	assertEqual(resolveMessageTarget(`rocket-chat:${rocketRoom}:${rocketRoot}`, [slack.adapter]), undefined, "Rocket.Chat target fails closed without Rocket.Chat adapter");
+	const zulipTarget = resolveMessageTarget("zulip:4", adapters);
+	assertEqual(zulipTarget?.adapter.name, "zulip", "Zulip target resolves to Zulip adapter");
+	assertEqual(zulipTarget?.channel, "4", "Zulip target preserves the numeric channel ID");
+	assertEqual(resolveMessageTarget("zulip:4", [telegram.adapter]), undefined, "Zulip target never falls through to Telegram");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.adapter.name, "email", "email thread target resolves to Email adapter");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.channel, "email-thread:0123456789abcdef", "email thread target keeps thread channel for adapter resolution");
 	assert(isObsoleteSilentControlMessage("[SILENT]"), "detects exact obsolete silent marker");
@@ -192,6 +197,14 @@ async function run() {
 	assertEqual(rocketChat.threadSent.length, 1, "tool sends Rocket.Chat thread targets through postInThread");
 	assertEqual(rocketChat.threadSent[0]?.channel, rocketRoom, "Rocket.Chat thread target passes native room");
 	assertEqual(rocketChat.threadSent[0]?.threadTs, rocketRoot, "Rocket.Chat thread target passes root message ID");
+
+	await (tool.execute as any)("call-zulip-channel", {
+		label: "Zulip channel test",
+		target: "zulip:4",
+		text: "hello Zulip crew",
+	});
+	assertEqual(zulip.sent.length, 1, "tool sends explicit Zulip targets through the Zulip adapter");
+	assertEqual(zulip.sent[0]?.channel, "4", "Zulip target passes the native channel ID");
 
 	await (tool.execute as any)("call-email-thread", {
 		label: "email thread test",

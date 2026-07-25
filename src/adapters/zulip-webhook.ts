@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, join } from "node:path";
 import type { WorkingOutputTarget } from "../context.js";
-import type { ChannelPulse } from "../engagement/channel-pulse.js";
+import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
@@ -52,6 +52,8 @@ interface ZulipMessage {
 	timestamp: number;
 	content: string;
 	raw_content?: string;
+	is_mentioned?: boolean;
+	flags?: string[];
 }
 
 interface ZulipResponse {
@@ -59,6 +61,10 @@ interface ZulipResponse {
 	msg: string;
 	id?: number;
 	uri?: string;
+}
+
+interface ZulipKnownUser extends UserInfo {
+	isBot?: boolean;
 }
 
 export interface ZulipWebhookConfig {
@@ -70,6 +76,8 @@ export interface ZulipWebhookConfig {
 	store: ChannelStore;
 	allowedChannelIds: Iterable<string>;
 	pulse?: ChannelPulse;
+	directChannelMessages?: boolean;
+	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
 
 /**
@@ -93,7 +101,9 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	private readonly store: ChannelStore;
 	private readonly pulse?: ChannelPulse;
 	private readonly allowedChannelIds: ReadonlySet<string>;
-	private readonly users = new Map<string, UserInfo>();
+	private readonly directChannelMessages: boolean;
+	private readonly onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	private readonly users = new Map<string, ZulipKnownUser>();
 	private readonly channels = new Map<string, ChannelInfo>();
 	private readonly queues = new Map<string, WorkspaceChannelQueue>();
 	private readonly deliveryLedger: WorkspaceDeliveryLedger;
@@ -113,6 +123,8 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		this.workingDir = config.workingDir;
 		this.store = config.store;
 		this.pulse = config.pulse;
+		this.directChannelMessages = config.directChannelMessages ?? true;
+		this.onAmbientMessage = config.onAmbientMessage;
 		this.allowedChannelIds = new Set(
 			Array.from(config.allowedChannelIds, (channelId) => channelId.trim()).filter(Boolean),
 		);
@@ -247,6 +259,9 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			directlyAddressed: true,
 			sourceEventType: "zulip_agent_message",
 		} as Parameters<ChannelStore["logMessage"]>[0]);
+		if (this.pulse && this.botUserId) {
+			this.pulse.record(channel, this.botUserId, text.length, text, this.pulseMetadata(channel, ts, true));
+		}
 	}
 
 	logToFile(entry: object): void {
@@ -371,34 +386,49 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		this.rememberUser(user);
 		const text = message.raw_content ?? message.content;
 		const ts = String(message.id);
+		const senderId = String(message.sender_id);
+		const sender = this.users.get(senderId);
+		const directlyAddressed = this.directChannelMessages || isMentioned(message);
+		const sourceEventType = directlyAddressed ? "zulip_mention" : "zulip_channel_message";
 		await this.store.logMessage({
 			date: new Date(message.timestamp * 1_000).toISOString(),
 			ts,
-			threadTs: ts,
 			channel: `zulip:${this.channels.get(channel)?.name || message.display_recipient || channel}`,
 			channelId: channel,
-			user: String(message.sender_id),
+			user: senderId,
 			userName: message.sender_email,
 			displayName: message.sender_full_name,
 			text,
 			attachments: [],
-			isBot: false,
-			directlyAddressed: true,
-			sourceEventType: "zulip_channel_message",
+			isBot: Boolean(sender?.isBot),
+			directlyAddressed,
+			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
+		this.pulse?.record(
+			channel,
+			senderId,
+			text.length,
+			text,
+			this.pulseMetadata(channel, ts, directlyAddressed),
+		);
+		if (senderId === this.botUserId) return;
 		const event: MomEvent = {
 			type: "mention",
 			channel,
 			ts,
-			user: String(message.sender_id),
+			user: senderId,
 			text,
 			rawText: text,
 			attachments: [],
-			sourceEventType: "zulip_channel_message",
-			directlyAddressed: true,
+			sourceEventType,
+			directlyAddressed,
 			replyTarget: `zulip:${channel}`,
-			replyTargetDescription: "Topic-free Zulip customer exchange feed",
+			replyTargetDescription: "Topic-free Zulip channel containing this message",
 		};
+		if (!directlyAddressed) {
+			this.onAmbientMessage?.(channel, event, this);
+			return;
+		}
 		await routeWorkspaceChannelEvent({
 			handler: this.handler,
 			adapter: this,
@@ -412,7 +442,21 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			id: String(user.user_id),
 			userName: user.email,
 			displayName: user.full_name,
+			isBot: user.is_bot === true,
 		});
+	}
+
+	private pulseMetadata(
+		channel: string,
+		messageId: string,
+		directlyAddressed: boolean,
+	): PulseRecordMetadata {
+		return {
+			messageId,
+			replyTarget: `zulip:${channel}`,
+			replyTargetDescription: "Topic-free Zulip channel containing this message",
+			directlyAddressed,
+		};
 	}
 
 	private requireAllowedChannel(channelId: string): void {
@@ -456,6 +500,12 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		}
 		return payload as T;
 	}
+}
+
+function isMentioned(message: ZulipMessage): boolean {
+	return message.is_mentioned === true
+		|| Boolean(message.flags?.includes("mentioned"))
+		|| Boolean(message.flags?.includes("wildcard_mentioned"));
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
