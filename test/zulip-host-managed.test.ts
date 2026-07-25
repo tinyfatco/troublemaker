@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -80,6 +80,10 @@ await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
 const upstreamAddress = upstream.address() as AddressInfo;
 
 const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
+writeFileSync(
+	join(workingDir, "log.jsonl"),
+	`{"broken"\n${JSON.stringify({ channel: "zulip:Group DM: Casey, Teammate", channelId: "dm:8,12" })}\n`,
+);
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
 const ambient: any[] = [];
@@ -120,6 +124,8 @@ try {
 	assert.equal(adapter.getUser("9")?.displayName, "Operator");
 	assert.equal(adapter.getChannel(CHANNEL_ID)?.name, "customer · Casey");
 	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID)?.name, "projects");
+	assert.equal(adapter.getChannel("dm:8,12")?.name, "Group DM: Casey, Teammate");
+	writeFileSync(join(workingDir, "log.jsonl"), "");
 	await assert.rejects(
 		adapter.postMessage(OUT_OF_SCOPE_CHANNEL_ID, "cross-context attempt"),
 		/not a current known subscription/,
