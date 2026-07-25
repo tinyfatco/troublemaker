@@ -9,6 +9,7 @@ import { ChannelStore } from "../src/store.js";
 
 const CHANNEL_ID = "4";
 const OTHER_CHANNEL_ID = "5";
+const OUT_OF_SCOPE_CHANNEL_ID = "6";
 const PROXY_TOKEN = "context-proxy-token";
 const INBOUND_TOKEN = "context-inbound-token";
 const RECEIPT_TOKEN = "context-receipt-token";
@@ -17,6 +18,10 @@ const outboundBodies: URLSearchParams[] = [];
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
+let subscribedStreams = [
+	{ stream_id: Number(CHANNEL_ID), name: "customer · Casey", topics_policy: "empty_topic_only" },
+	{ stream_id: Number(OTHER_CHANNEL_ID), name: "projects", topics_policy: "disable_empty_topic" },
+];
 
 async function readBody(request: import("node:http").IncomingMessage): Promise<Buffer> {
 	const chunks: Buffer[] = [];
@@ -50,15 +55,7 @@ const upstream = createServer(async (request, response) => {
 		return;
 	}
 	if (request.method === "GET" && url.pathname === "/api/v1/streams") {
-		send(200, {
-			result: "success",
-			msg: "",
-			streams: [{
-				stream_id: Number(CHANNEL_ID),
-				name: "customer · Casey",
-				topics_policy: "empty_topic_only",
-			}],
-		});
+		send(200, { result: "success", msg: "", streams: subscribedStreams });
 		return;
 	}
 	if (request.method === "POST" && url.pathname === "/api/v1/messages") {
@@ -94,12 +91,12 @@ const adapter = new ZulipWebhookAdapter({
 	agentName: "Operator",
 	workingDir,
 	store,
-	allowedChannelIds: [CHANNEL_ID],
 	pulse: {
 		setSelfId: () => {},
 		record: (...args: any[]) => pulseRecords.push(args),
 	} as any,
 	directChannelMessages: false,
+	channelRefreshMs: 20,
 	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
 adapter.setHandler({
@@ -122,10 +119,14 @@ try {
 	await adapter.start();
 	assert.equal(adapter.getUser("9")?.displayName, "Operator");
 	assert.equal(adapter.getChannel(CHANNEL_ID)?.name, "customer · Casey");
-	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID), undefined);
+	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID)?.name, "projects");
 	await assert.rejects(
-		adapter.postMessage(OTHER_CHANNEL_ID, "cross-context attempt"),
-		/outside this agent's allowed scope/,
+		adapter.postMessage(OUT_OF_SCOPE_CHANNEL_ID, "cross-context attempt"),
+		/not a current known subscription/,
+	);
+	await assert.rejects(
+		adapter.postMessage(OTHER_CHANNEL_ID, "missing topic"),
+		/requires a topic target/,
 	);
 
 	const inboundResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
@@ -212,6 +213,129 @@ try {
 	assert.equal(handled.length, 1, "ordinary Zulip messages do not bypass ambient evaluation");
 	assert.equal(pulseRecords.length, 2, "human mention and ambient traffic both reach pulse accounting");
 
+	const dmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-dm",
+			message: {
+				id: 92,
+				type: "private",
+				recipient_id: 18,
+				display_recipient: [
+					{ id: 8, email: "casey@example.com", full_name: "Casey" },
+					{ id: 9, email: "agent@example.com", full_name: "Operator" },
+				],
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				sender_is_bot: false,
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>Hello <strong>Operator</strong>.</p>",
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-dm",
+			},
+		}),
+	});
+	assert.equal(dmResponse.status, 202);
+	for (let index = 0; index < 100 && handled.length < 2; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(adapter.getChannel("dm:8")?.name, "DM: Casey");
+	assert.equal(handled[1].type, "dm");
+	assert.equal(handled[1].channel, "dm:8");
+	assert.equal(handled[1].text, "Hello **Operator**.");
+	assert.equal(handled[1].sourceEventType, "zulip_dm");
+	assert.equal(handled[1].replyTarget, "zulip:dm:8");
+	assert.equal(handled[1].directlyAddressed, true);
+	assert.equal(pulseRecords.length, 3, "Zulip DMs reach direct pulse accounting");
+
+	const groupDmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-group-dm",
+			message: {
+				id: 94,
+				type: "private",
+				recipient_id: 19,
+				display_recipient: [
+					{ id: 12, email: "teammate@example.com", full_name: "Teammate" },
+					{ id: 9, email: "agent@example.com", full_name: "Operator" },
+					{ id: 8, email: "casey@example.com", full_name: "Casey" },
+				],
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				sender_is_bot: false,
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>Hello group.</p>",
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-group-dm",
+			},
+		}),
+	});
+	assert.equal(groupDmResponse.status, 202);
+	for (let index = 0; index < 100 && handled.length < 3; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(adapter.getChannel("dm:8,12")?.name, "Group DM: Casey, Teammate");
+	assert.equal(handled[2].type, "dm");
+	assert.equal(handled[2].channel, "dm:8,12");
+	assert.equal(handled[2].replyTarget, "zulip:dm:8,12");
+	assert.equal(handled[2].directlyAddressed, true);
+	assert.equal(pulseRecords.length, 4, "Zulip group DMs reach direct pulse accounting");
+
+	const topicResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-topic",
+			message: {
+				id: 93,
+				type: "stream",
+				stream_id: Number(OTHER_CHANNEL_ID),
+				display_recipient: "projects",
+				subject: "Road map / alpha",
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				sender_is_bot: false,
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>Topic mention.</p>",
+				flags: ["mentioned"],
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-topic",
+			},
+		}),
+	});
+	assert.equal(topicResponse.status, 202);
+	for (let index = 0; index < 100 && handled.length < 4; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(handled[3].threadTs, "Road map / alpha");
+	assert.equal(handled[3].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
+	assert.equal(handled[3].replyTargetDescription, "Zulip channel topic Road map / alpha");
+	assert.equal(pulseRecords.length, 5, "topic mentions retain direct pulse accounting");
+
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
 		[91, ["mentioned"], "delivery-bot-mention", "lease-bot-mention"],
@@ -248,10 +372,10 @@ try {
 		});
 		assert.equal(response.status, 202);
 	}
-	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 4; index++) {
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 7; index++) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
-	assert.equal(receipts.filter((status) => status === "completed").length, 4);
+	assert.equal(receipts.filter((status) => status === "completed").length, 7);
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
@@ -259,17 +383,32 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 3, "explicit other-bot mentions reach direct pulse accounting");
+	assert.equal(pulseRecords.length, 6, "explicit other-bot mentions reach direct pulse accounting");
 	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
-	assert.equal(handled.length, 2, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[1].directlyAddressed, true);
-	assert.equal(handled[1].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[4].directlyAddressed, true);
+	assert.equal(handled[4].sourceEventType, "zulip_mention");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");
 	assert.equal(outboundBodies[0].get("to"), CHANNEL_ID);
 	assert.equal(outboundBodies[0].get("topic"), "");
 	assert.equal(outboundBodies[0].get("content"), "Customer review is ready.");
+	const directPosted = await adapter.postMessage("dm:8", "Direct review is ready.");
+	assert.equal(directPosted, "101");
+	assert.equal(outboundBodies[1].get("type"), "direct");
+	assert.equal(outboundBodies[1].get("to"), "[8]");
+	assert.equal(outboundBodies[1].get("content"), "Direct review is ready.");
+	const topicPosted = await adapter.postInThread(OTHER_CHANNEL_ID, "Roadmap", "Topic update.");
+	assert.equal(topicPosted, "102");
+	assert.equal(outboundBodies[2].get("type"), "channel");
+	assert.equal(outboundBodies[2].get("to"), OTHER_CHANNEL_ID);
+	assert.equal(outboundBodies[2].get("topic"), "Roadmap");
+	const groupDirectPosted = await adapter.postMessage("dm:8,12", "Group direct review is ready.");
+	assert.equal(groupDirectPosted, "103");
+	assert.equal(outboundBodies[3].get("type"), "direct");
+	assert.equal(outboundBodies[3].get("to"), "[8,12]");
+	assert.equal(outboundBodies[3].get("content"), "Group direct review is ready.");
 
 	const working = adapter.createWorkingOutputContext(
 		{ platform: "zulip", channelId: CHANNEL_ID },
@@ -290,6 +429,16 @@ try {
 	);
 	await working.deleteMessage();
 	assert.equal(deleteCount, 1);
+
+	subscribedStreams = [
+		{ stream_id: Number(CHANNEL_ID), name: "customer · Casey", topics_policy: "empty_topic_only" },
+		{ stream_id: 7, name: "new project", topics_policy: "disable_empty_topic" },
+	];
+	for (let index = 0; index < 50 && (!adapter.getChannel("7") || adapter.getChannel(OTHER_CHANNEL_ID)); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(adapter.getChannel("7")?.name, "new project", "new subscriptions appear without a restart");
+	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID), undefined, "removed subscriptions disappear without a restart");
 } finally {
 	await adapter.stop();
 	await new Promise<void>((resolve) => inbound.close(() => resolve()));
