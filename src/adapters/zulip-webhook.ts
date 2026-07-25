@@ -579,7 +579,6 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	}
 
 	private observeDirectConversation(channel: string, recipients: ZulipDirectRecipient[]): void {
-		const names: string[] = [];
 		for (const recipient of recipients) {
 			this.rememberUser({
 				user_id: recipient.id,
@@ -587,8 +586,11 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 				full_name: recipient.full_name,
 				...(String(recipient.id) === this.botUserId ? { is_bot: true } : {}),
 			});
-			if (String(recipient.id) !== this.botUserId) names.push(recipient.full_name);
 		}
+		const names = recipients
+			.filter((recipient) => String(recipient.id) !== this.botUserId)
+			.sort((left, right) => left.id - right.id)
+			.map((recipient) => recipient.full_name);
 		const prefix = names.length > 1 ? "Group DM" : "DM";
 		this.channels.set(channel, { id: channel, name: `${prefix}: ${names.join(", ") || channel}` });
 	}
