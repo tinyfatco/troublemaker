@@ -17,6 +17,7 @@ const expectedBasic = `Basic ${Buffer.from(`${NATIVE_EMAIL}:${NATIVE_KEY}`).toSt
 const messages = new Map();
 const events = [];
 const outbound = [];
+const subscriptions = [{ stream_id: CHANNEL_ID, name: "Crew", topics_policy: "empty_topic_only" }];
 let registerCount = 0;
 let expireNextPoll = false;
 let nextMessageId = 100;
@@ -73,6 +74,10 @@ const nativeServer = createServer(async (request, response) => {
 		});
 		return;
 	}
+	if (request.method === "GET" && url.pathname === "/api/v1/users/me/subscriptions") {
+		sendJson(response, 200, { result: "success", msg: "", subscriptions });
+		return;
+	}
 	if (request.method === "GET" && url.pathname === "/api/v1/streams") {
 		sendJson(response, 200, {
 			result: "success",
@@ -125,12 +130,8 @@ const nativeServer = createServer(async (request, response) => {
 		const body = new URLSearchParams((await readBody(request)).toString("utf8"));
 		outbound.push(Object.fromEntries(body));
 		const id = nextMessageId++;
-		messages.set(id, {
+		const common = {
 			id,
-			type: "stream",
-			stream_id: CHANNEL_ID,
-			display_recipient: "Crew",
-			subject: "",
 			sender_id: BOT_USER_ID,
 			sender_email: NATIVE_EMAIL,
 			sender_full_name: "Agent",
@@ -138,7 +139,27 @@ const nativeServer = createServer(async (request, response) => {
 			content: body.get("content"),
 			raw_content: body.get("content"),
 			is_mentioned: false,
-		});
+		};
+		if (body.get("type") === "direct") {
+			const recipientIds = JSON.parse(body.get("to"));
+			messages.set(id, {
+				...common,
+				type: "private",
+				recipient_id: 12,
+				display_recipient: [
+					...recipientIds.map((userId) => ({ id: userId, email: "alex@example.com", full_name: "Alex" })),
+					{ id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent" },
+				],
+			});
+		} else {
+			messages.set(id, {
+				...common,
+				type: "stream",
+				stream_id: Number(body.get("to")),
+				display_recipient: "Crew",
+				subject: body.get("topic") || "",
+			});
+		}
 		sendJson(response, 200, { result: "success", msg: "", id });
 		return;
 	}
@@ -190,7 +211,7 @@ const bridge = new ZulipResidentBridge({
 	zulipUrl: `http://127.0.0.1:${nativeAddress.port}`,
 	zulipEmail: NATIVE_EMAIL,
 	zulipApiKey: NATIVE_KEY,
-	channelId: CHANNEL_ID,
+	allowedDmUserIds: [8],
 	proxyToken: PROXY_TOKEN,
 	inboundUrl: `http://127.0.0.1:${inboundAddress.port}/zulip/inbound`,
 	inboundToken: INBOUND_TOKEN,
@@ -242,19 +263,57 @@ try {
 	assert.equal(inboundDeliveries[1].deliveryId, "zulip:52");
 	assert.equal(inboundDeliveries[1].message.sender_is_bot, true);
 
+	const directMessage = {
+		id: 53,
+		type: "private",
+		recipient_id: 12,
+		display_recipient: [
+			{ id: 8, email: "alex@example.com", full_name: "Alex" },
+			{ id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent" },
+		],
+		sender_id: 8,
+		sender_email: "alex@example.com",
+		sender_full_name: "Alex",
+		timestamp: Math.floor(Date.now() / 1000),
+		content: "<p>Direct hello.</p>",
+	};
+	messages.set(directMessage.id, directMessage);
+	events.push({ id: 3, type: "message", message: directMessage });
+	await waitFor(() => inboundDeliveries.length === 3, "direct-message delivery");
+	assert.equal(inboundDeliveries[2].deliveryId, "zulip:53");
+	assert.equal(inboundDeliveries[2].message.type, "private");
+	assert.equal(inboundDeliveries[2].message.sender_is_bot, false);
+	assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")).knownDirectConversations, ["dm:8"]);
+
+	subscriptions.push({ stream_id: 5, name: "Projects", topics_policy: "disable_empty_topic" });
+	const newlySubscribedMessage = {
+		...ambientMessage,
+		id: 54,
+		stream_id: 5,
+		display_recipient: "Projects",
+		subject: "Roadmap",
+		content: "<p>New channel update.</p>",
+		raw_content: "New channel update.",
+	};
+	messages.set(newlySubscribedMessage.id, newlySubscribedMessage);
+	events.push({ id: 4, type: "message", message: newlySubscribedMessage });
+	await waitFor(() => inboundDeliveries.length === 4, "newly subscribed channel delivery");
+	assert.equal(inboundDeliveries[3].message.stream_id, 5);
+	assert.equal(inboundDeliveries[3].message.subject, "Roadmap");
+
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
 	const meResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, { headers: proxyAuthorization });
 	assert.equal(meResponse.status, 200);
 	assert.equal((await meResponse.json()).user_id, BOT_USER_ID);
 	const streamsResponse = await fetch(`${bridge.proxyUrl()}/api/v1/streams`, { headers: proxyAuthorization });
 	const filteredStreams = (await streamsResponse.json()).streams;
-	assert.deepEqual(filteredStreams.map((stream) => stream.stream_id), [CHANNEL_ID]);
+	assert.deepEqual(filteredStreams.map((stream) => stream.stream_id), [CHANNEL_ID, 5]);
 	const usersResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users`, { headers: proxyAuthorization });
 	assert.equal(usersResponse.status, 404, "the resident proxy never exposes the native user directory");
 	const denied = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
 		method: "POST",
 		headers: proxyAuthorization,
-		body: new URLSearchParams({ type: "channel", to: "5", topic: "", content: "escape" }),
+		body: new URLSearchParams({ type: "channel", to: "6", topic: "", content: "escape" }),
 	});
 	assert.equal(denied.status, 403);
 	const sent = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
@@ -264,6 +323,14 @@ try {
 	});
 	assert.equal(sent.status, 200);
 	assert.equal(outbound.at(-1).content, "Agent reply");
+	const directSent = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
+		method: "POST",
+		headers: proxyAuthorization,
+		body: new URLSearchParams({ type: "direct", to: JSON.stringify([8]), content: "Direct reply" }),
+	});
+	assert.equal(directSent.status, 200);
+	assert.equal(outbound.at(-1).type, "direct");
+	assert.equal(outbound.at(-1).to, "[8]");
 
 	expireNextPoll = true;
 	await waitFor(() => registerCount >= 2, "expired queue recovery");
@@ -276,7 +343,7 @@ try {
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 3, type: "message", message: mentionEventMessage });
+	events.push({ id: 5, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:101"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:101");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);

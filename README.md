@@ -71,7 +71,7 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 | `slack:webhook` | Inbound HTTP | `MOM_SLACK_BOT_TOKEN`, `MOM_SLACK_SIGNING_SECRET` | Webhook-based |
 | `mattermost` / `mattermost:socket` | Outbound WebSocket + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN` | Self-hosted or managed Mattermost |
 | `rocket-chat:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ROCKETCHAT_URL`, `MOM_ROCKETCHAT_BOT_TOKEN`, `MOM_ROCKETCHAT_INBOUND_TOKEN`, `MOM_ROCKETCHAT_ALLOWED_ROOMS` | TinyFat customer relationship rooms |
-| `zulip:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ZULIP_URL`, `MOM_ZULIP_BOT_TOKEN`, `MOM_ZULIP_INBOUND_TOKEN`, `MOM_ZULIP_ALLOWED_CHANNELS` | Topic-free TinyFat customer feeds |
+| `zulip:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ZULIP_URL`, `MOM_ZULIP_BOT_TOKEN`, `MOM_ZULIP_INBOUND_TOKEN` | Subscribed channels, topics, ambient messages, and direct messages |
 | `telegram` / `telegram:polling` | Outbound polling | `MOM_TELEGRAM_BOT_TOKEN` | Always-on |
 | `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_SECRET` | Webhook-based |
 | `discord` / `discord:gateway` | Outbound Gateway WebSocket + REST | `MOM_DISCORD_BOT_TOKEN`, `MOM_DISCORD_APPLICATION_ID` | Always-on; no public ingress or relay |
@@ -135,8 +135,10 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_ROCKETCHAT_AGENT_NAME` | rocket-chat:webhook | Human-facing agent name used in the local transcript |
 | `MOM_ZULIP_URL` | zulip:webhook | Host-owned, context-scoped Zulip REST proxy URL |
 | `MOM_ZULIP_BOT_TOKEN` | zulip:webhook | Per-context host capability, never the native Zulip API key |
-| `MOM_ZULIP_INBOUND_TOKEN` | zulip:webhook | Per-context bearer token for host-delivered channel events |
-| `MOM_ZULIP_ALLOWED_CHANNELS` | zulip:webhook | Required numeric channel allowlist; all operations fail closed outside it |
+| `MOM_ZULIP_INBOUND_TOKEN` | zulip:webhook | Per-context bearer token for host-delivered channel and direct-message events |
+| `MOM_ZULIP_ALLOWED_CHANNELS` | zulip:webhook | Optional numeric stream allowlist; when omitted, the adapter follows the bot's live subscriptions |
+| `MOM_ZULIP_ALLOWED_DM_USERS` | zulip:webhook | Optional comma-separated Zulip user IDs allowed to invoke the agent by direct message |
+| `MOM_ZULIP_CHANNEL_MESSAGES_DIRECT` | zulip:webhook | When `true`, every non-self channel message directly wakes the agent; otherwise unmentioned traffic is ambient |
 | `MOM_ZULIP_AGENT_NAME` | zulip:webhook | Human-facing agent name used in the local transcript |
 | `MOM_TELEGRAM_BOT_TOKEN` | telegram:* | Telegram bot token from @BotFather |
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |

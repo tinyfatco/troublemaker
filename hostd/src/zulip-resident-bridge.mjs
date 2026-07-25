@@ -41,6 +41,35 @@ function basicAuthorization(email, apiKey) {
 	return `Basic ${Buffer.from(`${email}:${apiKey}`).toString("base64")}`;
 }
 
+function directRecipientIds(value, botUserId) {
+	let parsed;
+	try {
+		parsed = JSON.parse(String(value || ""));
+	} catch {
+		throw new Error("Zulip direct recipients must be a JSON array of user IDs");
+	}
+	if (!Array.isArray(parsed)) throw new Error("Zulip direct recipients must be a JSON array of user IDs");
+	const ids = Array.from(new Set(parsed.map((userId) => positiveId(userId, "Zulip direct recipient ID"))))
+		.filter((userId) => userId !== botUserId)
+		.sort((left, right) => left - right);
+	if (ids.length === 0) throw new Error("Zulip direct message requires at least one other participant");
+	return ids;
+}
+
+function directConversationKey(recipientIds) {
+	return `dm:${recipientIds.join(",")}`;
+}
+
+function directConversationFromMessage(message, botUserId) {
+	if (!Array.isArray(message?.display_recipient)) {
+		throw new Error("Zulip direct message omitted its participant list");
+	}
+	return directConversationKey(directRecipientIds(
+		JSON.stringify(message.display_recipient.map((recipient) => recipient?.id)),
+		botUserId,
+	));
+}
+
 function json(response, status, value) {
 	response.writeHead(status, {
 		"content-type": "application/json",
@@ -74,7 +103,14 @@ export class ZulipResidentBridge {
 		this.zulipUrl = httpUrl(config.zulipUrl, "zulipUrl");
 		this.zulipEmail = requiredText(config.zulipEmail, "zulipEmail").toLowerCase();
 		this.zulipApiKey = requiredText(config.zulipApiKey, "zulipApiKey");
-		this.channelId = positiveId(config.channelId, "channelId");
+		const configuredChannelIds = config.allowedChannelIds
+			?? (config.channelId === undefined ? undefined : [config.channelId]);
+		this.allowedChannelIds = configuredChannelIds === undefined
+			? null
+			: new Set(Array.from(configuredChannelIds, (channelId) => positiveId(channelId, "allowed channel ID")));
+		this.allowedDmUserIds = config.allowedDmUserIds === undefined
+			? null
+			: new Set(Array.from(config.allowedDmUserIds, (userId) => positiveId(userId, "allowed DM user ID")));
 		this.proxyToken = requiredText(config.proxyToken, "proxyToken");
 		this.inboundUrl = httpUrl(config.inboundUrl, "inboundUrl");
 		this.inboundToken = requiredText(config.inboundToken, "inboundToken");
@@ -87,6 +123,8 @@ export class ZulipResidentBridge {
 		this.botUserId = null;
 		this.knownUserIds = new Set();
 		this.botUserIds = new Set();
+		this.subscribedChannels = new Map();
+		this.knownDirectConversations = new Set();
 		this.queueId = null;
 		this.lastEventId = -1;
 		this.lastMessageId = null;
@@ -104,26 +142,24 @@ export class ZulipResidentBridge {
 		if (!this.botUserIds.has(this.botUserId)) {
 			throw new Error("Zulip user directory omitted the resident bridge bot identity");
 		}
-		const streams = await this.nativeRequest("streams", {
-			query: {
-				include_public: "true",
-				include_subscribed: "true",
-				include_all_active: "true",
-			},
-		});
-		const channel = (streams.streams || []).find((candidate) => Number(candidate.stream_id) === this.channelId);
-		if (!channel) throw new Error(`Zulip bot is not subscribed to channel ${this.channelId}`);
-		if (channel.topics_policy !== "empty_topic_only") {
-			throw new Error(`Zulip channel ${this.channelId} must use the topic-free policy`);
+		await this.refreshSubscriptions();
+		if (this.allowedChannelIds) {
+			for (const channelId of this.allowedChannelIds) {
+				if (!this.subscribedChannels.has(channelId)) {
+					throw new Error(`Zulip bot is not subscribed to allowed channel ${channelId}`);
+				}
+			}
 		}
 
 		await this.listen();
 		try {
 			await this.registerQueue();
-			this.lastMessageId = this.loadLastMessageId();
+			const state = this.loadState();
+			this.lastMessageId = state.lastMessageId;
+			this.knownDirectConversations = state.knownDirectConversations;
 			if (this.lastMessageId === null) {
-				this.lastMessageId = await this.newestChannelMessageId();
-				this.saveLastMessageId(this.lastMessageId);
+				this.lastMessageId = await this.newestVisibleMessageId();
+				this.saveState();
 			} else {
 				await this.catchUp();
 			}
@@ -229,38 +265,55 @@ export class ZulipResidentBridge {
 			return;
 		}
 		if (request.method === "GET" && providerPath === "streams") {
-			const result = await this.nativeRequest("streams", {
-				query: {
-					include_public: "true",
-					include_subscribed: "true",
-					include_all_active: "true",
-				},
-			});
+			await this.refreshSubscriptions();
 			json(response, 200, {
-				...result,
-				streams: (result.streams || []).filter((channel) => Number(channel.stream_id) === this.channelId),
+				result: "success",
+				msg: "",
+				streams: Array.from(this.subscribedChannels.values())
+					.filter((channel) => this.channelIsInScope(channel.stream_id))
+					.map((channel) => ({
+						stream_id: channel.stream_id,
+						name: channel.name,
+						topics_policy: channel.topics_policy,
+					})),
 			});
 			return;
 		}
 		if (request.method === "POST" && providerPath === "messages") {
 			const body = new URLSearchParams((await readRawBody(request, 2 * 1024 * 1024)).toString("utf8"));
-			if (
-				body.get("type") !== "channel"
-				|| Number(body.get("to")) !== this.channelId
-				|| (body.get("topic") || "") !== ""
-			) {
-				json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
-				return;
-			}
 			const content = body.get("content")?.trim() || "";
 			if (!content) {
 				json(response, 400, { result: "error", msg: "content_required" });
 				return;
 			}
-			json(response, 200, await this.nativeRequest("messages", {
-				method: "POST",
-				body: new URLSearchParams({ type: "channel", to: String(this.channelId), topic: "", content }),
-			}));
+			if (body.get("type") === "channel") {
+				const channelId = positiveId(body.get("to"), "Zulip outbound channel ID");
+				await this.refreshSubscriptions();
+				if (!this.channelIsInScope(channelId)) {
+					json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
+					return;
+				}
+				const topic = body.get("topic") || "";
+				json(response, 200, await this.nativeRequest("messages", {
+					method: "POST",
+					body: new URLSearchParams({ type: "channel", to: String(channelId), topic, content }),
+				}));
+				return;
+			}
+			if (body.get("type") === "direct") {
+				const recipientIds = directRecipientIds(body.get("to"), this.botUserId);
+				const conversation = directConversationKey(recipientIds);
+				if (!this.knownDirectConversations.has(conversation)) {
+					json(response, 403, { result: "error", msg: "zulip_direct_scope_denied" });
+					return;
+				}
+				json(response, 200, await this.nativeRequest("messages", {
+					method: "POST",
+					body: new URLSearchParams({ type: "direct", to: JSON.stringify(recipientIds), content }),
+				}));
+				return;
+			}
+			json(response, 403, { result: "error", msg: "zulip_message_scope_denied" });
 			return;
 		}
 		const messageMatch = providerPath.match(/^messages\/([1-9]\d*)$/);
@@ -307,13 +360,21 @@ export class ZulipResidentBridge {
 	async validateOwnMessage(messageId) {
 		const result = await this.nativeRequest(`messages/${messageId}`);
 		const message = result.message;
-		if (Number(message?.stream_id) !== this.channelId) {
-			throw new Error("Zulip message is outside the bridge channel");
-		}
 		if (Number(message?.sender_id) !== this.botUserId) {
 			throw new Error("Zulip bridge may only mutate its bot's messages");
 		}
-		return message;
+		if (message?.type === "stream") {
+			await this.requireSubscribedChannel(positiveId(message.stream_id, "Zulip message channel ID"));
+			return message;
+		}
+		if (message?.type === "private") {
+			const conversation = directConversationFromMessage(message, this.botUserId);
+			if (!this.knownDirectConversations.has(conversation)) {
+				throw new Error("Zulip direct message is outside the bridge's established conversations");
+			}
+			return message;
+		}
+		throw new Error("Zulip message has an unsupported conversation type");
 	}
 
 	async registerQueue() {
@@ -399,11 +460,55 @@ export class ZulipResidentBridge {
 		return this.botUserIds.has(senderId);
 	}
 
+	async refreshSubscriptions() {
+		const result = await this.nativeRequest("users/me/subscriptions");
+		if (!Array.isArray(result.subscriptions)) {
+			throw new Error("Zulip subscriptions endpoint returned an invalid subscription list");
+		}
+		const channels = new Map();
+		for (const subscription of result.subscriptions) {
+			const streamId = positiveId(subscription?.stream_id, "Zulip subscription channel ID");
+			channels.set(streamId, subscription);
+		}
+		this.subscribedChannels = channels;
+	}
+
+	channelIsInScope(channelId) {
+		return this.subscribedChannels.has(channelId)
+			&& (this.allowedChannelIds === null || this.allowedChannelIds.has(channelId));
+	}
+
+	async requireSubscribedChannel(channelId) {
+		await this.refreshSubscriptions();
+		if (!this.channelIsInScope(channelId)) {
+			throw new Error(`Zulip channel ${channelId} is not an allowed current subscription`);
+		}
+		return this.subscribedChannels.get(channelId);
+	}
+
 	async ingestMessage(message) {
 		const messageId = positiveId(message?.id, "Zulip message ID");
-		const channelId = positiveId(message?.stream_id, "Zulip channel ID");
 		const senderId = positiveId(message?.sender_id, "Zulip sender ID");
-		if (message?.type !== "stream" || channelId !== this.channelId) return;
+
+		if (message?.type === "stream") {
+			const channelId = positiveId(message.stream_id, "Zulip channel ID");
+			if (!this.channelIsInScope(channelId)) await this.refreshSubscriptions();
+			if (!this.channelIsInScope(channelId)) {
+				this.advanceMessageCursor(messageId);
+				return;
+			}
+		} else if (message?.type === "private") {
+			if (this.allowedDmUserIds && !this.allowedDmUserIds.has(senderId)) {
+				this.advanceMessageCursor(messageId);
+				return;
+			}
+			this.knownDirectConversations.add(directConversationFromMessage(message, this.botUserId));
+			this.saveState();
+		} else {
+			this.advanceMessageCursor(messageId);
+			return;
+		}
+
 		if (senderId === this.botUserId) {
 			this.advanceMessageCursor(messageId);
 			return;
@@ -470,31 +575,45 @@ export class ZulipResidentBridge {
 		}
 	}
 
-	loadLastMessageId() {
+	loadState() {
 		try {
 			const parsed = JSON.parse(readFileSync(this.statePath, "utf8"));
-			return positiveId(parsed.lastMessageId, "stored Zulip message ID");
+			const lastMessageId = positiveId(parsed.lastMessageId, "stored Zulip message ID");
+			const knownDirectConversations = new Set();
+			for (const value of parsed.knownDirectConversations || []) {
+				if (typeof value !== "string" || !/^dm:[1-9]\d*(?:,[1-9]\d*)*$/.test(value)) {
+					throw new Error("stored Zulip direct conversation is invalid");
+				}
+				knownDirectConversations.add(value);
+			}
+			return { lastMessageId, knownDirectConversations };
 		} catch (error) {
-			if (error?.code === "ENOENT") return null;
+			if (error?.code === "ENOENT") {
+				return { lastMessageId: null, knownDirectConversations: new Set() };
+			}
 			throw new Error("Zulip resident bridge state is unreadable");
 		}
 	}
 
-	saveLastMessageId(lastMessageId) {
-		if (lastMessageId === null) return;
+	saveState() {
+		if (this.lastMessageId === null) return;
 		mkdirSync(dirname(this.statePath), { recursive: true, mode: 0o700 });
 		const temporary = `${this.statePath}.${process.pid}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify({ version: 1, lastMessageId })}\n`, { mode: 0o600 });
+		writeFileSync(temporary, `${JSON.stringify({
+			version: 2,
+			lastMessageId: this.lastMessageId,
+			knownDirectConversations: Array.from(this.knownDirectConversations).sort(),
+		})}\n`, { mode: 0o600 });
 		renameSync(temporary, this.statePath);
 	}
 
 	advanceMessageCursor(messageId) {
 		this.lastMessageId = Math.max(this.lastMessageId || 0, messageId);
-		this.saveLastMessageId(this.lastMessageId);
+		this.saveState();
 	}
 
-	async newestChannelMessageId() {
-		const result = await this.channelMessages({
+	async newestVisibleMessageId() {
+		const result = await this.visibleMessages({
 			anchor: "newest",
 			num_before: "1",
 			num_after: "0",
@@ -507,7 +626,7 @@ export class ZulipResidentBridge {
 	async catchUp() {
 		if (this.lastMessageId === null) return;
 		while (true) {
-			const result = await this.channelMessages({
+			const result = await this.visibleMessages({
 				anchor: String(this.lastMessageId),
 				num_before: "0",
 				num_after: "100",
@@ -522,13 +641,8 @@ export class ZulipResidentBridge {
 		}
 	}
 
-	channelMessages(query) {
-		return this.nativeRequest("messages", {
-			query: {
-				...query,
-				narrow: JSON.stringify([{ operator: "channel", operand: this.channelId }]),
-			},
-		});
+	visibleMessages(query) {
+		return this.nativeRequest("messages", { query });
 	}
 
 	async nativeRequest(path, { method = "GET", query, body } = {}) {
