@@ -104,6 +104,8 @@ export interface ZulipWebhookConfig {
 	allowedChannelIds?: Iterable<string>;
 	/** Optional sender allowlist for individual and group direct messages. */
 	allowedDmUserIds?: Iterable<string>;
+	/** Subscription discovery refresh interval; zero disables periodic refresh. */
+	channelRefreshMs?: number;
 	pulse?: ChannelPulse;
 	directChannelMessages?: boolean;
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
@@ -132,6 +134,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	private readonly pulse?: ChannelPulse;
 	private readonly allowedChannelIds?: ReadonlySet<string>;
 	private readonly allowedDmUserIds?: ReadonlySet<string>;
+	private readonly channelRefreshMs: number;
 	private readonly directChannelMessages: boolean;
 	private readonly onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 	private readonly users = new Map<string, ZulipKnownUser>();
@@ -143,6 +146,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	private handler!: MomHandler;
 	private botUserId: string | null = null;
 	private botEmail: string | null = null;
+	private channelRefreshTimer?: NodeJS.Timeout;
 
 	constructor(config: ZulipWebhookConfig) {
 		const parsed = new URL(config.url);
@@ -156,6 +160,10 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		this.workingDir = config.workingDir;
 		this.store = config.store;
 		this.pulse = config.pulse;
+		this.channelRefreshMs = config.channelRefreshMs ?? 30_000;
+		if (!Number.isFinite(this.channelRefreshMs) || this.channelRefreshMs < 0) {
+			throw new Error("Zulip channel refresh interval must be a non-negative number");
+		}
 		this.directChannelMessages = config.directChannelMessages ?? true;
 		this.onAmbientMessage = config.onAmbientMessage;
 		this.allowedChannelIds = config.allowedChannelIds === undefined
@@ -190,26 +198,52 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		this.botUserId = String(me.user_id);
 		this.botEmail = me.email;
 		this.rememberUser(me);
-		const result = await this.api<ZulipResponse & { streams: ZulipChannel[] }>(
-			"/streams?include_public=true&include_subscribed=true&include_all_active=true",
-		);
-		for (const stream of result.streams) {
-			const channelId = String(stream.stream_id);
-			if (!this.streamIsInScope(channelId)) continue;
-			this.channels.set(channelId, { id: channelId, name: stream.name });
-			if (stream.topics_policy) this.channelPolicies.set(channelId, stream.topics_policy);
-		}
-		for (const channelId of this.allowedChannelIds || []) {
-			if (!this.channels.has(channelId)) {
-				throw new Error(`Zulip host proxy omitted allowed channel ${channelId}`);
-			}
-		}
+		await this.refreshChannels(true);
 		this.restoreKnownDirectConversations();
 		this.pulse?.setSelfId(this.botUserId);
+		if (this.channelRefreshMs > 0) {
+			this.channelRefreshTimer = setInterval(() => {
+				void this.refreshChannels(false).catch((error) => {
+					log.logWarning("Zulip subscription refresh failed", error instanceof Error ? error.message : String(error));
+				});
+			}, this.channelRefreshMs);
+			this.channelRefreshTimer.unref();
+		}
 		log.logConnected();
 	}
 
-	async stop(): Promise<void> {}
+	async stop(): Promise<void> {
+		if (this.channelRefreshTimer) clearInterval(this.channelRefreshTimer);
+		this.channelRefreshTimer = undefined;
+	}
+
+	private async refreshChannels(requireAllowedChannels: boolean): Promise<void> {
+		const result = await this.api<ZulipResponse & { streams: ZulipChannel[] }>(
+			"/streams?include_public=true&include_subscribed=true&include_all_active=true",
+		);
+		const currentChannelIds = new Set<string>();
+		for (const stream of result.streams) {
+			const channelId = String(stream.stream_id);
+			if (!this.streamIsInScope(channelId)) continue;
+			currentChannelIds.add(channelId);
+			this.channels.set(channelId, { id: channelId, name: stream.name });
+			if (stream.topics_policy) this.channelPolicies.set(channelId, stream.topics_policy);
+			else this.channelPolicies.delete(channelId);
+		}
+		for (const channelId of this.channels.keys()) {
+			if (isZulipChannelId(channelId) && !currentChannelIds.has(channelId)) {
+				this.channels.delete(channelId);
+				this.channelPolicies.delete(channelId);
+			}
+		}
+		if (requireAllowedChannels) {
+			for (const channelId of this.allowedChannelIds || []) {
+				if (!this.channels.has(channelId)) {
+					throw new Error(`Zulip host proxy omitted allowed channel ${channelId}`);
+				}
+			}
+		}
+	}
 
 	getUser(userId: string): UserInfo | undefined {
 		return this.users.get(userId);
