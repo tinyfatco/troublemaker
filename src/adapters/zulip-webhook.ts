@@ -596,26 +596,39 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	}
 
 	private restoreKnownDirectConversations(): void {
+		let history: string;
 		try {
-			for (const line of readFileSync(join(this.workingDir, "log.jsonl"), "utf8").split("\n")) {
-				if (!line.trim()) continue;
-				const entry = JSON.parse(line) as { channel?: unknown; channelId?: unknown };
-				if (
-					typeof entry.channel === "string"
-					&& entry.channel.startsWith("zulip:")
-					&& typeof entry.channelId === "string"
-					&& parseZulipDmChannel(entry.channelId)
-				) {
-					this.channels.set(entry.channelId, {
-						id: entry.channelId,
-						name: entry.channel.slice("zulip:".length) || entry.channelId,
-					});
-				}
-			}
+			history = readFileSync(join(this.workingDir, "log.jsonl"), "utf8");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-				throw new Error("Zulip direct-message history is unreadable");
+				log.logWarning("Zulip direct-message history could not be read; starting with no restored DMs");
 			}
+			return;
+		}
+		let malformedLines = 0;
+		for (const line of history.split("\n")) {
+			if (!line.trim()) continue;
+			let entry: { channel?: unknown; channelId?: unknown };
+			try {
+				entry = JSON.parse(line) as typeof entry;
+			} catch {
+				malformedLines += 1;
+				continue;
+			}
+			if (
+				typeof entry.channel === "string"
+				&& entry.channel.startsWith("zulip:")
+				&& typeof entry.channelId === "string"
+				&& parseZulipDmChannel(entry.channelId)
+			) {
+				this.channels.set(entry.channelId, {
+					id: entry.channelId,
+					name: entry.channel.slice("zulip:".length) || entry.channelId,
+				});
+			}
+		}
+		if (malformedLines > 0) {
+			log.logWarning(`Zulip direct-message history skipped ${malformedLines} malformed log line(s)`);
 		}
 	}
 
