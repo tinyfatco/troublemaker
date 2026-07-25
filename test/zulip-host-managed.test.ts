@@ -85,6 +85,9 @@ const upstreamAddress = upstream.address() as AddressInfo;
 const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
+const steered: any[] = [];
+let runtimeBusy = false;
+let steeringGate = Promise.resolve();
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -95,13 +98,16 @@ const adapter = new ZulipWebhookAdapter({
 	allowedChannelIds: [CHANNEL_ID],
 });
 adapter.setHandler({
-	isRunning: () => false,
+	isRunning: () => runtimeBusy,
 	handleEvent: async (event: any) => {
 		handled.push(event);
 		return { yielded: false };
 	},
 	handleSlashCommand: async () => false,
-	handleSteer: () => {},
+	handleSteer: async (event: any) => {
+		steered.push(event);
+		await steeringGate;
+	},
 	handleStop: async () => {},
 	resolvePendingInput: () => false,
 } as any);
@@ -158,6 +164,53 @@ try {
 	assert.equal(handled[0].text, "Please review the customer note.");
 	assert.equal(handled[0].threadTs, undefined);
 	assert.equal(handled[0].replyTarget, `zulip:${CHANNEL_ID}`);
+
+	receipts.length = 0;
+	runtimeBusy = true;
+	let releaseSteering!: () => void;
+	steeringGate = new Promise<void>((resolve) => {
+		releaseSteering = resolve;
+	});
+	const steeringResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-two",
+			message: {
+				id: 89,
+				type: "stream",
+				stream_id: Number(CHANNEL_ID),
+				display_recipient: "customer · Casey",
+				subject: "",
+				sender_id: 8,
+				sender_email: "casey@example.com",
+				sender_full_name: "Casey",
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>And include the second note.</p>",
+				raw_content: "And include the second note.",
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-two",
+			},
+		}),
+	});
+	assert.equal(steeringResponse.status, 202);
+	for (let index = 0; index < 100 && !receipts.includes("running"); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.deepEqual(receipts, ["running"], "host receipt remains live while Pi holds the batched steer");
+	assert.equal(steered.length, 1);
+	releaseSteering();
+	for (let index = 0; index < 100 && !receipts.includes("completed"); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.deepEqual(receipts, ["running", "completed"]);
+	runtimeBusy = false;
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");

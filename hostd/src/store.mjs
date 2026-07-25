@@ -1298,25 +1298,48 @@ export class HostStore {
 		return this.getControlNotification(id);
 	}
 
-	claimNextEvent({ leaseSeconds = 60, maximumAttempts = 5 } = {}) {
+	claimNextEvent({
+		leaseSeconds = 60,
+		maximumAttempts = 5,
+		maximumActiveContexts = Number.MAX_SAFE_INTEGER,
+	} = {}) {
 		const timestamp = now();
 		const leaseToken = randomUUID();
+		const contextLimit = Math.max(1, Math.floor(maximumActiveContexts));
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const row = this.database.prepare(`
-				SELECT id FROM events candidate
+				SELECT candidate.id,
+					EXISTS (
+						SELECT 1 FROM events running
+						WHERE running.context_id = candidate.context_id
+							AND running.status = 'running'
+					) AS append_to_running
+				FROM events candidate
 				WHERE candidate.status IN ('queued', 'failed')
 					AND candidate.attempts < ?
 					AND candidate.available_at <= ?
 					AND NOT EXISTS (
-						SELECT 1 FROM events active
-						WHERE active.context_id = candidate.context_id
-							AND active.id != candidate.id
-							AND active.status IN ('leased', 'accepted', 'running')
+						SELECT 1 FROM events delivering
+						WHERE delivering.context_id = candidate.context_id
+							AND delivering.id != candidate.id
+							AND delivering.status IN ('leased', 'accepted')
+					)
+					AND (
+						EXISTS (
+							SELECT 1 FROM events running
+							WHERE running.context_id = candidate.context_id
+								AND running.status = 'running'
+						)
+						OR (
+							SELECT COUNT(DISTINCT active.context_id)
+							FROM events active
+							WHERE active.status IN ('leased', 'accepted', 'running')
+						) < ?
 					)
 				ORDER BY candidate.received_at
 				LIMIT 1
-			`).get(maximumAttempts, timestamp);
+			`).get(maximumAttempts, timestamp, contextLimit);
 			if (!row) {
 				this.database.exec("COMMIT");
 				return null;
@@ -1328,7 +1351,10 @@ export class HostStore {
 				WHERE id = ? AND status IN ('queued', 'failed')
 			`).run(leaseToken, future(leaseSeconds), timestamp, row.id);
 			this.database.exec("COMMIT");
-			return this.getEvent(row.id);
+			return {
+				...this.getEvent(row.id),
+				deliveryMode: row.append_to_running ? "steer" : "turn",
+			};
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
@@ -1398,11 +1424,27 @@ export class HostStore {
 		`).get().count;
 	}
 
+	countActiveContexts() {
+		return this.database.prepare(`
+			SELECT COUNT(DISTINCT context_id) AS count
+			FROM events
+			WHERE status IN ('leased', 'accepted', 'running')
+		`).get().count;
+	}
+
 	hasActiveEvent(contextId) {
 		return Boolean(this.database.prepare(`
 			SELECT 1 FROM events
 			WHERE context_id = ? AND status IN ('leased', 'accepted', 'running')
 		`).get(contextId));
+	}
+
+	hasRunningEvent(contextId, excludedEventId) {
+		return Boolean(this.database.prepare(`
+			SELECT 1 FROM events
+			WHERE context_id = ? AND status = 'running'
+				AND (? IS NULL OR id != ?)
+		`).get(contextId, excludedEventId ?? null, excludedEventId ?? null));
 	}
 
 	getOutbox(idempotencyKey) {
@@ -1745,6 +1787,7 @@ export class HostStore {
 
 	status(maxConcurrent = 6) {
 		const activeEvents = this.countActiveEvents();
+		const activeContexts = this.countActiveContexts();
 		const queue = this.database.prepare(`
 			SELECT COUNT(*) AS count, MIN(received_at) AS oldest
 			FROM events WHERE status IN ('queued', 'failed')
@@ -1761,8 +1804,9 @@ export class HostStore {
 			zulipBindings: this.database.prepare("SELECT COUNT(*) AS count FROM zulip_bindings").get().count,
 			rocketChatPosts: this.database.prepare("SELECT COUNT(*) AS count FROM rocket_chat_posts").get().count,
 			maxConcurrent,
+			activeContexts,
 			activeEvents,
-			availableSlots: Math.max(0, maxConcurrent - activeEvents),
+			availableSlots: Math.max(0, maxConcurrent - activeContexts),
 			queuedEvents: queue.count,
 			oldestQueuedAt: queue.oldest ?? null,
 			deadEvents: this.database.prepare(`

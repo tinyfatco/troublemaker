@@ -166,7 +166,7 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		}
 
 		if (this.handler.isRunning(record.channelId)) {
-			this.handler.handleSteer(event, this);
+			await this.handler.handleSteer(event, this);
 		} else {
 			await this.handler.handleEvent(event, this);
 		}

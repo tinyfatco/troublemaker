@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { EventScheduler } from "../src/scheduler.mjs";
 import { HostStore } from "../src/store.mjs";
 
 function fixture() {
@@ -41,23 +42,127 @@ function enqueue(store, id, contextId, sequence) {
 	});
 }
 
-test("leases distinct contexts concurrently while serializing each context", () => {
+async function waitFor(predicate, message) {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (predicate()) return;
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+	}
+	assert.fail(message);
+}
+
+test("leases distinct contexts concurrently and appends ordered steers to a running context", () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-one", subject.contexts[0], 1);
+		enqueue(subject.store, "event-two", subject.contexts[0], 2);
+		enqueue(subject.store, "event-three", subject.contexts[1], 3);
+		enqueue(subject.store, "event-four", subject.contexts[0], 4);
+
+		const first = subject.store.claimNextEvent({ maximumActiveContexts: 2 });
+		assert.equal(first.id, "event-one");
+		assert.equal(first.deliveryMode, "turn");
+		const second = subject.store.claimNextEvent({ maximumActiveContexts: 2 });
+		assert.equal(second.id, "event-three", "a leased delivery blocks only its own context");
+		assert.equal(subject.store.claimNextEvent({ maximumActiveContexts: 2 }), null);
+
+		subject.store.acceptEvent(first.id, first.leaseToken);
+		subject.store.heartbeatEvent(first.id, first.leaseToken);
+		const firstSteer = subject.store.claimNextEvent({ maximumActiveContexts: 2 });
+		assert.equal(firstSteer.id, "event-two");
+		assert.equal(firstSteer.deliveryMode, "steer");
+		assert.equal(
+			subject.store.claimNextEvent({ maximumActiveContexts: 2 }),
+			null,
+			"only one same-context delivery may be in transport at a time",
+		);
+
+		subject.store.acceptEvent(firstSteer.id, firstSteer.leaseToken);
+		subject.store.heartbeatEvent(firstSteer.id, firstSteer.leaseToken);
+		const secondSteer = subject.store.claimNextEvent({ maximumActiveContexts: 2 });
+		assert.equal(secondSteer.id, "event-four");
+		assert.equal(secondSteer.deliveryMode, "steer");
+		assert.equal(subject.store.countActiveContexts(), 2);
+		assert.equal(subject.store.countActiveEvents(), 4);
+		assert.deepEqual(
+			{
+				activeContexts: subject.store.status(3).activeContexts,
+				activeEvents: subject.store.status(3).activeEvents,
+				availableSlots: subject.store.status(3).availableSlots,
+			},
+			{ activeContexts: 2, activeEvents: 4, availableSlots: 1 },
+			"capacity reporting counts resident contexts, not batched event receipts",
+		);
+	} finally {
+		subject.close();
+	}
+});
+
+test("running-context steers do not consume another context slot", () => {
 	const subject = fixture();
 	try {
 		enqueue(subject.store, "event-one", subject.contexts[0], 1);
 		enqueue(subject.store, "event-two", subject.contexts[0], 2);
 		enqueue(subject.store, "event-three", subject.contexts[1], 3);
 
-		const first = subject.store.claimNextEvent();
-		assert.equal(first.id, "event-one");
-		const second = subject.store.claimNextEvent();
-		assert.equal(second.id, "event-three", "the second event in a busy context remains serialized");
-		assert.equal(subject.store.claimNextEvent(), null);
-
+		const first = subject.store.claimNextEvent({ maximumActiveContexts: 1 });
 		subject.store.acceptEvent(first.id, first.leaseToken);
 		subject.store.heartbeatEvent(first.id, first.leaseToken);
-		subject.store.completeEvent(first.id, first.leaseToken);
-		assert.equal(subject.store.claimNextEvent().id, "event-two");
+
+		const steer = subject.store.claimNextEvent({ maximumActiveContexts: 1 });
+		assert.equal(steer.id, "event-two");
+		assert.equal(steer.deliveryMode, "steer");
+		assert.equal(
+			subject.store.claimNextEvent({ maximumActiveContexts: 1 }),
+			null,
+			"a new context remains capped while the active context accepts batched steering",
+		);
+	} finally {
+		subject.close();
+	}
+});
+
+test("a running receipt opens the same-context Pi steering lane", async () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-one", subject.contexts[0], 1);
+		enqueue(subject.store, "event-two", subject.contexts[0], 2);
+		const delivered = [];
+		const scheduler = new EventScheduler({
+			config: {
+				scheduler: {
+					maxConcurrent: 1,
+					leaseSeconds: 60,
+					turnLeaseSeconds: 900,
+					maximumAttempts: 5,
+				},
+			},
+			store: subject.store,
+			runtime: {
+				reconcile: async () => {},
+				reapIdle: async () => {},
+				acceptEvent: async (event) => {
+					delivered.push(event);
+				},
+			},
+		});
+
+		await scheduler.start();
+		await waitFor(
+			() => subject.store.getEvent("event-one")?.status === "accepted",
+			"first event was not accepted",
+		);
+		assert.equal(delivered.length, 1);
+		assert.equal(subject.store.getEvent("event-two").status, "queued");
+
+		const first = subject.store.getEvent("event-one");
+		scheduler.receipt(first.id, first.leaseToken, "running");
+		await waitFor(() => delivered.length === 2, "same-context steer was not delivered");
+		assert.equal(delivered[1].id, "event-two");
+		assert.equal(delivered[1].deliveryMode, "steer");
+		await waitFor(
+			() => subject.store.getEvent("event-two")?.status === "accepted",
+			"steering event was not accepted",
+		);
 	} finally {
 		subject.close();
 	}

@@ -117,8 +117,13 @@ export interface AgentRunner {
 	abort(): void;
 	/** Abort only an in-progress manual or automatic context compaction. */
 	abortCompaction(): boolean;
-	/** Queue a message at the active run's next safe turn boundary. */
-	steer(text: string): boolean;
+	/**
+	 * Queue a message at the active run's next safe turn boundary.
+	 * The returned promise settles only after Pi has drained the batched queue
+	 * and the active session is idle, allowing durable ingress receipts to stay
+	 * live across the in-memory steering interval.
+	 */
+	steer(text: string): Promise<void> | null;
 	/** Describe an in-progress context compaction for status surfaces. */
 	getCompactionStatus(): CompactionStatus | null;
 	/** Get current context diagnostics */
@@ -431,6 +436,7 @@ function createRunner(
 		},
 		convertToLlm,
 		streamFn,
+		steeringMode: "all",
 		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(authStorage, provider),
 	});
 
@@ -1316,12 +1322,16 @@ function createRunner(
 			return requestCompactionAbort();
 		},
 
-		steer(text: string): boolean {
-			if (!session || !acceptsSteering) return false;
-			void session.steer(text).catch((err: Error) => {
+		steer(text: string): Promise<void> | null {
+			if (!session || !acceptsSteering) return null;
+			const activeSession = session;
+			const settlement = activeSession.steer(text).then(async () => {
+				await activeSession.waitForIdle();
+			});
+			void settlement.catch((err: Error) => {
 				log.logWarning(`[awareness] steer failed`, err.message);
 			});
-			return true;
+			return settlement;
 		},
 
 		getCompactionStatus(): CompactionStatus | null {

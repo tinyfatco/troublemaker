@@ -116,7 +116,8 @@ export async function routeWorkspaceChannelEvent({
 		return;
 	}
 	if (handler.isRunning(event.channel)) {
-		handler.handleSteer(event, adapter);
+		const settled = handler.handleSteer(event, adapter);
+		if (awaitCompletion) await settled;
 		return;
 	}
 	const work = queue.enqueue(async () => {

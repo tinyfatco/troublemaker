@@ -315,7 +315,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			response.end(JSON.stringify({ ok: true, accepted: true }));
 			void withHostReceipt(payload.hostReceipt, async () => {
 				if (payload.deliveryId && this.deliveryLedger.has(payload.deliveryId)) return;
-				await this.handleMessage(message);
+				await this.handleMessage(message, true);
 				if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
 			}).catch((error) => {
 				log.logWarning("Zulip webhook processing error", error instanceof Error ? error.message : String(error));
@@ -360,7 +360,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		};
 	}
 
-	private async handleMessage(message: ZulipMessage): Promise<void> {
+	private async handleMessage(message: ZulipMessage, awaitCompletion = false): Promise<void> {
 		const channel = String(message.stream_id);
 		this.requireAllowedChannel(channel);
 		const user: ZulipUser = {
@@ -404,6 +404,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			adapter: this,
 			event,
 			queue: this.getQueue(channel),
+			awaitCompletion,
 		});
 	}
 
