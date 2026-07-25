@@ -81,7 +81,7 @@ const nativeServer = createServer(async (request, response) => {
 		if (expireNextPoll) {
 			expireNextPoll = false;
 			response.writeHead(400, { "content-type": "text/html" });
-			response.end();
+			response.end("<html><body>expired event queue</body></html>");
 			return;
 		}
 		const lastEventId = Number(url.searchParams.get("last_event_id") || -1);
