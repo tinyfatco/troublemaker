@@ -18,6 +18,10 @@ const outboundBodies: URLSearchParams[] = [];
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
+let subscribedStreams = [
+	{ stream_id: Number(CHANNEL_ID), name: "customer · Casey", topics_policy: "empty_topic_only" },
+	{ stream_id: Number(OTHER_CHANNEL_ID), name: "projects", topics_policy: "disable_empty_topic" },
+];
 
 async function readBody(request: import("node:http").IncomingMessage): Promise<Buffer> {
 	const chunks: Buffer[] = [];
@@ -51,22 +55,7 @@ const upstream = createServer(async (request, response) => {
 		return;
 	}
 	if (request.method === "GET" && url.pathname === "/api/v1/streams") {
-		send(200, {
-			result: "success",
-			msg: "",
-			streams: [
-				{
-					stream_id: Number(CHANNEL_ID),
-					name: "customer · Casey",
-					topics_policy: "empty_topic_only",
-				},
-				{
-					stream_id: Number(OTHER_CHANNEL_ID),
-					name: "projects",
-					topics_policy: "disable_empty_topic",
-				},
-			],
-		});
+		send(200, { result: "success", msg: "", streams: subscribedStreams });
 		return;
 	}
 	if (request.method === "POST" && url.pathname === "/api/v1/messages") {
@@ -107,6 +96,7 @@ const adapter = new ZulipWebhookAdapter({
 		record: (...args: any[]) => pulseRecords.push(args),
 	} as any,
 	directChannelMessages: false,
+	channelRefreshMs: 20,
 	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
 adapter.setHandler({
@@ -392,6 +382,16 @@ try {
 	);
 	await working.deleteMessage();
 	assert.equal(deleteCount, 1);
+
+	subscribedStreams = [
+		{ stream_id: Number(CHANNEL_ID), name: "customer · Casey", topics_policy: "empty_topic_only" },
+		{ stream_id: 7, name: "new project", topics_policy: "disable_empty_topic" },
+	];
+	for (let index = 0; index < 50 && (!adapter.getChannel("7") || adapter.getChannel(OTHER_CHANNEL_ID)); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(adapter.getChannel("7")?.name, "new project", "new subscriptions appear without a restart");
+	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID), undefined, "removed subscriptions disappear without a restart");
 } finally {
 	await adapter.stop();
 	await new Promise<void>((resolve) => inbound.close(() => resolve()));
