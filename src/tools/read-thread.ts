@@ -1,16 +1,16 @@
 /**
  * read_thread — inspect messages for a conversation thread target.
  *
- * `list_channels` tells the agent which Slack thread targets exist. This tool
- * gives the agent enough transcript context to choose among similar threads
- * without guessing or collapsing distinct roots together. It prefers the live
- * Slack API transcript and falls back to the local log when API access is not
- * available.
+ * `list_channels` tells the agent which durable conversation targets exist.
+ * This tool gives the agent enough transcript context to choose among similar
+ * threads, topics, DMs, and group conversations without collapsing them. It
+ * uses live provider APIs where supported and durable local ledgers otherwise.
  */
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { MessageReactionSummary, PlatformAdapter, ThreadTranscriptMessage } from "../adapters/types.js";
+import { parseZulipTarget } from "../adapters/zulip-target.js";
 import { parseEmailThreadTarget, readEmailThreadById, type EmailThreadLedgerRecord } from "../adapters/email/thread-ledger.js";
 import { displayNameForEntry, readLogEntries, type LogEntry } from "./list-channels.js";
 
@@ -47,7 +47,7 @@ export interface SlackThreadReadResult {
 }
 
 export interface ConversationThreadTargetParts {
-	platform: "slack" | "mattermost" | "rocket-chat" | "email" | "phone";
+	platform: "slack" | "mattermost" | "rocket-chat" | "zulip" | "email" | "phone";
 	inputTarget: string;
 	label: string;
 }
@@ -67,7 +67,7 @@ export interface ConversationThreadMessage {
 export interface ConversationThreadReadResult {
 	target: ConversationThreadTargetParts;
 	messages: ConversationThreadMessage[];
-	source: "slack-api" | "mattermost-api" | "rocket-chat-api" | "log" | "email-ledger" | "phone-log";
+	source: "slack-api" | "mattermost-api" | "rocket-chat-api" | "log" | "zulip-log" | "email-ledger" | "phone-log";
 	warning?: string;
 }
 
@@ -313,6 +313,39 @@ export async function collectRocketChatThreadMessages(
 	}
 }
 
+export function collectZulipConversationMessagesFromLog(
+	workingDir: string,
+	target: string,
+	limit = 40,
+): ConversationThreadReadResult | null {
+	const parsed = parseZulipTarget(target);
+	if (!parsed) return null;
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
+	const entries = readLogEntries(workingDir)
+		.filter((entry) => {
+			if (!entry.channel?.startsWith("zulip:") || entry.channelId !== parsed.channel || !entry.ts) return false;
+			return parsed.threadTs === undefined || entry.threadTs === parsed.threadTs;
+		})
+		.sort((a, b) => (a.date || a.ts || "").localeCompare(b.date || b.ts || ""))
+		.slice(-boundedLimit);
+	const label = entries[0]?.channel?.slice("zulip:".length)
+		|| (parsed.threadTs ? `${parsed.channel} / ${parsed.threadTs}` : parsed.channel);
+	return {
+		target: { platform: "zulip", inputTarget: parsed.inputTarget, label },
+		messages: entries.map((entry, index) => ({
+			date: entry.date || "",
+			ts: entry.ts || "",
+			sender: displayNameForEntry(entry),
+			text: normalizeText(entry.text),
+			isRoot: index === 0,
+			isBot: Boolean(entry.isBot),
+			directlyAddressed: entry.directlyAddressed,
+			sourceEventType: entry.sourceEventType,
+		})),
+		source: "zulip-log",
+	};
+}
+
 export async function collectThreadMessages(
 	workingDir: string,
 	target: string,
@@ -327,6 +360,9 @@ export async function collectThreadMessages(
 
 	const rocketChat = await collectRocketChatThreadMessages(workingDir, target, adapters, limit);
 	if (rocketChat) return rocketChat;
+
+	const zulip = collectZulipConversationMessagesFromLog(workingDir, target, limit);
+	if (zulip) return zulip;
 
 	const email = collectEmailThreadMessages(workingDir, target, limit);
 	if (email) return email;
@@ -470,20 +506,24 @@ export function formatThreadTranscript(result: ConversationThreadReadResult): st
 			? "Mattermost thread"
 			: target.platform === "rocket-chat"
 				? "Rocket.Chat thread"
-				: target.platform === "email"
-					? "Email thread"
-					: "Phone conversation";
+				: target.platform === "zulip"
+					? "Zulip conversation"
+					: target.platform === "email"
+						? "Email thread"
+						: "Phone conversation";
 	const sourceLabel = source === "slack-api"
 		? "Slack API"
 		: source === "mattermost-api"
 			? "Mattermost API"
 			: source === "rocket-chat-api"
 				? "Rocket.Chat API"
-				: source === "email-ledger"
-					? "email ledger"
-					: source === "phone-log"
-						? "phone log"
-						: "local log";
+				: source === "zulip-log"
+					? "Zulip local history"
+					: source === "email-ledger"
+						? "email ledger"
+						: source === "phone-log"
+							? "phone log"
+							: "local log";
 
 	if (messages.length === 0) {
 		return [
@@ -563,7 +603,7 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of the conversation you're reading and why (shown to user)" }),
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
-		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, email-thread:0123abcd..., or phone-..." }),
+		target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-..." }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
 	});
 
@@ -571,17 +611,17 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 		name: "read_thread",
 		label: "read_thread",
 		description:
-			"Read the transcript for a conversation target such as rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-..., with API/log/ledger fallback. " +
+			"Read the transcript for a conversation target such as rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-..., with API/log/ledger fallback. " +
 			"Use this after list_channels when several conversations are active and you need the nuance/context before choosing a send_message target.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
 			const { target, limit } = params as { target?: string; limit?: number };
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("read_thread requires a conversation target like rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
+				throw new Error("read_thread requires a conversation target like rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
 			}
 			const result = await collectThreadMessages(workingDir, target, adapters, limit);
 			if (!result) {
-				throw new Error(`Invalid conversation target "${target}". Expected rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-....`);
+				throw new Error(`Invalid conversation target "${target}". Expected rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-....`);
 			}
 			return {
 				content: [{ type: "text" as const, text: formatThreadTranscript(result) }],

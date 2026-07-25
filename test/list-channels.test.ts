@@ -3,7 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { PlatformAdapter } from "../src/adapters/types.js";
 import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
-import { collectChannels, collectChannelsFromLog, collectPhoneConversations, collectSlackThreads, collectSlackThreadsFromLog, formatChannelTable } from "../src/tools/list-channels.js";
+import { collectChannels, collectChannelsFromLog, collectPhoneConversations, collectSlackThreads, collectSlackThreadsFromLog, collectZulipConversationsFromLog, formatChannelTable } from "../src/tools/list-channels.js";
 
 let passed = 0;
 let failed = 0;
@@ -73,6 +73,25 @@ try {
 			isBot: false,
 		},
 		{
+			date: "2026-05-26T08:02:50.000Z",
+			ts: "201",
+			threadTs: "Road map / alpha",
+			channel: "zulip:projects",
+			channelId: "4",
+			displayName: "Casey",
+			text: "Zulip topic update",
+			isBot: false,
+		},
+		{
+			date: "2026-05-26T08:02:55.000Z",
+			ts: "202",
+			channel: "zulip:DM: Casey",
+			channelId: "dm:8",
+			displayName: "Casey",
+			text: "Zulip direct update",
+			isBot: false,
+		},
+		{
 			date: "2026-05-26T08:03:00.000Z",
 			channel: "telegram:DM:Casey",
 			channelId: "1234567890",
@@ -128,12 +147,16 @@ try {
 	const channels = collectChannelsFromLog(workingDir);
 	const liveZulipAdapter = {
 		name: "zulip",
-		getAllChannels: () => [{ id: "4", name: "customer · Casey" }],
+		getAllChannels: () => [
+			{ id: "4", name: "customer · Casey" },
+			{ id: "dm:8", name: "DM: Casey" },
+		],
 	} as unknown as PlatformAdapter;
 	const channelsWithLiveAdapter = collectChannels(workingDir, [liveZulipAdapter]);
 	const threads = collectSlackThreadsFromLog(workingDir);
 	const emailThreads = collectEmailThreadListings(workingDir);
 	const phoneConversations = collectPhoneConversations(workingDir);
+	const zulipConversations = collectZulipConversationsFromLog(workingDir);
 	const apiOnlyThreadTarget = "slack:C0123456789:1700000030.000500";
 	const slackApiAdapter = {
 		name: "slack",
@@ -172,8 +195,8 @@ try {
 	} as unknown as PlatformAdapter;
 	const combinedThreads = await collectSlackThreads(workingDir, [slackApiAdapter]);
 	const fallbackThreads = await collectSlackThreads(workingDir, [throwingSlackApiAdapter]);
-	const table = formatChannelTable(channels, threads, emailThreads, phoneConversations);
-	const combinedTable = formatChannelTable(channels, combinedThreads, emailThreads, phoneConversations);
+	const table = formatChannelTable(channels, threads, emailThreads, phoneConversations, zulipConversations);
+	const combinedTable = formatChannelTable(channels, combinedThreads, emailThreads, phoneConversations, zulipConversations);
 
 	assert(channels.some((c) => c.adapter === "slack" && c.id === "C0123456789"), "channel list still includes Slack channel target");
 	assert(
@@ -184,6 +207,14 @@ try {
 		formatChannelTable(channelsWithLiveAdapter).includes("`zulip:4`"),
 		"live Zulip membership formats as an explicit send target",
 	);
+	assert(
+		formatChannelTable(channelsWithLiveAdapter).includes("`zulip:dm:8`"),
+		"observed Zulip DMs format as explicit send targets",
+	);
+	assert(zulipConversations.length === 2, "Zulip topics and DMs stay distinct conversation targets");
+	assert(table.includes("Recent Zulip conversation targets:"), "formatted output has a Zulip conversation section");
+	assert(table.includes("`zulip:4:topic:Road%20map%20%2F%20alpha`"), "formatted output exposes exact Zulip topic target");
+	assert(table.includes("`zulip:dm:8`"), "formatted output exposes exact Zulip DM target");
 	assert(channels.some((c) => c.adapter === "mattermost" && c.id === "mmmmmmmmmmmmmmmmmmmmmmmmmm"), "channel list includes Mattermost channel targets");
 	assert(table.includes("`mattermost:mmmmmmmmmmmmmmmmmmmmmmmmmm`"), "formatted output uses an explicit Mattermost send target");
 	assert(channels.some((c) => c.adapter === "rocket-chat" && c.id === "rocketRoom123456"), "channel list includes Rocket.Chat room targets");

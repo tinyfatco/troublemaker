@@ -501,8 +501,11 @@ function createAdapter(name: string): AdapterWithHandler {
 		? []
 		: process.env.MOM_ROCKETCHAT_ALLOWED_ROOMS.split(",").map((id) => id.trim()).filter(Boolean);
 	const allowedZulipChannelIds = process.env.MOM_ZULIP_ALLOWED_CHANNELS === undefined
-		? []
+		? undefined
 		: process.env.MOM_ZULIP_ALLOWED_CHANNELS.split(",").map((id) => id.trim()).filter(Boolean);
+	const allowedZulipDmUserIds = process.env.MOM_ZULIP_ALLOWED_DM_USERS === undefined
+		? undefined
+		: process.env.MOM_ZULIP_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
 	const mattermostChannelMessagesDirect = process.env.MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT;
 	if (
 		mattermostChannelMessagesDirect !== undefined
@@ -614,8 +617,8 @@ function createAdapter(name: string): AdapterWithHandler {
 			const botToken = process.env.MOM_ZULIP_BOT_TOKEN;
 			const inboundToken = process.env.MOM_ZULIP_INBOUND_TOKEN;
 			const agentName = process.env.MOM_ZULIP_AGENT_NAME || "Agent";
-			if (!url || !botToken || !inboundToken || allowedZulipChannelIds.length === 0) {
-				console.error("Missing env: MOM_ZULIP_URL, MOM_ZULIP_BOT_TOKEN, MOM_ZULIP_INBOUND_TOKEN, MOM_ZULIP_ALLOWED_CHANNELS");
+			if (!url || !botToken || !inboundToken) {
+				console.error("Missing env: MOM_ZULIP_URL, MOM_ZULIP_BOT_TOKEN, MOM_ZULIP_INBOUND_TOKEN");
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
@@ -628,6 +631,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				store,
 				pulse,
 				allowedChannelIds: allowedZulipChannelIds,
+				allowedDmUserIds: allowedZulipDmUserIds,
 				directChannelMessages: zulipChannelMessagesDirect !== "false",
 				onAmbientMessage: handleAmbientMessage,
 			});
@@ -873,7 +877,10 @@ function resolveActiveWorkingOutputTarget(): WorkingOutputTarget | undefined {
 	if (scope.adapter.name === "rocket-chat" && /^[a-zA-Z0-9_-]{8,128}$/.test(scope.channelId)) {
 		return { platform: "rocket-chat", channelId: scope.channelId };
 	}
-	if (scope.adapter.name === "zulip" && /^[1-9]\d*$/.test(scope.channelId)) {
+	if (
+		scope.adapter.name === "zulip"
+		&& (/^[1-9]\d*$/.test(scope.channelId) || /^dm:[1-9]\d*(?:,[1-9]\d*)*$/.test(scope.channelId))
+	) {
 		return { platform: "zulip", channelId: scope.channelId };
 	}
 	return undefined;

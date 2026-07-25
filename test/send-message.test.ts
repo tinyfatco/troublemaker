@@ -116,6 +116,11 @@ async function run() {
 	const zulipTarget = resolveMessageTarget("zulip:4", adapters);
 	assertEqual(zulipTarget?.adapter.name, "zulip", "Zulip target resolves to Zulip adapter");
 	assertEqual(zulipTarget?.channel, "4", "Zulip target preserves the numeric channel ID");
+	const zulipDmTarget = resolveMessageTarget("zulip:dm:12,8", adapters);
+	assertEqual(zulipDmTarget?.channel, "dm:8,12", "Zulip group DM target canonicalizes participant IDs");
+	const zulipTopicTarget = resolveMessageTarget("zulip:4:topic:Road%20map%20%2F%20alpha", adapters);
+	assertEqual(zulipTopicTarget?.channel, "4", "Zulip topic target preserves the channel ID");
+	assertEqual(zulipTopicTarget?.threadTs, "Road map / alpha", "Zulip topic target decodes exact topic placement");
 	assertEqual(resolveMessageTarget("zulip:4", [telegram.adapter]), undefined, "Zulip target never falls through to Telegram");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.adapter.name, "email", "email thread target resolves to Email adapter");
 	assertEqual(resolveMessageTarget("email-thread:0123456789abcdef", adapters)?.channel, "email-thread:0123456789abcdef", "email thread target keeps thread channel for adapter resolution");
@@ -205,6 +210,19 @@ async function run() {
 	});
 	assertEqual(zulip.sent.length, 1, "tool sends explicit Zulip targets through the Zulip adapter");
 	assertEqual(zulip.sent[0]?.channel, "4", "Zulip target passes the native channel ID");
+	await (tool.execute as any)("call-zulip-dm", {
+		label: "Zulip DM test",
+		target: "zulip:dm:8",
+		text: "hello Zulip DM",
+	});
+	assertEqual(zulip.sent[1]?.channel, "dm:8", "tool sends Zulip DMs through the direct conversation key");
+	await (tool.execute as any)("call-zulip-topic", {
+		label: "Zulip topic test",
+		target: "zulip:4:topic:Road%20map%20%2F%20alpha",
+		text: "hello Zulip topic",
+	});
+	assertEqual(zulip.threadSent[0]?.channel, "4", "tool sends Zulip topic replies to the native channel");
+	assertEqual(zulip.threadSent[0]?.threadTs, "Road map / alpha", "tool preserves exact Zulip topic placement");
 
 	await (tool.execute as any)("call-email-thread", {
 		label: "email thread test",

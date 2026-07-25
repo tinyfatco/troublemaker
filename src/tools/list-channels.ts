@@ -1,5 +1,5 @@
 /**
- * list_channels — list every channel the agent has interacted with.
+ * list_channels — list every channel and durable conversation the agent can use.
  *
  * Reads log.jsonl (the agent's unified activity log written by every adapter)
  * and returns the unique set of channels the agent has ever sent or received
@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { PlatformAdapter, SlackThreadTargetInfo } from "../adapters/types.js";
+import { formatZulipTopicTarget } from "../adapters/zulip-target.js";
 import { collectEmailThreadListings, type EmailThreadListing } from "../adapters/email/thread-ledger.js";
 
 export interface ChannelListing {
@@ -37,6 +38,18 @@ export interface SlackThreadListing {
 	messageCount: number;
 	lastSeen: string;
 	source?: "slack-api" | "log";
+}
+
+export interface ZulipConversationListing {
+	adapter: "zulip";
+	channelId: string;
+	channelName: string;
+	topic?: string;
+	sendTarget: string;
+	lastPreview: string;
+	participants: string[];
+	messageCount: number;
+	lastSeen: string;
 }
 
 export interface PhoneConversationListing {
@@ -91,7 +104,7 @@ function sendTargetForChannel(channel: ChannelListing): string {
 	if (channel.adapter === "rocket-chat" && /^[A-Za-z0-9_-]+$/.test(channel.id)) {
 		return `rocket-chat:${channel.id}`;
 	}
-	if (channel.adapter === "zulip" && /^[1-9]\d*$/.test(channel.id)) {
+	if (channel.adapter === "zulip" && (/^[1-9]\d*$/.test(channel.id) || /^dm:[1-9]\d*(?:,[1-9]\d*)*$/.test(channel.id))) {
 		return `zulip:${channel.id}`;
 	}
 	return channel.id;
@@ -291,6 +304,55 @@ function normalizeSlackThreadListing(thread: SlackThreadTargetInfo | SlackThread
 	};
 }
 
+export function collectZulipConversationsFromLog(workingDir: string, limit = 20): ZulipConversationListing[] {
+	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
+	const byTarget = new Map<string, ZulipConversationListing & { participantSet: Set<string> }>();
+	for (const entry of readLogEntries(workingDir)) {
+		if (!entry.channel?.startsWith("zulip:") || !entry.channelId || !entry.ts) continue;
+		let sendTarget: string;
+		let topic: string | undefined;
+		if (/^dm:[1-9]\d*(?:,[1-9]\d*)*$/.test(entry.channelId)) {
+			sendTarget = `zulip:${entry.channelId}`;
+		} else if (/^[1-9]\d*$/.test(entry.channelId) && entry.threadTs) {
+			topic = entry.threadTs;
+			sendTarget = formatZulipTopicTarget(entry.channelId, topic);
+		} else {
+			continue;
+		}
+		const participant = displayNameForEntry(entry);
+		const existing = byTarget.get(sendTarget);
+		if (!existing) {
+			byTarget.set(sendTarget, {
+				adapter: "zulip",
+				channelId: entry.channelId,
+				channelName: entry.channel.slice("zulip:".length),
+				...(topic ? { topic } : {}),
+				sendTarget,
+				lastPreview: preview(entry.text),
+				participants: [],
+				participantSet: new Set([participant]),
+				messageCount: 1,
+				lastSeen: entry.date || "",
+			});
+			continue;
+		}
+		existing.participantSet.add(participant);
+		existing.messageCount += 1;
+		if (!existing.lastSeen || (entry.date && entry.date > existing.lastSeen)) {
+			existing.lastSeen = entry.date || existing.lastSeen;
+			existing.lastPreview = preview(entry.text) || existing.lastPreview;
+		}
+	}
+	return Array.from(byTarget.values())
+		.sort((a, b) => (b.lastSeen || "").localeCompare(a.lastSeen || ""))
+		.slice(0, boundedLimit)
+		.map(({ participantSet, ...conversation }) => ({
+			...conversation,
+			participants: Array.from(participantSet).slice(0, 8),
+			lastPreview: conversation.lastPreview || "(no text captured)",
+		}));
+}
+
 export function collectPhoneConversations(workingDir: string, limit = 20): PhoneConversationListing[] {
 	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
 	const registry = readPhoneRegistry(workingDir);
@@ -370,6 +432,7 @@ export function formatChannelTable(
 	slackThreads: SlackThreadListing[] = [],
 	emailThreads: EmailThreadListing[] = [],
 	phoneConversations: PhoneConversationListing[] = [],
+	zulipConversations: ZulipConversationListing[] = [],
 ): string {
 	const sections: string[] = [];
 
@@ -390,6 +453,15 @@ export function formatChannelTable(
 			"| Channel | Send Target | Root / Subject | Latest Message | Participants | Last Seen | Source |",
 			"|---------|-------------|----------------|----------------|--------------|-----------|--------|",
 			...slackThreads.map((t) => `| #${t.channelName} | \`${t.sendTarget}\` | ${t.rootPreview} | ${t.lastPreview} | ${t.participants.join(", ") || "-"} (${t.messageCount}) | ${t.lastSeen || "-"} | ${t.source === "slack-api" ? "Slack API" : "local log"} |`),
+		].join("\n"));
+	}
+
+	if (zulipConversations.length > 0) {
+		sections.push([
+			"Recent Zulip conversation targets:",
+			"| Channel / Conversation | Topic | Send Target | Latest Message | Participants | Last Seen |",
+			"|------------------------|-------|-------------|----------------|--------------|-----------|",
+			...zulipConversations.map((conversation) => `| ${conversation.channelName} | ${conversation.topic || "Direct message"} | \`${conversation.sendTarget}\` | ${conversation.lastPreview} | ${conversation.participants.join(", ") || "-"} (${conversation.messageCount}) | ${conversation.lastSeen || "-"} |`),
 		].join("\n"));
 	}
 
@@ -421,19 +493,26 @@ export function createListChannelsTool(workingDir: string, adapters: PlatformAda
 		name: "list_channels",
 		label: "list_channels",
 		description:
-			"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. " +
+			"List every channel the agent has ever sent or received a message on, plus recent Slack, Zulip, email, and phone conversation targets. " +
 			"Uses Slack API for recent Slack thread targets when available and log.jsonl as durable fallback. " +
 			"Reads channels from log.jsonl, so it covers all adapters (Telegram, Slack, Rocket.Chat, Mattermost, Email, " +
 			"Discord, SMS/iMessage, etc.) and survives container restarts. Use this to discover valid " +
-			"send_message targets, including rocket-chat:<room>, mattermost:<channel>, slack:<channel>:<thread_ts>, email-thread:<id>, and phone-... when choosing among conversations.",
+			"send_message targets, including rocket-chat:<room>, mattermost:<channel>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, and phone-... when choosing among conversations.",
 		parameters: schema,
 		execute: async () => {
 			const channels = collectChannels(workingDir, adapters);
 			const slackThreads = await collectSlackThreads(workingDir, adapters);
 			const emailThreads = collectEmailThreadListings(workingDir);
 			const phoneConversations = collectPhoneConversations(workingDir);
+			const zulipConversations = collectZulipConversationsFromLog(workingDir);
 			return {
-				content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads, emailThreads, phoneConversations) }],
+				content: [{ type: "text" as const, text: formatChannelTable(
+					channels,
+					slackThreads,
+					emailThreads,
+					phoneConversations,
+					zulipConversations,
+				) }],
 				details: undefined,
 			};
 		},

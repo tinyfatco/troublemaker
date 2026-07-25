@@ -221,7 +221,10 @@ export function isWorkingOutputTarget(value: unknown): value is WorkingOutputTar
 	if (candidate.platform === "slack") return /^[CDG][A-Z0-9]+$/i.test(candidate.channelId);
 	if (candidate.platform === "mattermost") return /^[a-z0-9]{26}$/.test(candidate.channelId);
 	if (candidate.platform === "rocket-chat") return /^[a-zA-Z0-9_-]{8,128}$/.test(candidate.channelId);
-	if (candidate.platform === "zulip") return /^[1-9]\d*$/.test(candidate.channelId);
+	if (candidate.platform === "zulip") {
+		return /^[1-9]\d*$/.test(candidate.channelId)
+			|| /^dm:[1-9]\d*(?:,[1-9]\d*)*$/.test(candidate.channelId);
+	}
 	return false;
 }
 

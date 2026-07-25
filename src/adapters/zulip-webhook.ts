@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { basename, join } from "node:path";
+import TurndownService from "turndown";
 import type { WorkingOutputTarget } from "../context.js";
 import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
@@ -26,6 +27,12 @@ import {
 	WorkspaceChannelQueue,
 	WorkspaceDeliveryLedger,
 } from "./workspace-channel-runtime.js";
+import {
+	formatZulipDmChannel,
+	formatZulipTopicTarget,
+	isZulipChannelId,
+	parseZulipDmChannel,
+} from "./zulip-target.js";
 
 interface ZulipUser {
 	user_id: number;
@@ -40,12 +47,14 @@ interface ZulipChannel {
 	topics_policy?: string;
 }
 
-interface ZulipMessage {
+interface ZulipDirectRecipient {
 	id: number;
-	type: "stream";
-	stream_id: number;
-	display_recipient: string;
-	subject: string;
+	email: string;
+	full_name: string;
+}
+
+interface ZulipMessageBase {
+	id: number;
 	sender_id: number;
 	sender_email: string;
 	sender_full_name: string;
@@ -56,6 +65,22 @@ interface ZulipMessage {
 	is_mentioned?: boolean;
 	flags?: string[];
 }
+
+interface ZulipStreamMessage extends ZulipMessageBase {
+	type: "stream";
+	stream_id: number;
+	display_recipient: string;
+	subject: string;
+}
+
+interface ZulipDirectMessage extends ZulipMessageBase {
+	type: "private";
+	recipient_id: number;
+	display_recipient: ZulipDirectRecipient[];
+	subject?: string;
+}
+
+type ZulipMessage = ZulipStreamMessage | ZulipDirectMessage;
 
 interface ZulipResponse {
 	result: "success";
@@ -75,24 +100,28 @@ export interface ZulipWebhookConfig {
 	agentName: string;
 	workingDir: string;
 	store: ChannelStore;
-	allowedChannelIds: Iterable<string>;
+	/** Optional extra stream allowlist. Omit it to follow the bot's live Zulip subscriptions. */
+	allowedChannelIds?: Iterable<string>;
+	/** Optional sender allowlist for individual and group direct messages. */
+	allowedDmUserIds?: Iterable<string>;
 	pulse?: ChannelPulse;
 	directChannelMessages?: boolean;
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 }
 
 /**
- * Host-managed, topic-free Zulip transport for one customer-scoped runtime.
+ * Host-managed Zulip transport for subscribed channels and direct messages.
  *
- * The configured URL is a Hostd capability proxy, not the native Zulip URL.
- * Hostd owns provider credentials and constrains every operation to the one
- * channel bound to this runtime context.
+ * The configured URL is a host capability proxy, not the native Zulip URL.
+ * The host keeps provider credentials and the private user directory outside
+ * the resident while exposing only its current subscriptions and established
+ * direct-message conversations.
  */
 export class ZulipWebhookAdapter implements PlatformAdapter {
 	readonly name = "zulip";
 	readonly maxMessageLength = 10_000;
 	readonly formatInstructions = `## Zulip Formatting (Markdown)
-Use standard Markdown. This customer feed is topic-free, so send messages directly to the configured Zulip channel.`;
+Use standard Markdown. Reply to direct messages directly and preserve the inbound topic when a channel uses topics.`;
 
 	private readonly apiBase: string;
 	private readonly botToken: string;
@@ -101,11 +130,14 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	private readonly workingDir: string;
 	private readonly store: ChannelStore;
 	private readonly pulse?: ChannelPulse;
-	private readonly allowedChannelIds: ReadonlySet<string>;
+	private readonly allowedChannelIds?: ReadonlySet<string>;
+	private readonly allowedDmUserIds?: ReadonlySet<string>;
 	private readonly directChannelMessages: boolean;
 	private readonly onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
 	private readonly users = new Map<string, ZulipKnownUser>();
 	private readonly channels = new Map<string, ChannelInfo>();
+	private readonly channelPolicies = new Map<string, string>();
+	private readonly turndown = new TurndownService({ codeBlockStyle: "fenced" });
 	private readonly queues = new Map<string, WorkspaceChannelQueue>();
 	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	private handler!: MomHandler;
@@ -126,15 +158,20 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		this.pulse = config.pulse;
 		this.directChannelMessages = config.directChannelMessages ?? true;
 		this.onAmbientMessage = config.onAmbientMessage;
-		this.allowedChannelIds = new Set(
-			Array.from(config.allowedChannelIds, (channelId) => channelId.trim()).filter(Boolean),
-		);
-		if (this.allowedChannelIds.size === 0) {
-			throw new Error("Zulip webhook adapter requires at least one allowed channel");
-		}
-		for (const channelId of this.allowedChannelIds) {
-			if (!/^[1-9]\d*$/.test(channelId)) {
+		this.allowedChannelIds = config.allowedChannelIds === undefined
+			? undefined
+			: new Set(Array.from(config.allowedChannelIds, (channelId) => channelId.trim()).filter(Boolean));
+		this.allowedDmUserIds = config.allowedDmUserIds === undefined
+			? undefined
+			: new Set(Array.from(config.allowedDmUserIds, (userId) => userId.trim()).filter(Boolean));
+		for (const channelId of this.allowedChannelIds || []) {
+			if (!isZulipChannelId(channelId)) {
 				throw new Error("Zulip allowed channel IDs must be positive integers");
+			}
+		}
+		for (const userId of this.allowedDmUserIds || []) {
+			if (!/^[1-9]\d*$/.test(userId)) {
+				throw new Error("Zulip allowed DM user IDs must be positive integers");
 			}
 		}
 		this.deliveryLedger = new WorkspaceDeliveryLedger(
@@ -156,16 +193,18 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		const result = await this.api<ZulipResponse & { streams: ZulipChannel[] }>(
 			"/streams?include_public=true&include_subscribed=true&include_all_active=true",
 		);
-		for (const channelId of this.allowedChannelIds) {
-			const stream = result.streams.find((candidate) => String(candidate.stream_id) === channelId);
-			if (!stream) {
+		for (const stream of result.streams) {
+			const channelId = String(stream.stream_id);
+			if (!this.streamIsInScope(channelId)) continue;
+			this.channels.set(channelId, { id: channelId, name: stream.name });
+			if (stream.topics_policy) this.channelPolicies.set(channelId, stream.topics_policy);
+		}
+		for (const channelId of this.allowedChannelIds || []) {
+			if (!this.channels.has(channelId)) {
 				throw new Error(`Zulip host proxy omitted allowed channel ${channelId}`);
 			}
-			if (stream.topics_policy !== "empty_topic_only") {
-				throw new Error(`Zulip channel ${channelId} must use the topic-free policy`);
-			}
-			this.channels.set(channelId, { id: channelId, name: stream.name });
 		}
+		this.restoreKnownDirectConversations();
 		this.pulse?.setSelfId(this.botUserId);
 		log.logConnected();
 	}
@@ -177,7 +216,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	}
 
 	getChannel(channelId: string): ChannelInfo | undefined {
-		return this.allowedChannelIds.has(channelId) ? this.channels.get(channelId) : undefined;
+		return this.channels.get(channelId);
 	}
 
 	getAllUsers(): UserInfo[] {
@@ -193,7 +232,6 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		text: string,
 		attachments: Array<{ filePath: string; filename: string }> = [],
 	): Promise<string> {
-		this.requireAllowedChannel(channel);
 		let content = text;
 		for (const attachment of attachments) {
 			const form = new FormData();
@@ -205,27 +243,37 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			if (!uploaded.uri) throw new Error("Zulip upload response omitted the file URI");
 			content += `${content ? "\n\n" : ""}[${attachment.filename}](${uploaded.uri})`;
 		}
-		const body = new URLSearchParams({
-			type: "channel",
-			to: channel,
-			topic: "",
-			content,
-		});
-		const result = await this.api<ZulipResponse>("/messages", { method: "POST", body });
-		if (!Number.isInteger(result.id)) throw new Error("Zulip message response omitted the ID");
-		return String(result.id);
+		const directRecipients = parseZulipDmChannel(channel);
+		const body = directRecipients
+			? new URLSearchParams({ type: "direct", to: JSON.stringify(directRecipients.map(Number)), content })
+			: new URLSearchParams({
+				type: "channel",
+				to: this.requireKnownStream(channel),
+				topic: this.defaultTopic(channel),
+				content,
+			});
+		return this.sendMessageBody(body);
 	}
 
-	async postInThread(channel: string, _threadTs: string, text: string): Promise<string> {
-		return this.postMessage(channel, text);
+	async postInThread(channel: string, topic: string, text: string): Promise<string> {
+		if (parseZulipDmChannel(channel)) return this.postMessage(channel, text);
+		const body = new URLSearchParams({
+			type: "channel",
+			to: this.requireKnownStream(channel),
+			topic,
+			content: text,
+		});
+		return this.sendMessageBody(body);
 	}
 
 	async postResponseMessage(event: MomEvent, text: string): Promise<string> {
-		return this.postMessage(event.channel, text);
+		return event.threadTs
+			? this.postInThread(event.channel, event.threadTs, text)
+			: this.postMessage(event.channel, text);
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-		this.requireAllowedChannel(channel);
+		this.requireKnownConversation(channel);
 		await this.api(`/messages/${this.messageId(ts)}`, {
 			method: "PATCH",
 			body: new URLSearchParams({ content: text }),
@@ -233,22 +281,27 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	}
 
 	async deleteMessage(channel: string, ts: string): Promise<void> {
-		this.requireAllowedChannel(channel);
+		this.requireKnownConversation(channel);
 		await this.api(`/messages/${this.messageId(ts)}`, { method: "DELETE" });
 	}
 
-	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
-		await this.postMessage(channel, "", [{
-			filePath,
-			filename: title || basename(filePath),
-		}]);
+	async uploadFile(channel: string, filePath: string, title?: string, topic?: string): Promise<void> {
+		this.requireKnownConversation(channel);
+		const filename = title || basename(filePath);
+		const form = new FormData();
+		form.append("file", new Blob([readFileSync(filePath)]), filename);
+		const uploaded = await this.api<ZulipResponse>("/user_uploads", { method: "POST", body: form });
+		if (!uploaded.uri) throw new Error("Zulip upload response omitted the file URI");
+		const content = `[${filename}](${uploaded.uri})`;
+		if (topic && !parseZulipDmChannel(channel)) await this.postInThread(channel, topic, content);
+		else await this.postMessage(channel, content);
 	}
 
-	logBotResponse(channel: string, text: string, ts: string): void {
+	logBotResponse(channel: string, text: string, ts: string, metadata: { threadTs?: string } = {}): void {
 		void this.store.logMessage({
 			date: new Date().toISOString(),
 			ts,
-			threadTs: ts,
+			threadTs: metadata.threadTs,
 			channel: `zulip:${this.channels.get(channel)?.name || channel}`,
 			channelId: channel,
 			user: this.botUserId || "tinyfat-agent",
@@ -258,10 +311,10 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			attachments: [],
 			isBot: true,
 			directlyAddressed: true,
-			sourceEventType: "zulip_agent_message",
+			sourceEventType: parseZulipDmChannel(channel) ? "zulip_agent_dm" : "zulip_agent_message",
 		} as Parameters<ChannelStore["logMessage"]>[0]);
 		if (this.pulse && this.botUserId) {
-			this.pulse.record(channel, this.botUserId, text.length, text, this.pulseMetadata(channel, ts, true));
+			this.pulse.record(channel, this.botUserId, text.length, text, this.pulseMetadata(channel, ts, true, metadata.threadTs));
 		}
 	}
 
@@ -270,7 +323,7 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
-		if (!this.allowedChannelIds.has(event.channel)) return false;
+		if (!this.channels.has(event.channel)) return false;
 		const queue = this.getQueue(event.channel);
 		if (queue.size() >= 5) {
 			log.logWarning(`Zulip event queue full for ${event.channel}`, event.text.substring(0, 80));
@@ -314,24 +367,27 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			if (
 				!message
 				|| !Number.isInteger(message.id)
-				|| !Number.isInteger(message.stream_id)
 				|| !Number.isInteger(message.sender_id)
-				|| message.type !== "stream"
+				|| !["stream", "private"].includes(message.type)
+				|| (message.type === "stream" && !Number.isInteger(message.stream_id))
+				|| (message.type === "private" && !Array.isArray(message.display_recipient))
 			) {
 				response.writeHead(400);
 				response.end("Missing Zulip message");
 				return;
 			}
-			if (!this.allowedChannelIds.has(String(message.stream_id))) {
+			if (message.type === "stream" && !this.streamIsInScope(String(message.stream_id))) {
 				response.writeHead(403);
-				response.end("Zulip message outside topic-free customer scope");
+				response.end("Zulip message outside the configured stream scope");
 				return;
 			}
 			response.writeHead(202, { "content-type": "application/json" });
 			response.end(JSON.stringify({ ok: true, accepted: true }));
 			void withHostReceipt(payload.hostReceipt, async () => {
 				if (payload.deliveryId && this.deliveryLedger.has(payload.deliveryId)) return;
-				await this.handleMessage(message);
+				if (message.type !== "private" || this.acceptsDmFrom(String(message.sender_id))) {
+					await this.handleMessage(message);
+				}
 				if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
 			}).catch((error) => {
 				log.logWarning("Zulip webhook processing error", error instanceof Error ? error.message : String(error));
@@ -348,7 +404,10 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	}
 
 	createContext(event: MomEvent, store: ChannelStore, isEvent?: boolean): MomContext {
-		return createWorkspaceMessageContext(this.workspaceTransport(), event, store, { isEvent });
+		return createWorkspaceMessageContext(this.workspaceTransport(), event, store, {
+			isEvent,
+			responseThreadId: event.threadTs,
+		});
 	}
 
 	private workspaceTransport(): WorkspaceChannelTransport {
@@ -357,45 +416,65 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			maxMessageLength: this.maxMessageLength,
 			formatStatus: (text) => `*${text}*`,
 			assertWorkingTarget: (target) => {
-				if (target.platform !== "zulip" || !/^[1-9]\d*$/.test(target.channelId)) {
-					throw new Error("Zulip working output requires a valid channel ID.");
+				if (target.platform !== "zulip") {
+					throw new Error("Zulip working output requires a Zulip conversation target.");
 				}
-				this.requireAllowedChannel(target.channelId);
+				this.requireKnownConversation(target.channelId);
 			},
 			postMessage: (channel, text) => this.postMessage(channel, text),
 			updateMessage: (channel, id, text) => this.updateMessage(channel, id, text),
 			deleteMessage: (channel, id) => this.deleteMessage(channel, id),
-			postInThread: (channel, _rootId, text) => this.postMessage(channel, text),
-			uploadFile: (channel, filePath, title) => this.uploadFile(channel, filePath, title),
-			logBotResponse: (channel, text, id) => this.logBotResponse(channel, text, id),
+			postInThread: (channel, topic, text) => this.postInThread(channel, topic, text),
+			uploadFile: (channel, filePath, title, topic) => this.uploadFile(channel, filePath, title, topic),
+			logBotResponse: (channel, text, id, metadata) => this.logBotResponse(channel, text, id, metadata),
 			getUser: (userId) => this.getUser(userId),
 			getChannel: (channelId) => this.getChannel(channelId),
 			getAllUsers: () => this.getAllUsers(),
 			getAllChannels: () => this.getAllChannels(),
-			describeReplyTarget: () => "Topic-free Zulip customer exchange feed",
+			describeReplyTarget: (channelId, topic) => this.describeReplyTarget(channelId, topic),
 		};
 	}
 
 	private async handleMessage(message: ZulipMessage): Promise<void> {
-		const channel = String(message.stream_id);
-		this.requireAllowedChannel(channel);
+		const isDirect = message.type === "private";
+		const channel = isDirect
+			? this.directChannelForMessage(message)
+			: String(message.stream_id);
+		if (isDirect) {
+			this.observeDirectConversation(channel, message.display_recipient);
+		} else {
+			this.observeStream(channel, message.display_recipient);
+		}
+
 		const senderId = String(message.sender_id);
 		const senderIsBot = message.sender_is_bot === true || senderId === this.botUserId;
-		const user: ZulipUser = {
+		this.rememberUser({
 			user_id: message.sender_id,
 			email: message.sender_email,
 			full_name: message.sender_full_name,
 			is_bot: senderIsBot,
-		};
-		this.rememberUser(user);
-		const text = message.raw_content ?? message.content;
+		});
+		const rawText = message.raw_content ?? this.renderedContentToMarkdown(message.content);
+		const text = isDirect ? rawText : stripZulipMentions(rawText);
 		const ts = String(message.id);
-		const directlyAddressed = this.directChannelMessages || isMentioned(message);
-		const sourceEventType = directlyAddressed ? "zulip_mention" : "zulip_channel_message";
+		const topic = !isDirect && message.subject ? message.subject : undefined;
+		const directlyAddressed = isDirect
+			? !senderIsBot || isMentioned(message)
+			: this.directChannelMessages || isMentioned(message);
+		const sourceEventType = isDirect
+			? "zulip_dm"
+			: directlyAddressed
+				? "zulip_mention"
+				: "zulip_channel_message";
+		const replyTarget = isDirect
+			? `zulip:${channel}`
+			: formatZulipTopicTarget(channel, topic || "");
+		const replyTargetDescription = this.describeReplyTarget(channel, topic);
 		await this.store.logMessage({
 			date: new Date(message.timestamp * 1_000).toISOString(),
 			ts,
-			channel: `zulip:${this.channels.get(channel)?.name || message.display_recipient || channel}`,
+			threadTs: topic,
+			channel: `zulip:${this.channels.get(channel)?.name || channel}`,
 			channelId: channel,
 			user: senderId,
 			userName: message.sender_email,
@@ -412,21 +491,22 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			senderId,
 			text.length,
 			text,
-			this.pulseMetadata(channel, ts, directlyAddressed),
+			this.pulseMetadata(channel, ts, directlyAddressed, topic),
 		);
 		if (senderId === this.botUserId) return;
 		const event: MomEvent = {
-			type: "mention",
+			type: isDirect ? "dm" : "mention",
 			channel,
 			ts,
 			user: senderId,
 			text,
-			rawText: text,
+			rawText,
 			attachments: [],
 			sourceEventType,
 			directlyAddressed,
-			replyTarget: `zulip:${channel}`,
-			replyTargetDescription: "Topic-free Zulip channel containing this message",
+			threadTs: topic,
+			replyTarget,
+			replyTargetDescription,
 		};
 		if (!directlyAddressed) {
 			this.onAmbientMessage?.(channel, event, this);
@@ -440,12 +520,86 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		});
 	}
 
+	private acceptsDmFrom(userId: string): boolean {
+		return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(userId);
+	}
+
+	private streamIsInScope(channelId: string): boolean {
+		return isZulipChannelId(channelId)
+			&& (this.allowedChannelIds === undefined || this.allowedChannelIds.has(channelId));
+	}
+
+	private observeStream(channelId: string, name: string): void {
+		if (!this.streamIsInScope(channelId)) {
+			throw new Error(`Zulip channel ${channelId} is outside this agent's configured scope`);
+		}
+		this.channels.set(channelId, { id: channelId, name: name || channelId });
+	}
+
+	private directChannelForMessage(message: ZulipDirectMessage): string {
+		const participantIds = message.display_recipient
+			.map((recipient) => String(recipient.id))
+			.filter((userId) => userId !== this.botUserId);
+		return formatZulipDmChannel(participantIds);
+	}
+
+	private observeDirectConversation(channel: string, recipients: ZulipDirectRecipient[]): void {
+		const names: string[] = [];
+		for (const recipient of recipients) {
+			this.rememberUser({
+				user_id: recipient.id,
+				email: recipient.email,
+				full_name: recipient.full_name,
+				...(String(recipient.id) === this.botUserId ? { is_bot: true } : {}),
+			});
+			if (String(recipient.id) !== this.botUserId) names.push(recipient.full_name);
+		}
+		const prefix = names.length > 1 ? "Group DM" : "DM";
+		this.channels.set(channel, { id: channel, name: `${prefix}: ${names.join(", ") || channel}` });
+	}
+
+	private restoreKnownDirectConversations(): void {
+		try {
+			for (const line of readFileSync(join(this.workingDir, "log.jsonl"), "utf8").split("\n")) {
+				if (!line.trim()) continue;
+				const entry = JSON.parse(line) as { channel?: unknown; channelId?: unknown };
+				if (
+					typeof entry.channel === "string"
+					&& entry.channel.startsWith("zulip:")
+					&& typeof entry.channelId === "string"
+					&& parseZulipDmChannel(entry.channelId)
+				) {
+					this.channels.set(entry.channelId, {
+						id: entry.channelId,
+						name: entry.channel.slice("zulip:".length) || entry.channelId,
+					});
+				}
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+				throw new Error("Zulip direct-message history is unreadable");
+			}
+		}
+	}
+
+	private renderedContentToMarkdown(content: string): string {
+		return this.turndown.turndown(content || "").trim();
+	}
+
+	private describeReplyTarget(channel: string, topic?: string): string {
+		if (parseZulipDmChannel(channel)) return "Zulip direct-message conversation";
+		if (topic) return `Zulip channel topic ${topic}`;
+		return "Zulip channel containing this message";
+	}
+
 	private rememberUser(user: ZulipUser): void {
-		this.users.set(String(user.user_id), {
-			id: String(user.user_id),
+		const userId = String(user.user_id);
+		const existing = this.users.get(userId);
+		this.users.set(userId, {
+			id: userId,
 			userName: user.email,
 			displayName: user.full_name,
-			isBot: user.is_bot === true,
+			isBot: user.is_bot === undefined ? existing?.isBot : user.is_bot === true,
 		});
 	}
 
@@ -453,19 +607,45 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 		channel: string,
 		messageId: string,
 		directlyAddressed: boolean,
+		topic?: string,
 	): PulseRecordMetadata {
 		return {
 			messageId,
-			replyTarget: `zulip:${channel}`,
-			replyTargetDescription: "Topic-free Zulip channel containing this message",
+			...(topic ? { threadTs: topic } : {}),
+			replyTarget: parseZulipDmChannel(channel)
+				? `zulip:${channel}`
+				: formatZulipTopicTarget(channel, topic || ""),
+			replyTargetDescription: this.describeReplyTarget(channel, topic),
 			directlyAddressed,
 		};
 	}
 
-	private requireAllowedChannel(channelId: string): void {
-		if (!this.allowedChannelIds.has(channelId)) {
-			throw new Error(`Zulip channel ${channelId} is outside this agent's allowed scope`);
+	private requireKnownConversation(channel: string): void {
+		if (parseZulipDmChannel(channel)) {
+			if (!this.channels.has(channel)) throw new Error(`Unknown Zulip direct conversation ${channel}`);
+			return;
 		}
+		this.requireKnownStream(channel);
+	}
+
+	private requireKnownStream(channel: string): string {
+		if (!this.streamIsInScope(channel) || !this.channels.has(channel)) {
+			throw new Error(`Zulip channel ${channel} is not a current known subscription`);
+		}
+		return channel;
+	}
+
+	private defaultTopic(channel: string): string {
+		if (this.channelPolicies.get(channel) === "disable_empty_topic") {
+			throw new Error(`Zulip channel ${channel} requires a topic target`);
+		}
+		return "";
+	}
+
+	private async sendMessageBody(body: URLSearchParams): Promise<string> {
+		const result = await this.api<ZulipResponse>("/messages", { method: "POST", body });
+		if (!Number.isInteger(result.id)) throw new Error("Zulip message response omitted the ID");
+		return String(result.id);
 	}
 
 	private messageId(value: string): string {
@@ -509,6 +689,10 @@ function isMentioned(message: ZulipMessage): boolean {
 	return message.is_mentioned === true
 		|| Boolean(message.flags?.includes("mentioned"))
 		|| Boolean(message.flags?.includes("wildcard_mentioned"));
+}
+
+function stripZulipMentions(text: string): string {
+	return text.replace(/@\*\*[^*\n]+\*\*/g, "").replace(/[ \t]{2,}/g, " ").trim();
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
