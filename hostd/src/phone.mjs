@@ -116,18 +116,22 @@ function isGroupOrMedia(message) {
 		...strings(message.media_urls),
 		...strings(message.mediaUrls),
 	];
-	return metadata.group === true
+	// Sendly may infer a group key for an ordinary two-party thread. Ignore that
+	// marker only when the signed payload contains no independent group evidence.
+	const groupInferred = metadata.groupInferred === true || metadata.group_inferred === true;
+	const groupIdentifier = firstString(
+		metadata.groupKey,
+		metadata.group_key,
+		metadata.groupMessageId,
+		metadata.group_message_id,
+		message.groupMessageId,
+		message.group_message_id,
+	);
+	return (metadata.group === true && !groupInferred)
 		|| destinations.length !== 1
 		|| strings(metadata.cc).length > 0
 		|| strings(metadata.participants).length > 0
-		|| Boolean(firstString(
-			metadata.groupKey,
-			metadata.group_key,
-			metadata.groupMessageId,
-			metadata.group_message_id,
-			message.groupMessageId,
-			message.group_message_id,
-		))
+		|| (!groupInferred && Boolean(groupIdentifier))
 		|| media.length > 0
 		|| (firstString(message.message_format, message.messageFormat, message.format) || "sms").toLowerCase() !== "sms";
 }
