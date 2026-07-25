@@ -49,6 +49,7 @@ interface ZulipMessage {
 	sender_id: number;
 	sender_email: string;
 	sender_full_name: string;
+	sender_is_bot?: boolean;
 	timestamp: number;
 	content: string;
 	raw_content?: string;
@@ -378,16 +379,17 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 	private async handleMessage(message: ZulipMessage): Promise<void> {
 		const channel = String(message.stream_id);
 		this.requireAllowedChannel(channel);
+		const senderId = String(message.sender_id);
+		const senderIsBot = message.sender_is_bot === true || senderId === this.botUserId;
 		const user: ZulipUser = {
 			user_id: message.sender_id,
 			email: message.sender_email,
 			full_name: message.sender_full_name,
+			is_bot: senderIsBot,
 		};
 		this.rememberUser(user);
 		const text = message.raw_content ?? message.content;
 		const ts = String(message.id);
-		const senderId = String(message.sender_id);
-		const sender = this.users.get(senderId);
 		const directlyAddressed = this.directChannelMessages || isMentioned(message);
 		const sourceEventType = directlyAddressed ? "zulip_mention" : "zulip_channel_message";
 		await this.store.logMessage({
@@ -400,10 +402,11 @@ Use standard Markdown. This customer feed is topic-free, so send messages direct
 			displayName: message.sender_full_name,
 			text,
 			attachments: [],
-			isBot: Boolean(sender?.isBot),
+			isBot: senderIsBot,
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
+		if (senderIsBot) return;
 		this.pulse?.record(
 			channel,
 			senderId,

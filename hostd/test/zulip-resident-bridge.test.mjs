@@ -7,6 +7,7 @@ import { ZulipResidentBridge } from "../src/zulip-resident-bridge.mjs";
 
 const CHANNEL_ID = 4;
 const BOT_USER_ID = 9;
+const OTHER_BOT_USER_ID = 10;
 const NATIVE_EMAIL = "agent@example.com";
 const NATIVE_KEY = "native-test-key";
 const PROXY_TOKEN = "proxy-test-token";
@@ -57,6 +58,18 @@ const nativeServer = createServer(async (request, response) => {
 			email: NATIVE_EMAIL,
 			full_name: "Agent",
 			is_bot: true,
+		});
+		return;
+	}
+	if (request.method === "GET" && url.pathname === "/api/v1/users") {
+		sendJson(response, 200, {
+			result: "success",
+			msg: "",
+			members: [
+				{ user_id: 8, email: "alex@example.com", full_name: "Alex", is_bot: false },
+				{ user_id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent", is_bot: true },
+				{ user_id: OTHER_BOT_USER_ID, email: "other-agent@example.com", full_name: "Other Agent", is_bot: true },
+			],
 		});
 		return;
 	}
@@ -212,6 +225,22 @@ try {
 	assert.equal(inboundDeliveries[0].deliveryId, "zulip:51");
 	assert.equal(inboundDeliveries[0].message.is_mentioned, false);
 	assert.equal(inboundDeliveries[0].message.raw_content, "Ambient update.");
+	assert.equal(inboundDeliveries[0].message.sender_is_bot, false);
+
+	const otherBotMessage = {
+		...ambientMessage,
+		id: 52,
+		sender_id: OTHER_BOT_USER_ID,
+		sender_email: "other-agent@example.com",
+		sender_full_name: "Other Agent",
+		content: "<p>Other agent update.</p>",
+		raw_content: "Other agent update.",
+	};
+	messages.set(otherBotMessage.id, otherBotMessage);
+	events.push({ id: 2, type: "message", message: otherBotMessage });
+	await waitFor(() => inboundDeliveries.length === 2, "other bot delivery");
+	assert.equal(inboundDeliveries[1].deliveryId, "zulip:52");
+	assert.equal(inboundDeliveries[1].message.sender_is_bot, true);
 
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
 	const meResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, { headers: proxyAuthorization });
@@ -220,6 +249,8 @@ try {
 	const streamsResponse = await fetch(`${bridge.proxyUrl()}/api/v1/streams`, { headers: proxyAuthorization });
 	const filteredStreams = (await streamsResponse.json()).streams;
 	assert.deepEqual(filteredStreams.map((stream) => stream.stream_id), [CHANNEL_ID]);
+	const usersResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users`, { headers: proxyAuthorization });
+	assert.equal(usersResponse.status, 404, "the resident proxy never exposes the native user directory");
 	const denied = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
 		method: "POST",
 		headers: proxyAuthorization,
@@ -245,10 +276,11 @@ try {
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 2, type: "message", message: mentionEventMessage });
+	events.push({ id: 3, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:101"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:101");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
+	assert.equal(mentionDelivery.message.sender_is_bot, false);
 	await waitFor(
 		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 101,
 		"durable recovered cursor",

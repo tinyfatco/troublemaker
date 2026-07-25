@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -86,6 +86,7 @@ const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
 const ambient: any[] = [];
+const pulseRecords: any[] = [];
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -94,6 +95,10 @@ const adapter = new ZulipWebhookAdapter({
 	workingDir,
 	store,
 	allowedChannelIds: [CHANNEL_ID],
+	pulse: {
+		setSelfId: () => {},
+		record: (...args: any[]) => pulseRecords.push(args),
+	} as any,
 	directChannelMessages: false,
 	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
@@ -140,6 +145,7 @@ try {
 				sender_id: 8,
 				sender_email: "casey@example.com",
 				sender_full_name: "Casey",
+				sender_is_bot: false,
 				timestamp: Math.floor(Date.now() / 1000),
 				content: "<p>Please review the customer note.</p>",
 				raw_content: "Please review the customer note.",
@@ -182,6 +188,7 @@ try {
 				sender_id: 8,
 				sender_email: "casey@example.com",
 				sender_full_name: "Casey",
+				sender_is_bot: false,
 				timestamp: Math.floor(Date.now() / 1000),
 				content: "<p>Ambient crew update.</p>",
 				raw_content: "Ambient crew update.",
@@ -203,6 +210,58 @@ try {
 	assert.equal(ambient[0].sourceEventType, "zulip_channel_message");
 	assert.equal(ambient[0].replyTarget, `zulip:${CHANNEL_ID}`);
 	assert.equal(handled.length, 1, "ordinary Zulip messages do not bypass ambient evaluation");
+	assert.equal(pulseRecords.length, 2, "human mention and ambient traffic both reach pulse accounting");
+
+	for (const [id, flags, deliveryId, leaseToken] of [
+		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
+		[91, ["mentioned"], "delivery-bot-mention", "lease-bot-mention"],
+	] as const) {
+		const response = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${INBOUND_TOKEN}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				deliveryId,
+				message: {
+					id,
+					type: "stream",
+					stream_id: Number(CHANNEL_ID),
+					display_recipient: "customer · Casey",
+					subject: "",
+					sender_id: 10,
+					sender_email: "other-agent@example.com",
+					sender_full_name: "Other Agent",
+					sender_is_bot: true,
+					timestamp: Math.floor(Date.now() / 1000),
+					content: flags ? "<p>@Operator bot mention.</p>" : "<p>Bot ambient update.</p>",
+					raw_content: flags ? "@**Operator** bot mention." : "Bot ambient update.",
+					...(flags ? { flags } : { is_mentioned: false }),
+				},
+				hostReceipt: {
+					url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+					token: RECEIPT_TOKEN,
+					leaseToken,
+				},
+			}),
+		});
+		assert.equal(response.status, 202);
+	}
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 4; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(receipts.filter((status) => status === "completed").length, 4);
+	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line));
+	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
+	assert.equal(otherBotEntries.length, 2);
+	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
+	assert.equal(pulseRecords.length, 2, "other-bot traffic never reaches pulse accounting");
+	assert.equal(ambient.length, 1, "other-bot ambient traffic never reaches ambient evaluation");
+	assert.equal(handled.length, 1, "other-bot mentions never reach direct handling");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");

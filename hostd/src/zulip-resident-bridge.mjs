@@ -85,6 +85,8 @@ export class ZulipResidentBridge {
 		if (this.listenPort < 0 || this.listenPort > 65_535) throw new Error("listenPort is invalid");
 		this.server = null;
 		this.botUserId = null;
+		this.knownUserIds = new Set();
+		this.botUserIds = new Set();
 		this.queueId = null;
 		this.lastEventId = -1;
 		this.lastMessageId = null;
@@ -98,6 +100,10 @@ export class ZulipResidentBridge {
 		const me = await this.nativeRequest("users/me");
 		this.botUserId = positiveId(me.user_id, "Zulip bot user ID");
 		if (me.is_bot !== true) throw new Error("Zulip resident bridge identity must be a bot");
+		await this.refreshUserIdentityCache();
+		if (!this.botUserIds.has(this.botUserId)) {
+			throw new Error("Zulip user directory omitted the resident bridge bot identity");
+		}
 		const streams = await this.nativeRequest("streams", {
 			query: {
 				include_public: "true",
@@ -364,6 +370,35 @@ export class ZulipResidentBridge {
 		}
 	}
 
+	async refreshUserIdentityCache() {
+		const result = await this.nativeRequest("users", {
+			query: {
+				client_gravatar: "false",
+				include_custom_profile_fields: "false",
+			},
+		});
+		if (!Array.isArray(result.members)) {
+			throw new Error("Zulip user directory returned an invalid member list");
+		}
+		const knownUserIds = new Set();
+		const botUserIds = new Set();
+		for (const member of result.members) {
+			const userId = positiveId(member?.user_id, "Zulip directory user ID");
+			knownUserIds.add(userId);
+			if (member?.is_bot === true) botUserIds.add(userId);
+		}
+		this.knownUserIds = knownUserIds;
+		this.botUserIds = botUserIds;
+	}
+
+	async senderIsBot(senderId) {
+		if (!this.knownUserIds.has(senderId)) await this.refreshUserIdentityCache();
+		if (!this.knownUserIds.has(senderId)) {
+			throw new Error(`Zulip sender ${senderId} is absent from the private user identity cache`);
+		}
+		return this.botUserIds.has(senderId);
+	}
+
 	async ingestMessage(message) {
 		const messageId = positiveId(message?.id, "Zulip message ID");
 		const channelId = positiveId(message?.stream_id, "Zulip channel ID");
@@ -373,6 +408,7 @@ export class ZulipResidentBridge {
 			this.advanceMessageCursor(messageId);
 			return;
 		}
+		const senderIsBot = await this.senderIsBot(senderId);
 		const detail = await this.nativeRequest(`messages/${messageId}`);
 		const rawContent = typeof detail.message?.raw_content === "string"
 			? detail.message.raw_content
@@ -383,6 +419,7 @@ export class ZulipResidentBridge {
 		const isMentioned = detail.message?.is_mentioned === true ? true : undefined;
 		await this.deliver({
 			...message,
+			sender_is_bot: senderIsBot,
 			...(rawContent === undefined ? {} : { raw_content: rawContent }),
 			...(flags === undefined ? {} : { flags }),
 			...(isMentioned === undefined ? {} : { is_mentioned: isMentioned }),
