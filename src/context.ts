@@ -393,7 +393,10 @@ export class MomSettingsManager {
 
 	// Compatibility methods for AgentSession
 	getSteeringMode(): "all" | "one-at-a-time" {
-		return "one-at-a-time"; // Mom processes one message at a time
+		// Preserve each inbound as its own user message, but let Pi inject every
+		// pending steer together at the next safe model boundary. Troublemaker's
+		// canonical run gate still prevents parallel agent turns.
+		return "all";
 	}
 
 	setSteeringMode(_mode: "all" | "one-at-a-time"): void {

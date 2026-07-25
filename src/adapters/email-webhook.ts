@@ -314,7 +314,7 @@ Keep responses concise and professional. The user will receive one email with yo
 
 		if (this.handler.isRunning(channelId)) {
 			log.logInfo(`[email] Already running for ${channelId}, steering active run`);
-			this.handler.handleSteer(event, this);
+			await this.handler.handleSteer(event, this);
 			return;
 		}
 
