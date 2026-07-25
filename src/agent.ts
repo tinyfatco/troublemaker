@@ -59,6 +59,7 @@ import {
 	resetClaudeCliSession,
 } from "./claude-cli.js";
 import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
+import { parseVisibleUserInputs } from "./user-input-display.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -803,6 +804,13 @@ function createRunner(
 				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
 				emitSnapshot(true);
 			} else if (agentEvent.message.role === "user") {
+				const messageContent = agentEvent.message.content;
+				const promptText = typeof messageContent === "string"
+					? messageContent
+					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+				const entries = parseVisibleUserInputs(promptText);
+				if (entries.length > 0) emitLiveEvent({ type: "user_input", entries });
+
 				if (runState.initialPromptSent) {
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
 					queue.enqueue(async () => {

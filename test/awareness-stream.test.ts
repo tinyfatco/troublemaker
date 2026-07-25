@@ -69,9 +69,18 @@ async function run() {
 
   console.log("\nTest 3: Unified runtime event delivery is sanitized");
 
-  const runtimePromise = collectEvents(1, 5000, "/api/v2/agents/current/live");
+  const runtimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live");
   await sleep(200);
-  gw.publishRuntimeEvent({
+  const inputEnvelope = gw.publishRuntimeEvent({
+    runId: "external-run",
+    channelId: "voice",
+    channelLabel: "voice",
+    source: "voice",
+  }, {
+    type: "user_input",
+    entries: [{ channel: "voice", userName: "example-user", text: "Visible webhook input" }],
+  });
+  const assistantEnvelope = gw.publishRuntimeEvent({
     runId: "external-run",
     channelId: "voice",
     channelLabel: "voice",
@@ -92,7 +101,10 @@ async function run() {
     },
   });
   const runtimeEvents = await runtimePromise;
-  const runtimePayload = runtimeEvents[0] || "";
+  const inputPayload = runtimeEvents.find((event) => event.includes('"type":"user_input"')) || "";
+  const runtimePayload = runtimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
+  assert(inputPayload.includes("Visible webhook input"), "unified feed carries the sanitized webhook input");
+  assert(inputEnvelope.sequence < assistantEnvelope.sequence, "webhook input is sequenced before assistant paint events");
   assert(runtimePayload.includes('"kind":"runtime"'), "unified feed identifies runtime events");
   assert(runtimePayload.includes("Checking safely"), "unified feed preserves safe tool labels");
   assert(!runtimePayload.includes("PRIVATE_ARGUMENT"), "unified feed removes raw tool arguments");

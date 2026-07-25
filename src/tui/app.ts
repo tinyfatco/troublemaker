@@ -27,12 +27,14 @@ import type {
 	RuntimeLiveEvent,
 	RuntimeLiveRunEvent,
 	RuntimeStreamEvent,
+	RuntimeUserInputEntry,
 } from "../core/runtime-contract.js";
 import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
 import {
 	assistantContentDelta,
 	isAssistantContentCoveredBySnapshot,
+	normalizeChannelLabel,
 	parseContextLine,
 	safeToolLabel,
 	toAssistantSnapshot,
@@ -48,6 +50,7 @@ const SEEN_AWARENESS_LIMIT = 5_000;
 const LOCAL_ECHO_TTL_MS = 30 * 60_000;
 const MAX_PENDING_LOCAL_ECHOES = 100;
 const ASSISTANT_ECHO_TTL_MS = 30_000;
+const INPUT_RECONCILIATION_TTL_MS = 30_000;
 const RUN_STATUS_POLL_MS = 500;
 
 type AwarenessState = "connecting" | "live" | "reconnecting";
@@ -55,10 +58,20 @@ type TranscriptContentKind = "user" | "text" | "tool";
 
 interface LiveRunView {
 	channelId: string;
+	channelLabel: string;
 	target: Container;
 	latestSnapshot: RuntimeAssistantSnapshotEntry | null;
 	segmentBaseline: RuntimeAssistantSnapshotContent[];
 	precedingContent: TranscriptContentKind | null;
+	inputSegments: number;
+}
+
+interface PendingInputEcho {
+	channel: string;
+	text: string;
+	expiresAt: number;
+	target?: Container;
+	precedingContent?: TranscriptContentKind | null;
 }
 
 export async function runTroublemakerTui(profile: TuiAgentProfile): Promise<void> {
@@ -99,7 +112,9 @@ class TroublemakerTuiApp {
 	private readonly seenAwarenessIds = new Set<string>();
 	private readonly seenAwarenessOrder: string[] = [];
 	private readonly awarenessChannelsById = new Map<string, string>();
-	private readonly pendingLocalEchoes: Array<{ channel: string; text: string; expiresAt: number }> = [];
+	private readonly pendingLocalEchoes: PendingInputEcho[] = [];
+	private readonly pendingRuntimeInputEchoes: PendingInputEcho[] = [];
+	private readonly recentAwarenessInputs: PendingInputEcho[] = [];
 	private readonly pendingAssistantEchoes: Array<{
 		content: RuntimeAssistantSnapshotContent[];
 		expiresAt: number;
@@ -193,13 +208,13 @@ class TroublemakerTuiApp {
 			return;
 		}
 
-		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
 		this.latestAssistantSnapshot = null;
 		this.activeSegmentBaseline = [];
 		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
+		this.rememberLocalEcho(this.profile.channelId, text, this.activeTurn, this.activeSegmentPrecedingContent);
 		this.activeAbort = new AbortController();
 		this.stopRequested = false;
 		this.editor.borderColor = (value) => chalk.yellow(value);
@@ -280,11 +295,11 @@ class TroublemakerTuiApp {
 		const liveView = this.findLiveRunForChannel(this.profile.channelId);
 		const baseline = liveView?.latestSnapshot?.content || this.latestAssistantSnapshot?.content || [];
 		this.activeSegmentBaseline = [...baseline];
-		this.rememberLocalEcho(this.profile.channelId, text);
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
 		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
+		this.rememberLocalEcho(this.profile.channelId, text, this.activeTurn, this.activeSegmentPrecedingContent);
 		if (liveView) {
 			liveView.target = this.activeTurn;
 			liveView.segmentBaseline = [...baseline];
@@ -331,6 +346,10 @@ class TroublemakerTuiApp {
 
 	private handleLiveRuntimeEvent(envelope: RuntimeLiveRunEvent): void {
 		const event = envelope.event;
+		if (event.type === "user_input") {
+			this.handleLiveUserInput(envelope, event.entries);
+			return;
+		}
 		if (event.type === "status") {
 			if (event.status === "accepted") return;
 			const message = event.status === "steering" ? "Steering..." : event.message || "Working...";
@@ -383,6 +402,104 @@ class TroublemakerTuiApp {
 		}
 	}
 
+	private handleLiveUserInput(envelope: RuntimeLiveRunEvent, rawEntries: RuntimeUserInputEntry[]): void {
+		const entries = rawEntries.map((entry) => ({
+			...entry,
+			channel: normalizeChannelLabel(entry.channel),
+		}));
+		const visible: RuntimeUserInputEntry[] = [];
+		let matchedLocalEcho: PendingInputEcho | null = null;
+		for (const entry of entries) {
+			const awarenessEcho = this.consumeAwarenessInputEntry(entry.channel, entry.text);
+			if (awarenessEcho) {
+				if (awarenessEcho.target) matchedLocalEcho ||= awarenessEcho;
+				continue;
+			}
+			const localEcho = this.consumeLocalEchoEntry(entry.channel, entry.text);
+			matchedLocalEcho ||= localEcho;
+			this.rememberRuntimeInputEcho(entry.channel, entry.text);
+			if (!localEcho) visible.push(entry);
+		}
+
+		if (visible.length > 0) {
+			this.beginLiveInputSegment(envelope, visible);
+		} else if (matchedLocalEcho) {
+			this.adoptLocalInputSegment(envelope, matchedLocalEcho);
+		}
+	}
+
+	private beginLiveInputSegment(envelope: RuntimeLiveRunEvent, entries: RuntimeUserInputEntry[]): void {
+		this.beginInputSegment(
+			envelope.runId,
+			envelope.channelId,
+			envelope.channelLabel || envelope.channelId,
+			entries,
+		);
+	}
+
+	private beginInputSegment(
+		runId: string,
+		channelId: string,
+		channelLabel: string,
+		entries: RuntimeUserInputEntry[],
+	): void {
+		const existing = this.liveRuns.get(runId);
+		if (existing?.inputSegments === 0) this.chat.removeChild(existing.target);
+
+		const baseline = existing?.latestSnapshot?.content || [];
+		for (const entry of entries) this.addUserMessage(entry.channel, entry.userName, entry.text);
+
+		if (!existing) {
+			const target = new Container();
+			this.chat.addChild(target);
+			this.liveRuns.set(runId, {
+				channelId,
+				channelLabel,
+				target,
+				latestSnapshot: null,
+				segmentBaseline: [],
+				precedingContent: this.lastTranscriptContent,
+				inputSegments: 1,
+			});
+			return;
+		}
+
+		if (existing.inputSegments === 0) {
+			this.chat.addChild(existing.target);
+			existing.precedingContent = this.lastTranscriptContent;
+			existing.inputSegments = 1;
+			if (existing.latestSnapshot) {
+				const renderedKind = this.renderAssistant(existing.target, {
+					...existing.latestSnapshot,
+					content: assistantContentDelta(existing.latestSnapshot.content, existing.segmentBaseline),
+				}, false, existing.precedingContent);
+				if (renderedKind) this.lastTranscriptContent = renderedKind;
+			}
+			this.ui.requestRender();
+			return;
+		}
+
+		const target = new Container();
+		this.chat.addChild(target);
+		existing.target = target;
+		existing.segmentBaseline = [...baseline];
+		existing.precedingContent = this.lastTranscriptContent;
+		existing.inputSegments++;
+		this.ui.requestRender();
+	}
+
+	private adoptLocalInputSegment(envelope: RuntimeLiveRunEvent, localEcho: PendingInputEcho): void {
+		const view = this.liveRuns.get(envelope.runId);
+		if (!view) return;
+		const target = localEcho.target || this.activeTurn;
+		if (target && view.target !== target) {
+			view.target = target;
+			view.segmentBaseline = [...(view.latestSnapshot?.content || [])];
+			view.precedingContent = localEcho.precedingContent ?? this.activeSegmentPrecedingContent;
+		}
+		view.inputSegments++;
+	}
+
 	private getOrCreateLiveRunView(envelope: RuntimeLiveRunEvent): LiveRunView {
 		const existing = this.liveRuns.get(envelope.runId);
 		if (existing) return existing;
@@ -391,17 +508,26 @@ class TroublemakerTuiApp {
 		if (!terminalTarget) this.chat.addChild(target);
 		const view: LiveRunView = {
 			channelId: envelope.channelId,
+			channelLabel: envelope.channelLabel || envelope.channelId,
 			target,
 			latestSnapshot: null,
 			segmentBaseline: terminalTarget ? [...this.activeSegmentBaseline] : [],
 			precedingContent: terminalTarget ? this.activeSegmentPrecedingContent : this.lastTranscriptContent,
+			inputSegments: terminalTarget ? 1 : 0,
 		};
 		this.liveRuns.set(envelope.runId, view);
 		return view;
 	}
 
 	private findLiveRunForChannel(channelId: string): LiveRunView | undefined {
-		return [...this.liveRuns.values()].reverse().find((view) => view.channelId === channelId);
+		return this.findLiveRunEntryForChannel(channelId)?.[1];
+	}
+
+	private findLiveRunEntryForChannel(channelId: string): [string, LiveRunView] | undefined {
+		const normalized = normalizeChannelLabel(channelId);
+		return [...this.liveRuns.entries()].reverse().find(([, view]) =>
+			view.channelId === channelId || normalizeChannelLabel(view.channelLabel) === normalized
+		);
 	}
 
 	private renderHistory(lines: string[]): void {
@@ -415,6 +541,14 @@ class TroublemakerTuiApp {
 		}
 		for (const entry of entries.filter((entry) => entry.role !== "toolResult").slice(-HISTORY_RENDER_LIMIT)) {
 			if (!newIds.has(entry.id)) continue;
+			if (entry.role === "user") {
+				const inputs = entry.batchedUserEntries || (entry.text ? [{
+					channel: entry.channel || "awareness",
+					userName: entry.userName || "user",
+					text: entry.text,
+				}] : []);
+				for (const input of inputs) this.rememberAwarenessInput(normalizeChannelLabel(input.channel), input.text);
+			}
 			this.renderAwarenessEntry(entry, true);
 		}
 	}
@@ -423,18 +557,34 @@ class TroublemakerTuiApp {
 		const entry = parseContextLine(line);
 		if (!entry || this.seenAwarenessIds.has(entry.id)) return;
 		const channel = this.resolveAwarenessChannel(entry);
-		if (entry.role === "user" && entry.batchedUserEntries) {
-			entry.batchedUserEntries = entry.batchedUserEntries.filter((message) =>
-				!this.consumeLocalEcho(message.channel, message.text)
-			);
-			if (entry.batchedUserEntries.length === 0) {
+		if (entry.role === "user") {
+			const rawInputs: RuntimeUserInputEntry[] = entry.batchedUserEntries
+				? entry.batchedUserEntries
+				: entry.text
+					? [{
+						channel: entry.channel || "awareness",
+						userName: entry.userName || "user",
+						text: entry.text,
+					}]
+					: [];
+			const visible: RuntimeUserInputEntry[] = [];
+			for (const rawInput of rawInputs) {
+				const input = { ...rawInput, channel: normalizeChannelLabel(rawInput.channel) };
+				if (this.consumeRuntimeInputEcho(input.channel, input.text)) continue;
+				const localEcho = this.consumeLocalEchoEntry(input.channel, input.text);
+				this.rememberAwarenessInput(input.channel, input.text, localEcho);
+				if (!localEcho) visible.push(input);
+			}
+			if (rawInputs.length > 0) {
+				this.deferredAwarenessAssistantLines.delete(entry.id);
 				this.rememberAwarenessId(entry.id);
+				if (visible.length > 0) {
+					const live = this.findLiveRunEntryForChannel(visible[0]!.channel);
+					if (live) this.beginInputSegment(live[0], live[1].channelId, live[1].channelLabel, visible);
+					else for (const input of visible) this.addUserMessage(input.channel, input.userName, input.text);
+				}
 				return;
 			}
-		}
-		if (entry.role === "user" && entry.text && this.consumeLocalEcho(entry.channel || "awareness", entry.text)) {
-			this.rememberAwarenessId(entry.id);
-			return;
 		}
 		if (entry.role === "assistant") {
 			if (channel && this.hasRuntimeEchoGrace(channel)) {
@@ -662,20 +812,79 @@ class TroublemakerTuiApp {
 		return channel;
 	}
 
-	private rememberLocalEcho(channel: string, text: string): void {
+	private rememberLocalEcho(
+		channel: string,
+		text: string,
+		target?: Container,
+		precedingContent?: TranscriptContentKind | null,
+	): void {
 		this.prunePendingEchoes();
-		this.pendingLocalEchoes.push({ channel, text, expiresAt: Date.now() + LOCAL_ECHO_TTL_MS });
+		this.pendingLocalEchoes.push({
+			channel,
+			text,
+			target,
+			precedingContent,
+			expiresAt: Date.now() + LOCAL_ECHO_TTL_MS,
+		});
 		if (this.pendingLocalEchoes.length > MAX_PENDING_LOCAL_ECHOES) {
 			this.pendingLocalEchoes.splice(0, this.pendingLocalEchoes.length - MAX_PENDING_LOCAL_ECHOES);
 		}
 	}
 
 	private consumeLocalEcho(channel: string, text: string): boolean {
+		return this.consumeLocalEchoEntry(channel, text) !== null;
+	}
+
+	private consumeLocalEchoEntry(channel: string, text: string): PendingInputEcho | null {
 		this.prunePendingEchoes();
 		const index = this.pendingLocalEchoes.findIndex((entry) => entry.channel === channel && entry.text === text);
-		if (index < 0) return false;
-		this.pendingLocalEchoes.splice(index, 1);
-		return true;
+		if (index < 0) return null;
+		return this.pendingLocalEchoes.splice(index, 1)[0] || null;
+	}
+
+	private rememberRuntimeInputEcho(channel: string, text: string): void {
+		this.rememberInputEcho(this.pendingRuntimeInputEchoes, channel, text);
+	}
+
+	private consumeRuntimeInputEcho(channel: string, text: string): boolean {
+		return this.consumeInputEcho(this.pendingRuntimeInputEchoes, channel, text);
+	}
+
+	private rememberAwarenessInput(channel: string, text: string, localEcho?: PendingInputEcho | null): void {
+		this.prunePendingEchoes();
+		this.recentAwarenessInputs.push({
+			channel,
+			text,
+			target: localEcho?.target,
+			precedingContent: localEcho?.precedingContent,
+			expiresAt: Date.now() + INPUT_RECONCILIATION_TTL_MS,
+		});
+		if (this.recentAwarenessInputs.length > MAX_PENDING_LOCAL_ECHOES) {
+			this.recentAwarenessInputs.splice(0, this.recentAwarenessInputs.length - MAX_PENDING_LOCAL_ECHOES);
+		}
+	}
+
+	private consumeAwarenessInputEntry(channel: string, text: string): PendingInputEcho | null {
+		return this.consumeInputEchoEntry(this.recentAwarenessInputs, channel, text);
+	}
+
+	private rememberInputEcho(ledger: PendingInputEcho[], channel: string, text: string): void {
+		this.prunePendingEchoes();
+		ledger.push({ channel, text, expiresAt: Date.now() + INPUT_RECONCILIATION_TTL_MS });
+		if (ledger.length > MAX_PENDING_LOCAL_ECHOES) {
+			ledger.splice(0, ledger.length - MAX_PENDING_LOCAL_ECHOES);
+		}
+	}
+
+	private consumeInputEcho(ledger: PendingInputEcho[], channel: string, text: string): boolean {
+		return this.consumeInputEchoEntry(ledger, channel, text) !== null;
+	}
+
+	private consumeInputEchoEntry(ledger: PendingInputEcho[], channel: string, text: string): PendingInputEcho | null {
+		this.prunePendingEchoes();
+		const index = ledger.findIndex((entry) => entry.channel === channel && entry.text === text);
+		if (index < 0) return null;
+		return ledger.splice(index, 1)[0] || null;
 	}
 
 	private rememberAssistantEcho(content: RuntimeAssistantSnapshotContent[]): void {
@@ -702,8 +911,10 @@ class TroublemakerTuiApp {
 
 	private prunePendingEchoes(): void {
 		const now = Date.now();
-		for (let index = this.pendingLocalEchoes.length - 1; index >= 0; index--) {
-			if (this.pendingLocalEchoes[index]!.expiresAt <= now) this.pendingLocalEchoes.splice(index, 1);
+		for (const ledger of [this.pendingLocalEchoes, this.pendingRuntimeInputEchoes, this.recentAwarenessInputs]) {
+			for (let index = ledger.length - 1; index >= 0; index--) {
+				if (ledger[index]!.expiresAt <= now) ledger.splice(index, 1);
+			}
 		}
 		for (let index = this.pendingAssistantEchoes.length - 1; index >= 0; index--) {
 			if (this.pendingAssistantEchoes[index]!.expiresAt <= now) this.pendingAssistantEchoes.splice(index, 1);

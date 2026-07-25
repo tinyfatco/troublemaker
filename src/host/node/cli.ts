@@ -1301,7 +1301,8 @@ function isConfigurableVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): 
 }
 
 function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
-	const steering = awareness?.running ? awareness.runner.steer(event.text) : null;
+	const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
+	const steering = awareness?.running ? awareness.runner.steer(prompt) : null;
 	if (steering) {
 		log.logInfo(`[voice-webhook:${event.channel}] Soft-steered transcript into the active run`);
 		return steering;
