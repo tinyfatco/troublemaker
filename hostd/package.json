@@ -1,0 +1,19 @@
+{
+  "name": "@tinyfatco/troublemaker-hostd",
+  "version": "0.1.0",
+  "description": "Single-host ingress router and OCI supervisor for Troublemaker runtimes.",
+  "type": "module",
+  "bin": {
+    "troublemaker-hostd": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "ws": "8.19.0"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "license": "MIT"
+}

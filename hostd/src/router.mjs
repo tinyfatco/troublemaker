@@ -1,0 +1,118 @@
+import { stablePrivateKey } from "./security.mjs";
+
+export class RouteParticipantDeniedError extends Error {
+	constructor(source, threadId) {
+		super(`sender is not an authorized participant in ${source} thread ${threadId}`);
+		this.name = "RouteParticipantDeniedError";
+		this.code = "route_participant_denied";
+	}
+}
+
+export class ContextRouter {
+	constructor(config, store, routingKey) {
+		this.config = config;
+		this.store = store;
+		this.routingKey = routingKey;
+	}
+
+	ensurePrincipalScope(sender, { project, label } = {}) {
+		const normalizedSender = sender.toLowerCase();
+		const principalHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
+		const targetId = this.config.routing.actorTarget;
+		const target = this.config.targetsById.get(targetId);
+		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
+
+		this.store.ensurePrincipal(principalHash, normalizedSender, label);
+		const known = this.config.routing.knownPrincipals.find((principal) => principal.email === normalizedSender);
+		for (const project of known?.projects ?? []) {
+			this.store.ensureProject(principalHash, project.slug, project.name);
+		}
+		if (project) this.store.ensureProject(principalHash, project.slug, project.name);
+		const projects = this.store.listProjects(principalHash).filter((candidate) => candidate.slug !== "intake");
+		const projectSlug = project?.slug ?? (projects.length === 1 ? projects[0].slug : "intake");
+		this.store.ensureProject(
+			principalHash,
+			projectSlug,
+			projectSlug === "intake"
+				? "Private intake"
+				: (project?.name ?? projects.find((candidate) => candidate.slug === projectSlug)?.name),
+		);
+		return {
+			principalHash,
+			targetId,
+			contextId: `${target.id}:${principalHash.slice(0, 24)}:${projectSlug}`,
+			projectSlug,
+		};
+	}
+
+	ensureKnownPrincipalScopes() {
+		return this.config.routing.knownPrincipals.map((principal) => ({
+			email: principal.email,
+			name: principal.name,
+			...this.ensurePrincipalScope(principal.email),
+		}));
+	}
+
+	ensurePhoneScope(contactAddress, { label } = {}) {
+		const normalized = contactAddress.trim();
+		const principalHash = stablePrivateKey(this.routingKey, "phone-principal", normalized);
+		const targetId = this.config.routing.actorTarget;
+		const target = this.config.targetsById.get(targetId);
+		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
+		this.store.ensurePrincipal(principalHash, undefined, label);
+		this.store.ensureProject(principalHash, "intake", "Private intake");
+		return {
+			principalHash,
+			targetId,
+			contextId: `${target.id}:${principalHash.slice(0, 24)}:intake`,
+			projectSlug: "intake",
+		};
+	}
+
+	resolvePhone({ providerThreadId, contactAddress, label }) {
+		const principalHash = stablePrivateKey(
+			this.routingKey,
+			"phone-principal",
+			contactAddress.trim(),
+		);
+		const existing = this.store.getRoute("phone", providerThreadId);
+		if (existing) {
+			if (!this.store.hasRouteParticipant("phone", providerThreadId, principalHash)) {
+				throw new RouteParticipantDeniedError("phone", providerThreadId);
+			}
+			this.store.ensurePrincipal(principalHash, undefined, label);
+			this.store.touchRoute("phone", providerThreadId);
+			this.store.touchRouteParticipant("phone", providerThreadId, principalHash);
+			return existing;
+		}
+		const scope = this.ensurePhoneScope(contactAddress, { label });
+		return this.store.bindRoute({
+			source: "phone",
+			providerThreadId,
+			...scope,
+		});
+	}
+
+	resolve({ source, threadId, sender, project, label }) {
+		const normalizedSender = sender.toLowerCase();
+		const principalHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
+		const existing = this.store.getRoute(source, threadId);
+		if (existing) {
+			if (!this.store.hasRouteParticipant(source, threadId, principalHash)) {
+				throw new RouteParticipantDeniedError(source, threadId);
+			}
+			this.store.ensurePrincipal(principalHash, normalizedSender, label);
+			this.store.touchRoute(source, threadId);
+			this.store.touchRouteParticipant(source, threadId, principalHash);
+			return this.store.getRoute(source, threadId);
+		}
+
+		const scope = this.ensurePrincipalScope(normalizedSender, { project, label });
+		return this.store.bindRoute({
+			source,
+			providerThreadId: threadId,
+			...scope,
+		});
+	}
+
+}

@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+exec /usr/bin/systemd-run \
+  --user \
+  --wait \
+  --pipe \
+  --collect \
+  --quiet \
+  --service-type=exec \
+  --property=KillMode=process \
+  /usr/bin/podman "$@"

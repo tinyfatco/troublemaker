@@ -1,0 +1,51 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+*.tgz
+
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+auth.json
+credentials.json
+rclone.conf
+*.secrets.json
+
+# Runtime state and logs
+data/
+data-*/
+logs/
+*.log
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+
+# Private notes and workspace state
+MEMORY.md
+memory/
+memory-bank/
+scratch/
+workspace/
+.pi/
+.claude/
+.wrangler/
+.dev.vars
+
+# Local/editor artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

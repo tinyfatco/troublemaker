@@ -1,0 +1,9 @@
+.git
+.github
+.worktrees
+node_modules
+hostd/node_modules
+coverage
+memory-bank
+test
+*.log

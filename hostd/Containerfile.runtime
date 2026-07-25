@@ -1,0 +1,18 @@
+FROM docker.io/library/node:22-bookworm
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
+	&& rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/troublemaker
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts \
+	&& npm rebuild node-pty \
+	&& npm cache clean --force
+
+COPY dist ./dist
+
+ENV NODE_ENV=production
+
+CMD ["node", "/opt/troublemaker/dist/main.js"]

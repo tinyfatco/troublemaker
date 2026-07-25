@@ -1,0 +1,97 @@
+{
+  "company": {
+    "id": "example-company",
+    "actor": "front-desk"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3099,
+    "operatorTokenEnv": "TROUBLEMAKER_HOSTD_OPERATOR_TOKEN"
+  },
+  "state": {
+    "database": "/var/lib/troublemaker-hostd/state.sqlite",
+    "routingKeyFile": "/etc/troublemaker-hostd/routing.key"
+  },
+  "gmail": {
+    "account": "agent@example.com",
+    "gogPath": "/usr/local/bin/gog",
+    "pollIntervalSeconds": 60,
+    "overlapSeconds": 900,
+    "contactRelays": [
+      {
+        "sender": "noreply@example.com",
+        "signatureSecretEnv": "CONTACT_RELAY_SECRET",
+        "project": {
+          "slug": "website",
+          "name": "Customer website"
+        }
+      }
+    ]
+  },
+  "scheduler": {
+    "maxConcurrent": 6,
+    "leaseSeconds": 60,
+    "turnLeaseSeconds": 900,
+    "idleSeconds": 300,
+    "tickSeconds": 2,
+    "maximumAttempts": 5
+  },
+  "rocketChat": {
+    "url": "http://127.0.0.1:3100",
+    "adminUserIdEnv": "ROCKETCHAT_HOSTD_ADMIN_USER_ID",
+    "adminTokenEnv": "ROCKETCHAT_HOSTD_ADMIN_TOKEN",
+    "createTokensSecretEnv": "ROCKETCHAT_CREATE_TOKENS_FOR_USERS_SECRET",
+    "credentialsDirectory": "/var/lib/troublemaker-hostd/rocket-chat-secrets",
+    "memberUsernames": [
+      "operator-bot"
+    ],
+    "agentUsernamePrefix": "operator",
+    "agentDisplayName": "Operator",
+    "notifierUsername": "tinyfat",
+    "notifierDisplayName": "TINYFAT"
+  },
+  "routing": {
+    "actorTarget": "front-desk",
+    "knownPrincipals": [
+      {
+        "email": "customer@example.com",
+        "projects": [
+          {
+            "slug": "website",
+            "name": "Company website"
+          }
+        ]
+      }
+    ]
+  },
+  "targets": [
+    {
+      "id": "front-desk",
+      "driver": "oci",
+      "protocol": "email-webhook",
+      "engine": "/opt/troublemaker/hostd/bin/podman-user-session",
+      "image": "localhost/troublemaker-runtime:git-commit",
+      "immutableImage": true,
+      "runtimeVersion": "git-commit",
+      "checkout": "/opt/troublemaker",
+      "skills": [
+        "/opt/company-skills",
+        "/opt/vendor-skills"
+      ],
+      "workspaceTemplate": "/var/lib/troublemaker-hostd/templates/front-desk",
+      "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
+      "basePort": 32000,
+      "maxPort": 32999,
+      "memory": "420m",
+      "stopAfterTurn": false,
+      "gmailToolsOnly": true,
+      "hostGateway": "host.containers.internal",
+      "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
+      "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
+      "runtimeEnv": {
+        "MOM_MODEL": "openai-codex/gpt-5.6-sol",
+        "MOM_THINKING": "high"
+      }
+    }
+  ]
+}

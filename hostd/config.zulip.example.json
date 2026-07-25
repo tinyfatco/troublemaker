@@ -1,0 +1,107 @@
+{
+  "company": {
+    "id": "example-company",
+    "actor": "front-desk"
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3099,
+    "operatorTokenEnv": "TROUBLEMAKER_HOSTD_OPERATOR_TOKEN"
+  },
+  "state": {
+    "database": "/var/lib/troublemaker-hostd/state.sqlite",
+    "routingKeyFile": "/etc/troublemaker-hostd/routing.key"
+  },
+  "gmail": {
+    "account": "agent@example.com",
+    "gogPath": "/usr/local/bin/gog",
+    "pollIntervalSeconds": 60,
+    "overlapSeconds": 900,
+    "contactRelays": [
+      {
+        "sender": "noreply@example.com",
+        "signatureSecretEnv": "CONTACT_RELAY_SECRET",
+        "project": {
+          "slug": "website",
+          "name": "Customer website"
+        }
+      }
+    ]
+  },
+  "scheduler": {
+    "maxConcurrent": 6,
+    "leaseSeconds": 60,
+    "turnLeaseSeconds": 900,
+    "idleSeconds": 300,
+    "tickSeconds": 2,
+    "maximumAttempts": 5
+  },
+  "zulip": {
+    "url": "http://127.0.0.1:3110",
+    "administratorEmail": "operator@example.com",
+    "administratorApiKeyEnv": "ZULIP_HOSTD_ADMIN_API_KEY",
+    "agentEmail": "operator-bot@example.com",
+    "agentApiKeyEnv": "ZULIP_HOSTD_AGENT_API_KEY",
+    "projectorEmail": "projector-bot@example.com",
+    "projectorApiKeyEnv": "ZULIP_HOSTD_PROJECTOR_API_KEY",
+    "memberEmails": [
+      "operator@example.com"
+    ],
+    "observerEmails": [
+      "observer-bot@example.com"
+    ],
+    "agentDisplayName": "Operator",
+    "projectorDisplayName": "TINYFAT"
+  },
+  "phone": {
+    "provider": "sendly",
+    "senderAddress": "+15555550100",
+    "webhookSecretEnv": "PHONE_WEBHOOK_SECRET",
+    "apiKeyEnv": "PHONE_API_KEY",
+    "directOnly": true,
+    "ingress": {
+      "host": "127.0.0.1",
+      "port": 3100,
+      "path": "/webhooks/sendly"
+    }
+  },
+  "routing": {
+    "actorTarget": "front-desk",
+    "knownPrincipals": [
+      {
+        "email": "customer@example.com",
+        "name": "Example Customer",
+        "projects": []
+      }
+    ]
+  },
+  "targets": [
+    {
+      "id": "front-desk",
+      "driver": "oci",
+      "protocol": "email-webhook",
+      "engine": "/opt/troublemaker/hostd/bin/podman-user-session",
+      "image": "localhost/troublemaker-runtime:git-commit",
+      "immutableImage": true,
+      "runtimeVersion": "git-commit",
+      "checkout": "/opt/troublemaker",
+      "skills": [
+        "/opt/company-skills"
+      ],
+      "workspaceTemplate": "/var/lib/troublemaker-hostd/templates/front-desk",
+      "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
+      "basePort": 32000,
+      "maxPort": 32999,
+      "memory": "420m",
+      "stopAfterTurn": false,
+      "gmailToolsOnly": true,
+      "hostGateway": "10.0.2.2",
+      "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
+      "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
+      "runtimeEnv": {
+        "MOM_MODEL": "openai-codex/gpt-5.6-sol",
+        "MOM_THINKING": "high"
+      }
+    }
+  ]
+}

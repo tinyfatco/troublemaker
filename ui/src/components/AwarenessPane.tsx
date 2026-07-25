@@ -1,0 +1,639 @@
+/**
+ * AwarenessPane — right sidebar showing the unified awareness stream + chat input.
+ * Shows all channel activity (Telegram, Slack, email, web, heartbeat) in real time.
+ *
+ * Loads recent entries first (tail-first), lazy-loads older entries on scroll-up.
+ */
+
+import { useRef, useEffect, useCallback, useMemo, useState, type CSSProperties, type TouchEvent, type WheelEvent } from 'react';
+import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
+import { useWebChat } from '../hooks/useWebChat';
+import { useVoiceChat } from '../hooks/useVoiceChat';
+import { buildContextWindowStatus } from '../contextWindowStatus';
+import { mergeOptimisticEntries } from '../optimisticEntries';
+import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
+import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
+import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
+import { fetchAgentSettings, type AgentSettingsSnapshot } from '../console-api';
+import { AwarenessEntryComponent } from './AwarenessEntry';
+import { InputBar } from './InputBar';
+import { SettingsMenu } from './SettingsMenu';
+
+interface AwarenessPaneProps {
+  stream: UseAwarenessStreamReturn;
+  allowCommands?: boolean;
+  allowSettings?: boolean;
+  allowVoice?: boolean;
+  showChannels?: boolean;
+}
+
+function initialDraftFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+  const params = new URLSearchParams(window.location.search);
+  return (params.get('tf_draft') || '').slice(0, 4000);
+}
+
+export function AwarenessPane({
+  stream,
+  allowCommands = true,
+  allowSettings = true,
+  allowVoice = true,
+  showChannels = true,
+}: AwarenessPaneProps) {
+  const {
+    entries,
+    isLoading,
+    backlogDone,
+    loadMore,
+    isLoadingMore,
+    allLoaded,
+    error: streamError,
+  } = stream;
+  const {
+    localEntries,
+    userEntry,
+    streamingEntry,
+    isStreaming,
+    error: chatError,
+    sendMessage,
+    abortStream,
+    clearError,
+  } = useWebChat();
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsVersion, setSettingsVersion] = useState(0);
+  const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');
+  const [settingsFocusVersion, setSettingsFocusVersion] = useState(0);
+  const [settingsSnapshot, setSettingsSnapshot] = useState<AgentSettingsSnapshot | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [initialDraft] = useState(initialDraftFromUrl);
+
+  const contextEntriesForVoice = useMemo(
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
+    [entries, userEntry, streamingEntry, localEntries],
+  );
+
+  const voice = useVoiceChat({ contextEntries: contextEntriesForVoice });
+  const isVoiceActive = allowVoice && voice.state !== 'idle' && voice.state !== 'error';
+  const voiceStatusText = useMemo(() => {
+    if (voice.assistantText) return voice.assistantText;
+    if (voice.cloudEvent) return voice.cloudEvent;
+    if (voice.partial) return voice.partial;
+    if (voice.transcript && (voice.state === 'thinking' || voice.state === 'transcribing')) return voice.transcript;
+    const modeLabel = voice.mode === 'turn' ? 'Turn-based voice' : 'Realtime 2';
+    switch (voice.state) {
+      case 'connecting': return `Connecting ${modeLabel}...`;
+      case 'listening': return `${modeLabel} ready...`;
+      case 'transcribing': return 'Speech detected...';
+      case 'thinking': return 'Agent is thinking...';
+      case 'speaking': return 'Agent is speaking...';
+      default: return '';
+    }
+  }, [voice.assistantText, voice.cloudEvent, voice.mode, voice.partial, voice.transcript, voice.state]);
+
+  const error = localError || chatError || streamError || voice.error;
+  const localVisibleEntries = useMemo(
+    () => [...localEntries, ...voice.localEntries],
+    [localEntries, voice.localEntries],
+  );
+
+  const visibleEntries = useMemo(
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries)),
+    [entries, userEntry, streamingEntry, localVisibleEntries],
+  );
+
+  const contextWindow = useMemo(
+    () => buildContextWindowStatus(visibleEntries, {
+      allLoaded,
+      realtimeVoice: allowVoice && voice.mode === 'realtime',
+    }),
+    [allLoaded, allowVoice, visibleEntries, voice.mode],
+  );
+
+  useEffect(() => {
+    if (!allowSettings) return;
+    let cancelled = false;
+    setSettingsError(null);
+    fetchAgentSettings()
+      .then((data) => {
+        if (!cancelled) setSettingsSnapshot(data);
+      })
+      .catch((err) => {
+        if (!cancelled) setSettingsError(err instanceof Error ? err.message : 'Settings unavailable');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [allowSettings, settingsVersion]);
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(0);
+  const userScrolledRef = useRef(false);
+  const prevScrollHeightRef = useRef(0);
+  const composerHeightRef = useRef(0);
+  const pendingExpansionFollowRef = useRef(false);
+  const pinnedToBottomRef = useRef(true);
+  const programmaticScrollRef = useRef(false);
+  const lastScrollTopRef = useRef(0);
+  const touchStartYRef = useRef<number | null>(null);
+
+  const isNearBottom = useCallback((threshold = 48) => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    // Use requestAnimationFrame to ensure DOM has settled
+    requestAnimationFrame(() => {
+      programmaticScrollRef.current = true;
+      messagesEndRef.current?.scrollIntoView({ behavior });
+      pinnedToBottomRef.current = true;
+      userScrolledRef.current = false;
+      setShowScrollBtn(false);
+      window.setTimeout(() => {
+        programmaticScrollRef.current = false;
+        lastScrollTopRef.current = scrollContainerRef.current?.scrollTop || 0;
+      }, 80);
+    });
+  }, []);
+
+  const handleComposerHeightChange = useCallback((height: number) => {
+    if (Math.abs(height - composerHeightRef.current) < 1) return;
+
+    const shouldFollowBottom = pinnedToBottomRef.current || isNearBottom();
+    composerHeightRef.current = height;
+    setComposerHeight(height);
+
+    if (shouldFollowBottom && backlogDone) {
+      scrollToBottom('instant');
+    }
+  }, [backlogDone, isNearBottom, scrollToBottom]);
+
+  const handleExpandingContent = useCallback(() => {
+    if (!backlogDone || isLoadingMore) return;
+    const shouldFollowBottom = pinnedToBottomRef.current || isNearBottom();
+    if (!shouldFollowBottom) return;
+
+    pendingExpansionFollowRef.current = true;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (!pendingExpansionFollowRef.current) return;
+        programmaticScrollRef.current = true;
+        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' });
+        pinnedToBottomRef.current = true;
+        userScrolledRef.current = false;
+        pendingExpansionFollowRef.current = false;
+        setShowScrollBtn(false);
+        window.setTimeout(() => {
+          programmaticScrollRef.current = false;
+          lastScrollTopRef.current = scrollContainerRef.current?.scrollTop || 0;
+        }, 80);
+      });
+    });
+  }, [backlogDone, isLoadingMore, isNearBottom]);
+
+  const liveScrollSignal = useMemo(
+    () => getLiveScrollSignal(visibleEntries),
+    [visibleEntries],
+  );
+
+  const paneStyle = useMemo(() => ({
+    '--composer-height': `${composerHeight}px`,
+  }) as CSSProperties, [composerHeight]);
+
+  // Scroll to bottom when initial backlog loads
+  useEffect(() => {
+    if (backlogDone && visibleEntries.length > 0) {
+      scrollToBottom('instant');
+    }
+  }, [backlogDone]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // After loading more (prepend), preserve scroll position
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || !isLoadingMore) return;
+
+    // Snapshot scrollHeight before the prepend renders
+    prevScrollHeightRef.current = el.scrollHeight;
+  }, [isLoadingMore]);
+
+  // After prepend completes, adjust scroll to maintain position
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || isLoadingMore || prevScrollHeightRef.current === 0) return;
+
+    const delta = el.scrollHeight - prevScrollHeightRef.current;
+    if (delta > 0) {
+      el.scrollTop += delta;
+    }
+    prevScrollHeightRef.current = 0;
+  }, [visibleEntries.length, isLoadingMore]);
+
+  // Auto-scroll on new entries and streaming text growth, but only while the
+  // user is still reading near the live bottom.
+  useEffect(() => {
+    if (!backlogDone || isLoadingMore) return;
+
+    if (pinnedToBottomRef.current || isNearBottom()) {
+      scrollToBottom(isStreaming ? 'instant' : 'smooth');
+    }
+  }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
+
+  // Detect user scroll — scroll-up triggers loadMore, scroll-down hides button
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const scrollingUp = el.scrollTop < lastScrollTopRef.current - 2;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    const atBottom = distFromBottom <= 48;
+
+    if (programmaticScrollRef.current) {
+      lastScrollTopRef.current = el.scrollTop;
+      return;
+    }
+
+    if (scrollingUp && !atBottom) {
+      pinnedToBottomRef.current = false;
+    } else if (atBottom) {
+      pinnedToBottomRef.current = true;
+    }
+
+    if (!pinnedToBottomRef.current && !atBottom) {
+      userScrolledRef.current = true;
+      setShowScrollBtn(true);
+    } else {
+      userScrolledRef.current = false;
+      setShowScrollBtn(false);
+    }
+    lastScrollTopRef.current = el.scrollTop;
+
+    // Load more when scrolled near the top
+    if (el.scrollTop < 200 && !isLoadingMore && !allLoaded && backlogDone) {
+      loadMore();
+    }
+  }, [loadMore, isLoadingMore, allLoaded, backlogDone]);
+
+  const handleWheel = useCallback((event: WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < -2 && !isNearBottom()) {
+      pinnedToBottomRef.current = false;
+      userScrolledRef.current = true;
+      setShowScrollBtn(true);
+    }
+  }, [isNearBottom]);
+
+  const handleTouchStart = useCallback((event: TouchEvent<HTMLDivElement>) => {
+    touchStartYRef.current = event.touches[0]?.clientY ?? null;
+  }, []);
+
+  const handleTouchMove = useCallback((event: TouchEvent<HTMLDivElement>) => {
+    const startY = touchStartYRef.current;
+    const currentY = event.touches[0]?.clientY;
+    if (startY === null || currentY === undefined) return;
+    if (currentY > startY + 4 && !isNearBottom()) {
+      pinnedToBottomRef.current = false;
+      userScrolledRef.current = true;
+      setShowScrollBtn(true);
+    }
+  }, [isNearBottom]);
+
+  const handleSend = useCallback((text: string) => {
+    setLocalError(null);
+    if (!allowCommands && text.trimStart().startsWith('/')) {
+      setLocalError('Commands are not available in this embedded chat.');
+      return;
+    }
+    sendMessage(text);
+  }, [allowCommands, sendMessage]);
+
+  const openSettings = useCallback((section: 'turn' | 'voice' = 'turn') => {
+    setSettingsSection(section);
+    setSettingsFocusVersion((version) => version + 1);
+    setSettingsOpen(true);
+  }, []);
+
+  const handleSlashCommand = useCallback((text: string) => {
+    if (allowSettings && isSettingsCommand(text)) {
+      setLocalError(null);
+      openSettings('turn');
+      return true;
+    }
+    if (isVoiceCommand(text)) {
+      setLocalError(null);
+      if (!allowVoice) {
+        setLocalError('Voice is not available in this view.');
+      } else {
+        openSettings('voice');
+      }
+      return true;
+    }
+    return false;
+  }, [allowSettings, allowVoice, openSettings]);
+
+  const clearVisibleError = useCallback(() => {
+    if (localError) {
+      setLocalError(null);
+      return;
+    }
+    clearError();
+  }, [clearError, localError]);
+
+  const closeSettings = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsVersion((version) => version + 1);
+  }, []);
+
+  const promptStatus = (
+    <PromptStatus
+      allowSettings={allowSettings}
+      allowVoice={allowVoice}
+      settingsSnapshot={settingsSnapshot}
+      settingsError={settingsError}
+      contextWindow={contextWindow}
+      voiceMode={voice.mode}
+      voiceState={voice.state}
+      isVoiceActive={isVoiceActive}
+      onOpenTurnSettings={() => openSettings('turn')}
+      onOpenVoiceSettings={() => openSettings('voice')}
+    />
+  );
+
+  return (
+    <div className="awareness-pane" style={paneStyle}>
+      <div
+        className="awareness-pane-messages"
+        ref={scrollContainerRef}
+        onScroll={handleScroll}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+      >
+        {isLoading ? (
+          <div className="awareness-pane-empty">
+            <span>Loading...</span>
+          </div>
+        ) : visibleEntries.length === 0 ? (
+          <div className="awareness-pane-empty">
+            <span>Send a message to get started.</span>
+          </div>
+        ) : (
+          <div className="awareness-pane-stream">
+            {isLoadingMore && (
+              <div className="awareness-loading-more">
+                <span className="tool-spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />
+                <span>Loading older messages...</span>
+              </div>
+            )}
+            {!allLoaded && !isLoadingMore && visibleEntries.length > 0 && (
+              <div className="awareness-loading-more awareness-load-trigger">
+                <span>Scroll up for older messages</span>
+              </div>
+            )}
+            {visibleEntries.map((entry) => (
+              <AwarenessEntryComponent
+                key={entry.id}
+                entry={entry}
+                onExpandingContent={handleExpandingContent}
+                showChannels={showChannels}
+              />
+            ))}
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {showScrollBtn && (
+        <button className="scroll-to-bottom-btn" onClick={() => scrollToBottom('smooth')}>
+          &#x2193;
+        </button>
+      )}
+
+      {error && (
+        <div className="error-banner" onClick={clearVisibleError}>
+          <span className="error-text">{error}</span>
+          <span className="error-dismiss">&times;</span>
+        </div>
+      )}
+
+      {allowVoice && isVoiceActive && (
+        <div className="voice-status">
+          <span className={`voice-status-dot voice-status-dot-${voice.state}`} />
+          <span className="voice-status-text">{voiceStatusText}</span>
+        </div>
+      )}
+
+      {allowSettings && (
+        <SettingsMenu
+          open={settingsOpen}
+          onClose={closeSettings}
+          initialSection={settingsSection}
+          focusVersion={settingsFocusVersion}
+          voiceMode={voice.mode}
+          onVoiceModeChange={voice.setMode}
+        />
+      )}
+
+      <InputBar
+        onSend={handleSend}
+        onStop={abortStream}
+        disabled={isVoiceActive}
+        initialValue={initialDraft}
+        isStreaming={isStreaming}
+        onHeightChange={handleComposerHeightChange}
+        onSlashCommand={handleSlashCommand}
+        onInvalidSlashCommand={(command) => setLocalError(allowCommands ? `Unknown command: ${command}` : 'Commands are not available in this embedded chat.')}
+        slashCommandsEnabled={allowCommands}
+        streamingPlaceholder={allowCommands ? undefined : 'Ask a follow-up...'}
+        streamingSendLabel={allowCommands ? undefined : 'Send follow-up'}
+        status={promptStatus}
+        extraButtons={allowVoice ? (
+          <>
+            <button
+              className={`mic-button ${isVoiceActive ? 'active' : ''}`}
+              onClick={isVoiceActive ? voice.stop : voice.start}
+              disabled={isStreaming && !isVoiceActive}
+              title={isVoiceActive ? 'Stop voice' : voice.mode === 'turn' ? 'Start turn-based voice' : 'Start Realtime 2 voice'}
+            >
+              {isVoiceActive ? (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="4" y="4" width="10" height="10" rx="1" fill="currentColor" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                  <rect x="7" y="2" width="4" height="9" rx="2" fill="currentColor" />
+                  <path d="M4 8.5a5 5 0 0010 0" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                  <path d="M9 14v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              )}
+            </button>
+          </>
+        ) : null}
+      />
+    </div>
+  );
+}
+
+function PromptStatus({
+  allowSettings,
+  allowVoice,
+  settingsSnapshot,
+  settingsError,
+  contextWindow,
+  voiceMode,
+  voiceState,
+  isVoiceActive,
+  onOpenTurnSettings,
+  onOpenVoiceSettings,
+}: {
+  allowSettings: boolean;
+  allowVoice: boolean;
+  settingsSnapshot: AgentSettingsSnapshot | null;
+  settingsError: string | null;
+  contextWindow: ReturnType<typeof buildContextWindowStatus>;
+  voiceMode: 'realtime' | 'turn';
+  voiceState: string;
+  isVoiceActive: boolean;
+  onOpenTurnSettings: () => void;
+  onOpenVoiceSettings: () => void;
+}) {
+  const modelLabel = settingsError ? 'settings unavailable' : compactModelLabel(settingsSnapshot);
+  const thinkingLabel = settingsError ? 'settings unavailable' : formatThinkingLevel(settingsSnapshot);
+  const voiceLabel = `${voiceMode === 'turn' ? 'turn voice' : 'realtime voice'}${isVoiceActive ? ` ${voiceState}` : ''}`;
+
+  return (
+    <>
+      {allowSettings && (
+        <>
+          <button className="input-status-button" type="button" onClick={onOpenTurnSettings} title={modelLabel}>
+            {modelLabel}
+          </button>
+          <button className="input-status-button" type="button" onClick={onOpenTurnSettings} title={thinkingLabel}>
+            {thinkingLabel}
+          </button>
+        </>
+      )}
+      <span className="input-status-item" title={contextWindow.title}>{contextWindow.contextLabel}</span>
+      <span className="input-status-item" title={contextWindow.title}>{contextWindow.sourceLabel}</span>
+      {contextWindow.realtime && (
+        <span className={`input-status-item ${contextWindow.realtime.tone === 'attention' ? 'attention' : ''}`} title={contextWindow.realtime.title}>
+          {contextWindow.realtime.label}
+        </span>
+      )}
+      {allowVoice && allowSettings && (
+        <button className={`input-status-button ${isVoiceActive ? 'active' : ''}`} type="button" onClick={onOpenVoiceSettings} title="Voice">
+          {voiceLabel}
+        </button>
+      )}
+    </>
+  );
+}
+
+function getLiveScrollSignal(entries: AwarenessEntry[]): string {
+  const last = entries[entries.length - 1];
+  if (!last) return 'empty';
+  const contentSignal = (last.content || []).map(getContentBlockSignal).join('|');
+  return `${last.id}:${last.role || ''}:${last.isStreaming ? 'streaming' : 'settled'}:${contentSignal}`;
+}
+
+function getContentBlockSignal(block: ContentBlock): string {
+  switch (block.type) {
+    case 'text':
+      return `text:${block.text.length}`;
+    case 'thinking':
+      return `thinking:${block.thinking.length}`;
+    case 'toolCall':
+      return `tool:${block.id}:${block.name}:${JSON.stringify(block.arguments || {}).length}`;
+    case 'toolOutput':
+      return `output:${block.toolCallId}:${block.stream}:${block.pid || ''}:${block.text.length}`;
+    case 'toolResult':
+      return `result:${block.toolCallId}:${block.isError ? 'error' : 'ok'}:${block.result.length}`;
+    default:
+      return 'unknown';
+  }
+}
+
+function normalizeToolResults(entries: AwarenessEntry[]): AwarenessEntry[] {
+  const normalized: AwarenessEntry[] = [];
+
+  for (const entry of entries) {
+    if (!isStandaloneToolResultEntry(entry)) {
+      normalized.push(entry);
+      continue;
+    }
+
+    if (!Array.isArray(entry.content)) continue;
+
+    const results = entry.content.filter((block): block is ToolResultContent => block.type === 'toolResult');
+    if (results.length === 0) {
+      normalized.push(entry);
+      continue;
+    }
+
+    const unmerged: ToolResultContent[] = [];
+
+    for (const result of results) {
+      const resultId = getToolResultId(result);
+      const assistantIndex = findAssistantWithToolCall(normalized, resultId);
+      if (assistantIndex === -1) {
+        unmerged.push(result);
+        continue;
+      }
+
+      const assistant = normalized[assistantIndex];
+      const content = assistant.content || [];
+      const alreadyMerged = content.some(
+        (block) => block.type === 'toolResult' && getToolResultId(block) === resultId,
+      );
+
+      if (alreadyMerged) continue;
+
+      normalized[assistantIndex] = {
+        ...assistant,
+        content: [...content, result],
+      };
+    }
+
+    if (unmerged.length > 0) {
+      normalized.push({ ...entry, role: 'toolResult', content: unmerged });
+    }
+  }
+
+  return normalized;
+}
+
+function isStandaloneToolResultEntry(entry: AwarenessEntry): boolean {
+  if (!Array.isArray(entry.content)) return false;
+  if (entry.role === 'toolResult') return true;
+  if (entry.role === 'assistant') return false;
+
+  const hasToolResult = entry.content.some((block) => block.type === 'toolResult');
+  const hasText = entry.content.some((block) => block.type === 'text' && block.text.trim());
+  return hasToolResult && !hasText;
+}
+
+function findAssistantWithToolCall(entries: AwarenessEntry[], toolCallId: string): number {
+  if (!toolCallId) return -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.role !== 'assistant' || !entry.content) continue;
+    const hasToolCall = entry.content.some((block: ContentBlock) => {
+      if (block.type !== 'toolCall') return false;
+      const toolCall = block as ToolCallContent;
+      return toolCall.id === toolCallId;
+    });
+    if (hasToolCall) return i;
+  }
+  return -1;
+}
+
+function getToolResultId(result: ToolResultContent): string {
+  return String((result as ToolResultContent & {
+    tool_call_id?: string;
+    toolUseId?: string;
+    tool_use_id?: string;
+  }).toolCallId || (result as any).tool_call_id || (result as any).toolUseId || (result as any).tool_use_id || '');
+}

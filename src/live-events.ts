@@ -1,0 +1,160 @@
+import { randomUUID } from "node:crypto";
+import type {
+	RuntimeAssistantSnapshotContent,
+	RuntimeLiveEvent,
+	RuntimeLiveRunMetadata,
+	RuntimeStreamEvent,
+} from "./core/runtime-contract.js";
+
+const DEFAULT_HISTORY_LIMIT = 512;
+
+type RuntimeLiveEventInput =
+	| { kind: "awareness"; line: string; awarenessId?: string }
+	| ({ kind: "runtime"; event: RuntimeStreamEvent } & RuntimeLiveRunMetadata)
+	| { kind: "reset"; reason: "context_rotated" | "replay_gap" };
+
+export interface LiveEventSubscription {
+	unsubscribe(): void;
+}
+
+/**
+ * Small in-process fanout with bounded reconnect replay. It deliberately owns
+ * no platform behavior: producers publish sanitized events and transports
+ * subscribe to one ordered sequence.
+ */
+export class RuntimeLiveEventHub {
+	private sequence = 0;
+	private readonly streamId = randomUUID();
+	private readonly history: RuntimeLiveEvent[] = [];
+	private readonly activeRuns = new Map<string, RuntimeLiveEvent>();
+	private readonly subscribers = new Set<(event: RuntimeLiveEvent) => void>();
+
+	constructor(private readonly historyLimit = DEFAULT_HISTORY_LIMIT) {}
+
+	publishAwareness(line: string, awarenessId?: string): RuntimeLiveEvent {
+		return this.publish({ kind: "awareness", line, awarenessId });
+	}
+
+	publishRuntime(metadata: RuntimeLiveRunMetadata, event: RuntimeStreamEvent): RuntimeLiveEvent {
+		return this.publish({
+			kind: "runtime",
+			...metadata,
+			event: projectRuntimeEventForTerminal(event),
+		});
+	}
+
+	publishReset(reason: "context_rotated" | "replay_gap"): RuntimeLiveEvent {
+		return this.publish({ kind: "reset", reason });
+	}
+
+	subscribe(listener: (event: RuntimeLiveEvent) => void, afterSequence = 0): LiveEventSubscription {
+		if (afterSequence === 0) {
+			// A newly opened terminal can attach in the middle of an external run.
+			// Replay only each active run's latest cumulative state, never stale
+			// completed history from earlier in the resident process.
+			for (const event of [...this.activeRuns.values()].sort((a, b) => a.sequence - b.sequence)) {
+				listener(event);
+			}
+		} else {
+			const oldest = this.history[0]?.sequence;
+			if (oldest !== undefined && afterSequence < oldest - 1) {
+				listener(this.createEphemeralReset("replay_gap"));
+			} else {
+				for (const event of this.history) {
+					if (event.sequence > afterSequence) listener(event);
+				}
+			}
+		}
+		this.subscribers.add(listener);
+		return {
+			unsubscribe: () => this.subscribers.delete(listener),
+		};
+	}
+
+	private publish(input: RuntimeLiveEventInput): RuntimeLiveEvent {
+		const event = {
+			...input,
+			sequence: ++this.sequence,
+			streamId: this.streamId,
+			id: randomUUID(),
+			timestamp: new Date().toISOString(),
+		} as RuntimeLiveEvent;
+		if (event.kind === "runtime") {
+			if (event.event.type === "run_complete") this.activeRuns.delete(event.runId);
+			else this.activeRuns.set(event.runId, event);
+		}
+		if (event.kind === "runtime" && event.event.type === "assistant_snapshot") {
+			const previousSnapshot = this.history.findIndex((candidate) =>
+				candidate.kind === "runtime" &&
+				candidate.runId === event.runId &&
+				candidate.event.type === "assistant_snapshot"
+			);
+			if (previousSnapshot >= 0) this.history.splice(previousSnapshot, 1);
+		}
+		this.history.push(event);
+		while (this.history.length > this.historyLimit) this.history.shift();
+		for (const subscriber of this.subscribers) subscriber(event);
+		return event;
+	}
+
+	private createEphemeralReset(reason: "replay_gap"): RuntimeLiveEvent {
+		return {
+			kind: "reset",
+			reason,
+			sequence: this.sequence,
+			streamId: this.streamId,
+			id: randomUUID(),
+			timestamp: new Date().toISOString(),
+		};
+	}
+}
+
+/**
+ * The local terminal needs visible assistant text, safe tool labels, and tool
+ * completion state. Raw arguments, tool output, results, and thinking never
+ * cross the shared live endpoint.
+ */
+export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent {
+	if (event.type === "assistant_snapshot") {
+		return {
+			...event,
+			entry: {
+				...event.entry,
+				content: event.entry.content.flatMap(projectSnapshotContent),
+			},
+		};
+	}
+	if (
+		event.type === "toolCall" ||
+		event.type === "toolcall_start" ||
+		event.type === "toolcall_delta" ||
+		event.type === "toolcall_end"
+	) {
+		return {
+			...event,
+			arguments: event.arguments ? {} : event.arguments,
+			delta: event.delta === undefined ? undefined : "",
+			toolCall: event.toolCall ? { ...event.toolCall, arguments: {} } : event.toolCall,
+			toolCalls: event.toolCalls?.map((toolCall) => ({ ...toolCall, arguments: {} })),
+		};
+	}
+	if (event.type === "toolResult") return { ...event, result: "" };
+	if (event.type === "toolResultDelta") return { ...event, text: "" };
+	if (event.type === "thinking_delta") return { ...event, delta: "", thinking: "" };
+	if (event.type === "thinking_patch") return { ...event, thinking: "" };
+	return event;
+}
+
+function projectSnapshotContent(block: RuntimeAssistantSnapshotContent): RuntimeAssistantSnapshotContent[] {
+	if (block.type === "thinking" || block.type === "toolOutput") return [];
+	if (block.type === "toolCall") {
+		return [{
+			...block,
+			arguments: block.label ? { label: block.label } : {},
+		}];
+	}
+	if (block.type === "toolResult") {
+		return [{ ...block, result: "" }];
+	}
+	return [block];
+}
