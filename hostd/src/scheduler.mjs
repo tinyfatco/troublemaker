@@ -25,10 +25,11 @@ export class EventScheduler {
 	async runPump() {
 		try {
 			if (this.store.getMeta("scheduler:draining") === "true") return;
-			while (this.store.countActiveEvents() < this.config.scheduler.maxConcurrent) {
+			while (true) {
 				const event = this.store.claimNextEvent({
 					leaseSeconds: this.config.scheduler.leaseSeconds,
 					maximumAttempts: this.config.scheduler.maximumAttempts,
+					maximumActiveContexts: this.config.scheduler.maxConcurrent,
 				});
 				if (!event) break;
 				void this.accept(event);
@@ -69,7 +70,9 @@ export class EventScheduler {
 
 	receipt(eventId, leaseToken, status, error) {
 		if (status === "heartbeat" || status === "running") {
-			return this.store.heartbeatEvent(eventId, leaseToken, this.config.scheduler.turnLeaseSeconds);
+			const event = this.store.heartbeatEvent(eventId, leaseToken, this.config.scheduler.turnLeaseSeconds);
+			this.pump();
+			return event;
 		}
 		if (status === "completed") {
 			const event = this.store.completeEvent(eventId, leaseToken);

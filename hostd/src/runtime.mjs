@@ -150,6 +150,28 @@ async function waitForHealth(url, timeout = 90_000) {
 	throw new Error(`runtime health check timed out: ${lastError}`);
 }
 
+async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
+	const started = Date.now();
+	let lastState = "runtime idle";
+	while (Date.now() - started < timeout) {
+		if (!stillHasRunningTurn()) return;
+		try {
+			const response = await fetch(url, { signal: AbortSignal.timeout(500) });
+			if (response.ok) {
+				const status = await response.json();
+				if (status?.idle === false) return;
+				lastState = "runtime idle";
+			} else {
+				lastState = `HTTP ${response.status}`;
+			}
+		} catch (error) {
+			lastState = error instanceof Error ? error.message : String(error);
+		}
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+	}
+	throw new Error(`runtime did not become steering-ready: ${lastState}`);
+}
+
 export class RuntimeManager {
 	constructor(config, store, { mattermost, rocketChat, zulip } = {}) {
 		this.config = config;
@@ -163,6 +185,12 @@ export class RuntimeManager {
 		const target = this.config.targetsById.get(event.targetId);
 		if (!target) throw new Error(`unknown target ${event.targetId}`);
 		const context = await this.ensureOciContext(target, event.contextId);
+		if (event.deliveryMode === "steer") {
+			await waitForSteeringReady(
+				context.statusEndpoint,
+				() => this.store.hasRunningEvent(event.contextId, event.id),
+			);
+		}
 		const payload = event.payloadJson ? JSON.parse(event.payloadJson) : {};
 		if (event.source === "gmail") {
 			await this.deliverEmailWebhook(target, context, event, payload);
@@ -522,6 +550,7 @@ export class RuntimeManager {
 			rocketChatEndpoint: `http://127.0.0.1:${context.port}/rocketchat/inbound`,
 			zulipEndpoint: `http://127.0.0.1:${context.port}/zulip/inbound`,
 			phoneEndpoint: `http://127.0.0.1:${context.port}/phone-messaging/webhook`,
+			statusEndpoint: `http://127.0.0.1:${context.port}/status`,
 		};
 	}
 
