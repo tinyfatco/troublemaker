@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -83,6 +83,14 @@ await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
 const upstreamAddress = upstream.address() as AddressInfo;
 
 const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
+writeFileSync(
+	join(workingDir, "log.jsonl"),
+	[
+		"truncated historical line",
+		JSON.stringify({ channel: "zulip:DM: Previous", channelId: "dm:7" }),
+		"",
+	].join("\n"),
+);
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
 const ambient: any[] = [];
@@ -142,6 +150,11 @@ try {
 	assert.equal(adapter.getUser("9")?.displayName, "Operator");
 	assert.equal(adapter.getChannel(CHANNEL_ID)?.name, "customer · Casey");
 	assert.equal(adapter.getChannel(OTHER_CHANNEL_ID)?.name, "projects");
+	assert.equal(
+		adapter.getChannel("dm:7")?.name,
+		"DM: Previous",
+		"malformed history lines do not hide later valid direct-message targets",
+	);
 	await assert.rejects(
 		adapter.postMessage(OUT_OF_SCOPE_CHANNEL_ID, "cross-context attempt"),
 		/not a current known subscription/,
@@ -537,6 +550,7 @@ try {
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
+		.filter((line) => line.startsWith("{"))
 		.map((line) => JSON.parse(line));
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
