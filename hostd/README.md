@@ -5,9 +5,10 @@ customer collaboration channels, and isolated Troublemaker runtimes. It keeps
 provider credentials outside agent containers, journals delivery in SQLite,
 and binds native conversations to durable OCI contexts.
 
-The initial connector uses `gog` for native Gmail reads, drafts, and delivery.
-Normal mail remains in Gmail; no forwarding mailbox or reconstructed email
-transport is involved.
+When `gmail` is configured, hostd uses `gog` for native Gmail reads, drafts,
+and delivery. Normal mail remains in Gmail; no forwarding mailbox or
+reconstructed email transport is involved. A phone-and-Zulip business may omit
+`gmail` entirely; those runtimes receive no email adapter or Gmail tools.
 
 ## Scoped Gmail tools
 

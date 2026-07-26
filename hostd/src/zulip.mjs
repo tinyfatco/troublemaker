@@ -59,7 +59,7 @@ function bindingMarker(contextId) {
 
 function channelDescription(contextId) {
 	return [
-		"Private TinyFat customer exchange feed backed by one isolated agent runtime.",
+		"Private customer exchange feed backed by one isolated agent runtime.",
 		`Hostd binding: ${bindingMarker(contextId)}`,
 	].join("\n");
 }

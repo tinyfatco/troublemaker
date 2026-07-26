@@ -350,7 +350,7 @@ export async function loadConfig(path, environment = process.env) {
 	const company = object(raw.company, "company");
 	const server = object(raw.server ?? {}, "server");
 	const state = object(raw.state, "state");
-	const gmail = object(raw.gmail, "gmail");
+	const gmail = raw.gmail === undefined ? undefined : object(raw.gmail, "gmail");
 	const routing = object(raw.routing, "routing");
 	const scheduler = object(raw.scheduler ?? {}, "scheduler");
 	if (!Array.isArray(raw.targets) || raw.targets.length === 0) {
@@ -382,7 +382,7 @@ export async function loadConfig(path, environment = process.env) {
 			throw new Error("phone.relay.encryptionKeyEnv must contain a base64-encoded 32-byte key");
 		}
 	}
-	const rawContactRelays = gmail.contactRelays === undefined ? [] : gmail.contactRelays;
+	const rawContactRelays = gmail?.contactRelays === undefined ? [] : gmail.contactRelays;
 	if (!Array.isArray(rawContactRelays)) throw new Error("gmail.contactRelays must be an array");
 	const contactRelays = rawContactRelays.map((relay, index) => (
 		contactRelayConfig(relay, index, environment)
@@ -394,6 +394,9 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
+	if (!gmail && targets.some((target) => target.gmailToolsOnly)) {
+		throw new Error("targets cannot enable gmailToolsOnly when Gmail is not configured");
+	}
 	if (phone?.ingress && phone.ingress.port === integer(
 		server.port,
 		3099,
@@ -421,13 +424,13 @@ export async function loadConfig(path, environment = process.env) {
 			database: resolve(text(state.database, "state.database")),
 			routingKeyFile: resolve(text(state.routingKeyFile, "state.routingKeyFile")),
 		},
-		gmail: {
+		gmail: gmail ? {
 			account: normalizeAddress(gmail.account, "gmail.account"),
 			gogPath: resolve(text(gmail.gogPath ?? "/usr/local/bin/gog", "gmail.gogPath")),
 			pollIntervalSeconds: integer(gmail.pollIntervalSeconds, 60, "gmail.pollIntervalSeconds", 15, 3600),
 			overlapSeconds: integer(gmail.overlapSeconds, 900, "gmail.overlapSeconds", 60, 86400),
 			contactRelays,
-		},
+		} : undefined,
 		scheduler: {
 			maxConcurrent: integer(scheduler.maxConcurrent, 6, "scheduler.maxConcurrent", 1, 64),
 			leaseSeconds: integer(scheduler.leaseSeconds, 60, "scheduler.leaseSeconds", 15, 600),
