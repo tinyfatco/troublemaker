@@ -74,6 +74,45 @@ test("configured customer names label pre-provisioned Zulip channels", () => {
 	);
 });
 
+test("authenticated Zulip administrator may have a realm-hidden API email", async () => {
+	const provisioner = new ZulipProvisioner(
+		{
+			administratorEmail: "owner-login@example.com",
+			agentEmail: "operator-bot@example.com",
+			projectorEmail: "projector-bot@example.com",
+			memberEmails: ["resident-bot@example.com"],
+			observerEmails: [],
+		},
+		{},
+	);
+	provisioner.request = async (path) => {
+		if (path === "users/me") {
+			return {
+				user_id: 16,
+				email: "user16@example.com",
+				is_admin: true,
+				is_owner: true,
+				is_bot: false,
+			};
+		}
+		assert.equal(path, "users");
+		return {
+			members: [
+				{ user_id: 17, email: "operator-bot@example.com", is_bot: true },
+				{ user_id: 18, email: "projector-bot@example.com", is_bot: true },
+				{ user_id: 19, email: "resident-bot@example.com", is_bot: true },
+			],
+		};
+	};
+
+	const identities = await provisioner.identities();
+	assert.equal(identities.administrator.user_id, 16);
+	assert.equal(identities.administrator.email, "user16@example.com");
+	assert.equal(identities.agent.user_id, 17);
+	assert.equal(identities.projector.user_id, 18);
+	assert.deepEqual(identities.members.map((member) => member.user_id), [19]);
+});
+
 test("first context creates a fresh private channel instead of adopting a same-labeled channel", async () => {
 	const principalHash = "1234567890abcdef12345678";
 	const contextId = `front-desk:${principalHash}:website`;

@@ -160,7 +160,10 @@ export class ZulipProvisioner {
 	async identities() {
 		if (this.identityPromise) return this.identityPromise;
 		this.identityPromise = (async () => {
-			const result = await this.request("users");
+			const [result, authenticated] = await Promise.all([
+				this.request("users"),
+				this.request("users/me"),
+			]);
 			const byEmail = new Map(
 				(result.members ?? []).map((user) => [String(user.email).toLowerCase(), user]),
 			);
@@ -172,9 +175,15 @@ export class ZulipProvisioner {
 					user_id: positiveInteger(user.user_id, `${role} user ID`),
 				};
 			};
-			const administrator = requireUser(this.config.administratorEmail, "administrator");
+			const administrator = {
+				...authenticated,
+				user_id: positiveInteger(authenticated.user_id, "administrator user ID"),
+			};
 			const agent = requireUser(this.config.agentEmail, "agent");
 			const projector = requireUser(this.config.projectorEmail, "projector");
+			if (administrator.is_bot || (!administrator.is_admin && !administrator.is_owner)) {
+				throw new Error("Zulip authenticated administrator must be a human realm administrator");
+			}
 			if (!agent.is_bot || !projector.is_bot) {
 				throw new Error("Zulip agent and projector identities must be bots");
 			}
