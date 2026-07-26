@@ -94,6 +94,15 @@ function isExpiredQueueError(error) {
 	return /bad event queue id|bad_event_queue_id|event queue.*(?:expired|invalid|not found)|zulip get events returned http 400/i.test(message);
 }
 
+function isBareDirectStop(message) {
+	if (message?.type !== "private") return false;
+	if (typeof message.raw_content === "string") {
+		return message.raw_content.trim().toLowerCase() === "stop";
+	}
+	return typeof message.content === "string"
+		&& /^<p>\s*stop\s*<\/p>$/i.test(message.content.trim());
+}
+
 function sleep(milliseconds) {
 	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -131,6 +140,10 @@ export class ZulipResidentBridge {
 		this.pollPromise = null;
 		this.stopped = true;
 		this.pendingReceipts = new Map();
+		this.liveDeliveryTail = Promise.resolve();
+		this.liveDeliveryTasks = new Set();
+		this.liveDeliveryRecords = [];
+		this.scheduledLiveMessageIds = new Set();
 	}
 
 	async start() {
@@ -180,6 +193,10 @@ export class ZulipResidentBridge {
 			pending.reject(new Error("Zulip resident bridge stopped"));
 		}
 		this.pendingReceipts.clear();
+		await Promise.allSettled(Array.from(this.liveDeliveryTasks));
+		this.liveDeliveryTail = Promise.resolve();
+		this.liveDeliveryRecords = [];
+		this.scheduledLiveMessageIds.clear();
 		await this.closeServer();
 	}
 
@@ -395,6 +412,56 @@ export class ZulipResidentBridge {
 		this.lastEventId = Number.isInteger(result.last_event_id) ? result.last_event_id : -1;
 	}
 
+	/**
+	 * Host receipts remain pending for the full agent turn. Keep polling on a
+	 * separate lane so an exact DM stop can reach the runtime immediately,
+	 * while normal work and durable cursor commits retain message order.
+	 */
+	scheduleLiveMessage(message) {
+		const messageId = positiveId(message?.id, "Zulip message ID");
+		if (messageId <= (this.lastMessageId || 0) || this.scheduledLiveMessageIds.has(messageId)) return;
+		this.scheduledLiveMessageIds.add(messageId);
+		const record = { messageId, completed: false };
+		this.liveDeliveryRecords.push(record);
+		this.liveDeliveryRecords.sort((left, right) => left.messageId - right.messageId);
+
+		const deliver = () => this.processLiveMessage(message, record);
+		const priority = isBareDirectStop(message);
+		const task = priority ? deliver() : this.liveDeliveryTail.then(deliver);
+		if (!priority) this.liveDeliveryTail = task;
+		this.liveDeliveryTasks.add(task);
+		void task.then(
+			() => this.liveDeliveryTasks.delete(task),
+			() => this.liveDeliveryTasks.delete(task),
+		);
+	}
+
+	async processLiveMessage(message, record) {
+		while (!this.stopped) {
+			try {
+				await this.ingestMessage(message, false);
+				record.completed = true;
+				this.flushCompletedLiveMessages();
+				return;
+			} catch (error) {
+				if (this.stopped) return;
+				console.error(
+					`zulip-resident-bridge: delivery ${record.messageId} failed; retrying:`,
+					error instanceof Error ? error.message : String(error),
+				);
+				await sleep(500);
+			}
+		}
+	}
+
+	flushCompletedLiveMessages() {
+		while (this.liveDeliveryRecords[0]?.completed) {
+			const record = this.liveDeliveryRecords.shift();
+			this.scheduledLiveMessageIds.delete(record.messageId);
+			this.advanceMessageCursor(record.messageId);
+		}
+	}
+
 	async pollLoop() {
 		while (!this.stopped) {
 			try {
@@ -406,7 +473,7 @@ export class ZulipResidentBridge {
 					},
 				});
 				for (const event of result.events || []) {
-					if (event.type === "message") await this.ingestMessage(event.message);
+					if (event.type === "message") this.scheduleLiveMessage(event.message);
 					if (Number.isInteger(event.id)) this.lastEventId = Math.max(this.lastEventId, event.id);
 				}
 			} catch (error) {
@@ -486,31 +553,34 @@ export class ZulipResidentBridge {
 		return this.subscribedChannels.get(channelId);
 	}
 
-	async ingestMessage(message) {
+	async ingestMessage(message, advanceCursor = true) {
 		const messageId = positiveId(message?.id, "Zulip message ID");
 		const senderId = positiveId(message?.sender_id, "Zulip sender ID");
+		const complete = () => {
+			if (advanceCursor) this.advanceMessageCursor(messageId);
+		};
 
 		if (message?.type === "stream") {
 			const channelId = positiveId(message.stream_id, "Zulip channel ID");
 			if (!this.channelIsInScope(channelId)) await this.refreshSubscriptions();
 			if (!this.channelIsInScope(channelId)) {
-				this.advanceMessageCursor(messageId);
+				complete();
 				return;
 			}
 		} else if (message?.type === "private") {
 			if (this.allowedDmUserIds && !this.allowedDmUserIds.has(senderId)) {
-				this.advanceMessageCursor(messageId);
+				complete();
 				return;
 			}
 			this.knownDirectConversations.add(directConversationFromMessage(message, this.botUserId));
 			this.saveState();
 		} else {
-			this.advanceMessageCursor(messageId);
+			complete();
 			return;
 		}
 
 		if (senderId === this.botUserId) {
-			this.advanceMessageCursor(messageId);
+			complete();
 			return;
 		}
 		const senderIsBot = await this.senderIsBot(senderId);
@@ -529,7 +599,7 @@ export class ZulipResidentBridge {
 			...(flags === undefined ? {} : { flags }),
 			...(isMentioned === undefined ? {} : { is_mentioned: isMentioned }),
 		});
-		this.advanceMessageCursor(messageId);
+		complete();
 	}
 
 	async deliver(message) {
@@ -625,18 +695,23 @@ export class ZulipResidentBridge {
 
 	async catchUp() {
 		if (this.lastMessageId === null) return;
+		let anchor = this.lastMessageId;
 		while (true) {
 			const result = await this.visibleMessages({
-				anchor: String(this.lastMessageId),
+				anchor: String(anchor),
 				num_before: "0",
 				num_after: "100",
 				include_anchor: "false",
 			});
 			const messages = (result.messages || [])
-				.filter((message) => Number(message.id) > this.lastMessageId)
+				.filter((message) => Number(message.id) > anchor)
 				.sort((left, right) => Number(left.id) - Number(right.id));
 			if (messages.length === 0) return;
-			for (const message of messages) await this.ingestMessage(message);
+			for (const message of messages) {
+				if (this.stopped) await this.ingestMessage(message);
+				else this.scheduleLiveMessage(message);
+			}
+			anchor = Number(messages.at(-1).id);
 			if (messages.length < 100) return;
 		}
 	}

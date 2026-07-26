@@ -177,22 +177,35 @@ await new Promise((resolve) => nativeServer.listen(0, "127.0.0.1", resolve));
 const nativeAddress = nativeServer.address();
 
 const inboundDeliveries = [];
+const receiptStatuses = new Map();
+let heldReceiptPayload = null;
+
+async function reportReceipt(payload, status) {
+	const receiptResponse = await fetch(payload.hostReceipt.url, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${payload.hostReceipt.token}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({ status, lease_token: payload.hostReceipt.leaseToken }),
+	});
+	assert.equal(receiptResponse.status, 200);
+	const statuses = receiptStatuses.get(payload.deliveryId) || [];
+	statuses.push(status);
+	receiptStatuses.set(payload.deliveryId, statuses);
+}
+
 const inboundServer = createServer(async (request, response) => {
 	assert.equal(request.headers.authorization, `Bearer ${INBOUND_TOKEN}`);
 	const payload = JSON.parse((await readBody(request)).toString("utf8"));
 	inboundDeliveries.push(payload);
 	sendJson(response, 202, { ok: true, accepted: true });
-	for (const status of ["running", "completed"]) {
-		const receiptResponse = await fetch(payload.hostReceipt.url, {
-			method: "POST",
-			headers: {
-				authorization: `Bearer ${payload.hostReceipt.token}`,
-				"content-type": "application/json",
-			},
-			body: JSON.stringify({ status, lease_token: payload.hostReceipt.leaseToken }),
-		});
-		assert.equal(receiptResponse.status, 200);
+	await reportReceipt(payload, "running");
+	if (payload.deliveryId === "zulip:56") {
+		heldReceiptPayload = payload;
+		return;
 	}
+	await reportReceipt(payload, "completed");
 });
 await new Promise((resolve) => inboundServer.listen(0, "127.0.0.1", resolve));
 const inboundAddress = inboundServer.address();
@@ -321,6 +334,71 @@ try {
 	assert.equal(inboundDeliveries[4].message.stream_id, 5);
 	assert.equal(inboundDeliveries[4].message.subject, "Roadmap");
 
+	const activeDirectMessage = {
+		...directMessage,
+		id: 56,
+		content: "<p>Keep working until I stop you.</p>",
+	};
+	messages.set(activeDirectMessage.id, activeDirectMessage);
+	events.push({ id: 6, type: "message", message: activeDirectMessage });
+	await waitFor(
+		() => receiptStatuses.get("zulip:56")?.includes("running"),
+		"active direct-message delivery receipt",
+	);
+	assert(heldReceiptPayload, "the active direct-message delivery remains in progress");
+
+	const ordinaryFollowUp = {
+		...directMessage,
+		id: 57,
+		content: "<p>Please stop after the current step.</p>",
+	};
+	messages.set(ordinaryFollowUp.id, ordinaryFollowUp);
+	events.push({ id: 7, type: "message", message: ordinaryFollowUp });
+
+	const stopDirectMessage = {
+		...directMessage,
+		id: 58,
+		content: "<p>stop</p>",
+	};
+	messages.set(stopDirectMessage.id, stopDirectMessage);
+	events.push({ id: 8, type: "message", message: stopDirectMessage });
+	await waitFor(
+		() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:58"),
+		"bare stop delivery while prior direct-message work remains active",
+	);
+	assert.equal(
+		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:57"),
+		false,
+		"an ordinary DM containing the word stop remains behind active work",
+	);
+	assert.deepEqual(receiptStatuses.get("zulip:58"), ["running", "completed"]);
+	assert.equal(
+		JSON.parse(readFileSync(statePath, "utf8")).lastMessageId,
+		55,
+		"an expedited stop cannot advance the durable cursor past unfinished prior work",
+	);
+	await reportReceipt(heldReceiptPayload, "completed");
+	heldReceiptPayload = null;
+	await waitFor(
+		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 58,
+		"ordered direct-message cursor after the active delivery completes",
+	);
+	assert.equal(
+		inboundDeliveries.filter((delivery) => delivery.deliveryId === "zulip:56").length,
+		1,
+		"active direct-message delivery remains deduplicated",
+	);
+	assert.equal(
+		inboundDeliveries.filter((delivery) => delivery.deliveryId === "zulip:57").length,
+		1,
+		"ordinary direct-message delivery remains ordered and deduplicated",
+	);
+	assert.equal(
+		inboundDeliveries.filter((delivery) => delivery.deliveryId === "zulip:58").length,
+		1,
+		"expedited stop delivery remains deduplicated",
+	);
+
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
 	const meResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, { headers: proxyAuthorization });
 	assert.equal(meResponse.status, 200);
@@ -371,7 +449,7 @@ try {
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 6, type: "message", message: mentionEventMessage });
+	events.push({ id: 9, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:201"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:201");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
@@ -382,6 +460,10 @@ try {
 	);
 	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 201);
 } finally {
+	if (heldReceiptPayload) {
+		await reportReceipt(heldReceiptPayload, "completed");
+		heldReceiptPayload = null;
+	}
 	await bridge.stop();
 	await new Promise((resolve) => inboundServer.close(() => resolve()));
 	await new Promise((resolve) => nativeServer.close(() => resolve()));
