@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WorkspaceDeliveryLedger } from "../src/adapters/workspace-channel-runtime.js";
 import { ZulipWebhookAdapter } from "../src/adapters/zulip-webhook.js";
 import { ChannelStore } from "../src/store.js";
 
@@ -91,6 +92,10 @@ const stopped: any[] = [];
 const steered: any[] = [];
 const pulseRecords: any[] = [];
 let running = false;
+let releaseRestartClaim: (() => void) | undefined;
+const restartClaimGate = new Promise<void>((resolve) => {
+	releaseRestartClaim = resolve;
+});
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -110,6 +115,7 @@ adapter.setHandler({
 	isRunning: () => running,
 	handleEvent: async (event: any) => {
 		handled.push(event);
+		if (event.ts === "96") await restartClaimGate;
 		return { yielded: false };
 	},
 	handleSlashCommand: async () => false,
@@ -470,6 +476,105 @@ try {
 	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
 	assert.equal(handled[4].directlyAddressed, true);
 	assert.equal(handled[4].sourceEventType, "zulip_mention");
+
+	const restartClaimPayload = {
+		deliveryId: "delivery-restart-claim",
+		message: {
+			id: 96,
+			type: "private",
+			recipient_id: 18,
+			display_recipient: [
+				{ id: 8, email: "casey@example.com", full_name: "Casey" },
+				{ id: 9, email: "agent@example.com", full_name: "Operator" },
+			],
+			sender_id: 8,
+			sender_email: "casey@example.com",
+			sender_full_name: "Casey",
+			sender_is_bot: false,
+			timestamp: Math.floor(Date.now() / 1000),
+			content: "<p>Keep this accepted turn restart-safe.</p>",
+			raw_content: "Keep this accepted turn restart-safe.",
+		},
+		hostReceipt: {
+			url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+			token: RECEIPT_TOKEN,
+			leaseToken: "lease-restart-claim",
+		},
+	};
+	const restartClaimResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify(restartClaimPayload),
+	});
+	assert.equal(restartClaimResponse.status, 202);
+	for (let index = 0; index < 100 && !handled.some((event) => event.ts === "96"); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(
+		handled.filter((event) => event.ts === "96").length,
+		1,
+		"the claimed delivery starts one turn",
+	);
+	const replayedClaimResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			...restartClaimPayload,
+			hostReceipt: {
+				...restartClaimPayload.hostReceipt,
+				leaseToken: "lease-replayed-restart-claim",
+			},
+		}),
+	});
+	assert.equal(replayedClaimResponse.status, 202);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(
+		handled.filter((event) => event.ts === "96").length,
+		1,
+		"a replay cannot launch an accepted in-flight turn again",
+	);
+	const restartClaimRecordsBeforeCompletion = readFileSync(
+		join(workingDir, "zulip-inbound-deliveries.jsonl"),
+		"utf8",
+	)
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line))
+		.filter((record) => record.deliveryId === restartClaimPayload.deliveryId);
+	assert.equal(restartClaimRecordsBeforeCompletion.length, 1);
+	assert.equal(typeof restartClaimRecordsBeforeCompletion[0].claimedAt, "string");
+	const restartedLedger = new WorkspaceDeliveryLedger(
+		join(workingDir, "zulip-inbound-deliveries.jsonl"),
+		"restart-safe delivery ledger is unreadable",
+	);
+	assert.equal(
+		restartedLedger.claim(restartClaimPayload.deliveryId),
+		false,
+		"a fresh resident process reloads and retains the in-flight claim",
+	);
+	releaseRestartClaim?.();
+	for (let index = 0; index < 100; index++) {
+		const records = readFileSync(join(workingDir, "zulip-inbound-deliveries.jsonl"), "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+			.filter((record) => record.deliveryId === restartClaimPayload.deliveryId);
+		if (records.some((record) => typeof record.completedAt === "string")) break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	const restartClaimRecords = readFileSync(join(workingDir, "zulip-inbound-deliveries.jsonl"), "utf8")
+		.trim()
+		.split("\n")
+		.map((line) => JSON.parse(line))
+		.filter((record) => record.deliveryId === restartClaimPayload.deliveryId);
+	assert.equal(restartClaimRecords.length, 2);
+	assert.equal(typeof restartClaimRecords[1].completedAt, "string");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");
