@@ -174,11 +174,17 @@ export class ZulipResidentBridge {
 				this.lastMessageId = await this.newestVisibleMessageId();
 				this.saveState();
 			} else {
+				// The proxy must remain available while a resident restarts. Catch-up
+				// deliveries already have their own durable retry lane, so mark the
+				// bridge live before scheduling them instead of making startup depend
+				// on the resident inbound endpoint being ready.
+				this.stopped = false;
 				await this.catchUp();
 			}
 			this.stopped = false;
 			this.pollPromise = this.pollLoop();
 		} catch (error) {
+			this.stopped = true;
 			await this.closeServer();
 			throw error;
 		}
