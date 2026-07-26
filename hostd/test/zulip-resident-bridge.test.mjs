@@ -373,6 +373,10 @@ try {
 		() => receiptStatuses.get("zulip:58")?.includes("completed"),
 		"tagged stop delivery while prior direct-message work remains active",
 	);
+	await waitFor(
+		() => receiptStatuses.get("zulip:57")?.includes("completed"),
+		"ordinary follow-up completion while prior direct-message work remains active",
+	);
 	assert.equal(
 		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:57"),
 		true,
