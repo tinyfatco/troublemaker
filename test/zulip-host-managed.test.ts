@@ -314,6 +314,14 @@ try {
 	assert.equal(handled[2].replyTarget, "zulip:dm:8,12");
 	assert.equal(handled[2].directlyAddressed, true);
 	assert.equal(pulseRecords.length, 4, "Zulip group DMs reach direct pulse accounting");
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 4; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(
+		receipts.filter((status) => status === "completed").length,
+		4,
+		"earlier deliveries finish their receipts before the stop timing check",
+	);
 
 	running = true;
 	const stopReceiptStart = receipts.length;
@@ -350,7 +358,11 @@ try {
 		body: JSON.stringify(stopPayload),
 	});
 	assert.equal(stopResponse.status, 202);
-	for (let index = 0; index < 100 && receipts.length < stopReceiptStart + 2; index++) {
+	for (
+		let index = 0;
+		index < 100 && (receipts.length < stopReceiptStart + 2 || stopped.length < 1);
+		index++
+	) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	assert.equal(stopped.length, 1, "a bare Zulip DM reaches the stop handler while work is active");
