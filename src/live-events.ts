@@ -115,6 +115,18 @@ export class RuntimeLiveEventHub {
  * cross the shared live endpoint.
  */
 export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent {
+	if (event.type === "user_input") {
+		return {
+			...event,
+			entries: event.entries
+				.filter((entry) => entry.channel.trim() && entry.text.trim())
+				.map((entry) => ({
+					channel: entry.channel.trim(),
+					userName: entry.userName.trim() || "user",
+					text: entry.text,
+				})),
+		};
+	}
 	if (event.type === "assistant_snapshot") {
 		return {
 			...event,

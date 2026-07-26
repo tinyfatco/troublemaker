@@ -279,7 +279,7 @@ try {
 	assert.match(cli, /handleSteer[\s\S]*?steerOrQueueBusyMessage\(event, adapter\)/, "non-voice busy routing soft-steers or queues without interruption");
 	assert.match(cli, /handleVoiceEvent[\s\S]*?voiceContract\.commit\(event, adapter\)/, "voice busy routing uses the FIFO contract instead");
 	assert.match(cli, /isConfigurableVoiceWebhook[\s\S]*?getVoiceWebhookInputMode\(\) === "steer"[\s\S]*?steerOrQueueVoiceWebhook[\s\S]*?enqueueHardInterrupt/, "legacy voice webhooks honor the durable steer mode before explicit hard interruption");
-	assert.match(cli, /steerOrQueueVoiceWebhook[\s\S]*?awareness\.runner\.steer\(event\.text\)[\s\S]*?withGlobalRunSlot/, "voice webhook steer mode queues safely when the active model cannot accept steering");
+	assert.match(cli, /steerOrQueueVoiceWebhook[\s\S]*?formatBusyMessageSteer\(event, adapter[\s\S]*?awareness\.runner\.steer\(prompt\)[\s\S]*?withGlobalRunSlot/, "voice webhook steer mode paints the same source-aware input envelope and queues safely when steering is unavailable");
 
 	console.log("first-class voice contract ok");
 } finally {

@@ -43,7 +43,7 @@ async function components(configPath) {
 	const config = await loadConfig(configPath);
 	const store = new HostStore(config.state.database);
 	const routingKey = await readRoutingKey(config.state.routingKeyFile);
-	const gmail = new GogGmail(config.gmail);
+	const gmail = config.gmail ? new GogGmail(config.gmail) : undefined;
 	const router = new ContextRouter(config, store, routingKey);
 	const knownEmailsByPrincipalHash = new Map(
 		config.routing.knownPrincipals.map((principal) => [
@@ -82,14 +82,16 @@ async function components(configPath) {
 		: undefined;
 	const runtime = new RuntimeManager(config, store, { mattermost, rocketChat, zulip });
 	const scheduler = new EventScheduler({ config, store, runtime });
-	const daemon = new InboxDaemon({
-		config,
-		store,
-		gmail,
-		router,
-		scheduler,
-		controlNotifier,
-	});
+	const daemon = config.gmail
+		? new InboxDaemon({
+			config,
+			store,
+			gmail,
+			router,
+			scheduler,
+			controlNotifier,
+		})
+		: { polling: false, controlNotifier };
 	const mattermostGateway = mattermost
 		? new MattermostGateway({ config, store, provisioner: mattermost, scheduler })
 		: undefined;
@@ -179,13 +181,17 @@ async function serve(configPath) {
 			);
 		}
 	};
-	await poll();
-	if (!stopped) {
+	if (state.config.gmail) {
+		await poll();
+	}
+	if (!stopped && state.config.gmail) {
 		pollTimer = setInterval(
 			() => void poll(),
 			state.config.gmail.pollIntervalSeconds * 1000,
 		);
 		pollTimer.unref();
+	}
+	if (!stopped) {
 		schedulerTimer = setInterval(
 			() => void state.scheduler.tick().catch((error) => {
 				console.error("troublemaker-hostd: scheduler tick failed:", error);
@@ -210,10 +216,12 @@ async function main() {
 	const state = await components(resolvedConfig);
 	try {
 		if (command === "poll-once") {
+			if (!state.config.gmail) throw new Error("Gmail is not configured");
 			console.log(JSON.stringify(await state.daemon.pollOnce()));
 			return;
 		}
 		if (command === "baseline") {
+			if (!state.config.gmail) throw new Error("Gmail is not configured");
 			console.log(JSON.stringify(await state.daemon.baseline()));
 			return;
 		}
@@ -249,6 +257,7 @@ async function main() {
 			return;
 		}
 		if (command === "import-legacy-checkpoint") {
+			if (!state.config.gmail) throw new Error("Gmail is not configured");
 			const checkpointPath = option("--checkpoint");
 			const keyPath = option("--key-file");
 			if (!checkpointPath || !keyPath) usage();

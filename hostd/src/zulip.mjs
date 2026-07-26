@@ -59,13 +59,20 @@ function bindingMarker(contextId) {
 
 function channelDescription(contextId) {
 	return [
-		"Private TinyFat customer exchange feed backed by one isolated agent runtime.",
+		"Private customer exchange feed backed by one isolated agent runtime.",
 		`Hostd binding: ${bindingMarker(contextId)}`,
 	].join("\n");
 }
 
 function ownedByContext(stream, contextId) {
 	return String(stream?.description || "").includes(`Hostd binding: ${bindingMarker(contextId)}`);
+}
+
+function isChannelNameConflict(error) {
+	return error instanceof Error
+		&& /Zulip POST channels\/create returned HTTP (?:400|409): .*already exists/i.test(
+			error.message,
+		);
 }
 
 function positiveInteger(value, label) {
@@ -153,7 +160,10 @@ export class ZulipProvisioner {
 	async identities() {
 		if (this.identityPromise) return this.identityPromise;
 		this.identityPromise = (async () => {
-			const result = await this.request("users");
+			const [result, authenticated] = await Promise.all([
+				this.request("users"),
+				this.request("users/me"),
+			]);
 			const byEmail = new Map(
 				(result.members ?? []).map((user) => [String(user.email).toLowerCase(), user]),
 			);
@@ -165,9 +175,15 @@ export class ZulipProvisioner {
 					user_id: positiveInteger(user.user_id, `${role} user ID`),
 				};
 			};
-			const administrator = requireUser(this.config.administratorEmail, "administrator");
+			const administrator = {
+				...authenticated,
+				user_id: positiveInteger(authenticated.user_id, "administrator user ID"),
+			};
 			const agent = requireUser(this.config.agentEmail, "agent");
 			const projector = requireUser(this.config.projectorEmail, "projector");
+			if (administrator.is_bot || (!administrator.is_admin && !administrator.is_owner)) {
+				throw new Error("Zulip authenticated administrator must be a human realm administrator");
+			}
 			if (!agent.is_bot || !projector.is_bot) {
 				throw new Error("Zulip agent and projector identities must be bots");
 			}
@@ -210,7 +226,7 @@ export class ZulipProvisioner {
 		)}`;
 	}
 
-	freshChannel(streams, contextId, baseName) {
+	freshChannel(streams, contextId, baseName, unavailableNames = new Set()) {
 		const marker = bindingMarker(contextId);
 		const candidates = [
 			baseName,
@@ -219,9 +235,10 @@ export class ZulipProvisioner {
 		];
 		for (const name of candidates) {
 			const existing = streams.find((candidate) => candidate.name === name);
-			if (!existing || ownedByContext(existing, contextId)) {
+			if (existing && ownedByContext(existing, contextId)) {
 				return { name, stream: existing };
 			}
+			if (!existing && !unavailableNames.has(name)) return { name, stream: existing };
 		}
 		throw new Error(`Zulip channel namespace is exhausted for ${baseName}`);
 	}
@@ -258,34 +275,53 @@ export class ZulipProvisioner {
 			? streams.find((candidate) => Number(candidate.stream_id) === Number(existing.channelId))
 			: null;
 		const fresh = stream ? null : this.freshChannel(streams, contextId, baseName);
-		const desiredName = stream ? existing.channelName : fresh.name;
+		let desiredName = stream ? existing.channelName : fresh.name;
 		if (!stream) stream = fresh.stream;
 
 		if (!stream) {
-			await this.request("channels/create", {
-				method: "POST",
-				form: zulipForm({
-					name: desiredName,
-					description: channelDescription(contextId),
-					subscribers: [
-						...new Set([
-							identities.administrator.user_id,
-							identities.agent.user_id,
-							identities.projector.user_id,
-							...identities.members.map((user) => user.user_id),
-							...identities.observers.map((user) => user.user_id),
-						]),
-					],
-					invite_only: true,
-					history_public_to_subscribers: false,
-					announce: false,
-					// Unlike the stream update route, channel creation parses
-					// this enum through Zulip's JSON request convention.
-					topics_policy: JSON.stringify("empty_topic_only"),
-				}),
-			});
-			streams = await this.listChannels();
-			stream = streams.find((candidate) => candidate.name === desiredName);
+			const unavailableNames = new Set();
+			while (!stream) {
+				try {
+					await this.request("channels/create", {
+						method: "POST",
+						form: zulipForm({
+							name: desiredName,
+							description: channelDescription(contextId),
+							subscribers: [
+								...new Set([
+									identities.administrator.user_id,
+									identities.agent.user_id,
+									identities.projector.user_id,
+									...identities.members.map((user) => user.user_id),
+									...identities.observers.map((user) => user.user_id),
+								]),
+							],
+							invite_only: true,
+							history_public_to_subscribers: false,
+							announce: false,
+							// Unlike the stream update route, channel creation parses
+							// this enum through Zulip's JSON request convention.
+							topics_policy: JSON.stringify("empty_topic_only"),
+						}),
+					});
+				} catch (error) {
+					if (!isChannelNameConflict(error)) throw error;
+					unavailableNames.add(desiredName);
+					streams = await this.listChannels();
+					const retry = this.freshChannel(
+						streams,
+						contextId,
+						baseName,
+						unavailableNames,
+					);
+					desiredName = retry.name;
+					stream = retry.stream;
+					continue;
+				}
+				streams = await this.listChannels();
+				stream = streams.find((candidate) => candidate.name === desiredName);
+				break;
+			}
 		}
 		if (!stream) throw new Error(`Zulip did not return customer channel ${desiredName}`);
 		if (fresh && !ownedByContext(stream, contextId)) {

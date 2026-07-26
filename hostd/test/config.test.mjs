@@ -83,3 +83,40 @@ test("loads encrypted edge relay polling without a public Hostd listener", async
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+
+test("loads a phone-only Zulip host without Gmail", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-only-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		delete raw.gmail;
+		raw.routing.knownPrincipals = [];
+		raw.targets[0].gmailToolsOnly = false;
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.gmail, undefined);
+		assert.equal(config.phone.senderAddress, "+15555550100");
+		assert.equal(config.zulip.agentDisplayName, "Operator");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects Gmail-only runtime tools on a phone-only host", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-only-gmail-tools-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		delete raw.gmail;
+		raw.routing.knownPrincipals = [];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/targets cannot enable gmailToolsOnly when Gmail is not configured/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});

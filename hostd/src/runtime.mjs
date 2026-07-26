@@ -224,6 +224,7 @@ export class RuntimeManager {
 	}
 
 	async deliverEmailWebhook(target, context, event, input) {
+		if (!this.config.gmail) throw new Error("Gmail event received without Gmail configuration");
 		const inboundToken = contextCapability(target.inboundToken, "inbound", context.contextId);
 		const response = await fetch(context.endpoint, {
 			method: "POST",
@@ -443,10 +444,12 @@ export class RuntimeManager {
 			const envPath = join(contextDirectory, "runtime.env");
 			const env = {
 				HOME: "/data",
-				MOM_EMAIL_INBOUND_TOKEN: contextCapability(target.inboundToken, "inbound", contextId),
-				MOM_EMAIL_TOOLS_TOKEN: contextCapability(target.outboundToken, "outbound", contextId),
-				MOM_EMAIL_SEND_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/outbound/gmail`,
-				MOM_EMAIL_TOOLS_ONLY: target.gmailToolsOnly ? "true" : "false",
+				...(this.config.gmail ? {
+					MOM_EMAIL_INBOUND_TOKEN: contextCapability(target.inboundToken, "inbound", contextId),
+					MOM_EMAIL_TOOLS_TOKEN: contextCapability(target.outboundToken, "outbound", contextId),
+					MOM_EMAIL_SEND_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/outbound/gmail`,
+					MOM_EMAIL_TOOLS_ONLY: target.gmailToolsOnly ? "true" : "false",
+				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
 				...(mattermost ? {
@@ -517,12 +520,20 @@ export class RuntimeManager {
 			for (const [index, skillsPath] of target.skills.entries()) {
 				args.push("--volume", `${skillsPath}:/opt/troublemaker-skills/${index}:ro`);
 			}
+			const adapters = [
+				...(this.config.gmail ? ["email:webhook"] : []),
+				...(mattermost ? ["mattermost:webhook"] : []),
+				...(rocketChat ? ["rocket-chat:webhook"] : []),
+				...(zulip ? ["zulip:webhook"] : []),
+				...(this.config.phone ? ["phone-messaging:webhook"] : []),
+			];
+			if (adapters.length === 0) throw new Error(`context ${contextId} has no configured adapters`);
 			args.push(
 				target.image,
 				"node",
 				"/opt/troublemaker/dist/main.js",
 				"--sandbox=host",
-				`--adapter=email:webhook${mattermost ? ",mattermost:webhook" : ""}${rocketChat ? ",rocket-chat:webhook" : ""}${zulip ? ",zulip:webhook" : ""}${this.config.phone ? ",phone-messaging:webhook" : ""}`,
+				`--adapter=${adapters.join(",")}`,
 				...target.skills.flatMap((_skillsPath, index) => [
 					"--skills",
 					`/opt/troublemaker-skills/${index}`,

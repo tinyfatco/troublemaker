@@ -6,6 +6,23 @@ export interface HostDeliveryReceipt {
 	leaseToken: string;
 }
 
+export interface HostReceiptProgress {
+	/**
+	 * Report that the durable delivery has entered its runtime route. Bridges
+	 * may release the next ordered message after this point without waiting for
+	 * the full agent turn to finish.
+	 */
+	markRunning(): Promise<void>;
+}
+
+export interface HostReceiptOptions {
+	/**
+	 * Most host deliveries report running immediately. Ordered collaboration
+	 * bridges can defer it until the adapter has actually routed the event.
+	 */
+	deferRunning?: boolean;
+}
+
 function validReceipt(value: unknown): value is HostDeliveryReceipt {
 	if (!value || typeof value !== "object") return false;
 	const receipt = value as Partial<HostDeliveryReceipt>;
@@ -39,11 +56,21 @@ async function report(receipt: HostDeliveryReceipt, status: string, error?: stri
 
 export async function withHostReceipt<T>(
 	rawReceipt: unknown,
-	work: () => Promise<T>,
+	work: (progress: HostReceiptProgress) => Promise<T>,
+	options: HostReceiptOptions = {},
 ): Promise<T> {
-	if (!validReceipt(rawReceipt)) return await work();
+	if (!validReceipt(rawReceipt)) {
+		return await work({ markRunning: async () => {} });
+	}
 	const receipt = rawReceipt;
-	await report(receipt, "running");
+	let runningReport: Promise<void> | null = null;
+	const progress: HostReceiptProgress = {
+		markRunning: () => {
+			runningReport ??= report(receipt, "running");
+			return runningReport;
+		},
+	};
+	if (!options.deferRunning) await progress.markRunning();
 	const timer = setInterval(() => {
 		void report(receipt, "heartbeat").catch((error) => {
 			log.logWarning("Host delivery heartbeat failed", error instanceof Error ? error.message : String(error));
@@ -51,7 +78,8 @@ export async function withHostReceipt<T>(
 	}, 30_000);
 	timer.unref();
 	try {
-		const result = await work();
+		const result = await work(progress);
+		await progress.markRunning();
 		await report(receipt, "completed");
 		return result;
 	} catch (error) {

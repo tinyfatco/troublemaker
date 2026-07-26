@@ -19,6 +19,7 @@ test("outbound Gmail is confined to the owning context", async () => {
 	};
 	const config = {
 		server: {},
+		gmail: { account: "agent@example.com" },
 		routing: { actorTarget: "front-desk", knownPrincipals: [] },
 		targetsById: new Map([["front-desk", target]]),
 	};
@@ -107,6 +108,37 @@ test("outbound Gmail is confined to the owning context", async () => {
 		assert.equal(duplicate.status, 200);
 		assert.equal(sends.length, 1);
 
+	} finally {
+		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("phone-only hosts expose no Gmail delivery surface", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-no-gmail-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const server = createHostServer({
+		config: {
+			server: {},
+			gmail: undefined,
+			scheduler: { maxConcurrent: 1 },
+			targetsById: new Map(),
+		},
+		store,
+		daemon: { polling: false },
+	});
+	await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+	const address = server.address();
+	assert(address && typeof address === "object");
+	try {
+		const response = await fetch(`http://127.0.0.1:${address.port}/v1/outbound/gmail`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		assert.equal(response.status, 503);
+		assert.deepEqual(await response.json(), { error: "gmail_unavailable" });
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();

@@ -1,4 +1,4 @@
-import { appendFileSync, readFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./types.js";
 import { slashCommandHandled, slashCommandPending } from "./types.js";
 
@@ -45,11 +45,12 @@ export class WorkspaceChannelQueue {
 }
 
 /**
- * Host-owned replay guard used by webhook transports. Completion is appended
- * only after the shared event router returns successfully.
+ * Host-owned replay guard used by webhook transports. A durable claim prevents
+ * an accepted agent turn from being launched twice across a resident restart;
+ * completion remains separately auditable after the event router returns.
  */
 export class WorkspaceDeliveryLedger {
-	private completed?: Set<string>;
+	private deliveries?: Map<string, "claimed" | "completed">;
 
 	constructor(
 		private readonly path: string,
@@ -60,26 +61,58 @@ export class WorkspaceDeliveryLedger {
 		return this.load().has(deliveryId);
 	}
 
-	complete(deliveryId: string): void {
-		const ids = this.load();
-		if (ids.has(deliveryId)) return;
-		appendFileSync(
-			this.path,
-			`${JSON.stringify({ deliveryId, completedAt: new Date().toISOString() })}\n`,
-			{ mode: 0o600 },
-		);
-		ids.add(deliveryId);
+	/**
+	 * Durably claim a delivery before the transport acknowledges it. Agent turns
+	 * can survive a resident restart independently, so replaying an accepted turn
+	 * is more dangerous than retaining an incomplete claim for reconciliation.
+	 */
+	claim(deliveryId: string): boolean {
+		const deliveries = this.load();
+		if (deliveries.has(deliveryId)) return false;
+		this.append({
+			deliveryId,
+			claimedAt: new Date().toISOString(),
+		});
+		deliveries.set(deliveryId, "claimed");
+		return true;
 	}
 
-	private load(): Set<string> {
-		if (this.completed) return this.completed;
-		const ids = new Set<string>();
+	complete(deliveryId: string): void {
+		const deliveries = this.load();
+		if (deliveries.get(deliveryId) === "completed") return;
+		this.append({
+			deliveryId,
+			completedAt: new Date().toISOString(),
+		});
+		deliveries.set(deliveryId, "completed");
+	}
+
+	private append(record: { deliveryId: string; claimedAt?: string; completedAt?: string }): void {
+		const descriptor = openSync(this.path, "a", 0o600);
+		try {
+			writeSync(descriptor, `${JSON.stringify(record)}\n`);
+			fsyncSync(descriptor);
+		} finally {
+			closeSync(descriptor);
+		}
+	}
+
+	private load(): Map<string, "claimed" | "completed"> {
+		if (this.deliveries) return this.deliveries;
+		const deliveries = new Map<string, "claimed" | "completed">();
 		try {
 			for (const line of readFileSync(this.path, "utf8").split("\n")) {
 				if (!line.trim()) continue;
-				const record = JSON.parse(line) as { deliveryId?: unknown };
+				const record = JSON.parse(line) as {
+					deliveryId?: unknown;
+					claimedAt?: unknown;
+					completedAt?: unknown;
+				};
 				if (typeof record.deliveryId === "string" && record.deliveryId) {
-					ids.add(record.deliveryId);
+					deliveries.set(
+						record.deliveryId,
+						typeof record.completedAt === "string" ? "completed" : "claimed",
+					);
 				}
 			}
 		} catch (error) {
@@ -87,8 +120,8 @@ export class WorkspaceDeliveryLedger {
 				throw new Error(this.unreadableMessage);
 			}
 		}
-		this.completed = ids;
-		return ids;
+		this.deliveries = deliveries;
+		return deliveries;
 	}
 }
 
@@ -98,30 +131,47 @@ export async function routeWorkspaceChannelEvent({
 	event,
 	queue,
 	awaitCompletion = false,
+	onAccepted,
 }: {
 	handler: MomHandler;
 	adapter: PlatformAdapter;
 	event: MomEvent;
 	queue: WorkspaceChannelQueue;
 	awaitCompletion?: boolean;
+	/** Called once the event has entered its control, steer, or run route. */
+	onAccepted?: () => void | Promise<void>;
 }): Promise<void> {
-	if (handler.resolvePendingInput(event.channel, event.text)) return;
+	let accepted = false;
+	const markAccepted = async () => {
+		if (accepted) return;
+		accepted = true;
+		await onAccepted?.();
+	};
+	if (handler.resolvePendingInput(event.channel, event.text)) {
+		await markAccepted();
+		return;
+	}
 	const command = await handler.handleSlashCommand(event, adapter);
 	if (slashCommandHandled(command)) {
+		await markAccepted();
 		if (awaitCompletion) await slashCommandPending(command);
 		return;
 	}
 	if (event.text.toLowerCase().trim() === "stop") {
-		await handler.handleStop(event.channel, adapter, event);
+		const settled = handler.handleStop(event.channel, adapter, event);
+		await markAccepted();
+		await settled;
 		return;
 	}
 	if (handler.isRunning(event.channel)) {
 		const settled = handler.handleSteer(event, adapter);
+		await markAccepted();
 		if (awaitCompletion) await settled;
 		return;
 	}
 	const work = queue.enqueue(async () => {
 		await handler.handleEvent(event, adapter);
 	});
+	await markAccepted();
 	if (awaitCompletion) await work;
 }
