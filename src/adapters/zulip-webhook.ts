@@ -519,7 +519,6 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
-		if (senderIsBot && !directlyAddressed) return;
 		this.pulse?.record(
 			channel,
 			senderId,

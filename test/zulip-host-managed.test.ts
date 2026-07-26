@@ -447,8 +447,12 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 7, "explicit other-bot mentions reach direct pulse accounting");
-	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
+	assert.equal(pulseRecords.length, 8, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
+	assert.equal(ambient[1].user, "10");
+	assert.equal(ambient[1].text, "Bot ambient update.");
+	assert.equal(ambient[1].directlyAddressed, false);
+	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
 	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
 	assert.equal(handled[4].directlyAddressed, true);
 	assert.equal(handled[4].sourceEventType, "zulip_mention");
