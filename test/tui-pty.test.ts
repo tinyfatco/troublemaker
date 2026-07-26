@@ -84,6 +84,18 @@ const terminalUserLine = JSON.stringify({
 		content: [{ type: "text", text: "[2026-01-02 03:04:06+00:00] [terminal:demo-agent] [you]: run a check" }],
 	},
 });
+const terminalDuringExternalRunLine = JSON.stringify({
+	type: "message",
+	id: "terminal-during-external-run",
+	timestamp: "2026-01-02T03:04:09Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "[2026-01-02 03:04:09+00:00] [terminal:demo-agent] [you]: during external work",
+		}],
+	},
+});
 const terminalAssistantEchoLine = JSON.stringify({
 	type: "message",
 	id: "terminal-assistant-echo",
@@ -92,6 +104,33 @@ const terminalAssistantEchoLine = JSON.stringify({
 	message: {
 		role: "assistant",
 		content: [{ type: "text", text: "PERSISTED_TERMINAL_ECHO" }],
+	},
+});
+const zulipMentionLine = JSON.stringify({
+	type: "message",
+	id: "zulip-mention-input",
+	timestamp: "2026-01-02T03:04:09Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "<delivery_context>private route</delivery_context>\n\n[2026-01-02 03:04:09+00:00] [zulip:10:topic:general%20chat] [Alex]: @**Batman** BATMAN_TAG_INPUT" }],
+	},
+});
+const goalContinuationLine = JSON.stringify({
+	type: "message",
+	id: "goal-continuation-input",
+	timestamp: "2026-01-02T03:04:11Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "<session_context>private runtime context</session_context>\n\n[2026-01-02 03:04:11+00:00] [terminal:ghost] [goal]: [GOAL CONTINUATION]\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
+	},
+});
+const webhookSteerLine = JSON.stringify({
+	type: "message",
+	id: "webhook-steer",
+	timestamp: "2026-01-02T03:04:10Z",
+	message: {
+		role: "user",
+		content: [{ type: "text", text: "<delivery_context>private route</delivery_context>\n\n[2026-01-02 03:04:10+00:00] [slack:#urgent] [Riley]: WEBHOOK_STEER_INPUT" }],
 	},
 });
 let awarenessResponse: ServerResponse | undefined;
@@ -208,14 +247,91 @@ const server = createServer(async (req, res) => {
 				},
 			}, "voice");
 		}, 1_150);
+		const webhookInputTimer = setTimeout(() => {
+			emitRuntime("webhook-run", "zulip:10:topic:general%20chat", {
+				type: "user_input",
+				entries: [{ channel: "zulip:10:topic:general%20chat", userName: "Alex", text: "@**Batman** BATMAN_TAG_INPUT" }],
+			}, "zulip");
+		}, 1_400);
+		const webhookOutputTimer = setTimeout(() => {
+			emitRuntime("webhook-run", "zulip:10:topic:general%20chat", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "webhook-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:09Z",
+					role: "assistant",
+					content: [{ type: "text", text: "WEBHOOK_FIRST_OUTPUT" }],
+					isStreaming: false,
+				},
+			}, "zulip");
+		}, 1_480);
+		const webhookAwarenessTimer = setTimeout(() => emitAwareness("zulip-mention-input", zulipMentionLine), 1_560);
+		const webhookSteerTimer = setTimeout(() => {
+			emitRuntime("webhook-run", "slack:#webhook", {
+				type: "user_input",
+				entries: [{ channel: "slack:#urgent", userName: "Riley", text: "WEBHOOK_STEER_INPUT" }],
+			}, "slack");
+		}, 1_640);
+		const webhookSteerOutputTimer = setTimeout(() => {
+			emitRuntime("webhook-run", "slack:#webhook", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "webhook-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:10Z",
+					role: "assistant",
+					content: [
+						{ type: "text", text: "WEBHOOK_FIRST_OUTPUT" },
+						{ type: "text", text: "TERMINAL_INTERPOLATED_OUTPUT" },
+						{ type: "text", text: "WEBHOOK_SECOND_OUTPUT" },
+					],
+					isStreaming: false,
+				},
+			}, "slack");
+		}, 1_720);
+		const webhookSteerAwarenessTimer = setTimeout(() => emitAwareness("webhook-steer", webhookSteerLine), 1_800);
+		const goalInputTimer = setTimeout(() => {
+			emitRuntime("goal-run", "terminal:ghost", {
+				type: "user_input",
+				entries: [{ channel: "terminal:ghost", userName: "goal", text: "[GOAL CONTINUATION]\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
+			}, "goal");
+		}, 1_880);
+		const goalOutputTimer = setTimeout(() => {
+			emitRuntime("goal-run", "terminal:ghost", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "goal-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:11Z",
+					role: "assistant",
+					content: [{ type: "text", text: "GOAL_CONTINUED_OUTPUT" }],
+					isStreaming: false,
+				},
+			}, "goal");
+		}, 1_960);
+		const goalAwarenessTimer = setTimeout(() => emitAwareness("goal-continuation-input", goalContinuationLine), 2_040);
+		const webhookCompleteTimer = setTimeout(() => {
+			emitRuntime("webhook-run", "slack:#webhook", { type: "run_complete", channelId: "slack:#webhook" }, "slack");
+		}, 2_120);
 		const idleTimer = setTimeout(() => {
 			runBusy = false;
-		}, 1_350);
+		}, 2_200);
 		req.on("close", () => {
 			clearTimeout(ambientTimer);
 			clearTimeout(assistantTimer);
 			clearTimeout(voiceTimer);
 			clearTimeout(voiceToolTimer);
+			clearTimeout(webhookInputTimer);
+			clearTimeout(webhookOutputTimer);
+			clearTimeout(webhookAwarenessTimer);
+			clearTimeout(webhookSteerTimer);
+			clearTimeout(webhookSteerOutputTimer);
+			clearTimeout(webhookSteerAwarenessTimer);
+			clearTimeout(goalInputTimer);
+			clearTimeout(goalOutputTimer);
+			clearTimeout(goalAwarenessTimer);
+			clearTimeout(webhookCompleteTimer);
 			clearTimeout(idleTimer);
 			if (liveResponse === res) liveResponse = undefined;
 		});
@@ -227,6 +343,27 @@ const server = createServer(async (req, res) => {
 		assert.equal(typeof body.message, "string");
 		receivedMessages.push(body.message as string);
 		if (receivedMessages.length === 1) {
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
+			res.write(`data: ${JSON.stringify({ type: "status", status: "steering", message: "Steering active run..." })}\n\n`);
+			emitAwareness("terminal-during-external-run", terminalDuringExternalRunLine);
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 40));
+			emitRuntime("webhook-run", "slack:#webhook", {
+				type: "assistant_snapshot",
+				entry: {
+					id: "webhook-live",
+					type: "message",
+					timestamp: "2026-01-02T03:04:09Z",
+					role: "assistant",
+					content: [
+						{ type: "text", text: "WEBHOOK_FIRST_OUTPUT" },
+						{ type: "text", text: "TERMINAL_INTERPOLATED_OUTPUT" },
+					],
+					isStreaming: false,
+				},
+			}, "terminal");
+			res.end("data: [DONE]\n\n");
+		} else if (receivedMessages.length === 2) {
 			await writeTurn(res, steerReceived, () => {
 				emitAwareness("terminal-user", terminalUserLine);
 				emitAwareness("terminal-assistant-echo", terminalAssistantEchoLine);
@@ -300,6 +437,42 @@ expect {
   timeout { puts stderr "External voice tool repaint timeout"; exit 20 }
   eof { puts stderr "TUI exited before external voice tool"; exit 21 }
 }
+expect {
+  {BATMAN_TAG_INPUT} {}
+  timeout { puts stderr "Zulip Batman mention paint timeout"; exit 22 }
+  eof { puts stderr "TUI exited before Zulip Batman mention"; exit 23 }
+}
+expect {
+  {WEBHOOK_FIRST_OUTPUT} {}
+  timeout { puts stderr "Webhook first output ordering timeout"; exit 24 }
+  eof { puts stderr "TUI exited before webhook first output"; exit 25 }
+}
+send -- "during external work\\r"
+expect {
+  {TERMINAL_INTERPOLATED_OUTPUT} {}
+  timeout { puts stderr "Terminal-during-external interpolation timeout"; exit 34 }
+  eof { puts stderr "TUI exited before interpolated terminal output"; exit 35 }
+}
+expect {
+  {WEBHOOK_STEER_INPUT} {}
+  timeout { puts stderr "Webhook steering input paint timeout"; exit 26 }
+  eof { puts stderr "TUI exited before webhook steering input"; exit 27 }
+}
+expect {
+  {WEBHOOK_SECOND_OUTPUT} {}
+  timeout { puts stderr "Webhook steering output ordering timeout"; exit 28 }
+  eof { puts stderr "TUI exited before webhook steering output"; exit 29 }
+}
+expect {
+  {GOAL CONTINUATION} {}
+  timeout { puts stderr "Goal continuation input paint timeout"; exit 30 }
+  eof { puts stderr "TUI exited before goal continuation input"; exit 31 }
+}
+expect {
+  {GOAL_CONTINUED_OUTPUT} {}
+  timeout { puts stderr "Goal continuation output ordering timeout"; exit 32 }
+  eof { puts stderr "TUI exited before goal continuation output"; exit 33 }
+}
 send -- "run a check\\r"
 expect {
   {All done.} {}
@@ -359,6 +532,14 @@ expect eof
 	assert.match(rendered, /External check finished/);
 	assert.match(rendered, /voice update/);
 	assert.match(rendered, /Voice-side check/);
+	assert.match(rendered, /BATMAN_TAG_INPUT/);
+	assert.match(rendered, /WEBHOOK_FIRST_OUTPUT/);
+	assert.match(rendered, /during external work/);
+	assert.match(rendered, /TERMINAL_INTERPOLATED_OUTPUT/);
+	assert.match(rendered, /WEBHOOK_STEER_INPUT/);
+	assert.match(rendered, /WEBHOOK_SECOND_OUTPUT/);
+	assert.match(rendered, /GOAL CONTINUATION/);
+	assert.match(rendered, /GOAL_CONTINUED_OUTPUT/);
 	assert.match(rendered, /Robin: ambient during active turn @observer/);
 	assert.doesNotMatch(rendered, /<@U456>/);
 	assert.match(rendered, /yield_no_action/);
@@ -370,7 +551,16 @@ expect eof
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
 	assert.doesNotMatch(rendered, /EXTERNAL_PRIVATE_COMMAND/);
-	assert.deepEqual(receivedMessages, ["run a check", "look at the newer results instead"]);
+	assert.doesNotMatch(rendered, /private route/);
+	assert(
+		rendered.lastIndexOf("during external work") < rendered.lastIndexOf("TERMINAL_INTERPOLATED_OUTPUT"),
+		"terminal input remains above the assistant output that follows it during an external run",
+	);
+	assert.deepEqual(receivedMessages, [
+		"during external work",
+		"run a check",
+		"look at the newer results instead",
+	]);
 	console.log("troublemaker TUI PTY smoke test passed");
 } finally {
 	resolveSteer();

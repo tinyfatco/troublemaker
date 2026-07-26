@@ -43,7 +43,9 @@ export function createHostServer({
 	phoneGateway,
 	routingKey,
 }) {
-	const gmailTools = routingKey ? new HostGmailTools({ config, store, gmail, routingKey }) : null;
+	const gmailTools = routingKey && gmail && config.gmail
+		? new HostGmailTools({ config, store, gmail, routingKey })
+		: null;
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {
@@ -193,6 +195,10 @@ export function createHostServer({
 				return;
 			}
 			if (request.method === "POST" && url.pathname === "/v1/outbound/gmail") {
+				if (!gmail || !config.gmail) {
+					json(response, 503, { error: "gmail_unavailable" });
+					return;
+				}
 				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
 					json(response, 415, { error: "json_required" });
 					return;

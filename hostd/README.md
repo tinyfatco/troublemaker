@@ -5,9 +5,10 @@ customer collaboration channels, and isolated Troublemaker runtimes. It keeps
 provider credentials outside agent containers, journals delivery in SQLite,
 and binds native conversations to durable OCI contexts.
 
-The initial connector uses `gog` for native Gmail reads, drafts, and delivery.
-Normal mail remains in Gmail; no forwarding mailbox or reconstructed email
-transport is involved.
+When `gmail` is configured, hostd uses `gog` for native Gmail reads, drafts,
+and delivery. Normal mail remains in Gmail; no forwarding mailbox or
+reconstructed email transport is involved. A phone-and-Zulip business may omit
+`gmail` entirely; those runtimes receive no email adapter or Gmail tools.
 
 ## Scoped Gmail tools
 
@@ -237,6 +238,14 @@ opens a new segment beneath the sent message so the feed remains chronological.
 Each binding stores an `ambient` or `mentions-only` attention mode. Ambient is
 the default; mentions-only keeps the channel readable and writable while
 suppressing ordinary human posts from waking the Operator.
+
+The standalone resident bridge can use a broader first-class mode. With no
+static stream allowlist, it follows the bot's current Zulip subscriptions,
+accepts newly subscribed channels without a restart, preserves normal topics,
+and delivers individual or group direct messages. Optional stream and DM-sender
+allowlists retain fail-closed deployments. Native API keys and the full user
+directory remain bridge-only; the resident receives scoped capabilities,
+subscribed-channel metadata, message participants, and sender bot status.
 
 ## Legacy private Mattermost rooms
 
