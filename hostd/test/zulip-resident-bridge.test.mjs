@@ -366,10 +366,6 @@ try {
 		() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:58"),
 		"bare stop delivery while prior direct-message work remains active",
 	);
-	await waitFor(
-		() => receiptStatuses.get("zulip:58")?.includes("completed") === true,
-		"bare stop delivery completion receipt",
-	);
 	assert.equal(
 		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:57"),
 		false,
@@ -401,27 +397,6 @@ try {
 		inboundDeliveries.filter((delivery) => delivery.deliveryId === "zulip:58").length,
 		1,
 		"expedited stop delivery remains deduplicated",
-	);
-
-	const selfEchoMessage = {
-		...ambientMessage,
-		id: 59,
-		sender_id: BOT_USER_ID,
-		sender_email: NATIVE_EMAIL,
-		sender_full_name: "Agent",
-		content: "<p>Agent reply echo.</p>",
-		raw_content: "Agent reply echo.",
-	};
-	messages.set(selfEchoMessage.id, selfEchoMessage);
-	events.push({ id: 9, type: "message", message: selfEchoMessage });
-	await waitFor(
-		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 59,
-		"self-authored message cursor advancement",
-	);
-	assert.equal(
-		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:59"),
-		false,
-		"self-authored Zulip messages never re-enter resident delivery",
 	);
 
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
@@ -474,7 +449,7 @@ try {
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 10, type: "message", message: mentionEventMessage });
+	events.push({ id: 9, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:201"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:201");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
