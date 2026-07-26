@@ -18,6 +18,7 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
+import { playCompactionCue } from "./compaction-cue.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
 	buildSessionPreamble,
@@ -58,6 +59,7 @@ import {
 	resetClaudeCliSession,
 } from "./claude-cli.js";
 import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
+import { parseVisibleUserInputs } from "./user-input-display.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -650,6 +652,7 @@ function createRunner(
 		return true;
 	};
 	const beginCompaction = (reason: unknown) => {
+		const alreadyCompacting = compactionStatus !== null;
 		if (compactionTimer) clearTimeout(compactionTimer);
 		const startedAt = Date.now();
 		compactionStatus = {
@@ -657,6 +660,7 @@ function createRunner(
 			startedAt,
 			timeoutAt: startedAt + compactionTimeoutMs,
 		};
+		if (!alreadyCompacting) playCompactionCue();
 		compactionTimer = setTimeout(() => {
 			if (!compactionStatus || compactionStatus.startedAt !== startedAt) return;
 			log.logWarning(`[compaction] Timed out after ${compactionTimeoutMs}ms; requesting cancellation`);
@@ -800,6 +804,13 @@ function createRunner(
 				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
 				emitSnapshot(true);
 			} else if (agentEvent.message.role === "user") {
+				const messageContent = agentEvent.message.content;
+				const promptText = typeof messageContent === "string"
+					? messageContent
+					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+				const entries = parseVisibleUserInputs(promptText);
+				if (entries.length > 0) emitLiveEvent({ type: "user_input", entries });
+
 				if (runState.initialPromptSent) {
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
 					queue.enqueue(async () => {

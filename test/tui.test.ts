@@ -21,6 +21,7 @@ import {
 	readRuntimeSse,
 	safeToolLabel,
 } from "../src/tui/protocol.js";
+import { parseVisibleUserInputs } from "../src/user-input-display.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -81,7 +82,23 @@ try {
 	assert.equal(parsedHistory?.channel, "slack:#general");
 	assert.equal(parsedHistory?.userName, "Taylor");
 	assert.equal(parsedHistory?.text, "hello there");
+	assert.deepEqual(parseVisibleUserInputs(JSON.parse(historyLine).message.content[0].text), [{
+		channel: "#general",
+		userName: "Taylor",
+		text: "hello there",
+	}], "live input projection strips private session and delivery scaffolding");
+	assert.deepEqual(parseVisibleUserInputs("<delivery_context>private route</delivery_context>\n\n[2026-07-25 20:03:46-05:00] [zulip:10:topic:general%20chat] [Alex]: @**Batman** report exact source state"), [{
+		channel: "zulip:10:topic:general%20chat",
+		userName: "Alex",
+		text: "@**Batman** report exact source state",
+	}], "Zulip mention inputs are projected before their assistant output");
+	assert.deepEqual(parseVisibleUserInputs("<session_context>private runtime context</session_context>\n\n[2026-07-25 19:47:18-05:00] [terminal:ghost] [goal]: [GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nAutomatic goal turn: 1"), [{
+		channel: "terminal:ghost",
+		userName: "goal",
+		text: "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nAutomatic goal turn: 1",
+	}], "automatic goal continuation is projected as ordered visible input");
 	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nCasey (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nObserver (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
+	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [#general] [ambient]: ${ambientPrompt}`), [], "ambient evaluation scaffolding never enters the live input feed");
 	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Casey: ship the fix <@U456>", "Observer: on it"]);
 	const parsedAmbient = parseContextLine(JSON.stringify({
 		type: "message",

@@ -238,6 +238,14 @@ Each binding stores an `ambient` or `mentions-only` attention mode. Ambient is
 the default; mentions-only keeps the channel readable and writable while
 suppressing ordinary human posts from waking the Operator.
 
+The standalone resident bridge can use a broader first-class mode. With no
+static stream allowlist, it follows the bot's current Zulip subscriptions,
+accepts newly subscribed channels without a restart, preserves normal topics,
+and delivers individual or group direct messages. Optional stream and DM-sender
+allowlists retain fail-closed deployments. Native API keys and the full user
+directory remain bridge-only; the resident receives scoped capabilities,
+subscribed-channel metadata, message participants, and sender bot status.
+
 ## Legacy private Mattermost rooms
 
 When `mattermost` is configured, the host deterministically provisions one

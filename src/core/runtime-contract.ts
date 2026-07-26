@@ -129,6 +129,19 @@ export interface RuntimeAssistantSnapshotEvent {
 	mode?: RuntimeMode;
 }
 
+export interface RuntimeUserInputEntry {
+	channel: string;
+	userName: string;
+	text: string;
+}
+
+/** Sanitized transcript input emitted before its run can paint assistant output. */
+export interface RuntimeUserInputEvent {
+	type: "user_input";
+	entries: RuntimeUserInputEntry[];
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeTextDeltaEvent {
 	type: "text_delta";
 	contentIndex?: number;
@@ -207,6 +220,7 @@ export type RuntimeStreamEvent =
 	| RuntimeStatusEvent
 	| RuntimeErrorEvent
 	| RuntimeAssistantSnapshotEvent
+	| RuntimeUserInputEvent
 	| RuntimeTextDeltaEvent
 	| RuntimeTextPatchEvent
 	| RuntimeThinkingDeltaEvent

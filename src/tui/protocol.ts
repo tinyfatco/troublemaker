@@ -3,6 +3,12 @@ import type {
 	RuntimeAssistantSnapshotEntry,
 	RuntimeStreamEvent,
 } from "../core/runtime-contract.js";
+import {
+	parseInterruptBatchMessages as parseVisibleInterruptBatchMessages,
+	parseUserPromptEnvelope,
+	parseVisibleUserInputs,
+	stripModelContextBlocks,
+} from "../user-input-display.js";
 
 export interface TuiHistoryEntry {
 	id: string;
@@ -24,9 +30,6 @@ export interface TuiBatchedUserEntry {
 	userName: string;
 	text: string;
 }
-
-const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
-const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 
 export async function* readRuntimeSse(response: Response): AsyncGenerator<RuntimeStreamEvent> {
 	for await (const data of readSseData(response)) {
@@ -89,17 +92,19 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 		if (text?.type === "text") {
 			const slackUsers = extractSlackUsers(text.text);
 			const visibleText = stripModelContextBlocks(text.text).trim();
-			const match = visibleText.match(USER_PREFIX_RE);
-			if (match) {
-				const messageText = match[4].trimStart();
-				if (messageText.startsWith("[AMBIENT]")) {
-					applyAmbientDisplay(entry, messageText, slackUsers, normalizeChannelLabel(match[2]));
-				} else {
-					const batchedUserEntries = parseInterruptBatchMessages(messageText);
-					entry.channel = normalizeChannelLabel(match[2]);
-					entry.userName = match[3];
-					if (batchedUserEntries.length > 0) entry.batchedUserEntries = batchedUserEntries;
-					else entry.text = messageText;
+			const envelope = parseUserPromptEnvelope(text.text);
+			if (envelope?.text.startsWith("[AMBIENT]")) {
+				applyAmbientDisplay(entry, envelope.text, slackUsers, normalizeChannelLabel(envelope.channel));
+			} else if (envelope) {
+				const inputs = parseVisibleUserInputs(text.text).map((input) => ({
+					...input,
+					channel: normalizeChannelLabel(input.channel),
+				}));
+				if (inputs.length > 1) entry.batchedUserEntries = inputs;
+				else if (inputs[0]) {
+					entry.channel = inputs[0].channel;
+					entry.userName = inputs[0].userName;
+					entry.text = inputs[0].text;
 				}
 			} else if (visibleText.startsWith("[AMBIENT]")) {
 				// Same-thread ambient context can be soft-steered directly into an
@@ -117,23 +122,10 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 }
 
 export function parseInterruptBatchMessages(text: string): TuiBatchedUserEntry[] {
-	if (!text.startsWith("Recent messages:\n")) return [];
-	const body = text.slice("Recent messages:\n".length);
-	const header = /^\[([^\]\n]+)\]\s+\[([^\]\n]+)\]\s+\[([^\]\n]+)\]:[ \t]*/gm;
-	const matches = [...body.matchAll(header)];
-	// Harness interrupt batches contain at least two messages. Requiring that
-	// boundary avoids reinterpreting an ordinary user-authored phrase.
-	if (matches.length < 2) return [];
-
-	return matches.map((match, index) => {
-		const start = (match.index ?? 0) + match[0].length;
-		const end = matches[index + 1]?.index ?? body.length;
-		return {
-			channel: normalizeChannelLabel(match[2]),
-			userName: match[3],
-			text: body.slice(start, end).trimEnd(),
-		};
-	}).filter((entry) => Boolean(entry.text));
+	return parseVisibleInterruptBatchMessages(text).map((entry) => ({
+		...entry,
+		channel: normalizeChannelLabel(entry.channel),
+	}));
 }
 
 function applyAmbientDisplay(
@@ -375,10 +367,6 @@ function visibleAssistantTokens(content: RuntimeAssistantSnapshotContent[]): str
 		}
 	}
 	return tokens;
-}
-
-function stripModelContextBlocks(text: string): string {
-	return text.replace(MODEL_CONTEXT_BLOCK_RE, "");
 }
 
 function extractSlackUsers(text: string): Map<string, string> {
