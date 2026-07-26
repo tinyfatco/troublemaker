@@ -415,10 +415,22 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 				response.end("Zulip message outside the configured stream scope");
 				return;
 			}
+			let shouldProcess = true;
+			try {
+				if (payload.deliveryId) shouldProcess = this.deliveryLedger.claim(payload.deliveryId);
+			} catch (error) {
+				log.logWarning(
+					"Zulip delivery claim failed",
+					error instanceof Error ? error.message : String(error),
+				);
+				response.writeHead(500);
+				response.end("Unable to persist Zulip delivery claim");
+				return;
+			}
 			response.writeHead(202, { "content-type": "application/json" });
 			response.end(JSON.stringify({ ok: true, accepted: true }));
 			void withHostReceipt(payload.hostReceipt, async () => {
-				if (payload.deliveryId && this.deliveryLedger.has(payload.deliveryId)) return;
+				if (!shouldProcess) return;
 				if (message.type !== "private" || this.acceptsDmFrom(String(message.sender_id))) {
 					await this.handleMessage(message, true);
 				}
