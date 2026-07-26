@@ -83,7 +83,10 @@ const workingDir = mkdtempSync(join(tmpdir(), "zulip-host-managed-"));
 const store = new ChannelStore({ workingDir, botToken: PROXY_TOKEN });
 const handled: any[] = [];
 const ambient: any[] = [];
+const stopped: any[] = [];
+const steered: any[] = [];
 const pulseRecords: any[] = [];
+let running = false;
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -100,14 +103,16 @@ const adapter = new ZulipWebhookAdapter({
 	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
 adapter.setHandler({
-	isRunning: () => false,
+	isRunning: () => running,
 	handleEvent: async (event: any) => {
 		handled.push(event);
 		return { yielded: false };
 	},
 	handleSlashCommand: async () => false,
-	handleSteer: () => {},
-	handleStop: async () => {},
+	handleSteer: (event: any) => steered.push(event),
+	handleStop: async (_channelId: string, _adapter: unknown, event: any) => {
+		stopped.push(event);
+	},
 	resolvePendingInput: () => false,
 } as any);
 
@@ -298,6 +303,65 @@ try {
 	assert.equal(handled[2].directlyAddressed, true);
 	assert.equal(pulseRecords.length, 4, "Zulip group DMs reach direct pulse accounting");
 
+	running = true;
+	const stopReceiptStart = receipts.length;
+	const stopPayload = {
+		deliveryId: "delivery-dm-stop",
+		message: {
+			id: 95,
+			type: "private",
+			recipient_id: 18,
+			display_recipient: [
+				{ id: 8, email: "casey@example.com", full_name: "Casey" },
+				{ id: 9, email: "agent@example.com", full_name: "Operator" },
+			],
+			sender_id: 8,
+			sender_email: "casey@example.com",
+			sender_full_name: "Casey",
+			sender_is_bot: false,
+			timestamp: Math.floor(Date.now() / 1000),
+			content: "<p>stop</p>",
+			raw_content: "stop",
+		},
+		hostReceipt: {
+			url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+			token: RECEIPT_TOKEN,
+			leaseToken: "lease-dm-stop",
+		},
+	};
+	const stopResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify(stopPayload),
+	});
+	assert.equal(stopResponse.status, 202);
+	for (let index = 0; index < 100 && receipts.length < stopReceiptStart + 2; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(stopped.length, 1, "a bare Zulip DM reaches the stop handler while work is active");
+	assert.equal(stopped[0].type, "dm");
+	assert.equal(stopped[0].channel, "dm:8");
+	assert.equal(stopped[0].sourceEventType, "zulip_dm");
+	assert.equal(stopped[0].replyTarget, "zulip:dm:8");
+	assert.equal(steered.length, 0, "a bare Zulip DM stop never degrades into busy steering");
+	assert.equal(handled.length, 3, "a bare Zulip DM stop never starts an ordinary model turn");
+	assert.deepEqual(receipts.slice(stopReceiptStart), ["running", "completed"]);
+	const duplicateStopResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify(stopPayload),
+	});
+	assert.equal(duplicateStopResponse.status, 202);
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(stopped.length, 1, "replayed stop delivery remains deduplicated");
+	running = false;
+
 	const topicResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",
 		headers: {
@@ -334,7 +398,7 @@ try {
 	assert.equal(handled[3].threadTs, "Road map / alpha");
 	assert.equal(handled[3].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
 	assert.equal(handled[3].replyTargetDescription, "Zulip channel topic Road map / alpha");
-	assert.equal(pulseRecords.length, 5, "topic mentions retain direct pulse accounting");
+	assert.equal(pulseRecords.length, 6, "topic mentions retain direct pulse accounting after the stop DM");
 
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
@@ -372,10 +436,10 @@ try {
 		});
 		assert.equal(response.status, 202);
 	}
-	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 7; index++) {
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 9; index++) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
-	assert.equal(receipts.filter((status) => status === "completed").length, 7);
+	assert.equal(receipts.filter((status) => status === "completed").length, 9);
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
@@ -383,7 +447,7 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 6, "explicit other-bot mentions reach direct pulse accounting");
+	assert.equal(pulseRecords.length, 7, "explicit other-bot mentions reach direct pulse accounting");
 	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
 	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
 	assert.equal(handled[4].directlyAddressed, true);
