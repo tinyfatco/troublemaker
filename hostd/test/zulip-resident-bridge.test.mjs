@@ -371,6 +371,10 @@ try {
 		() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:58"),
 		"bare stop delivery while prior direct-message work remains active",
 	);
+	await waitFor(
+		() => receiptStatuses.get("zulip:58")?.includes("completed") === true,
+		"bare stop delivery completion receipt",
+	);
 	assert.equal(
 		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:57"),
 		false,
