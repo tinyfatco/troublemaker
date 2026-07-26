@@ -179,6 +179,7 @@ const nativeAddress = nativeServer.address();
 const inboundDeliveries = [];
 const receiptStatuses = new Map();
 let heldReceiptPayload = null;
+let inboundUnavailable = false;
 
 async function reportReceipt(payload, status) {
 	const receiptResponse = await fetch(payload.hostReceipt.url, {
@@ -198,6 +199,10 @@ async function reportReceipt(payload, status) {
 const inboundServer = createServer(async (request, response) => {
 	assert.equal(request.headers.authorization, `Bearer ${INBOUND_TOKEN}`);
 	const payload = JSON.parse((await readBody(request)).toString("utf8"));
+	if (inboundUnavailable) {
+		sendJson(response, 503, { ok: false, error: "resident_starting" });
+		return;
+	}
 	inboundDeliveries.push(payload);
 	sendJson(response, 202, { ok: true, accepted: true });
 	await reportReceipt(payload, "running");
@@ -459,6 +464,58 @@ try {
 		"durable recovered cursor",
 	);
 	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 201);
+
+	await bridge.stop();
+	const restartMessage = {
+		...ambientMessage,
+		id: 202,
+		content: "<p>Queued while the resident restarts.</p>",
+		raw_content: "Queued while the resident restarts.",
+	};
+	messages.set(restartMessage.id, restartMessage);
+	inboundUnavailable = true;
+	const restartBridge = new ZulipResidentBridge({
+		zulipUrl: `http://127.0.0.1:${nativeAddress.port}`,
+		zulipEmail: NATIVE_EMAIL,
+		zulipApiKey: NATIVE_KEY,
+		allowedDmUserIds: [8],
+		proxyToken: PROXY_TOKEN,
+		inboundUrl: `http://127.0.0.1:${inboundAddress.port}/zulip/inbound`,
+		inboundToken: INBOUND_TOKEN,
+		receiptToken: RECEIPT_TOKEN,
+		statePath,
+		listenHost: "127.0.0.1",
+		listenPort: 0,
+	});
+	try {
+		await restartBridge.start();
+		const restartProxyResponse = await fetch(`${restartBridge.proxyUrl()}/api/v1/users/me`, {
+			headers: proxyAuthorization,
+		});
+		assert.equal(restartProxyResponse.status, 200, "the proxy is ready while catch-up waits for the resident");
+		assert.equal(
+			JSON.parse(readFileSync(statePath, "utf8")).lastMessageId,
+			201,
+			"an unavailable resident cannot advance the durable cursor",
+		);
+		inboundUnavailable = false;
+		await waitFor(
+			() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:202"),
+			"catch-up retry after resident recovery",
+		);
+		await waitFor(
+			() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 202,
+			"durable catch-up cursor after resident recovery",
+		);
+		assert.equal(
+			inboundDeliveries.filter((delivery) => delivery.deliveryId === "zulip:202").length,
+			1,
+			"resident recovery delivers the queued message exactly once",
+		);
+	} finally {
+		inboundUnavailable = false;
+		await restartBridge.stop();
+	}
 } finally {
 	if (heldReceiptPayload) {
 		await reportReceipt(heldReceiptPayload, "completed");
