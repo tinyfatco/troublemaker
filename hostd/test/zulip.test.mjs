@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
 	isExpiredZulipEventQueueError,
@@ -137,6 +138,65 @@ test("first context creates a fresh private channel instead of adopting a same-l
 	assert.equal(repeat.channelId, 6);
 	assert.equal(createCalls, 1);
 	assert.notEqual(first.channelId, 5);
+});
+
+test("soft-deleted channel name conflicts retry with a context marker", async () => {
+	const principalHash = "abcdef1234567890abcdef12";
+	const contextId = `front-desk:${principalHash}:intake`;
+	let binding;
+	const attemptedNames = [];
+	const streams = [];
+	const store = {
+		getLatestContextEventPayload() {
+			return undefined;
+		},
+		getPrincipal() {
+			return { displayLabel: "Retired Room" };
+		},
+		getZulipBinding() {
+			return binding;
+		},
+		upsertZulipBinding(input) {
+			binding = input;
+			return input;
+		},
+	};
+	const provisioner = new ZulipProvisioner({}, store);
+	provisioner.identities = async () => ({
+		administrator: { user_id: 1 },
+		agent: { user_id: 2 },
+		projector: { user_id: 3 },
+		members: [],
+		observers: [],
+	});
+	provisioner.listChannels = async () => streams;
+	provisioner.request = async (path, input) => {
+		assert.equal(path, "channels/create");
+		const name = input.form.get("name");
+		attemptedNames.push(name);
+		if (attemptedNames.length === 1) {
+			throw new Error(
+				`Zulip POST channels/create returned HTTP 400: Channel '${name}' already exists`,
+			);
+		}
+		streams.push({
+			stream_id: 21,
+			name,
+			description: input.form.get("description"),
+			topics_policy: "empty_topic_only",
+		});
+		return { result: "success" };
+	};
+
+	const result = await provisioner.ensureContext(contextId);
+	assert.equal(result.channelId, 21);
+	assert.deepEqual(attemptedNames, [
+		"customer · Retired Room",
+		`customer · Retired Room · ${createHash("sha256")
+			.update(contextId, "utf8")
+			.digest("hex")
+			.slice(0, 8)}`,
+	]);
 });
 
 test("projects redacted direct SMS ledger events into the bound customer channel", async () => {
