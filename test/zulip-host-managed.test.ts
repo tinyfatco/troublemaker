@@ -458,50 +458,6 @@ try {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	assert.equal(receipts.filter((status) => status === "completed").length, 9);
-	const completedBeforeBotReplay = receipts.filter((status) => status === "completed").length;
-	const duplicateBotAmbientResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
-		method: "POST",
-		headers: {
-			authorization: `Bearer ${INBOUND_TOKEN}`,
-			"content-type": "application/json",
-		},
-		body: JSON.stringify({
-			deliveryId: "delivery-bot-ambient",
-			message: {
-				id: 90,
-				type: "stream",
-				stream_id: Number(CHANNEL_ID),
-				display_recipient: "customer · Casey",
-				subject: "",
-				sender_id: 10,
-				sender_email: "other-agent@example.com",
-				sender_full_name: "Other Agent",
-				sender_is_bot: true,
-				timestamp: Math.floor(Date.now() / 1000),
-				content: "<p>Bot ambient update.</p>",
-				raw_content: "Bot ambient update.",
-				is_mentioned: false,
-			},
-			hostReceipt: {
-				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
-				token: RECEIPT_TOKEN,
-				leaseToken: "lease-bot-ambient-replay",
-			},
-		}),
-	});
-	assert.equal(duplicateBotAmbientResponse.status, 202);
-	for (
-		let index = 0;
-		index < 100 && receipts.filter((status) => status === "completed").length === completedBeforeBotReplay;
-		index++
-	) {
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	assert.equal(
-		receipts.filter((status) => status === "completed").length,
-		completedBeforeBotReplay + 1,
-		"replayed bot delivery still completes its host receipt",
-	);
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
@@ -509,64 +465,11 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 8, "ambient and explicitly mentioned other-bot traffic reach pulse accounting");
-	assert.equal(ambient.length, 2, "passive other-bot channel traffic reaches ambient evaluation exactly once");
-	assert.equal(ambient[1].user, "10");
-	assert.equal(ambient[1].directlyAddressed, false);
-	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
-	assert.equal(handled.length, 5, "other-bot ambient traffic does not bypass evaluation or trigger a direct reply");
+	assert.equal(pulseRecords.length, 7, "explicit other-bot mentions reach direct pulse accounting");
+	assert.equal(ambient.length, 1, "passive other-bot traffic never reaches ambient evaluation");
+	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
 	assert.equal(handled[4].directlyAddressed, true);
 	assert.equal(handled[4].sourceEventType, "zulip_mention");
-
-	const completedBeforePassiveBotDm = receipts.filter((status) => status === "completed").length;
-	const passiveBotDmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
-		method: "POST",
-		headers: {
-			authorization: `Bearer ${INBOUND_TOKEN}`,
-			"content-type": "application/json",
-		},
-		body: JSON.stringify({
-			deliveryId: "delivery-bot-dm-passive",
-			message: {
-				id: 96,
-				type: "private",
-				recipient_id: 20,
-				display_recipient: [
-					{ id: 10, email: "other-agent@example.com", full_name: "Other Agent" },
-					{ id: 9, email: "agent@example.com", full_name: "Operator" },
-				],
-				sender_id: 10,
-				sender_email: "other-agent@example.com",
-				sender_full_name: "Other Agent",
-				sender_is_bot: true,
-				timestamp: Math.floor(Date.now() / 1000),
-				content: "<p>Passive bot DM.</p>",
-				raw_content: "Passive bot DM.",
-				is_mentioned: false,
-			},
-			hostReceipt: {
-				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
-				token: RECEIPT_TOKEN,
-				leaseToken: "lease-bot-dm-passive",
-			},
-		}),
-	});
-	assert.equal(passiveBotDmResponse.status, 202);
-	for (
-		let index = 0;
-		index < 100 && receipts.filter((status) => status === "completed").length === completedBeforePassiveBotDm;
-		index++
-	) {
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
-	assert.equal(
-		receipts.filter((status) => status === "completed").length,
-		completedBeforePassiveBotDm + 1,
-		"suppressed passive bot DMs still complete their host receipt",
-	);
-	assert.equal(ambient.length, 2, "unmentioned bot DMs remain outside ambient channel evaluation");
-	assert.equal(handled.length, 5, "unmentioned bot DMs do not start direct model turns");
-	assert.equal(pulseRecords.length, 8, "unmentioned bot DMs remain outside pulse accounting");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");

@@ -519,9 +519,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
-		// Other bots are ambient channel participants, matching Slack. Passive bot
-		// DMs still require an explicit mention, and self echoes remain ignored below.
-		if (isDirect && senderIsBot && !directlyAddressed) return;
+		if (senderIsBot && !directlyAddressed) return;
 		this.pulse?.record(
 			channel,
 			senderId,
