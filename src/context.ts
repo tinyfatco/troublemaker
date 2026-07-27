@@ -10,6 +10,10 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
+import {
+	DEFAULT_FOLLOW_UP_OFFSETS_MINUTES,
+	normalizeFollowUpOffsets,
+} from "./attention/post-run-follow-up.js";
 import type { SettingsStore } from "./storage/settings.js";
 
 // ============================================================================
@@ -42,6 +46,13 @@ export interface MomSpontaneitySettings {
 	intervalMinutes: number;
 	quietHours: { start: string; end: string };
 	timezone?: string; // IANA timezone, defaults to system
+}
+
+export interface MomFollowUpSettings {
+	/** Disabled by default; when enabled, ordinary completed runs seed a finite sequence. */
+	enabled: boolean;
+	/** Strictly increasing whole-minute offsets from the eligible run stop. */
+	offsetsMinutes: number[];
 }
 
 export type VerbosityLevel = boolean | "messages-only";
@@ -158,6 +169,8 @@ export interface MomSettings {
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
+	/** Optional finite post-run evaluations; absent means disabled. */
+	followUp?: Partial<MomFollowUpSettings>;
 	shellPath?: string;
 	speak?: MomSpeakSettings;
 }
@@ -341,6 +354,42 @@ export class MomSettingsManager {
 		this.settings.spontaneity = merged;
 		this.save();
 		return merged;
+	}
+
+	getFollowUpSettings(): MomFollowUpSettings {
+		const configured = this.settings.followUp;
+		let offsetsMinutes: number[];
+		try {
+			offsetsMinutes = normalizeFollowUpOffsets(
+				configured?.offsetsMinutes ?? [...DEFAULT_FOLLOW_UP_OFFSETS_MINUTES],
+			);
+		} catch {
+			// Manual settings edits fail closed instead of arming an unintended schedule.
+			return {
+				enabled: false,
+				offsetsMinutes: [...DEFAULT_FOLLOW_UP_OFFSETS_MINUTES],
+			};
+		}
+		return {
+			enabled: configured?.enabled === true,
+			offsetsMinutes,
+		};
+	}
+
+	setFollowUp(patch: Partial<MomFollowUpSettings>): MomFollowUpSettings {
+		const current = this.getFollowUpSettings();
+		const merged: MomFollowUpSettings = {
+			enabled: patch.enabled ?? current.enabled,
+			offsetsMinutes: patch.offsetsMinutes === undefined
+				? current.offsetsMinutes
+				: normalizeFollowUpOffsets(patch.offsetsMinutes),
+		};
+		this.settings.followUp = merged;
+		this.save();
+		return {
+			enabled: merged.enabled,
+			offsetsMinutes: [...merged.offsetsMinutes],
+		};
 	}
 
 	/**

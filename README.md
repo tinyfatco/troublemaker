@@ -205,8 +205,10 @@ Each platform channel gets its own subdirectory:
 ```
 ./data/
 ├── MEMORY.md              # Global memory (all conversations)
-├── settings.json          # Settings (compaction, retry, etc.)
-├── events/                # Scheduled events (cron, one-shot, immediate)
+├── settings.json          # Settings (compaction, retry, follow-ups, etc.)
+├── attention/
+│   ├── queue/             # Scheduled events (cron, one-shot, immediate)
+│   └── history/           # Fired and expired event receipts
 ├── skills/                # Global CLI tools the agent creates
 ├── C123ABC/               # Slack channel
 │   ├── MEMORY.md          # Channel-specific memory
@@ -244,7 +246,34 @@ The agent can schedule events that wake it up:
 | **One-shot** | At a specific time, once | Reminders, scheduled tasks |
 | **Periodic** | Cron schedule | Daily summaries, inbox checks |
 
-Event files go in `data/events/`. External systems can also write events here to trigger the agent without going through a platform.
+Event files go in `data/attention/queue/`. External systems can also write events there to trigger the agent without going through a platform. The read-only `/schedule` endpoint exposes the next wake manifest so an external supervisor can wake an idle runtime.
+
+### Optional post-run follow-ups
+
+Post-run follow-ups are a finite, headless evaluation sequence after an eligible ordinary run. They are separate from heartbeat, spontaneity, and persistent goals, and are disabled by default. Each wake asks the agent to inspect current context and decide whether a reasonable next action exists; `yield_no_action` is valid, and the scheduler never authors or promises a user-visible message.
+
+Enable the default `1, 3, 5, 10` minute sequence in `settings.json`:
+
+```json
+{
+  "followUp": {
+    "enabled": true
+  }
+}
+```
+
+Or provide a validated, strictly increasing list of whole-minute offsets:
+
+```json
+{
+  "followUp": {
+    "enabled": true,
+    "offsetsMinutes": [2, 7, 12]
+  }
+}
+```
+
+The same controls are available through `self_configure` as `follow_up.enabled`, `follow_up.offsets`, and `follow_up.cancel`. New ordinary user work supersedes pending wakes. Durable state restores pending queue entries after restart, claims each wake once, and prevents generated follow-up runs from seeding another sequence.
 
 ## Security
 

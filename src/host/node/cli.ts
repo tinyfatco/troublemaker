@@ -6,6 +6,7 @@ import { detectDiscordAdapterFromEnv, normalizeDiscordAdapterName, readDiscordBo
 import { DiscordGatewayAdapter } from "../../adapters/discord-gateway.js";
 import { DiscordWebhookAdapter } from "../../adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
+import { FollowUpAdapter } from "../../adapters/follow-up.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "../../adapters/heartbeat.js";
 import { syncHeartbeatFromSpontaneity } from "../../heartbeat-schedule.js";
 import { OperatorAdapter } from "../../adapters/operator.js";
@@ -39,6 +40,12 @@ import { downloadChannel } from "../../download.js";
 import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
+import {
+	isPostRunFollowUpEvent,
+	PostRunFollowUpScheduler,
+	shouldSchedulePostRunFollowUps,
+	type PostRunFollowUpClaim,
+} from "../../attention/post-run-follow-up.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import { Gateway } from "../../gateway.js";
 import * as log from "../../log.js";
@@ -766,6 +773,12 @@ const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
 const heartbeatAdapter = new HeartbeatAdapter({ workingDir }) as AdapterWithHandler;
 adapters.push(heartbeatAdapter);
 
+// Finite post-run evaluations use the same attention queue and run gate, but a
+// distinct headless adapter keeps them independent from heartbeat semantics.
+const followUpAdapter = new FollowUpAdapter(workingDir) as AdapterWithHandler;
+adapters.push(followUpAdapter);
+const followUpScheduler = new PostRunFollowUpScheduler(workingDir);
+
 // Always create operator adapter — headless inbound surface for the Agency
 // MCP. Crawdad-cf worker proxies authenticated operator requests to
 // /operator/* routes on the container gateway. No outbound path.
@@ -1103,8 +1116,41 @@ function scheduleInterruptRestart(): void {
 	});
 }
 
+function currentFollowUpSettings() {
+	const settings = new MomSettingsManager(workingDir);
+	return settings.getFollowUpSettings();
+}
+
+function supersedePendingFollowUps(reason: string): number {
+	try {
+		followUpScheduler.reconcileConfiguration(currentFollowUpSettings());
+		return followUpScheduler.cancelPending(reason).cancelled;
+	} catch (error) {
+		log.logWarning("[follow-up] Failed to supersede pending wakes", error instanceof Error ? error.message : String(error));
+		return 0;
+	}
+}
+
 async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
 	const trimmed = event.text.trim();
+	let followUpClaim: PostRunFollowUpClaim | null = null;
+	let followUpOutcome: "completed" | "failed" | "superseded" = "failed";
+
+	if (isPostRunFollowUpEvent(event)) {
+		try {
+			followUpClaim = followUpScheduler.claim(event.sourceEventType);
+		} catch (error) {
+			log.logWarning("[follow-up] Durable claim failed; wake will not run", error instanceof Error ? error.message : String(error));
+			return;
+		}
+		if (!followUpClaim) {
+			log.logInfo("[follow-up] Ignored stale or duplicate wake");
+			return;
+		}
+	} else if (!isEvent) {
+		const cancelled = supersedePendingFollowUps("new-user-work");
+		if (cancelled > 0) log.logInfo(`[follow-up] Superseded ${cancelled} pending wake(s)`);
+	}
 
 	// Lightweight slash commands are pure control-plane work and should not
 	// wait for MCP bridge/runner initialization.
@@ -1163,18 +1209,20 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			// then follow it, disappear, or move to one durable Slack destination.
 			const sourceContext = platform.createContext(turnEvent, state.store, isEvent);
 			const workingSettings = new MomSettingsManager(workingDir);
-			const ctx = routeWorkingOutputContext({
-				policy: workingSettings.getWorkingOutput(),
-				sourceContext,
-				adapters,
-				store: state.store,
-				presentation: {
-					toolStreaming: workingSettings.getSlackToolStreaming(),
-					presentation: workingSettings.getSlackToolStreamPresentation(),
-					windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
-				},
-				warn: (message) => log.logWarning(`[working-output] ${message}`),
-			});
+			const ctx = followUpClaim
+				? sourceContext
+				: routeWorkingOutputContext({
+					policy: workingSettings.getWorkingOutput(),
+					sourceContext,
+					adapters,
+					store: state.store,
+					presentation: {
+						toolStreaming: workingSettings.getSlackToolStreaming(),
+						presentation: workingSettings.getSlackToolStreamPresentation(),
+						windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
+					},
+					warn: (message) => log.logWarning(`[working-output] ${message}`),
+				});
 			if (isGoalContinuationEvent(turnEvent)) applyGoalContinuationIdentity(ctx);
 
 			await ctx.setTyping(true);
@@ -1242,9 +1290,23 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			if (decision === "block") {
 				blockActiveGoal(goalWorkspace, GOAL_TERMINAL_ERROR_REASON);
 				log.logWarning("[goal] Active goal blocked after a terminal run error");
+				followUpOutcome = "failed";
 				return result;
 			}
-			if (decision === "stop") return result;
+			if (decision === "stop") {
+				followUpOutcome = result.stopReason === "stop" ? "completed" : "failed";
+				if (shouldSchedulePostRunFollowUps(event, isEvent, result)) {
+					try {
+						const followUp = followUpScheduler.scheduleFromRunStop(currentFollowUpSettings());
+						if (followUp.pending > 0) {
+							log.logInfo(`[follow-up] Scheduled ${followUp.pending} finite wake(s); next=${followUp.nextWake}`);
+						}
+					} catch (error) {
+						log.logWarning("[follow-up] Failed to persist finite wake sequence", error instanceof Error ? error.message : String(error));
+					}
+				}
+				return result;
+			}
 
 			automaticGoalTurn++;
 			turnEvent = createGoalContinuationEvent(event, automaticGoalTurn);
@@ -1252,6 +1314,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		}
 	} catch (err) {
 		const errMsg = err instanceof Error ? err.message : String(err);
+		followUpOutcome = state.interruptRequested ? "superseded" : "failed";
 		if (!state.interruptRequested && !state.stopRequested) {
 			const blocked = blockActiveGoal(goalWorkspace, GOAL_TERMINAL_ERROR_REASON);
 			if (blocked?.status === "blocked") {
@@ -1269,6 +1332,13 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			return { stopReason: "error", errorMessage: errMsg };
 		}
 	} finally {
+		if (followUpClaim) {
+			try {
+				followUpScheduler.complete(followUpClaim, followUpOutcome);
+			} catch (error) {
+				log.logWarning("[follow-up] Failed to persist claim outcome", error instanceof Error ? error.message : String(error));
+			}
+		}
 		if (activeDeliveryScope === deliveryScope) activeDeliveryScope = null;
 		state.running = false;
 		state.interruptRequested = false;
@@ -1365,6 +1435,7 @@ const handler: MomHandler = {
 	async handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<SlashCommandResult> {
 		const trimmed = event.text.trim();
 		if (!trimmed.startsWith("/")) return false;
+		supersedePendingFollowUps("new-user-command");
 
 		// Slash commands are control-plane messages. Handle them before the
 		// busy/steer path so active ticks or heartbeats don't swallow commands
@@ -1378,6 +1449,17 @@ const handler: MomHandler = {
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
+		if (!isPostRunFollowUpEvent(event)) {
+			const cancelled = supersedePendingFollowUps("new-user-work");
+			if (cancelled > 0) log.logInfo(`[follow-up] Superseded ${cancelled} pending wake(s) during busy delivery`);
+		}
+		if (activeDeliveryScope?.adapter.name === "follow-up") {
+			log.logInfo(`[follow-up] Queuing new user work as a fresh ordinary run`);
+			return withGlobalRunSlot(
+				`follow-up-supersession:${adapter.name}:${event.channel}`,
+				() => runEventInSlot(event, adapter, false),
+			).then(() => undefined);
+		}
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
@@ -1415,9 +1497,10 @@ const handler: MomHandler = {
 		const ambientCancellation = cancelPendingAmbientEvaluations(ambientTimers, ambientIncludedKeys, pulse);
 		const cancelledInterrupts = pendingInterrupts.splice(0).length;
 		const cancelledVoiceTurns = voiceContract?.clearPendingTurns() ?? 0;
-		if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0) {
+		const cancelledFollowUps = supersedePendingFollowUps("stop-command");
+		if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0 || cancelledFollowUps > 0) {
 			log.logInfo(
-				`[stop] Cancelled ${ambientCancellation.cancelledTimers} ambient wake(s), discarded ${ambientCancellation.discardedMessages} ambient message(s), cleared ${cancelledInterrupts} queued interrupt(s), and cleared ${cancelledVoiceTurns} queued voice turn(s)`,
+				`[stop] Cancelled ${ambientCancellation.cancelledTimers} ambient wake(s), ${cancelledFollowUps} follow-up wake(s), discarded ${ambientCancellation.discardedMessages} ambient message(s), cleared ${cancelledInterrupts} queued interrupt(s), and cleared ${cancelledVoiceTurns} queued voice turn(s)`,
 			);
 		}
 
@@ -1427,7 +1510,7 @@ const handler: MomHandler = {
 			awareness.stopResponse = { channelId, adapter: platform, event, messageTs };
 			awareness.runner.abort();
 			await messageTs;
-		} else if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0) {
+		} else if (ambientCancellation.cancelledTimers > 0 || cancelledInterrupts > 0 || cancelledVoiceTurns > 0 || cancelledFollowUps > 0) {
 			await postResponseMessage(platform, channelId, "_Stopped_", event);
 		} else {
 			await postResponseMessage(platform, channelId, "_Nothing running_", event);
@@ -1501,6 +1584,7 @@ gateway.registerGet("/status", async (_req, res) => {
 	const running = busy ? [AWARENESS_DIR] : [];
 	const queuedVoiceTurns = voiceContract?.pendingCount ?? 0;
 	const queuedInterrupts = pendingInterrupts.length;
+	const followUps = followUpScheduler.getStatus(currentFollowUpSettings());
 	const phase = compaction ? "compacting" : busy ? "running" : "idle";
 	res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 	res.end(JSON.stringify({
@@ -1519,6 +1603,7 @@ gateway.registerGet("/status", async (_req, res) => {
 		queuedInterrupts,
 		queuedVoiceTurns,
 		queuedInputCount: queuedInterrupts + queuedVoiceTurns,
+		followUps,
 		compaction: compaction ? {
 			reason: compaction.reason,
 			startedAt: compaction.startedAt,
@@ -2212,6 +2297,7 @@ To change these, edit \`settings.json\` directly.
 {
 	const settings = new MomSettingsManager(workingDir);
 	syncHeartbeatFromSpontaneity(workingDir, settings.getSpontaneitySettings());
+	followUpScheduler.reconcileConfiguration(settings.getFollowUpSettings());
 }
 
 // Seed auto-compaction event — runs at 4am daily, cleans up context

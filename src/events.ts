@@ -13,12 +13,16 @@ import * as log from "./log.js";
 export interface ImmediateEvent {
 	type: "immediate";
 	channelId?: string;
+	/** Optional stable classifier propagated to the synthetic incoming event. */
+	sourceEventType?: string;
 	text: string;
 }
 
 export interface OneShotEvent {
 	type: "one-shot";
 	channelId?: string;
+	/** Optional stable classifier propagated to the synthetic incoming event. */
+	sourceEventType?: string;
 	text: string;
 	at: string; // ISO 8601 with timezone offset
 }
@@ -26,6 +30,8 @@ export interface OneShotEvent {
 export interface PeriodicEvent {
 	type: "periodic";
 	channelId?: string;
+	/** Optional stable classifier propagated to the synthetic incoming event. */
+	sourceEventType?: string;
 	text: string;
 	schedule: string; // cron syntax
 	timezone: string; // IANA timezone
@@ -373,16 +379,19 @@ export class EventsWatcher {
 		}
 
 		const channelId = data.channelId || "heartbeat";
+		const sourceEventType = typeof data.sourceEventType === "string" && data.sourceEventType.trim()
+			? data.sourceEventType.trim()
+			: undefined;
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId, text: data.text };
+				return { type: "immediate", channelId, sourceEventType, text: data.text };
 
 			case "one-shot":
 				if (!data.at) {
 					throw new Error(`Missing 'at' field for one-shot event in ${filename}`);
 				}
-				return { type: "one-shot", channelId, text: data.text, at: data.at };
+				return { type: "one-shot", channelId, sourceEventType, text: data.text, at: data.at };
 
 			case "periodic":
 				if (!data.schedule) {
@@ -394,6 +403,7 @@ export class EventsWatcher {
 				return {
 					type: "periodic",
 					channelId,
+					sourceEventType,
 					text: data.text,
 					schedule: data.schedule,
 					timezone: data.timezone,
@@ -571,6 +581,8 @@ export class EventsWatcher {
 			user: "EVENT",
 			text: message,
 			ts: Date.now().toString(),
+			sourceEventType: event.sourceEventType,
+			directlyAddressed: false,
 		};
 
 		// Enqueue for processing — try each adapter until one accepts
@@ -696,17 +708,20 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 		if (!data.type || !data.text) return null;
 
 		const channelId = data.channelId || "heartbeat";
+		const sourceEventType = typeof data.sourceEventType === "string" && data.sourceEventType.trim()
+			? data.sourceEventType.trim()
+			: undefined;
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId, text: data.text };
+				return { type: "immediate", channelId, sourceEventType, text: data.text };
 			case "one-shot":
 				if (!data.at) return null;
-				return { type: "one-shot", channelId, text: data.text, at: data.at };
+				return { type: "one-shot", channelId, sourceEventType, text: data.text, at: data.at };
 			case "periodic":
 				if (!data.schedule || !data.timezone) return null;
 				return {
-					type: "periodic", channelId, text: data.text,
+					type: "periodic", channelId, sourceEventType, text: data.text,
 					schedule: data.schedule, timezone: data.timezone,
 					spontaneity: data.spontaneity, quietHours: data.quietHours,
 					action: data.action,

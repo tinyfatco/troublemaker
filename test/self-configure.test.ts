@@ -198,6 +198,9 @@ try {
 	assert(settingDescription.includes("voice.webhook_input_mode"), "self_configure schema exposes voice webhook routing");
 	assert(settingDescription.includes("working_output"), "self_configure schema exposes working-output routing");
 	assert(settingDescription.includes("mattermost.channel_attention"), "self_configure schema exposes per-channel Mattermost attention");
+	assert(settingDescription.includes("follow_up.enabled"), "self_configure schema exposes finite follow-up enablement");
+	assert(settingDescription.includes("follow_up.offsets"), "self_configure schema exposes finite follow-up offsets");
+	assert(settingDescription.includes("follow_up.cancel"), "self_configure schema exposes pending follow-up cancellation");
 	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");
 	assert(tool.description.includes("mentions-only"), "self_configure metadata explains mentions-only Mattermost attention");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");

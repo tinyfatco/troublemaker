@@ -12,6 +12,11 @@ import { Type } from "typebox";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import {
+	PostRunFollowUpScheduler,
+	normalizeFollowUpOffsets,
+	type PostRunFollowUpStatus,
+} from "../attention/post-run-follow-up.js";
+import {
 	MAX_DISCORD_TOOL_STREAM_WINDOW_MINUTES,
 	MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES,
 	MIN_DISCORD_TOOL_STREAM_WINDOW_MINUTES,
@@ -19,6 +24,7 @@ import {
 	isWorkingOutputTarget,
 	MomSettingsManager,
 	type DiscordToolStreamPresentation,
+	type MomFollowUpSettings,
 	type MomSpontaneitySettings,
 	type MomWorkingOutputSettings,
 	type SlackResponsePlacement,
@@ -64,6 +70,9 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"spontaneity.quietHours.end",
 	"spontaneity.timezone",
 	"heartbeat.checklist",
+	"follow_up.enabled",
+	"follow_up.offsets",
+	"follow_up.cancel",
 	"voice.wake_aliases",
 	"voice.webhook_input_mode",
 	"voice",
@@ -89,6 +98,10 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"workingMessages": "working_output",
 	"mattermost.channelAttention": "mattermost.channel_attention",
 	"mattermost.attention": "mattermost.channel_attention",
+	"followUp.enabled": "follow_up.enabled",
+	"followUp.offsets": "follow_up.offsets",
+	"followUp.offsetsMinutes": "follow_up.offsets",
+	"followUp.cancel": "follow_up.cancel",
 	"slack.verbose": "slack.verbosity",
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
@@ -127,6 +140,7 @@ interface SelfConfigureResult {
 	newValue: unknown;
 	note: string;
 	schedule?: HeartbeatScheduleResult;
+	followUp?: PostRunFollowUpStatus;
 	path?: string;
 }
 
@@ -634,6 +648,68 @@ function configureSpontaneity(workingDir: string, setting: string, value: unknow
 	};
 }
 
+function parseFollowUpOffsets(value: unknown): number[] {
+	if (typeof value === "string") {
+		const entries = value.split(",").map((entry) => entry.trim()).filter(Boolean);
+		value = entries.map((entry) => {
+			const match = entry.match(/^(\d+)\s*(?:m|min|mins|minute|minutes)?$/i);
+			if (!match) throw new Error(`Invalid follow-up offset: ${entry}`);
+			return Number(match[1]);
+		});
+	}
+	return normalizeFollowUpOffsets(value);
+}
+
+function configureFollowUp(workingDir: string, setting: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const scheduler = new PostRunFollowUpScheduler(workingDir);
+	const previous = manager.getFollowUpSettings();
+	let configured: MomFollowUpSettings = previous;
+	let previousValue: unknown;
+	let newValue: unknown;
+	let note: string;
+
+	if (setting === "follow_up.enabled") {
+		previousValue = previous.enabled;
+		configured = manager.setFollowUp({ enabled: parseBoolean(value, setting) });
+		newValue = configured.enabled;
+		note = configured.enabled
+			? "Finite post-run follow-ups are enabled for the next eligible ordinary run stop."
+			: "Post-run follow-ups are disabled and pending wakes were cancelled.";
+	} else if (setting === "follow_up.offsets") {
+		previousValue = previous.offsetsMinutes;
+		configured = manager.setFollowUp({ offsetsMinutes: parseFollowUpOffsets(value) });
+		newValue = configured.offsetsMinutes;
+		note = "Follow-up offsets were updated; any pending sequence was cancelled and the new schedule applies after the next eligible ordinary run stop.";
+	} else if (setting === "follow_up.cancel") {
+		if (!parseBoolean(value, setting)) {
+			throw new Error("follow_up.cancel must be true to cancel pending wakes.");
+		}
+		const before = scheduler.getStatus(previous);
+		const cancelled = scheduler.cancelPending("self-configure");
+		return {
+			changed: true,
+			setting,
+			previousValue: before,
+			newValue: cancelled.status,
+			followUp: cancelled.status,
+			note: `Cancelled ${cancelled.cancelled} pending follow-up wake(s); the enabled setting is unchanged.`,
+		};
+	} else {
+		throw new Error(`Unsupported follow-up setting: ${setting}`);
+	}
+
+	const followUp = scheduler.reconcileConfiguration(configured);
+	return {
+		changed: true,
+		setting,
+		previousValue,
+		newValue,
+		followUp,
+		note,
+	};
+}
+
 function configureHeartbeatChecklist(workingDir: string, value: unknown): SelfConfigureResult {
 	const checklist = parseString(value, "heartbeat.checklist");
 	const path = join(workingDir, "HEARTBEAT.md");
@@ -749,6 +825,7 @@ export function applySelfConfiguration(
 	if (target === "discord.tool_stream_window_minutes") return configureDiscordToolStreamWindowMinutes(workingDir, value);
 	if (target.startsWith("spontaneity.")) return configureSpontaneity(workingDir, target, value);
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
+	if (target.startsWith("follow_up.")) return configureFollowUp(workingDir, target, value);
 	if (target === "voice.wake_aliases") return configureVoiceWakeAliases(workingDir, value);
 	if (target === "voice.webhook_input_mode") return configureVoiceWebhookInputMode(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
@@ -765,6 +842,9 @@ function formatResult(result: SelfConfigureResult): string {
 	if (result.schedule) {
 		lines.push(`Schedule: ${result.schedule.enabled ? result.schedule.schedule : "disabled"}`);
 	}
+	if (result.followUp) {
+		lines.push(`Follow-up status: ${JSON.stringify(result.followUp)}`);
+	}
 	return lines.join("\n");
 }
 
@@ -778,7 +858,8 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
-				"heartbeat.checklist, voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
+				"heartbeat.checklist, follow_up.enabled, follow_up.offsets, follow_up.cancel, " +
+				"voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
 		}),
 		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
 	});
@@ -787,7 +868,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, heartbeat checklist, or finite post-run follow-up settings. Use follow_up.enabled to enable or disable the mode, follow_up.offsets with a strictly increasing minute array such as [1,3,5,10], and follow_up.cancel=true to cancel only the pending sequence. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
