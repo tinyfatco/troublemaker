@@ -22,6 +22,7 @@ import { RocketChatWebhookAdapter } from "../../adapters/rocket-chat-webhook.js"
 import { ZulipWebhookAdapter } from "../../adapters/zulip-webhook.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
 import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
+import { dispatchPathForAdapter, indexAdaptersByIdentity } from "./adapter-route-identity.js";
 import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "../../adapters/web-voice.js";
 import { handleTerminalUpgrade } from "../../terminal.js";
@@ -769,6 +770,7 @@ function createAdapter(name: string): AdapterWithHandler {
 }
 
 const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
+const adapterIdentityByInstance = indexAdaptersByIdentity(parsedArgs.adapters, adapters);
 
 // Follow-up events must be claimed by a dedicated headless adapter before any
 // external adapter sees them. Deliberate send_message calls still route through
@@ -1503,23 +1505,6 @@ for (const adapter of adapters) {
 	adapter.setHandler(handler);
 }
 
-// Route map: webhook adapters register their dispatch path with the gateway
-const DISPATCH_PATHS: Record<string, string> = {
-	"slack:webhook": "/slack/events",
-	"telegram:webhook": "/telegram/webhook",
-	"discord:webhook": "/discord/interactions",
-	"email:webhook": "/email/inbound",
-	"mattermost:webhook": "/mattermost/inbound",
-	"rocket-chat:webhook": "/rocketchat/inbound",
-	"rocketchat:webhook": "/rocketchat/inbound",
-	"zulip:webhook": "/zulip/inbound",
-	"phone-messaging:webhook": "/phone-messaging/webhook",
-	"phone:webhook": "/phone-messaging/webhook",
-	"form:webhook": "/form/webhook",
-	"web": "/web/chat",
-	"mcp": "/mcp",
-};
-
 // Start gateway — binds HTTP port before adapter init so callers can
 // detect the port is up. Routes return 503 until their adapter is ready.
 const gateway = new Gateway({
@@ -1718,10 +1703,9 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.
 // Each adapter starts independently — a slow Slack backfill doesn't block Telegram.
-for (let i = 0; i < adapters.length; i++) {
-	const adapter = adapters[i];
-	const adapterName = parsedArgs.adapters[i];
-	const path = DISPATCH_PATHS[adapterName];
+for (const adapter of adapters) {
+	const adapterName = adapterIdentityByInstance.get(adapter);
+	const path = dispatchPathForAdapter(adapter, adapterIdentityByInstance);
 
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
@@ -1738,9 +1722,9 @@ for (let i = 0; i < adapters.length; i++) {
 	}
 }
 
-await Promise.all(adapters.map(async (adapter, i) => {
-	const adapterName = parsedArgs.adapters[i];
-	const path = DISPATCH_PATHS[adapterName];
+await Promise.all(adapters.map(async (adapter) => {
+	const adapterName = adapterIdentityByInstance.get(adapter);
+	const path = dispatchPathForAdapter(adapter, adapterIdentityByInstance);
 	const t = performance.now();
 	try {
 		await adapter.start();
