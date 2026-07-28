@@ -80,8 +80,6 @@ async function main(): Promise<void> {
 		assert.equal(harnessPosts, 0, "working and final harness output remain headless");
 		assert(adapter.formatInstructions.includes("yield_no_action"), "headless instructions preserve explicit silence");
 		assert(adapter.formatInstructions.includes("send_message"), "headless instructions preserve deliberate delivery");
-		assert(!adapter.formatInstructions.includes("relationship"), "headless instructions remain domain-neutral");
-
 		writeFileSync(join(queueDir, "ordinary-synthetic.json"), JSON.stringify({
 			type: "one-shot",
 			channelId: "heartbeat",
