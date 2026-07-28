@@ -16,7 +16,7 @@ export class FollowUpAdapter implements PlatformAdapter {
 	readonly name = "follow-up";
 	readonly maxMessageLength = 100_000;
 	readonly formatInstructions = `## Natural Follow-up Evaluation (Internal)
-This is a headless harness evaluation, not a direct user message. Re-read the current relationship with the available conversation tools. If one concise follow-up is still useful, call send_message exactly once with the exact target supplied in the event. Otherwise call yield_no_action. Ordinary assistant text, working output, typing indicators, and harness errors are not delivered.`;
+This is a headless harness evaluation, not a direct user message. Re-read the current conversation with the available conversation tools. If one concise follow-up is still useful, call send_message exactly once with the exact target supplied in the event. Otherwise call yield_no_action. Ordinary assistant text, working output, typing indicators, and harness errors are not delivered.`;
 
 	private handler!: MomHandler;
 	private queue: MomEvent[] = [];

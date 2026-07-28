@@ -15,10 +15,13 @@ async function main(): Promise<void> {
 
 	const adapter = new FollowUpAdapter({ workingDir });
 	let externalEnqueues = 0;
+	let externalEvent: MomEvent | null = null;
 	let harnessPosts = 0;
 	let handledEvent: MomEvent | null = null;
 	let finish!: () => void;
+	let finishExternal!: () => void;
 	const handled = new Promise<void>((resolve) => { finish = resolve; });
+	const externalHandled = new Promise<void>((resolve) => { finishExternal = resolve; });
 
 	adapter.postMessage = async () => {
 		harnessPosts++;
@@ -45,8 +48,10 @@ async function main(): Promise<void> {
 	} as MomHandler);
 
 	const externalAdapter = {
-		enqueueEvent() {
+		enqueueEvent(event: MomEvent) {
 			externalEnqueues++;
+			externalEvent = event;
+			finishExternal();
 			return true;
 		},
 	} as unknown as PlatformAdapter;
@@ -75,6 +80,21 @@ async function main(): Promise<void> {
 		assert.equal(harnessPosts, 0, "working and final harness output remain headless");
 		assert(adapter.formatInstructions.includes("yield_no_action"), "headless instructions preserve explicit silence");
 		assert(adapter.formatInstructions.includes("send_message"), "headless instructions preserve deliberate delivery");
+		assert(!adapter.formatInstructions.includes("relationship"), "headless instructions remain domain-neutral");
+
+		writeFileSync(join(queueDir, "ordinary-synthetic.json"), JSON.stringify({
+			type: "one-shot",
+			channelId: "heartbeat",
+			at: new Date(Date.now() + 80).toISOString(),
+			text: "Run a synthetic scheduled check.",
+		}, null, 2));
+		await Promise.race([
+			externalHandled,
+			sleep(1500).then(() => { throw new Error("Timed out waiting for unrelated scheduled event"); }),
+		]);
+		assert(externalEvent);
+		assert.equal(externalEnqueues, 1);
+		assert.equal(externalEvent.directlyAddressed, undefined, "unrelated scheduled events preserve the prior unset classification");
 	} finally {
 		watcher.stop();
 		rmSync(workingDir, { recursive: true, force: true });
