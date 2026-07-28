@@ -2,7 +2,7 @@ import { Cron } from "croner";
 import { existsSync, type FSWatcher, mkdirSync, readFileSync, statSync, unlinkSync, watch, writeFileSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { basename, join } from "path";
-import type { MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
+import type { FollowUpWakeMetadata, MomEvent as MomIncomingEvent, PlatformAdapter } from "./adapters/types.js";
 import { attentionHistoryDir, attentionQueueDir, legacyEventsDir } from "./attention/paths.js";
 import * as log from "./log.js";
 
@@ -10,22 +10,28 @@ import * as log from "./log.js";
 // Event Types
 // ============================================================================
 
-export interface ImmediateEvent {
-	type: "immediate";
+interface ScheduledDeliveryContext {
 	channelId?: string;
+	sourceEventType?: string;
+	replyTarget?: string;
+	replyTargetDescription?: string;
+	threadTs?: string;
+	followUp?: FollowUpWakeMetadata;
+}
+
+export interface ImmediateEvent extends ScheduledDeliveryContext {
+	type: "immediate";
 	text: string;
 }
 
-export interface OneShotEvent {
+export interface OneShotEvent extends ScheduledDeliveryContext {
 	type: "one-shot";
-	channelId?: string;
 	text: string;
 	at: string; // ISO 8601 with timezone offset
 }
 
-export interface PeriodicEvent {
+export interface PeriodicEvent extends ScheduledDeliveryContext {
 	type: "periodic";
-	channelId?: string;
 	text: string;
 	schedule: string; // cron syntax
 	timezone: string; // IANA timezone
@@ -372,17 +378,24 @@ export class EventsWatcher {
 			throw new Error(`Missing required fields (type, text) in ${filename}`);
 		}
 
-		const channelId = data.channelId || "heartbeat";
+		const deliveryContext: ScheduledDeliveryContext = {
+			channelId: data.channelId || "heartbeat",
+			sourceEventType: data.sourceEventType,
+			replyTarget: data.replyTarget,
+			replyTargetDescription: data.replyTargetDescription,
+			threadTs: data.threadTs,
+			followUp: data.followUp,
+		};
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId, text: data.text };
+				return { type: "immediate", ...deliveryContext, text: data.text };
 
 			case "one-shot":
 				if (!data.at) {
 					throw new Error(`Missing 'at' field for one-shot event in ${filename}`);
 				}
-				return { type: "one-shot", channelId, text: data.text, at: data.at };
+				return { type: "one-shot", ...deliveryContext, text: data.text, at: data.at };
 
 			case "periodic":
 				if (!data.schedule) {
@@ -393,7 +406,7 @@ export class EventsWatcher {
 				}
 				return {
 					type: "periodic",
-					channelId,
+					...deliveryContext,
 					text: data.text,
 					schedule: data.schedule,
 					timezone: data.timezone,
@@ -571,6 +584,14 @@ export class EventsWatcher {
 			user: "EVENT",
 			text: message,
 			ts: Date.now().toString(),
+			sourceEventType: event.sourceEventType,
+			// Only follow-up evaluations need an explicit ambient classification.
+			// Preserve the historical unset classification for all other events.
+			...(event.followUp ? { directlyAddressed: false } : {}),
+			threadTs: event.threadTs,
+			replyTarget: event.replyTarget,
+			replyTargetDescription: event.replyTargetDescription,
+			followUp: event.followUp,
 		};
 
 		// Enqueue for processing — try each adapter until one accepts
@@ -695,18 +716,25 @@ export function parseEventContent(content: string): ScheduledEvent | null {
 		const data = JSON.parse(content);
 		if (!data.type || !data.text) return null;
 
-		const channelId = data.channelId || "heartbeat";
+		const deliveryContext: ScheduledDeliveryContext = {
+			channelId: data.channelId || "heartbeat",
+			sourceEventType: data.sourceEventType,
+			replyTarget: data.replyTarget,
+			replyTargetDescription: data.replyTargetDescription,
+			threadTs: data.threadTs,
+			followUp: data.followUp,
+		};
 
 		switch (data.type) {
 			case "immediate":
-				return { type: "immediate", channelId, text: data.text };
+				return { type: "immediate", ...deliveryContext, text: data.text };
 			case "one-shot":
 				if (!data.at) return null;
-				return { type: "one-shot", channelId, text: data.text, at: data.at };
+				return { type: "one-shot", ...deliveryContext, text: data.text, at: data.at };
 			case "periodic":
 				if (!data.schedule || !data.timezone) return null;
 				return {
-					type: "periodic", channelId, text: data.text,
+					type: "periodic", ...deliveryContext, text: data.text,
 					schedule: data.schedule, timezone: data.timezone,
 					spontaneity: data.spontaneity, quietHours: data.quietHours,
 					action: data.action,
