@@ -38,6 +38,7 @@ if (has("gmail", "search")) {
 } else if (has("drafts", "get")) {
   console.log(JSON.stringify({ draft: { id: "draft-1", message: { id: "draft-message-1", threadId: "thread-1", payload: { mimeType: "text/plain", headers: [
     { name: "To", value: "person@example.com" },
+    { name: "Cc", value: "archive@example.com" },
     { name: "Subject", value: "Example" }
   ], body: { data: Buffer.from("Draft body").toString("base64url") } } } } }));
 } else if (has("drafts", "send")) {
@@ -89,6 +90,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 		}]);
 		assert.deepEqual(await gmail.createDraft({
 			to: "person@example.com",
+			cc: ["archive@example.com"],
 			subject: "Example",
 			body: "Draft body",
 			replyToMessageId: "message-1",
@@ -98,7 +100,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			messageId: "draft-message-1",
 			threadId: "thread-1",
 			to: ["person@example.com"],
-			cc: [],
+			cc: ["archive@example.com"],
 			bcc: [],
 			replyTo: [],
 			subject: "Example",
@@ -114,6 +116,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 		assert.ok(create.args.includes("--enable-commands=gmail.drafts.create,gmail.drafts.update,gmail.drafts.delete"));
 		assert.equal(create.input, "Draft body");
 		assert.ok(create.args.includes("--reply-to-message-id"));
+		assert.equal(create.args.at(create.args.indexOf("--cc") + 1), "archive@example.com");
 
 		const send = calls.find((call) => call.args.includes("send"));
 		assert.ok(!send.args.includes("--gmail-no-send"));

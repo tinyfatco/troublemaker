@@ -22,6 +22,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	const path = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const config = await loadConfig(path, ENVIRONMENT);
 
+	assert.deepEqual(config.gmail.alwaysCc, ["archive@example.com"]);
 	assert.deepEqual(config.gmail.contactRelays, [{
 		sender: "noreply@example.com",
 		signatureSecret: "test-contact-relay-secret-at-least-32-bytes",

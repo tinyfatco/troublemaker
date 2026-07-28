@@ -74,6 +74,27 @@ function threadAddresses(thread) {
 	return addresses;
 }
 
+function canonicalAddresses(values) {
+	const addresses = new Set();
+	for (const value of values) {
+		const candidates = Array.isArray(value) ? value : emailAddresses(value || "");
+		for (const candidate of candidates) {
+			const address = String(candidate || "").trim().toLowerCase();
+			if (address) addresses.add(address);
+		}
+	}
+	return [...addresses].sort();
+}
+
+function replyCcAddresses(message, account, contact, alwaysCc = []) {
+	return canonicalAddresses([message?.to, message?.cc, alwaysCc])
+		.filter((address) => address !== account && address !== contact);
+}
+
+function sameAddresses(left, right) {
+	return JSON.stringify(canonicalAddresses([left])) === JSON.stringify(canonicalAddresses([right]));
+}
+
 function sameRequest(request, { action, targetId, contextId, providerDraftId }) {
 	return request.action === action
 		&& request.targetId === targetId
@@ -162,8 +183,9 @@ export class HostGmailTools {
 		}
 		const thread = await this.gmail.getThread(threadId);
 		if (!route) {
+			const allowed = new Set([scope.contact, ...(this.config.gmail.alwaysCc ?? [])]);
 			const external = [...threadAddresses(thread)].filter((address) => address !== this.account);
-			if (external.length === 0 || external.some((address) => address !== scope.contact)) {
+			if (external.length === 0 || external.some((address) => !allowed.has(address))) {
 				throw new GmailToolError(403, "conversation_scope_denied");
 			}
 		}
@@ -234,6 +256,7 @@ export class HostGmailTools {
 		let subject;
 		let providerThreadId;
 		let replyToMessageId;
+		let ccAddresses;
 		if (hasThread) {
 			if (input.to !== undefined || input.subject !== undefined) {
 				throw new GmailToolError(400, "draft_addressing_mode_invalid");
@@ -249,11 +272,23 @@ export class HostGmailTools {
 			replyToMessageId = requireProviderId(replyTarget.id, "reply_target_unavailable");
 			subject = replySubject(replyTarget.subject || thread.find((message) => message.subject)?.subject);
 			contact = scope.contact;
+			ccAddresses = replyCcAddresses(
+				replyTarget,
+				this.account,
+				contact,
+				this.config.gmail.alwaysCc ?? [],
+			);
 		} else {
 			mode = "compose";
 			contact = requireExactAddress(input.to);
 			if (contact !== scope.contact) throw new GmailToolError(403, "contact_scope_denied");
 			subject = requireSubject(input.subject);
+			ccAddresses = replyCcAddresses(
+				undefined,
+				this.account,
+				contact,
+				this.config.gmail.alwaysCc ?? [],
+			);
 		}
 
 		const action = "draft_create";
@@ -273,7 +308,13 @@ export class HostGmailTools {
 
 		let receipt;
 		try {
-			receipt = await this.gmail.createDraft({ to: contact, subject, body, replyToMessageId });
+			receipt = await this.gmail.createDraft({
+				to: contact,
+				cc: ccAddresses,
+				subject,
+				body,
+				replyToMessageId,
+			});
 			if (mode === "thread" && receipt.threadId !== providerThreadId) {
 				throw new Error("provider draft thread did not match the requested thread");
 			}
@@ -284,6 +325,7 @@ export class HostGmailTools {
 				contextId,
 				principalHash: scope.principalHash,
 				contactAddress: contact,
+				ccAddresses,
 				mode,
 				providerThreadId,
 				replyToMessageId,
@@ -329,6 +371,7 @@ export class HostGmailTools {
 		try {
 			const receipt = await this.gmail.updateDraft(providerDraftId, {
 				to: draft.contactAddress,
+				cc: draft.ccAddresses,
 				subject: draft.subject,
 				body,
 				replyToMessageId: draft.replyToMessageId,
@@ -356,7 +399,7 @@ export class HostGmailTools {
 			|| provider.threadId !== binding.providerThreadId
 			|| provider.to.length !== 1
 			|| provider.to[0] !== binding.contactAddress
-			|| provider.cc.length !== 0
+			|| !sameAddresses(provider.cc, binding.ccAddresses)
 			|| provider.bcc.length !== 0
 			|| provider.replyTo.length !== 0
 			|| provider.subject !== binding.subject

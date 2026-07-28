@@ -202,6 +202,7 @@ export class HostStore {
 				context_id TEXT NOT NULL,
 				principal_hash TEXT NOT NULL,
 				contact_address TEXT NOT NULL,
+				cc_addresses_json TEXT NOT NULL DEFAULT '[]',
 				mode TEXT NOT NULL,
 				provider_thread_id TEXT NOT NULL,
 				reply_to_message_id TEXT,
@@ -296,6 +297,7 @@ export class HostStore {
 		add("events", "started_at TEXT");
 		add("events", "updated_at TEXT");
 		add("outbox", "body_sha256 TEXT");
+		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		this.database.exec(`
 			UPDATE events SET status = 'queued' WHERE status = 'pending';
 			UPDATE events SET status = 'queued', lease_token = NULL, lease_expires_at = NULL
@@ -1565,10 +1567,10 @@ export class HostStore {
 	}
 
 	getGmailDraft(providerDraftId) {
-		return this.database.prepare(`
+		const row = this.database.prepare(`
 			SELECT provider_draft_id AS providerDraftId, target_id AS targetId,
 				context_id AS contextId, principal_hash AS principalHash,
-				contact_address AS contactAddress, mode,
+				contact_address AS contactAddress, cc_addresses_json AS ccAddressesJson, mode,
 				provider_thread_id AS providerThreadId,
 				reply_to_message_id AS replyToMessageId, subject,
 				body_sha256 AS bodySha256, status,
@@ -1576,6 +1578,18 @@ export class HostStore {
 				created_at AS createdAt, updated_at AS updatedAt, sent_at AS sentAt
 			FROM gmail_drafts WHERE provider_draft_id = ?
 		`).get(providerDraftId);
+		if (!row) return undefined;
+		let ccAddresses;
+		try {
+			ccAddresses = JSON.parse(row.ccAddressesJson);
+		} catch {
+			throw new Error("stored Gmail draft Cc binding is invalid");
+		}
+		if (!Array.isArray(ccAddresses) || ccAddresses.some((address) => typeof address !== "string")) {
+			throw new Error("stored Gmail draft Cc binding is invalid");
+		}
+		const { ccAddressesJson: _ccAddressesJson, ...draft } = row;
+		return { ...draft, ccAddresses };
 	}
 
 	getGmailRequest(idempotencyKey) {
@@ -1609,16 +1623,17 @@ export class HostStore {
 			this.database.prepare(`
 				INSERT INTO gmail_drafts(
 					provider_draft_id, target_id, context_id, principal_hash,
-					contact_address, mode, provider_thread_id,
+					contact_address, cc_addresses_json, mode, provider_thread_id,
 					reply_to_message_id, subject, body_sha256, status,
 					created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)
 			`).run(
 				draft.providerDraftId,
 				draft.targetId,
 				draft.contextId,
 				draft.principalHash,
 				draft.contactAddress,
+				JSON.stringify(draft.ccAddresses ?? []),
 				draft.mode,
 				draft.providerThreadId,
 				draft.replyToMessageId ?? null,

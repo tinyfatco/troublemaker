@@ -232,7 +232,7 @@ export class GogGmail {
 		await this.json(["gmail", "mark-read", "--account", this.account, messageId]);
 	}
 
-	async createDraft({ to, subject, body, replyToMessageId }) {
+	async createDraft({ to, cc = [], subject, body, replyToMessageId }) {
 		const parsed = await this.json([
 			"gmail",
 			"drafts",
@@ -241,6 +241,7 @@ export class GogGmail {
 			this.account,
 			"--to",
 			to,
+			...(cc.length > 0 ? ["--cc", cc.join(",")] : []),
 			"--subject",
 			subject,
 			...(replyToMessageId ? ["--reply-to-message-id", replyToMessageId] : []),
@@ -258,7 +259,7 @@ export class GogGmail {
 		};
 	}
 
-	async updateDraft(draftId, { to, subject, body, replyToMessageId }) {
+	async updateDraft(draftId, { to, cc = [], subject, body, replyToMessageId }) {
 		const parsed = await this.json([
 			"gmail",
 			"drafts",
@@ -268,6 +269,7 @@ export class GogGmail {
 			draftId,
 			"--to",
 			to,
+			...(cc.length > 0 ? ["--cc", cc.join(",")] : []),
 			"--subject",
 			subject,
 			...(replyToMessageId ? ["--reply-to-message-id", replyToMessageId] : []),
