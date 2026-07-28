@@ -18,14 +18,13 @@ export class TelegramPollingAdapter extends TelegramBase {
 			log.logInfo("Telegram webhook removed for polling takeover");
 		}
 
-		// Start polling
-		this.bot.startPolling();
-
 		const me = await this.bot.getMe();
 		log.logInfo(`Telegram bot started (polling): @${me.username} (${me.id})`);
 
-		// Wire up message handler
+		// Wire the handler before polling so updates already queued at startup
+		// cannot be acknowledged before the adapter is ready to process them.
 		this.bot.on("message", (msg) => this.handleIncomingMessage(msg));
+		this.bot.startPolling();
 
 		log.logConnected();
 	}
