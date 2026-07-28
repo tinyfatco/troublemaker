@@ -4,6 +4,12 @@ import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
 import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
+import {
+	allowsTelegramIncoming,
+	allowsTelegramOutbound,
+	createTelegramAccessPolicy,
+	type TelegramAccessPolicy,
+} from "./telegram-access-policy.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
 import { createTwoMessageContext } from "./context.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
@@ -20,6 +26,10 @@ export function escapeHtml(text: string): string {
 export interface TelegramBaseConfig {
 	botToken: string;
 	workingDir: string;
+	/** Optional sender allowlist. An explicit empty list denies all inbound users. */
+	allowedUserIds?: Iterable<string>;
+	/** When true, admit and deliver only one-to-one chats. */
+	privateOnly?: boolean;
 }
 
 type QueuedWork = () => Promise<void>;
@@ -35,16 +45,19 @@ When mentioning users, use @username format.`;
 	protected handler!: MomHandler;
 	protected workingDir: string;
 	protected botToken: string;
+	private accessPolicy: TelegramAccessPolicy;
 
-	// Track users/channels we've seen
+	// Track only users/channels that passed the configured access policy.
 	protected users = new Map<string, UserInfo>();
 	protected channels = new Map<string, ChannelInfo>();
+	private admittedChannelIds = new Set<string>();
 	private queues = new Map<string, QueuedWork[]>();
 	private processing = new Map<string, boolean>();
 
 	constructor(config: TelegramBaseConfig) {
 		this.workingDir = config.workingDir;
 		this.botToken = config.botToken;
+		this.accessPolicy = createTelegramAccessPolicy(config);
 		// Always construct with polling: false — subclasses control lifecycle
 		this.bot = new TelegramBot(config.botToken, { polling: false });
 	}
@@ -69,17 +82,21 @@ When mentioning users, use @username format.`;
 
 	protected handleIncomingMessage(msg: TelegramBot.Message): void {
 		const hasMedia = !!(msg.voice || msg.audio || msg.document || msg.photo || msg.video || msg.video_note);
-		if ((!msg.text && !msg.caption && !hasMedia) || msg.from?.is_bot) return;
+		if ((!msg.text && !msg.caption && !hasMedia) || !msg.from || msg.from.is_bot) return;
 
 		const chatId = String(msg.chat.id);
-		const userId = String(msg.from!.id);
-		const userName = msg.from!.username || msg.from!.first_name || userId;
-		const displayName = [msg.from!.first_name, msg.from!.last_name].filter(Boolean).join(" ") || userName;
+		const userId = String(msg.from.id);
+		if (!allowsTelegramIncoming(this.accessPolicy, { chatId, chatType: msg.chat.type, userId })) {
+			log.logInfo("Ignoring Telegram message outside the configured access policy");
+			return;
+		}
+		const userName = msg.from.username || msg.from.first_name || userId;
+		const displayName = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ") || userName;
 
-		// Track user
+		// Track only admitted identities and chats.
 		this.users.set(userId, { id: userId, userName, displayName });
+		this.admittedChannelIds.add(chatId);
 
-		// Track channel/chat
 		const chatName = msg.chat.title || (msg.chat.type === "private" ? `DM:${userName}` : chatId);
 		this.channels.set(chatId, { id: chatId, name: chatName });
 
@@ -237,12 +254,20 @@ When mentioning users, use @username format.`;
 	// PlatformAdapter implementation
 	// ==========================================================================
 
+	private assertAllowedChannel(channel: string): void {
+		if (!allowsTelegramOutbound(this.accessPolicy, channel, this.admittedChannelIds)) {
+			throw new Error("telegram_channel_not_allowed");
+		}
+	}
+
 	async postMessage(channel: string, text: string): Promise<string> {
+		this.assertAllowedChannel(channel);
 		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), { parse_mode: "HTML" });
 		return String(result.message_id);
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
+		this.assertAllowedChannel(channel);
 		try {
 			await this.bot.editMessageText(markdownToTelegramHtml(text), {
 				chat_id: Number(channel),
@@ -259,6 +284,7 @@ When mentioning users, use @username format.`;
 	}
 
 	async deleteMessage(channel: string, ts: string): Promise<void> {
+		this.assertAllowedChannel(channel);
 		try {
 			await this.bot.deleteMessage(Number(channel), Number(ts));
 		} catch {
@@ -267,6 +293,7 @@ When mentioning users, use @username format.`;
 	}
 
 	async postInThread(channel: string, _threadTs: string, text: string): Promise<string> {
+		this.assertAllowedChannel(channel);
 		// Telegram doesn't have threads in the same way — just post as reply
 		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), {
 			reply_to_message_id: Number(_threadTs),
@@ -276,6 +303,7 @@ When mentioning users, use @username format.`;
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
+		this.assertAllowedChannel(channel);
 		const fileName = title || basename(filePath);
 		const fileContent = readFileSync(filePath);
 		await this.bot.sendDocument(Number(channel), fileContent, {}, { filename: fileName });
@@ -304,6 +332,7 @@ When mentioning users, use @username format.`;
 	}
 
 	getChannel(channelId: string): ChannelInfo | undefined {
+		if (!allowsTelegramOutbound(this.accessPolicy, channelId, this.admittedChannelIds)) return undefined;
 		return this.channels.get(channelId);
 	}
 
@@ -316,8 +345,8 @@ When mentioning users, use @username format.`;
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
-		// Telegram chat IDs are numeric (positive for users, negative for groups)
-		if (!/^-?\d+$/.test(event.channel)) return false;
+		// Telegram chat IDs are numeric (positive for users, negative for groups).
+		if (!allowsTelegramOutbound(this.accessPolicy, event.channel, this.admittedChannelIds)) return false;
 
 		const queue = this.queues.get(event.channel) || [];
 		if (queue.length >= 5) {

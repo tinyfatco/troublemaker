@@ -506,6 +506,13 @@ function createAdapter(name: string): AdapterWithHandler {
 	const allowedZulipDmUserIds = process.env.MOM_ZULIP_ALLOWED_DM_USERS === undefined
 		? undefined
 		: process.env.MOM_ZULIP_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+	const allowedTelegramUserIds = process.env.MOM_TELEGRAM_ALLOWED_USERS === undefined
+		? undefined
+		: process.env.MOM_TELEGRAM_ALLOWED_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+	const telegramPrivateOnly = process.env.MOM_TELEGRAM_PRIVATE_ONLY;
+	if (telegramPrivateOnly !== undefined && telegramPrivateOnly !== "true" && telegramPrivateOnly !== "false") {
+		throw new Error("MOM_TELEGRAM_PRIVATE_ONLY must be true or false");
+	}
 	const mattermostChannelMessagesDirect = process.env.MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT;
 	if (
 		mattermostChannelMessagesDirect !== undefined
@@ -643,7 +650,12 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 				process.exit(1);
 			}
-			return new TelegramPollingAdapter({ botToken, workingDir });
+			return new TelegramPollingAdapter({
+				botToken,
+				workingDir,
+				allowedUserIds: allowedTelegramUserIds,
+				privateOnly: telegramPrivateOnly === "true",
+			});
 		}
 		case "telegram:webhook": {
 			const botToken = process.env.MOM_TELEGRAM_BOT_TOKEN;
@@ -663,7 +675,15 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_SECRET (required when registering webhook)");
 				process.exit(1);
 			}
-			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
+			return new TelegramWebhookAdapter({
+				botToken,
+				workingDir,
+				webhookUrl,
+				webhookSecret,
+				skipRegistration,
+				allowedUserIds: allowedTelegramUserIds,
+				privateOnly: telegramPrivateOnly === "true",
+			});
 		}
 		case "discord":
 		case "discord:gateway": {
