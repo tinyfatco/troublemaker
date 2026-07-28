@@ -210,6 +210,27 @@ export class ZulipProvisioner {
 		return result.streams ?? [];
 	}
 
+	desiredSubscriberIds(identities) {
+		return [...new Set([
+			identities.administrator.user_id,
+			identities.agent.user_id,
+			identities.projector.user_id,
+			...identities.members.map((user) => user.user_id),
+			...identities.observers.map((user) => user.user_id),
+		])];
+	}
+
+	async ensureSubscribers(channelName, identities) {
+		await this.request("users/me/subscriptions", {
+			method: "POST",
+			form: zulipForm({
+				subscriptions: [{ name: channelName }],
+				principals: this.desiredSubscriberIds(identities),
+				authorization_errors_fatal: true,
+			}),
+		});
+	}
+
 	channelName(contextId) {
 		const email = verifiedContextEmail(
 			this.store,
@@ -287,15 +308,7 @@ export class ZulipProvisioner {
 						form: zulipForm({
 							name: desiredName,
 							description: channelDescription(contextId),
-							subscribers: [
-								...new Set([
-									identities.administrator.user_id,
-									identities.agent.user_id,
-									identities.projector.user_id,
-									...identities.members.map((user) => user.user_id),
-									...identities.observers.map((user) => user.user_id),
-								]),
-							],
+							subscribers: this.desiredSubscriberIds(identities),
 							invite_only: true,
 							history_public_to_subscribers: false,
 							announce: false,
@@ -343,6 +356,7 @@ export class ZulipProvisioner {
 				}),
 			});
 		}
+		await this.ensureSubscribers(desiredName, identities);
 		const binding = this.store.upsertZulipBinding({
 			contextId,
 			channelId,

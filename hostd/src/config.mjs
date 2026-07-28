@@ -390,6 +390,14 @@ export async function loadConfig(path, environment = process.env) {
 	if (new Set(contactRelays.map((relay) => relay.sender)).size !== contactRelays.length) {
 		throw new Error("gmail.contactRelays cannot repeat a sender");
 	}
+	const gmailAccount = gmail ? normalizeAddress(gmail.account, "gmail.account") : undefined;
+	const alwaysCc = gmail ? emailArray(gmail.alwaysCc, "gmail.alwaysCc") : [];
+	if (new Set(alwaysCc).size !== alwaysCc.length) {
+		throw new Error("gmail.alwaysCc cannot repeat an address");
+	}
+	if (gmailAccount && alwaysCc.includes(gmailAccount)) {
+		throw new Error("gmail.alwaysCc cannot include gmail.account");
+	}
 	if ([mattermost, rocketChat, zulip].filter(Boolean).length > 1) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
@@ -425,10 +433,11 @@ export async function loadConfig(path, environment = process.env) {
 			routingKeyFile: resolve(text(state.routingKeyFile, "state.routingKeyFile")),
 		},
 		gmail: gmail ? {
-			account: normalizeAddress(gmail.account, "gmail.account"),
+			account: gmailAccount,
 			gogPath: resolve(text(gmail.gogPath ?? "/usr/local/bin/gog", "gmail.gogPath")),
 			pollIntervalSeconds: integer(gmail.pollIntervalSeconds, 60, "gmail.pollIntervalSeconds", 15, 3600),
 			overlapSeconds: integer(gmail.overlapSeconds, 900, "gmail.overlapSeconds", 60, 86400),
+			alwaysCc,
 			contactRelays,
 		} : undefined,
 		scheduler: {

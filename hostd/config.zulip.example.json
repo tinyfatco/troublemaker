@@ -26,6 +26,9 @@
           "name": "Customer website"
         }
       }
+    ],
+    "alwaysCc": [
+      "archive@example.com"
     ]
   },
   "scheduler": {

@@ -113,11 +113,48 @@ test("authenticated Zulip administrator may have a realm-hidden API email", asyn
 	assert.deepEqual(identities.members.map((member) => member.user_id), [19]);
 });
 
+test("existing customer channels reconcile every configured participant", async () => {
+	const contextId = "front-desk:1234567890abcdef12345678:website";
+	const binding = { contextId, channelId: 7, channelName: "customer · Example" };
+	const store = {
+		getLatestContextEventPayload() { return undefined; },
+		getPrincipal() { return { displayLabel: "Example" }; },
+		getZulipBinding() { return binding; },
+		upsertZulipBinding(input) { return input; },
+	};
+	const provisioner = new ZulipProvisioner({}, store);
+	provisioner.identities = async () => ({
+		administrator: { user_id: 1 },
+		agent: { user_id: 2 },
+		projector: { user_id: 3 },
+		members: [{ user_id: 4 }],
+		observers: [{ user_id: 5 }, { user_id: 4 }],
+	});
+	provisioner.listChannels = async () => [{
+		stream_id: 7,
+		name: "customer · Example",
+		description: "Private customer exchange feed",
+		topics_policy: "empty_topic_only",
+	}];
+	const requests = [];
+	provisioner.request = async (path, input) => {
+		requests.push({ path, input });
+		return { result: "success" };
+	};
+
+	await provisioner.ensureContext(contextId);
+	assert.deepEqual(requests.map((request) => request.path), ["users/me/subscriptions"]);
+	assert.deepEqual(JSON.parse(requests[0].input.form.get("subscriptions")), [{ name: "customer · Example" }]);
+	assert.deepEqual(JSON.parse(requests[0].input.form.get("principals")), [1, 2, 3, 4, 5]);
+	assert.equal(requests[0].input.form.get("authorization_errors_fatal"), "true");
+});
+
 test("first context creates a fresh private channel instead of adopting a same-labeled channel", async () => {
 	const principalHash = "1234567890abcdef12345678";
 	const contextId = `front-desk:${principalHash}:website`;
 	let binding;
 	let createCalls = 0;
+	let subscriberCalls = 0;
 	const streams = [{
 		stream_id: 5,
 		name: "customer · Robin",
@@ -155,6 +192,12 @@ test("first context creates a fresh private channel instead of adopting a same-l
 	});
 	provisioner.listChannels = async () => streams;
 	provisioner.request = async (path, input) => {
+		if (path === "users/me/subscriptions") {
+			subscriberCalls++;
+			assert.equal(input.method, "POST");
+			assert.deepEqual(JSON.parse(input.form.get("principals")), [1, 2, 3]);
+			return { result: "success" };
+		}
 		assert.equal(path, "channels/create");
 		createCalls++;
 		const name = input.form.get("name");
@@ -176,6 +219,7 @@ test("first context creates a fresh private channel instead of adopting a same-l
 	assert.equal(first.channelId, 6);
 	assert.equal(repeat.channelId, 6);
 	assert.equal(createCalls, 1);
+	assert.equal(subscriberCalls, 2);
 	assert.notEqual(first.channelId, 5);
 });
 
@@ -210,6 +254,7 @@ test("soft-deleted channel name conflicts retry with a context marker", async ()
 	});
 	provisioner.listChannels = async () => streams;
 	provisioner.request = async (path, input) => {
+		if (path === "users/me/subscriptions") return { result: "success" };
 		assert.equal(path, "channels/create");
 		const name = input.form.get("name");
 		attemptedNames.push(name);

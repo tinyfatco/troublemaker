@@ -8,8 +8,8 @@ import { createHostServer } from "../src/server.mjs";
 import { contextCapability } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
 
-function message(id, from, to, subject, body, replyTo = "") {
-	return { id, date: "Thu, 23 Jul 2026 12:00:00 +0000", from, to, cc: "", bcc: "", replyTo, subject, body };
+function message(id, from, to, subject, body, replyTo = "", cc = "") {
+	return { id, date: "Thu, 23 Jul 2026 12:00:00 +0000", from, to, cc, bcc: "", replyTo, subject, body };
 }
 
 function fakeGmail() {
@@ -17,13 +17,22 @@ function fakeGmail() {
 		["thread-owner", [message(
 			"message-owner",
 			"noreply@example.com",
-			"agent@example.com",
+			"agent@example.com, collaborator@example.com",
 			"Owner request",
 			"Hello",
 			"owner@example.com",
+			"reviewer@example.com",
 		)]],
 		["thread-stranger", [message("message-stranger", "stranger@example.com", "agent@example.com", "Other request", "Private")]],
-		["thread-unbound", [message("message-unbound", "agent@example.com", "owner@example.com", "Earlier note", "Earlier")]],
+		["thread-unbound", [message(
+			"message-unbound",
+			"agent@example.com",
+			"owner@example.com",
+			"Earlier note",
+			"Earlier",
+			"",
+			"archive@example.com",
+		)]],
 		["thread-group", [message("message-group", "owner@example.com", "agent@example.com, third@example.com", "Group note", "Group")]],
 	]);
 	const drafts = new Map();
@@ -63,7 +72,7 @@ function fakeGmail() {
 				messageId: `draft-message-${number}`,
 				threadId,
 				to: [input.to],
-				cc: [],
+				cc: [...(input.cc || [])],
 				bcc: [],
 				replyTo: [],
 				subject: input.subject,
@@ -78,6 +87,7 @@ function fakeGmail() {
 			if (!current) throw new Error("missing fake draft");
 			Object.assign(current, {
 				to: [input.to],
+				cc: [...(input.cc || [])],
 				subject: input.subject,
 				body: input.body,
 			});
@@ -137,7 +147,7 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 	};
 	const config = {
 		server: {},
-		gmail: { account: "agent@example.com" },
+		gmail: { account: "agent@example.com", alwaysCc: ["archive@example.com"] },
 		mattermost: {},
 		routing: { actorTarget: "front-desk", knownPrincipals: [] },
 		targetsById: new Map([["front-desk", target]]),
@@ -245,6 +255,7 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		assert.equal(updated.response.status, 200);
 		assert.equal(gmail.updated.length, 1);
 		assert.equal(gmail.updated[0].to, "owner@example.com");
+		assert.deepEqual(gmail.updated[0].cc, ["archive@example.com"]);
 		assert.equal(gmail.updated[0].subject, "Requested follow-up");
 
 		gmail.drafts.get("draft-1").cc = ["third@example.com"];
@@ -256,7 +267,7 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		assert.equal(tampered.response.status, 409);
 		assert.equal(tampered.body.error, "draft_binding_changed");
 		assert.equal(gmail.sent.length, 0);
-		gmail.drafts.get("draft-1").cc = [];
+		gmail.drafts.get("draft-1").cc = ["archive@example.com"];
 
 		const sent = await post(base, "/v1/gmail/send", ownerToken, {
 			context_id: owner.contextId,
@@ -328,10 +339,16 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		assert.equal(replyDraft.body.thread_id, "thread-owner");
 		assert.deepEqual(gmail.created[1], {
 			to: "owner@example.com",
+			cc: ["archive@example.com", "collaborator@example.com", "reviewer@example.com"],
 			subject: "Re: Owner request",
 			body: "Reply body",
 			replyToMessageId: "message-owner",
 		});
+		assert.deepEqual(store.getGmailDraft("draft-2").ccAddresses, [
+			"archive@example.com",
+			"collaborator@example.com",
+			"reviewer@example.com",
+		]);
 
 		gmail.uncertainSends.add("draft-2");
 		const uncertain = await post(base, "/v1/gmail/send", ownerToken, {
