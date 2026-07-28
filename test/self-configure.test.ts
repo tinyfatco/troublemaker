@@ -158,6 +158,20 @@ try {
 	assert(discordWindowMinutes.newValue === 4, "Discord tool-stream group-minutes alias accepts a numeric string");
 	assert((settings.discord as any).toolStreamWindowMinutes === 4, "Discord tool-stream window persists inside Discord settings");
 
+	const defaultFollowUps = applySelfConfiguration(workingDir, "follow_ups", "default");
+	settings = readSettings(workingDir);
+	assert((defaultFollowUps.newValue as any).enabled === true, "default follow-up preset enables the mode");
+	assert(JSON.stringify((defaultFollowUps.newValue as any).intervalsMinutes) === JSON.stringify([1, 3, 5, 10]), "default follow-up preset uses 1/3/5/10-minute checkpoints");
+	assert((settings.followUps as any).preset === "default", "default follow-up preset persists in settings.json");
+	const customFollowUps = applySelfConfiguration(workingDir, "followUps.intervalsMinutes", "2, 6, 10");
+	settings = readSettings(workingDir);
+	assert((customFollowUps.newValue as any).preset === "custom", "custom follow-up intervals select the custom preset");
+	assert(JSON.stringify((settings.followUps as any).intervalsMinutes) === JSON.stringify([2, 6, 10]), "custom follow-up intervals persist in ascending order");
+	const disabledFollowUps = applySelfConfiguration(workingDir, "follow_ups.enabled", false);
+	settings = readSettings(workingDir);
+	assert((disabledFollowUps.newValue as any).enabled === false, "follow-up mode can be disabled through self_configure");
+	assert((settings.followUps as any).enabled === false, "disabled follow-up mode persists");
+
 	const spontaneity = applySelfConfiguration(workingDir, "spontaneity.level", 5);
 	settings = readSettings(workingDir);
 	assert((settings.spontaneity as any).level === 5, "spontaneity level writes settings");
@@ -198,6 +212,8 @@ try {
 	assert(settingDescription.includes("voice.webhook_input_mode"), "self_configure schema exposes voice webhook routing");
 	assert(settingDescription.includes("working_output"), "self_configure schema exposes working-output routing");
 	assert(settingDescription.includes("mattermost.channel_attention"), "self_configure schema exposes per-channel Mattermost attention");
+	assert(settingDescription.includes("follow_ups.intervals_minutes"), "self_configure schema exposes natural follow-up checkpoints");
+	assert(tool.description.includes("1/3/5/10-minute"), "self_configure metadata explains the default follow-up preset");
 	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");
 	assert(tool.description.includes("mentions-only"), "self_configure metadata explains mentions-only Mattermost attention");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
@@ -335,6 +351,20 @@ try {
 		assert(false, "unsafe Discord tool-stream window throws");
 	} catch (err) {
 		assert(err instanceof Error && err.message.includes("1"), "invalid Discord tool-stream window explains its safe range");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "follow_ups.intervals_minutes", [0, 3]);
+		assert(false, "unsafe follow-up interval throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("whole minutes"), "invalid follow-up intervals explain the safe range");
+	}
+
+	try {
+		applySelfConfiguration(workingDir, "follow_ups.preset", "maximum-jazz");
+		assert(false, "unknown follow-up preset throws");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("default"), "invalid follow-up preset explains accepted values");
 	}
 
 	try {

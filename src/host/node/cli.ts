@@ -40,6 +40,12 @@ import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbien
 import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
 import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
+import {
+	armPendingFollowUps,
+	claimFollowUpWake,
+	noteFollowUpActivity,
+	reconcileFollowUpSchedules,
+} from "../../follow-ups.js";
 import { Gateway } from "../../gateway.js";
 import * as log from "../../log.js";
 import { createExecutor, parseSandboxArg, withExecutorCwd, type SandboxConfig, validateSandbox } from "../../sandbox.js";
@@ -1104,6 +1110,10 @@ function scheduleInterruptRestart(): void {
 }
 
 async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
+	if (event.followUp && !claimFollowUpWake(workingDir, event.followUp)) {
+		log.logInfo(`[follow-ups] Rejected stale or duplicate wake for ${event.channel}`);
+		return;
+	}
 	const trimmed = event.text.trim();
 
 	// Lightweight slash commands are pure control-plane work and should not
@@ -1146,6 +1156,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 
 	let turnEvent = event;
 	let automaticGoalTurn = isGoalContinuationEvent(event) ? 1 : 0;
+	let completedCanonicalTurn = false;
 	try {
 		while (true) {
 			if (automaticGoalTurn > 0 && (voiceContract?.pendingCount ?? 0) > 0) {
@@ -1214,6 +1225,9 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					});
 				}
 			}
+			if (result.stopReason !== "aborted" && result.stopReason !== "error") {
+				completedCanonicalTurn = true;
+			}
 
 			if (result.stopReason === "aborted" && state.stopRequested) {
 				const stopResponse = state.stopResponse;
@@ -1272,6 +1286,14 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		if (activeDeliveryScope === deliveryScope) activeDeliveryScope = null;
 		state.running = false;
 		state.interruptRequested = false;
+		if (
+			completedCanonicalTurn
+			&& queuedRunCount === 0
+			&& pendingInterrupts.length === 0
+			&& (voiceContract?.pendingCount ?? 0) === 0
+		) {
+			armPendingFollowUps(workingDir);
+		}
 	}
 }
 
@@ -1378,6 +1400,7 @@ const handler: MomHandler = {
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
+		noteFollowUpActivity(workingDir, event, adapter.name);
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
@@ -1439,6 +1462,7 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
+		noteFollowUpActivity(workingDir, event, platform.name);
 		const label = `${platform.name}:${event.channel}`;
 		return withGlobalRunSlot(label, () => runEventInSlot(event, platform, isEvent));
 	},
@@ -2201,8 +2225,13 @@ To change these, edit \`settings.json\` directly.
 				spontaneity: 0.25,
 				quietHours: { start: "23:00", end: "07:00" },
 			},
+			followUps: {
+				enabled: true,
+				preset: "default",
+				intervalsMinutes: [1, 3, 5, 10],
+			},
 		}, null, 2) + "\n", "utf-8");
-		log.logInfo("Seeded settings.json (spontaneity level 1, variance 0.25)");
+		log.logInfo("Seeded settings.json (spontaneity level 1; follow-ups default 1/3/5/10 minutes)");
 	}
 }
 
@@ -2238,6 +2267,10 @@ To change these, edit \`settings.json\` directly.
 	}
 	log.logInfo(`Wrote ${ATTENTION_QUEUE_DIR}/compaction.json (daily 4am, tz=${tz})`);
 }
+
+// Restore any follow-up queue files interrupted between authoritative state
+// commit and event-file creation before the watcher scans the queue.
+reconcileFollowUpSchedules(workingDir);
 
 // Arm event-file watching after seeding, but delay the existing-file scan so
 // first web turns after cold boot are not starved by background scheduling.

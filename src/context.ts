@@ -44,6 +44,15 @@ export interface MomSpontaneitySettings {
 	timezone?: string; // IANA timezone, defaults to system
 }
 
+export type FollowUpPreset = "default" | "custom";
+
+export interface MomFollowUpSettings {
+	enabled: boolean;
+	preset: FollowUpPreset;
+	/** Successive idle checkpoints after the latest completed human turn. */
+	intervalsMinutes: number[];
+}
+
 export type VerbosityLevel = boolean | "messages-only";
 
 export interface MomVerboseSettings {
@@ -158,6 +167,8 @@ export interface MomSettings {
 	compaction?: Partial<MomCompactionSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
+	/** `"default"` is shorthand for the enabled 1/3/5/10-minute preset. */
+	followUps?: Partial<MomFollowUpSettings> | "default" | "off";
 	shellPath?: string;
 	speak?: MomSpeakSettings;
 }
@@ -191,6 +202,26 @@ const DEFAULT_SPONTANEITY: MomSpontaneitySettings = {
 	intervalMinutes: 180,
 	quietHours: { start: "23:00", end: "07:00" },
 };
+
+export const DEFAULT_FOLLOW_UP_INTERVALS_MINUTES = [1, 3, 5, 10] as const;
+export const MAX_FOLLOW_UP_INTERVALS = 12;
+export const MAX_FOLLOW_UP_INTERVAL_MINUTES = 7 * 24 * 60;
+
+const DEFAULT_FOLLOW_UPS: MomFollowUpSettings = {
+	enabled: false,
+	preset: "default",
+	intervalsMinutes: [...DEFAULT_FOLLOW_UP_INTERVALS_MINUTES],
+};
+
+export function normalizeFollowUpIntervals(value: unknown): number[] {
+	if (!Array.isArray(value)) return [...DEFAULT_FOLLOW_UP_INTERVALS_MINUTES];
+	const normalized = Array.from(new Set(value
+		.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
+		.filter((entry) => Number.isInteger(entry) && entry >= 1 && entry <= MAX_FOLLOW_UP_INTERVAL_MINUTES)))
+		.sort((a, b) => a - b)
+		.slice(0, MAX_FOLLOW_UP_INTERVALS);
+	return normalized.length > 0 ? normalized : [...DEFAULT_FOLLOW_UP_INTERVALS_MINUTES];
+}
 
 const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "mattermost", "telegram", "discord", "email", "phone"]);
 
@@ -341,6 +372,32 @@ export class MomSettingsManager {
 		this.settings.spontaneity = merged;
 		this.save();
 		return merged;
+	}
+
+	getFollowUpSettings(): MomFollowUpSettings {
+		const raw = this.settings.followUps;
+		if (raw === "default") {
+			return { enabled: true, preset: "default", intervalsMinutes: [...DEFAULT_FOLLOW_UP_INTERVALS_MINUTES] };
+		}
+		if (raw === "off" || raw === undefined) return { ...DEFAULT_FOLLOW_UPS, intervalsMinutes: [...DEFAULT_FOLLOW_UPS.intervalsMinutes] };
+
+		const preset: FollowUpPreset = raw.preset === "custom" ? "custom" : "default";
+		return {
+			enabled: raw.enabled ?? preset === "default",
+			preset,
+			intervalsMinutes: normalizeFollowUpIntervals(raw.intervalsMinutes),
+		};
+	}
+
+	setFollowUps(settings: MomFollowUpSettings): MomFollowUpSettings {
+		const normalized: MomFollowUpSettings = {
+			enabled: settings.enabled,
+			preset: settings.preset,
+			intervalsMinutes: normalizeFollowUpIntervals(settings.intervalsMinutes),
+		};
+		this.settings.followUps = normalized;
+		this.save();
+		return normalized;
 	}
 
 	/**

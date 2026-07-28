@@ -10,6 +10,12 @@ import type { Attachment, ChannelStore } from "../store.js";
  * An incoming message event from any platform.
  * Adapters translate platform-specific events into this shape.
  */
+export interface FollowUpWakeMetadata {
+	key: string;
+	generation: string;
+	ordinal: number;
+}
+
 export interface MomEvent {
 	type: "mention" | "dm";
 	channel: string;
@@ -28,6 +34,8 @@ export interface MomEvent {
 	threadTs?: string;
 	replyTarget?: string;
 	replyTargetDescription?: string;
+	/** Present only on harness-generated idle follow-up checks. */
+	followUp?: FollowUpWakeMetadata;
 	files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
 	/** Processed attachments with local paths (populated after logging) */
 	attachments?: Attachment[];

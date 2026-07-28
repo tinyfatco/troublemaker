@@ -246,6 +246,32 @@ The agent can schedule events that wake it up:
 
 Event files go in `data/events/`. External systems can also write events here to trigger the agent without going through a platform.
 
+## Natural follow-ups
+
+Follow-up mode lets the harness wake the agent at successive idle checkpoints after a completed, directly addressed human turn. Each wake re-reads the conversation and asks the agent to send at most one concise follow-up with `send_message`, or stay quiet with `yield_no_action`. A newer human message immediately invalidates the older sequence.
+
+Fresh workspaces seed the enabled `default` preset at 1, 3, 5, and 10 minutes. Existing workspaces stay unchanged until configured. The preset can be selected directly in `settings.json`:
+
+```json
+{
+  "followUps": "default"
+}
+```
+
+Custom checkpoints use whole minutes:
+
+```json
+{
+  "followUps": {
+    "enabled": true,
+    "preset": "custom",
+    "intervalsMinutes": [2, 6, 10]
+  }
+}
+```
+
+The agent can make the same durable changes with `self_configure` settings `follow_ups`, `follow_ups.enabled`, `follow_ups.preset`, and `follow_ups.intervals_minutes`. Pending wake files and generation claims survive restart; stale and duplicate generations fail closed.
+
 ## Security
 
 The agent has full bash access in its execution environment. Use Docker sandbox mode to isolate it.
