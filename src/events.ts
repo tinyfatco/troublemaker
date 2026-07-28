@@ -585,7 +585,9 @@ export class EventsWatcher {
 			text: message,
 			ts: Date.now().toString(),
 			sourceEventType: event.sourceEventType,
-			directlyAddressed: true,
+			// Harness-generated follow-up evaluations are ambient/headless. The
+			// exact reply target remains metadata for a deliberate send_message.
+			directlyAddressed: event.followUp ? false : true,
 			threadTs: event.threadTs,
 			replyTarget: event.replyTarget,
 			replyTargetDescription: event.replyTargetDescription,

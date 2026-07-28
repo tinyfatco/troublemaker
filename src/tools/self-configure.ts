@@ -34,7 +34,7 @@ import {
 	type WorkingOutputTarget,
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
-import { clearAllFollowUpSchedules } from "../follow-ups.js";
+import { cancelFollowUpSchedules, clearAllFollowUpSchedules, getFollowUpRuntimeStatus } from "../follow-ups.js";
 import { findModel } from "../model-config.js";
 import {
 	DEFAULT_REALTIME_VOICE,
@@ -65,6 +65,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"follow_ups.enabled",
 	"follow_ups.preset",
 	"follow_ups.intervals_minutes",
+	"follow_ups.cancel",
 	"spontaneity.enabled",
 	"spontaneity.level",
 	"spontaneity.intervalMinutes",
@@ -136,6 +137,8 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"followUps.intervalsMinutes": "follow_ups.intervals_minutes",
 	"followups.intervalsMinutes": "follow_ups.intervals_minutes",
 	"follow_ups.intervalsMinutes": "follow_ups.intervals_minutes",
+	"followUps.cancel": "follow_ups.cancel",
+	"followups.cancel": "follow_ups.cancel",
 };
 
 interface SelfConfigureResult {
@@ -614,6 +617,19 @@ function parseFollowUpPreset(value: unknown): "default" | "custom" | "off" {
 }
 
 function configureFollowUps(workingDir: string, setting: string, value: unknown): SelfConfigureResult {
+	if (setting === "follow_ups.cancel") {
+		if (!parseBoolean(value, setting)) throw new Error("follow_ups.cancel must be true to confirm cancellation.");
+		const previousValue = cancelFollowUpSchedules(workingDir);
+		const newValue = getFollowUpRuntimeStatus(workingDir);
+		return {
+			changed: true,
+			setting,
+			previousValue,
+			newValue,
+			note: "Current follow-up sequences were cancelled without changing the enabled preset or intervals.",
+		};
+	}
+
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getFollowUpSettings();
 	let next: MomFollowUpSettings = { ...previousValue, intervalsMinutes: [...previousValue.intervalsMinutes] };
@@ -890,7 +906,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 			description:
 				"Setting to change. Supported: model, thinking_level, verbosity, working_output, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
-				"follow_ups, follow_ups.enabled, follow_ups.preset, follow_ups.intervals_minutes, " +
+				"follow_ups, follow_ups.enabled, follow_ups.preset, follow_ups.intervals_minutes, follow_ups.cancel, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
 				"heartbeat.checklist, voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
@@ -902,7 +918,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, or set follow_ups.intervals_minutes to a custom list. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

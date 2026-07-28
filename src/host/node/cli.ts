@@ -7,6 +7,7 @@ import { DiscordGatewayAdapter } from "../../adapters/discord-gateway.js";
 import { DiscordWebhookAdapter } from "../../adapters/discord-webhook.js";
 import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "../../adapters/heartbeat.js";
+import { FollowUpAdapter } from "../../adapters/follow-up.js";
 import { syncHeartbeatFromSpontaneity } from "../../heartbeat-schedule.js";
 import { OperatorAdapter } from "../../adapters/operator.js";
 import { SlackSocketAdapter } from "../../adapters/slack-socket.js";
@@ -43,6 +44,7 @@ import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.
 import {
 	armPendingFollowUps,
 	claimFollowUpWake,
+	getFollowUpRuntimeStatus,
 	noteFollowUpActivity,
 	reconcileFollowUpSchedules,
 } from "../../follow-ups.js";
@@ -768,6 +770,12 @@ function createAdapter(name: string): AdapterWithHandler {
 
 const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
 
+// Follow-up events must be claimed by a dedicated headless adapter before any
+// external adapter sees them. Deliberate send_message calls still route through
+// the normal peer-adapter tool registry using the exact target in the prompt.
+const followUpAdapter = new FollowUpAdapter({ workingDir }) as AdapterWithHandler;
+adapters.unshift(followUpAdapter);
+
 // Always create heartbeat adapter — implicit, not user-configured
 const heartbeatAdapter = new HeartbeatAdapter({ workingDir }) as AdapterWithHandler;
 adapters.push(heartbeatAdapter);
@@ -1174,18 +1182,20 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			// then follow it, disappear, or move to one durable Slack destination.
 			const sourceContext = platform.createContext(turnEvent, state.store, isEvent);
 			const workingSettings = new MomSettingsManager(workingDir);
-			const ctx = routeWorkingOutputContext({
-				policy: workingSettings.getWorkingOutput(),
-				sourceContext,
-				adapters,
-				store: state.store,
-				presentation: {
-					toolStreaming: workingSettings.getSlackToolStreaming(),
-					presentation: workingSettings.getSlackToolStreamPresentation(),
-					windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
-				},
-				warn: (message) => log.logWarning(`[working-output] ${message}`),
-			});
+			const ctx = turnEvent.followUp
+				? sourceContext
+				: routeWorkingOutputContext({
+					policy: workingSettings.getWorkingOutput(),
+					sourceContext,
+					adapters,
+					store: state.store,
+					presentation: {
+						toolStreaming: workingSettings.getSlackToolStreaming(),
+						presentation: workingSettings.getSlackToolStreamPresentation(),
+						windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
+					},
+					warn: (message) => log.logWarning(`[working-output] ${message}`),
+				});
 			if (isGoalContinuationEvent(turnEvent)) applyGoalContinuationIdentity(ctx);
 
 			await ctx.setTyping(true);
@@ -1543,6 +1553,7 @@ gateway.registerGet("/status", async (_req, res) => {
 		queuedInterrupts,
 		queuedVoiceTurns,
 		queuedInputCount: queuedInterrupts + queuedVoiceTurns,
+		followUps: getFollowUpRuntimeStatus(workingDir),
 		compaction: compaction ? {
 			reason: compaction.reason,
 			startedAt: compaction.startedAt,
@@ -2225,13 +2236,8 @@ To change these, edit \`settings.json\` directly.
 				spontaneity: 0.25,
 				quietHours: { start: "23:00", end: "07:00" },
 			},
-			followUps: {
-				enabled: true,
-				preset: "default",
-				intervalsMinutes: [1, 3, 5, 10],
-			},
 		}, null, 2) + "\n", "utf-8");
-		log.logInfo("Seeded settings.json (spontaneity level 1; follow-ups default 1/3/5/10 minutes)");
+		log.logInfo("Seeded settings.json (spontaneity level 1; follow-ups opt-in)");
 	}
 }
 

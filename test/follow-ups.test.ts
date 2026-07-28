@@ -8,8 +8,10 @@ import { MomSettingsManager } from "../src/context.js";
 import { parseEventContent } from "../src/events.js";
 import {
 	armPendingFollowUps,
+	cancelFollowUpSchedules,
 	claimFollowUpWake,
 	clearAllFollowUpSchedules,
+	getFollowUpRuntimeStatus,
 	isEligibleFollowUpActivity,
 	noteFollowUpActivity,
 	reconcileFollowUpSchedules,
@@ -18,13 +20,13 @@ import {
 function event(ts: string, overrides: Partial<MomEvent> = {}): MomEvent {
 	return {
 		type: "mention",
-		channel: "C0123456789",
+		channel: "C0000000000",
 		ts,
-		user: "U0123456789",
+		user: "U0000000000",
 		text: "Can you follow up if I go quiet?",
 		directlyAddressed: true,
-		threadTs: "1785194448.101469",
-		replyTarget: "slack:C0123456789:1785194448.101469",
+		threadTs: "1000000000.000001",
+		replyTarget: "slack:C0000000000:1000000000.000001",
 		replyTargetDescription: "Slack thread under the human request",
 		...overrides,
 	};
@@ -51,50 +53,84 @@ try {
 	const preset = new MomSettingsManager(workingDir).getFollowUpSettings();
 	assert.deepEqual(preset, { enabled: true, preset: "default", intervalsMinutes: [1, 3, 5, 10] });
 
-	const first = noteFollowUpActivity(workingDir, event("1785194448.101469"), "slack", new Date("2026-07-27T23:20:00.000Z"));
+	const first = noteFollowUpActivity(workingDir, event("1000000000.000001"), "slack", new Date("2040-01-01T23:20:00.000Z"));
 	assert.equal(first.eligible, true);
 	assert.ok(first.key && first.generation);
-	assert.equal(armPendingFollowUps(workingDir, new Date("2026-07-27T23:21:00.000Z")), 1);
+	assert.equal(getFollowUpRuntimeStatus(workingDir).state, "pending");
+	assert.equal(armPendingFollowUps(workingDir, new Date("2040-01-01T23:21:00.000Z")), 1);
+	const armedStatus = getFollowUpRuntimeStatus(workingDir);
+	assert.equal(armedStatus.state, "scheduled");
+	assert.equal(armedStatus.scheduledWakes, 4);
+	assert.equal(armedStatus.claimedWakes, 0);
+	assert.equal(armedStatus.nextWakeAt, "2040-01-01T23:22:00.000Z");
 	const firstFiles = queueFiles(workingDir);
 	assert.equal(firstFiles.length, 4, "default preset creates a finite four-checkpoint chain");
 	const firstEvents = firstFiles.map((filename) => readQueueEvent(workingDir, filename));
 	assert.deepEqual(firstEvents.map((entry) => entry.at), [
-		"2026-07-27T23:22:00.000Z",
-		"2026-07-27T23:24:00.000Z",
-		"2026-07-27T23:26:00.000Z",
-		"2026-07-27T23:31:00.000Z",
+		"2040-01-01T23:22:00.000Z",
+		"2040-01-01T23:24:00.000Z",
+		"2040-01-01T23:26:00.000Z",
+		"2040-01-01T23:31:00.000Z",
 	]);
-	assert.ok(firstEvents.every((entry) => entry.replyTarget === "slack:C0123456789:1785194448.101469"));
+	assert.ok(firstEvents.every((entry) => entry.replyTarget === "slack:C0000000000:1000000000.000001"));
 	assert.ok(firstEvents.every((entry) => entry.sourceEventType === "follow_up"));
-	assert.ok(firstEvents.every((entry) => !/pedicab|dispatch/i.test(entry.text)), "follow-up prompts remain business-neutral");
 	const parsedFirst = parseEventContent(JSON.stringify(firstEvents[0]));
 	assert.equal(parsedFirst?.sourceEventType, "follow_up", "scheduled parsing preserves the wake classification");
 	assert.deepEqual(parsedFirst?.followUp, firstEvents[0].followUp, "scheduled parsing preserves the generation claim");
-	assert.equal(parsedFirst?.replyTarget, "slack:C0123456789:1785194448.101469", "scheduled parsing preserves the exact reply target");
+	assert.equal(parsedFirst?.replyTarget, "slack:C0000000000:1000000000.000001", "scheduled parsing preserves the exact reply target");
 
 	const firstWake = firstEvents[0].followUp as FollowUpWakeMetadata;
-	assert.equal(claimFollowUpWake(workingDir, firstWake, new Date("2026-07-27T23:22:00.000Z")), true);
-	assert.equal(claimFollowUpWake(workingDir, firstWake, new Date("2026-07-27T23:22:01.000Z")), false, "a claimed wake cannot replay");
+	assert.equal(claimFollowUpWake(workingDir, firstWake, new Date("2040-01-01T23:22:00.000Z")), true);
+	assert.equal(claimFollowUpWake(workingDir, firstWake, new Date("2040-01-01T23:22:01.000Z")), false, "a claimed wake cannot replay");
+	assert.equal(getFollowUpRuntimeStatus(workingDir).claimedWakes, 1, "runtime status exposes durable claims");
 	const finiteCount = queueFiles(workingDir).length;
 	assert.equal(armPendingFollowUps(workingDir), 0, "a follow-up wake does not recursively arm another sequence");
 	assert.equal(queueFiles(workingDir).length, finiteCount, "the finite chain remains bounded after a wake claim");
 
 	const oldSecondWake = firstEvents[1].followUp as FollowUpWakeMetadata;
-	const second = noteFollowUpActivity(workingDir, event("1785194500.000000"), "slack", new Date("2026-07-27T23:22:30.000Z"));
+	const second = noteFollowUpActivity(workingDir, event("1000000001.000001"), "slack", new Date("2040-01-01T23:22:30.000Z"));
 	assert.equal(second.eligible, true);
 	assert.notEqual(second.generation, first.generation, "new human activity replaces the generation immediately");
 	assert.equal(queueFiles(workingDir).length, 0, "new activity cancels the old queue before the next turn finishes");
 	assert.equal(claimFollowUpWake(workingDir, oldSecondWake), false, "already-enqueued stale generations fail closed");
 
-	assert.equal(armPendingFollowUps(workingDir, new Date("2026-07-27T23:23:00.000Z")), 1);
+	assert.equal(armPendingFollowUps(workingDir, new Date("2040-01-01T23:23:00.000Z")), 1);
 	const replacementFiles = queueFiles(workingDir);
 	assert.equal(replacementFiles.length, 4);
 	const removed = replacementFiles[1];
 	unlinkSync(join(attentionQueueDir(workingDir), removed));
-	assert.equal(reconcileFollowUpSchedules(workingDir), 1, "restart reconciliation restores a missing scheduled wake");
+	assert.equal(
+		reconcileFollowUpSchedules(workingDir, new Date("2040-01-01T23:23:01.000Z")),
+		1,
+		"restart reconciliation restores a missing scheduled wake",
+	);
 	assert.ok(existsSync(join(attentionQueueDir(workingDir), removed)));
 
-	const ambient = event("1785194600.000000", { directlyAddressed: false });
+	const replacementEvents = replacementFiles.map((filename) => readQueueEvent(workingDir, filename));
+	const claimedReplacement = replacementEvents[0].followUp as FollowUpWakeMetadata;
+	assert.equal(claimFollowUpWake(workingDir, claimedReplacement, new Date("2040-01-01T23:24:00.000Z")), true);
+	unlinkSync(join(attentionQueueDir(workingDir), replacementFiles[0]));
+	assert.equal(
+		reconcileFollowUpSchedules(workingDir, new Date("2050-01-01T00:00:00.000Z")),
+		3,
+		"downtime longer than the watcher grace window rearms every unclaimed wake",
+	);
+	assert.equal(existsSync(join(attentionQueueDir(workingDir), replacementFiles[0])), false, "claimed wakes are never recreated");
+	const lateStatus = getFollowUpRuntimeStatus(workingDir);
+	assert.equal(lateStatus.claimedWakes, 1);
+	assert.equal(lateStatus.scheduledWakes, 3);
+	assert.equal(lateStatus.nextWakeAt, "2050-01-01T00:00:30.000Z");
+
+	const cancelled = cancelFollowUpSchedules(workingDir);
+	assert.equal(cancelled.claimedWakes, 1);
+	assert.equal(cancelled.scheduledWakes, 3);
+	const afterCancel = getFollowUpRuntimeStatus(workingDir);
+	assert.equal(afterCancel.enabled, true, "explicit cancellation preserves enabled configuration");
+	assert.equal(afterCancel.state, "idle");
+	assert.equal(afterCancel.scheduledWakes, 0);
+	assert.equal(afterCancel.claimedWakes, 0);
+
+	const ambient = event("1000000002.000001", { directlyAddressed: false });
 	assert.equal(isEligibleFollowUpActivity(ambient, "slack"), false, "ambient traffic does not create follow-up sequences");
 	assert.equal(noteFollowUpActivity(workingDir, ambient, "slack").eligible, false);
 	assert.equal(isEligibleFollowUpActivity(event("2", { user: "EVENT", sourceEventType: "follow_up" }), "slack"), false);

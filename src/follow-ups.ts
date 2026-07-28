@@ -17,6 +17,7 @@ import * as log from "./log.js";
 
 const FOLLOW_UP_STATE_DIR = join("attention", "follow-ups");
 const FOLLOW_UP_FILE_PREFIX = "follow-up-";
+const RESTART_REARM_DELAY_MS = 30_000;
 
 interface FollowUpTarget {
 	adapter: string;
@@ -50,6 +51,17 @@ export interface FollowUpActivityResult {
 	eligible: boolean;
 	key?: string;
 	generation?: string;
+}
+
+export interface FollowUpRuntimeStatus {
+	enabled: boolean;
+	preset: MomFollowUpSettings["preset"];
+	intervalsMinutes: number[];
+	state: "disabled" | "idle" | "pending" | "scheduled" | "claimed";
+	pendingSequences: number;
+	scheduledWakes: number;
+	claimedWakes: number;
+	nextWakeAt: string | null;
 }
 
 function stateDir(workingDir: string): string {
@@ -130,6 +142,45 @@ export function clearAllFollowUpSchedules(workingDir: string): void {
 		}
 	}
 	rmSync(stateDir(workingDir), { recursive: true, force: true });
+}
+
+export function getFollowUpRuntimeStatus(workingDir: string): FollowUpRuntimeStatus {
+	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
+	const states = listStates(workingDir);
+	const pendingSequences = states.filter((entry) => entry.state.status === "pending").length;
+	const wakes = states.flatMap((entry) => entry.state.wakes);
+	const scheduled = wakes.filter((wake) => wake.status === "scheduled");
+	const claimedWakes = wakes.filter((wake) => wake.status === "claimed").length;
+	const nextWakeAt = scheduled
+		.map((wake) => wake.at)
+		.filter((at) => Number.isFinite(Date.parse(at)))
+		.sort((a, b) => Date.parse(a) - Date.parse(b))[0] ?? null;
+	const state: FollowUpRuntimeStatus["state"] = !settings.enabled
+		? "disabled"
+		: pendingSequences > 0
+			? "pending"
+			: scheduled.length > 0
+				? "scheduled"
+				: claimedWakes > 0
+					? "claimed"
+					: "idle";
+	return {
+		enabled: settings.enabled,
+		preset: settings.preset,
+		intervalsMinutes: [...settings.intervalsMinutes],
+		state,
+		pendingSequences,
+		scheduledWakes: scheduled.length,
+		claimedWakes,
+		nextWakeAt,
+	};
+}
+
+/** Cancel current sequences without changing the enabled preset or intervals. */
+export function cancelFollowUpSchedules(workingDir: string): FollowUpRuntimeStatus {
+	const previous = getFollowUpRuntimeStatus(workingDir);
+	clearAllFollowUpSchedules(workingDir);
+	return previous;
 }
 
 /**
@@ -263,8 +314,13 @@ export function armPendingFollowUps(workingDir: string, now: Date = new Date()):
 	return armed;
 }
 
-/** Restore missing queue files from authoritative armed state after restart. */
-export function reconcileFollowUpSchedules(workingDir: string): number {
+/**
+ * Restore queue files from authoritative state after restart. Scheduled wakes
+ * remain recoverable regardless of downtime length: an overdue wake is moved a
+ * short distance into the future before the watcher scans it. Claimed wakes
+ * are never recreated.
+ */
+export function reconcileFollowUpSchedules(workingDir: string, now: Date = new Date()): number {
 	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
 	if (!settings.enabled) {
 		clearAllFollowUpSchedules(workingDir);
@@ -273,14 +329,26 @@ export function reconcileFollowUpSchedules(workingDir: string): number {
 	let restored = 0;
 	for (const entry of listStates(workingDir)) {
 		if (entry.state.status === "pending") {
-			armState(workingDir, entry.path, entry.state, settings, new Date());
+			armState(workingDir, entry.path, entry.state, settings, now);
 			restored += settings.intervalsMinutes.length;
 			continue;
 		}
+
+		const rearmedOrdinals = new Set<number>();
+		for (const wake of entry.state.wakes) {
+			if (wake.status !== "scheduled") continue;
+			const atMs = Date.parse(wake.at);
+			if (!Number.isFinite(atMs) || atMs <= now.getTime()) {
+				wake.at = new Date(now.getTime() + RESTART_REARM_DELAY_MS).toISOString();
+				rearmedOrdinals.add(wake.ordinal);
+			}
+		}
+		if (rearmedOrdinals.size > 0) atomicWriteJson(entry.path, entry.state);
+
 		for (const wake of entry.state.wakes) {
 			if (wake.status !== "scheduled") continue;
 			const wakePath = join(attentionQueueDir(workingDir), wake.filename);
-			if (existsSync(wakePath)) continue;
+			if (existsSync(wakePath) && !rearmedOrdinals.has(wake.ordinal)) continue;
 			writeWakeFile(workingDir, entry.state, wake);
 			restored++;
 		}

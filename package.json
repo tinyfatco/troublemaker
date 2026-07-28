@@ -142,7 +142,7 @@
 		"prepublishOnly": "npm run clean && npm run build",
 		"test:google-login-command": "npx tsx test/google-login-command.test.ts",
 		"test:edge-session-preamble": "npx tsx test/edge-session-preamble.test.ts",
-		"test:follow-ups": "npx tsx test/follow-ups.test.ts"
+		"test:follow-ups": "npx tsx test/follow-ups.test.ts && npx tsx test/follow-up-headless.test.ts"
 	},
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.16",
