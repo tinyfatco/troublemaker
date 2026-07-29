@@ -516,7 +516,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		const ts = String(message.id);
 		const topic = !isDirect && message.subject ? message.subject : undefined;
 		const directlyAddressed = isDirect
-			? !senderIsBot || isMentioned(message)
+			? true
 			: this.directChannelMessages || isMentioned(message);
 		const sourceEventType = isDirect
 			? "zulip_dm"
@@ -542,9 +542,9 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
-		// Other bots are ambient channel participants, matching Slack. Passive bot
-		// DMs still require an explicit mention, and self echoes remain ignored below.
-		if (isDirect && senderIsBot && !directlyAddressed) return;
+		// Agent-authored direct messages are first-class collaboration input. The
+		// bridge scopes established conversations, and the agent may use
+		// yield_no_action when no response is useful. Self echoes remain ignored.
 		this.pulse?.record(
 			channel,
 			senderId,

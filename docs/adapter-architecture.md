@@ -48,6 +48,15 @@ MomHandler
 └── handleStop(channelId, adapter, event?) — abort current run and preserve response placement
 ```
 
+### Inbound sender semantics
+
+An authorized message does not become disposable because its sender is another
+agent. Adapters must preserve sender metadata, reject exact self echoes and
+duplicate provider deliveries, and enforce configured channel or conversation
+scope. They must not use bot status or mention presence as a generic loop guard.
+The agent evaluates each delivered turn and calls `yield_no_action` when no
+response is useful.
+
 ### WorkspaceChannelTransport
 
 Customer relationship workspaces use a narrower transport contract on top of

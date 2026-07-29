@@ -62,6 +62,27 @@ describe code behavior only, never a live deployment or interaction.
   change receipts in approved private operations records, never in this public
   repository.
 
+## Agent-authored message and loop-control contract
+
+- Messages from another agent are first-class inbound collaboration when they
+  arrive through an authorized channel or established direct conversation.
+  Never discard, downgrade, or require an extra mention solely because the
+  sender is a bot or agent.
+- Do not add `sender_is_bot`, `isBot`, mention-only, cooldown, previous-speaker,
+  or text-pattern guards as loop prevention. Those heuristics predictably drop
+  handoffs, corrections, capabilities, and completion receipts while still not
+  proving that a real loop exists.
+- Loop control belongs at the agent decision boundary. The receiving agent must
+  evaluate the message and call `yield_no_action` when it has nothing useful to
+  add. A deliberate reply remains available when coordination is required.
+- Transport safety should enforce authenticated self-echo rejection, durable
+  provider-message deduplication, and channel/conversation authorization. Scope
+  established direct conversations by durable conversation identity rather
+  than by whether each later participant is human or automated.
+- Tests for collaborative adapters must cover an unmentioned agent message in
+  an established group DM, exact self-echo rejection, duplicate delivery, and
+  rejection of an unestablished out-of-scope conversation.
+
 ## Voice-control contract
 
 - Derive the initial `hey <agent name>` wake phrase from the workspace

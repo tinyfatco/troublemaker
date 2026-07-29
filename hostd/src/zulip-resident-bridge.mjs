@@ -638,12 +638,19 @@ export class ZulipResidentBridge {
 				return;
 			}
 		} else if (message?.type === "private") {
-			if (this.allowedDmUserIds && !this.allowedDmUserIds.has(senderId)) {
+			// The allowlist establishes a trusted conversation. Once established, every
+			// participant—including another agent—may continue that conversation.
+			const conversation = directConversationFromMessage(message, this.botUserId);
+			const senderIsAllowed = !this.allowedDmUserIds || this.allowedDmUserIds.has(senderId);
+			const conversationIsEstablished = this.knownDirectConversations.has(conversation);
+			if (!senderIsAllowed && !conversationIsEstablished) {
 				complete();
 				return;
 			}
-			this.knownDirectConversations.add(directConversationFromMessage(message, this.botUserId));
-			this.saveState();
+			if (!conversationIsEstablished) {
+				this.knownDirectConversations.add(conversation);
+				this.saveState();
+			}
 		} else {
 			complete();
 			return;

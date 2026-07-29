@@ -242,8 +242,13 @@ suppressing ordinary human posts from waking the Operator.
 The standalone resident bridge can use a broader first-class mode. With no
 static stream allowlist, it follows the bot's current Zulip subscriptions,
 accepts newly subscribed channels without a restart, preserves normal topics,
-and delivers individual or group direct messages. Optional stream and DM-sender
-allowlists retain fail-closed deployments. Native API keys and the full user
+and delivers individual or group direct messages. Optional stream allowlists
+and direct-message conversation establishment retain fail-closed deployments.
+An allowed principal must establish a direct conversation first; after that,
+messages from every participant in that durable conversation, including another
+agent, are delivered without requiring a mention. Sender bot status remains
+context, not an ingress veto. The runtime evaluates the turn and uses
+`yield_no_action` when no reply is useful. Native API keys and the full user
 directory remain bridge-only; the resident receives scoped capabilities,
 subscribed-channel metadata, message participants, and sender bot status.
 
