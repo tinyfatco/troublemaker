@@ -431,7 +431,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			response.end(JSON.stringify({ ok: true, accepted: true }));
 			void withHostReceipt(payload.hostReceipt, async () => {
 				if (!shouldProcess) return;
-				if (message.type !== "private" || this.acceptsDmFrom(String(message.sender_id))) {
+				if (message.type !== "private" || this.directConversationIsInScope(message)) {
 					await this.handleMessage(message, true);
 				}
 				if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
@@ -505,7 +505,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		const ts = String(message.id);
 		const topic = !isDirect && message.subject ? message.subject : undefined;
 		const directlyAddressed = isDirect
-			? !senderIsBot || isMentioned(message)
+			? true
 			: this.directChannelMessages || isMentioned(message);
 		const sourceEventType = isDirect
 			? "zulip_dm"
@@ -531,9 +531,9 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			directlyAddressed,
 			sourceEventType,
 		} as Parameters<ChannelStore["logMessage"]>[0]);
-		// Other bots are ambient channel participants, matching Slack. Passive bot
-		// DMs still require an explicit mention, and self echoes remain ignored below.
-		if (isDirect && senderIsBot && !directlyAddressed) return;
+		// Agent-authored direct messages are first-class collaboration input. The
+		// bridge scopes established conversations, and the agent may use
+		// yield_no_action when no response is useful. Self echoes remain ignored.
 		this.pulse?.record(
 			channel,
 			senderId,
@@ -571,6 +571,11 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 
 	private acceptsDmFrom(userId: string): boolean {
 		return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(userId);
+	}
+
+	private directConversationIsInScope(message: ZulipDirectMessage): boolean {
+		return this.acceptsDmFrom(String(message.sender_id))
+			|| this.channels.has(this.directChannelForMessage(message));
 	}
 
 	private streamIsInScope(channelId: string): boolean {

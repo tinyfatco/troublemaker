@@ -104,6 +104,7 @@ const adapter = new ZulipWebhookAdapter({
 		record: (...args: any[]) => pulseRecords.push(args),
 	} as any,
 	directChannelMessages: false,
+	allowedDmUserIds: ["8"],
 	channelRefreshMs: 20,
 	onAmbientMessage: (_channelId, event) => ambient.push(event),
 });
@@ -573,6 +574,49 @@ try {
 		.filter((record) => record.deliveryId === restartClaimPayload.deliveryId);
 	assert.equal(restartClaimRecords.length, 2);
 	assert.equal(typeof restartClaimRecords[1].completedAt, "string");
+
+	const handledBeforeBotDm = handled.length;
+	const botGroupDmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${INBOUND_TOKEN}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			deliveryId: "delivery-bot-group-dm",
+			message: {
+				id: 150,
+				type: "private",
+				recipient_id: 19,
+				display_recipient: [
+					{ id: 12, email: "teammate-agent@example.com", full_name: "Teammate Agent" },
+					{ id: 9, email: "agent@example.com", full_name: "Operator" },
+					{ id: 8, email: "casey@example.com", full_name: "Casey" },
+				],
+				sender_id: 12,
+				sender_email: "teammate-agent@example.com",
+				sender_full_name: "Teammate Agent",
+				sender_is_bot: true,
+				timestamp: Math.floor(Date.now() / 1000),
+				content: "<p>The verified handoff is ready.</p>",
+				raw_content: "The verified handoff is ready.",
+				is_mentioned: false,
+			},
+			hostReceipt: {
+				url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+				token: RECEIPT_TOKEN,
+				leaseToken: "lease-bot-group-dm",
+			},
+		}),
+	});
+	assert.equal(botGroupDmResponse.status, 202);
+	for (let index = 0; index < 100 && handled.length === handledBeforeBotDm; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(handled.length, handledBeforeBotDm + 1, "an unmentioned agent message in an established group DM starts one direct turn");
+	assert.equal(handled.at(-1).channel, "dm:8,12");
+	assert.equal(handled.at(-1).directlyAddressed, true);
+	assert.equal(handled.at(-1).sourceEventType, "zulip_dm");
 
 	const posted = await adapter.postMessage(CHANNEL_ID, "Customer review is ready.");
 	assert.equal(posted, "100");
