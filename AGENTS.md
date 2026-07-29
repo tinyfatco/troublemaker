@@ -33,6 +33,35 @@ Tests and examples must use unmistakably synthetic fixtures:
 Run `npm run check:public-safety` before every commit. Commit messages must
 describe code behavior only, never a live deployment or interaction.
 
+## Client preview addresses
+
+- Give each client preview a dedicated, descriptive business-specific
+  `*.tinyfat.dev` hostname.
+- Do not use short links, capability URLs, or provider-native deployment URLs
+  as the client-facing handoff address.
+- Internal staging URLs may support verification, but they are not a customer
+  deliverable.
+
+## Direct user-facing communication
+
+- Communicate in plain language and name the actual state of the work.
+- Do not expose internal phase codes, incident shorthand, routing identifiers,
+  or implementation labels in user-facing messages.
+- Say `local build`, `private review preview`, `customer preview`,
+  `production`, `checking`, `working`, or `complete` when that is what you
+  mean.
+
+## Production-data operations
+
+- Do not rediscover, copy, print, or commit live credentials during routine
+  operations.
+- When an owner-authorized production mutation must be performed by a
+  designated infrastructure operator, hand off an exact idempotent operation
+  and require a non-secret verification receipt.
+- Keep real infrastructure names, credential locations, identifiers, and
+  change receipts in approved private operations records, never in this public
+  repository.
+
 ## Voice-control contract
 
 - Derive the initial `hey <agent name>` wake phrase from the workspace
@@ -46,3 +75,6 @@ describe code behavior only, never a live deployment or interaction.
   turn when steering is temporarily unavailable; they never abort active work.
 - Ordinary final responses are never spoken automatically. Preserve explicit
   voice-session TTS and the deliberate `speak` tool.
+
+Commit messages count as public output: describe the behavior change, not the
+live system where it was tested or deployed.
