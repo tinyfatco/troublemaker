@@ -13,6 +13,13 @@ INFO_PLIST="$CONTENTS/Info.plist"
 SWIFT_SOURCE_DIR="$PROJECT_ROOT/mac/TroublemakerMac"
 ICONSET="$PROJECT_ROOT/build/Troublemaker.iconset"
 ICON_GENERATOR="$PROJECT_ROOT/build/generate-t-icon.swift"
+SIGNING_IDENTITY="${TROUBLEMAKER_SIGNING_IDENTITY:-}"
+
+sign_for_local_use() {
+	echo "Using the standard local ad-hoc signature."
+	echo "Warning: macOS privacy permissions may need approval again after a binary rebuild."
+	codesign --force --deep --sign - "$APP_BUNDLE"
+}
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$MACOS" "$RESOURCES"
@@ -138,11 +145,52 @@ cat > "$INFO_PLIST" <<'PLIST'
 </plist>
 PLIST
 
-codesign --force --deep --sign - "$APP_BUNDLE" >/dev/null
+# This bundle was compiled locally. Do not carry execution-policy metadata from
+# a previously rejected signature into the new build.
+xattr -dr com.apple.quarantine "$APP_BUNDLE" 2>/dev/null || true
+xattr -dr com.apple.provenance "$APP_BUNDLE" 2>/dev/null || true
+
+if [ -z "$SIGNING_IDENTITY" ] && command -v security >/dev/null 2>&1; then
+	SIGNING_IDENTITY="$(
+		security find-identity -v -p codesigning 2>/dev/null |
+			awk '$1 ~ /\)$/ { print $2; exit }'
+	)"
+fi
+
+if [ -z "$SIGNING_IDENTITY" ]; then
+	echo "Warning: no code-signing identity found in Keychain."
+	sign_for_local_use
+else
+	echo "Trying code-signing identity: $SIGNING_IDENTITY"
+	if ! CODESIGN_RESULT="$(codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_BUNDLE" 2>&1)"; then
+		echo "Warning: code signing with that identity failed:"
+		echo "         $CODESIGN_RESULT"
+		echo "         Falling back to a local signature."
+		sign_for_local_use
+	elif ! GATEKEEPER_RESULT="$(spctl --assess --type execute --verbose=2 "$APP_BUNDLE" 2>&1)"; then
+		echo "Warning: Gatekeeper rejected that identity:"
+		echo "         $GATEKEEPER_RESULT"
+		echo "         Falling back before launch so macOS does not cache a blocked app."
+		sign_for_local_use
+	fi
+fi
+
+# Signing tools may attach fresh local provenance. Remove it after the final
+# signature too, so a rejected development identity cannot leave execution
+# policy state on the bundle that will be copied into /Applications.
+xattr -dr com.apple.quarantine "$APP_BUNDLE" 2>/dev/null || true
+xattr -dr com.apple.provenance "$APP_BUNDLE" 2>/dev/null || true
+
+echo "Verifying the signed bundle..."
+codesign --verify --deep --strict "$APP_BUNDLE"
+codesign -dr - "$APP_BUNDLE" 2>&1
 
 if [ "${TROUBLEMAKER_SKIP_INSTALL:-0}" != "1" ]; then
 	rm -rf "$INSTALL_APP"
 	ditto "$APP_BUNDLE" "$INSTALL_APP"
+	xattr -dr com.apple.quarantine "$INSTALL_APP" 2>/dev/null || true
+	xattr -dr com.apple.provenance "$INSTALL_APP" 2>/dev/null || true
+	codesign --verify --deep --strict "$INSTALL_APP"
 fi
 
 echo "Built $APP_BUNDLE"
