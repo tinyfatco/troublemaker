@@ -53,6 +53,18 @@ repository.
 ./run-dev.sh
 ```
 
+The installer builds first, then swaps the app bundle transactionally. It
+verifies the installed signature, host architecture, and exact running
+executable before keeping the update; a failed launch restores the previous
+bundle.
+
+When a usable Keychain identity is available, the build tries it and checks the
+result with Gatekeeper. A rejected or revoked identity falls back to a standard
+local ad-hoc signature before launch. Ad-hoc builds start through a user
+`launchctl` job so stale Launch Services malware decisions do not select or
+block an older bundle. Because local ad-hoc identity changes with rebuilt
+binaries, macOS may ask for privacy permissions again after an update.
+
 Defaults:
 
 ```text
