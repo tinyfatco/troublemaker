@@ -106,7 +106,9 @@ function channelNameForEntry(entry: LogEntry): string {
 	return channel.startsWith("slack:#") ? channel.slice("slack:#".length) : entry.channelId || "unknown";
 }
 
-function normalizeText(text: unknown, maxLength = 1000): string {
+const DEFAULT_MAX_MESSAGE_CHARACTERS = 40_000;
+
+function normalizeText(text: unknown, maxLength = DEFAULT_MAX_MESSAGE_CHARACTERS): string {
 	if (typeof text !== "string") return "";
 	const normalized = text.replace(/\s+/g, " ").trim();
 	if (normalized.length <= maxLength) return normalized;

@@ -70,7 +70,7 @@ try {
 			channel: "slack:#tinyfat",
 			channelId: "C0123456789",
 			userName: "agent",
-			text: "I will check deploy QA in this thread.",
+			text: `I will check deploy QA in this thread. ${"context ".repeat(180)}COMPLETE HANDOFF END`,
 			isBot: true,
 		},
 		{
@@ -231,6 +231,8 @@ try {
 	assert(!first?.messages.some((m) => m.text.includes("product feedback")), "first transcript excludes second thread nuance");
 	assert(first?.messages[0]?.isRoot === true, "root message is marked root");
 	assert(first?.messages[1]?.isBot === true, "bot reply is marked Agent context");
+	assert(first?.messages[1]?.text.endsWith("COMPLETE HANDOFF END"), "read_thread preserves the end of provider-sized agent messages");
+	assert((first?.messages[1]?.text.length || 0) > 1000, "read_thread no longer clips messages at the old 1,000-character boundary");
 	assert(second?.messages.length === 2, "second thread transcript includes second thread messages");
 	assert(second?.messages.some((m) => m.text.includes("thread replies less noisy")), "second transcript preserves follow-up nuance");
 	assert(missing?.messages.length === 0, "valid but unseen thread returns an empty transcript");

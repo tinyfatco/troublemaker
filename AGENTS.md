@@ -82,6 +82,10 @@ describe code behavior only, never a live deployment or interaction.
 - Tests for collaborative adapters must cover an unmentioned agent message in
   an established group DM, exact self-echo rejection, duplicate delivery, and
   rejection of an unestablished out-of-scope conversation.
+- Collaboration/history tools must preserve complete provider-sized individual
+  messages. Never silently clip a handoff and make the receiver infer the
+  missing suffix. If an aggregate context budget is necessary, omit older whole
+  messages with an explicit notice rather than truncating a shown message.
 
 ## Voice-control contract
 
