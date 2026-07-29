@@ -309,7 +309,7 @@ try {
 		recipient_id: 13,
 		display_recipient: [
 			{ id: 8, email: "alex@example.com", full_name: "Alex" },
-			{ id: 12, email: "teammate@example.com", full_name: "Teammate" },
+			{ id: OTHER_BOT_USER_ID, email: "other-agent@example.com", full_name: "Other Agent" },
 			{ id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent" },
 		],
 		content: "<p>Group direct hello.</p>",
@@ -320,7 +320,7 @@ try {
 	assert.equal(inboundDeliveries[3].message.type, "private");
 	assert.deepEqual(
 		JSON.parse(readFileSync(statePath, "utf8")).knownDirectConversations,
-		["dm:8", "dm:8,12"],
+		["dm:8", "dm:8,10"],
 	);
 
 	subscriptions.push({ stream_id: 5, name: "Projects", topics_policy: "disable_empty_topic" });
@@ -415,6 +415,69 @@ try {
 		"expedited stop delivery remains deduplicated",
 	);
 
+	const establishedAgentMessage = {
+		...groupDirectMessage,
+		id: 59,
+		sender_id: OTHER_BOT_USER_ID,
+		sender_email: "other-agent@example.com",
+		sender_full_name: "Other Agent",
+		content: "<p>The verified handoff is ready.</p>",
+		raw_content: "The verified handoff is ready.",
+	};
+	messages.set(establishedAgentMessage.id, establishedAgentMessage);
+	events.push({ id: 9, type: "message", message: establishedAgentMessage });
+	await waitFor(
+		() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:59"),
+		"agent message in an established direct conversation",
+	);
+	const establishedAgentDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:59");
+	assert.equal(establishedAgentDelivery.message.sender_is_bot, true);
+	assert.equal(establishedAgentDelivery.message.raw_content, "The verified handoff is ready.");
+
+	const unknownAgentDirectMessage = {
+		...establishedAgentMessage,
+		id: 60,
+		recipient_id: 14,
+		display_recipient: [
+			{ id: OTHER_BOT_USER_ID, email: "other-agent@example.com", full_name: "Other Agent" },
+			{ id: BOT_USER_ID, email: NATIVE_EMAIL, full_name: "Agent" },
+		],
+		content: "<p>Unestablished direct attempt.</p>",
+		raw_content: "Unestablished direct attempt.",
+	};
+	messages.set(unknownAgentDirectMessage.id, unknownAgentDirectMessage);
+	events.push({ id: 10, type: "message", message: unknownAgentDirectMessage });
+	await waitFor(
+		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 60,
+		"unestablished direct-message cursor",
+	);
+	assert.equal(
+		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:60"),
+		false,
+		"an unestablished agent-only DM remains outside the allowlisted conversation scope",
+	);
+
+	const selfEchoMessage = {
+		...groupDirectMessage,
+		id: 61,
+		sender_id: BOT_USER_ID,
+		sender_email: NATIVE_EMAIL,
+		sender_full_name: "Agent",
+		content: "<p>Resident echo.</p>",
+		raw_content: "Resident echo.",
+	};
+	messages.set(selfEchoMessage.id, selfEchoMessage);
+	events.push({ id: 11, type: "message", message: selfEchoMessage });
+	await waitFor(
+		() => JSON.parse(readFileSync(statePath, "utf8")).lastMessageId === 61,
+		"resident self-echo cursor",
+	);
+	assert.equal(
+		inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:61"),
+		false,
+		"the authenticated resident's own echo remains ignored",
+	);
+
 	const proxyAuthorization = { authorization: `Bearer ${PROXY_TOKEN}` };
 	const meResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, { headers: proxyAuthorization });
 	assert.equal(meResponse.status, 200);
@@ -448,11 +511,11 @@ try {
 	const groupDirectSent = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
 		method: "POST",
 		headers: proxyAuthorization,
-		body: new URLSearchParams({ type: "direct", to: JSON.stringify([12, 8]), content: "Group reply" }),
+		body: new URLSearchParams({ type: "direct", to: JSON.stringify([OTHER_BOT_USER_ID, 8]), content: "Group reply" }),
 	});
 	assert.equal(groupDirectSent.status, 200);
 	assert.equal(outbound.at(-1).type, "direct");
-	assert.equal(outbound.at(-1).to, "[8,12]");
+	assert.equal(outbound.at(-1).to, "[8,10]");
 
 	expireNextPoll = true;
 	await waitFor(() => registerCount >= 2, "expired queue recovery");
@@ -465,7 +528,7 @@ try {
 	};
 	messages.set(mentionMessage.id, mentionMessage);
 	const { flags: _detailOnlyFlags, ...mentionEventMessage } = mentionMessage;
-	events.push({ id: 9, type: "message", message: mentionEventMessage });
+	events.push({ id: 12, type: "message", message: mentionEventMessage });
 	await waitFor(() => inboundDeliveries.some((delivery) => delivery.deliveryId === "zulip:201"), "mention delivery after recovery");
 	const mentionDelivery = inboundDeliveries.find((delivery) => delivery.deliveryId === "zulip:201");
 	assert.deepEqual(mentionDelivery.message.flags, ["mentioned"]);
