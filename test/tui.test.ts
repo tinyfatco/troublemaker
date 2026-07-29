@@ -3,6 +3,9 @@ import { mkdtemp, mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createTuiUserMessage } from "../src/tui/app.js";
 import { TroublemakerTuiClient } from "../src/tui/client.js";
 import {
 	installTuiProfile,
@@ -26,6 +29,18 @@ import { parseVisibleUserInputs } from "../src/user-input-display.js";
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
 try {
+	initTheme(undefined, false);
+	const compactUserMessageRender = createTuiUserMessage("Compact user message").render(80);
+	const compactUserMessageLines = compactUserMessageRender.map((line) => stripVTControlCharacters(line));
+	assert.equal(
+		compactUserMessageLines.length,
+		1,
+		"terminal user messages render without blank top or bottom padding rows",
+	);
+	assert.equal(compactUserMessageLines[0]?.trim(), "Compact user message");
+	assert.ok(compactUserMessageRender[0]?.startsWith("\x1b]133;A\x07"));
+	assert.ok(compactUserMessageRender.at(-1)?.endsWith("\x1b]133;B\x07\x1b]133;C\x07"));
+
 	const executablePath = join(tempRoot, "dist", "tui.js");
 	const configPath = join(tempRoot, "config", "tui.json");
 	const binDir = join(tempRoot, "bin");
