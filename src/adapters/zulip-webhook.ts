@@ -434,7 +434,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 					await receipt.markRunning();
 					return;
 				}
-				if (message.type !== "private" || this.acceptsDmFrom(String(message.sender_id))) {
+				if (message.type !== "private" || this.directConversationIsInScope(message)) {
 					await this.handleMessage(message, true, receipt.markRunning);
 				} else {
 					await receipt.markRunning();
@@ -584,6 +584,11 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 
 	private acceptsDmFrom(userId: string): boolean {
 		return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(userId);
+	}
+
+	private directConversationIsInScope(message: ZulipDirectMessage): boolean {
+		return this.acceptsDmFrom(String(message.sender_id))
+			|| this.channels.has(this.directChannelForMessage(message));
 	}
 
 	private streamIsInScope(channelId: string): boolean {
