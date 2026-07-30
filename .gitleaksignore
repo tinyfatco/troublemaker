@@ -1,0 +1,8 @@
+# Deterministic synthetic Mattermost fixture IDs in historical example and test commits.
+6cfe4bc48e8d2c2c642357119b970a6d6accb37e:.env.example:mattermost-access-token:16
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/list-channels.test.ts:mattermost-access-token:166
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/read-thread.test.ts:mattermost-access-token:45
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/read-thread.test.ts:mattermost-access-token:46
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/read-thread.test.ts:mattermost-access-token:47
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/send-message.test.ts:mattermost-access-token:98
+8896b7a976544428c638bc6bdaff5d1fd74e19ea:test/send-message.test.ts:mattermost-access-token:99

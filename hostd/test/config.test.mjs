@@ -22,6 +22,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	const path = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const config = await loadConfig(path, ENVIRONMENT);
 
+	assert.deepEqual(config.gmail.internalDomains, ["internal.example.com"]);
 	assert.deepEqual(config.gmail.alwaysCc, ["archive@example.com"]);
 	assert.deepEqual(config.gmail.alwaysTo, ["owner@example.com"]);
 	assert.deepEqual(config.gmail.contactRelays, [{
@@ -118,6 +119,28 @@ test("rejects Gmail-only runtime tools on a phone-only host", async () => {
 			loadConfig(path, ENVIRONMENT),
 			/targets cannot enable gmailToolsOnly when Gmail is not configured/,
 		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("requires unique valid Gmail internal domains", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-gmail-internal-domains-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		for (const [internalDomains, expected] of [
+			[undefined, /gmail.internalDomains must contain at least one domain/],
+			[[], /gmail.internalDomains must contain at least one domain/],
+			[["not a domain"], /gmail.internalDomains\[0\] must be a domain name/],
+			[["internal.example.com", "INTERNAL.EXAMPLE.COM"], /gmail.internalDomains cannot repeat a domain/],
+		]) {
+			if (internalDomains === undefined) delete raw.gmail.internalDomains;
+			else raw.gmail.internalDomains = internalDomains;
+			await writeFile(path, JSON.stringify(raw));
+			await assert.rejects(loadConfig(path, ENVIRONMENT), expected);
+		}
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

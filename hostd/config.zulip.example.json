@@ -14,6 +14,9 @@
   },
   "gmail": {
     "account": "agent@example.com",
+    "internalDomains": [
+      "internal.example.com"
+    ],
     "gogPath": "/usr/local/bin/gog",
     "pollIntervalSeconds": 60,
     "overlapSeconds": 900,

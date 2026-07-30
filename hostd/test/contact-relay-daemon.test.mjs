@@ -41,6 +41,7 @@ test("Gmail remains canonical while repeat form submissions reuse one email-scop
 	const config = {
 		gmail: {
 			account: "howdy@example.com",
+			internalDomains: ["internal.example.com"],
 			overlapSeconds: 900,
 			contactRelays: [{
 				sender: "noreply@example.com",

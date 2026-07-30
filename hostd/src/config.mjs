@@ -170,6 +170,29 @@ function emailArray(value, label) {
 	return value.map((candidate, index) => normalizeAddress(candidate, `${label}[${index}]`));
 }
 
+function normalizeDomain(value, label) {
+	const domain = text(value, label).toLowerCase();
+	if (domain.length > 253 || !domain.includes(".")) {
+		throw new Error(`${label} must be a domain name`);
+	}
+	const labels = domain.split(".");
+	if (labels.some((candidate) => (
+		candidate.length === 0
+		|| candidate.length > 63
+		|| !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(candidate)
+	))) {
+		throw new Error(`${label} must be a domain name`);
+	}
+	return domain;
+}
+
+function domainArray(value, label) {
+	if (!Array.isArray(value) || value.length === 0) {
+		throw new Error(`${label} must contain at least one domain`);
+	}
+	return value.map((candidate, index) => normalizeDomain(candidate, `${label}[${index}]`));
+}
+
 function contactRelayConfig(raw, index, environment) {
 	const relay = object(raw, `gmail.contactRelays[${index}]`);
 	const project = object(relay.project, `gmail.contactRelays[${index}].project`);
@@ -391,8 +414,12 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("gmail.contactRelays cannot repeat a sender");
 	}
 	const gmailAccount = gmail ? normalizeAddress(gmail.account, "gmail.account") : undefined;
+	const internalDomains = gmail ? domainArray(gmail.internalDomains, "gmail.internalDomains") : [];
 	const alwaysTo = gmail ? emailArray(gmail.alwaysTo, "gmail.alwaysTo") : [];
 	const alwaysCc = gmail ? emailArray(gmail.alwaysCc, "gmail.alwaysCc") : [];
+	if (new Set(internalDomains).size !== internalDomains.length) {
+		throw new Error("gmail.internalDomains cannot repeat a domain");
+	}
 	if (new Set(alwaysTo).size !== alwaysTo.length) {
 		throw new Error("gmail.alwaysTo cannot repeat an address");
 	}
@@ -444,6 +471,7 @@ export async function loadConfig(path, environment = process.env) {
 		},
 		gmail: gmail ? {
 			account: gmailAccount,
+			internalDomains,
 			gogPath: resolve(text(gmail.gogPath ?? "/usr/local/bin/gog", "gmail.gogPath")),
 			pollIntervalSeconds: integer(gmail.pollIntervalSeconds, 60, "gmail.pollIntervalSeconds", 15, 3600),
 			overlapSeconds: integer(gmail.overlapSeconds, 900, "gmail.overlapSeconds", 60, 86400),
