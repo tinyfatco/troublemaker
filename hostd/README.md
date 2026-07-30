@@ -121,6 +121,12 @@ principal and may supply a display label. A matching relay sender with missing,
 invalid, or mismatched signature headers is quarantined. The form never calls
 the operator workspace directly.
 
+Host-owned `gmail.alwaysTo` recipients are added to every scoped draft as
+visible To participants, while `gmail.alwaysCc` recipients remain visible Cc
+participants. Runtimes cannot add, remove, or replace either list. Hostd binds
+both recipient sets before send and emits matching plain-text and minimal HTML
+alternatives without imposing a fixed content width.
+
 The customer email is the durable identity. On its first verified submission,
 Hostd lazily creates a new principal/project context and a fresh private
 operator channel. Later native threads and form submissions from the same

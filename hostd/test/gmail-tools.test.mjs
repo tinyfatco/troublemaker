@@ -71,7 +71,7 @@ function fakeGmail() {
 				draftId,
 				messageId: `draft-message-${number}`,
 				threadId,
-				to: [input.to],
+				to: [...input.to],
 				cc: [...(input.cc || [])],
 				bcc: [],
 				replyTo: [],
@@ -86,7 +86,7 @@ function fakeGmail() {
 			const current = drafts.get(draftId);
 			if (!current) throw new Error("missing fake draft");
 			Object.assign(current, {
-				to: [input.to],
+				to: [...input.to],
 				cc: [...(input.cc || [])],
 				subject: input.subject,
 				body: input.body,
@@ -147,7 +147,11 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 	};
 	const config = {
 		server: {},
-		gmail: { account: "agent@example.com", alwaysCc: ["archive@example.com"] },
+		gmail: {
+			account: "agent@example.com",
+			alwaysTo: ["operator@example.com"],
+			alwaysCc: ["archive@example.com"],
+		},
 		mattermost: {},
 		routing: { actorTarget: "front-desk", knownPrincipals: [] },
 		targetsById: new Map([["front-desk", target]]),
@@ -254,7 +258,7 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		});
 		assert.equal(updated.response.status, 200);
 		assert.equal(gmail.updated.length, 1);
-		assert.equal(gmail.updated[0].to, "owner@example.com");
+		assert.deepEqual(gmail.updated[0].to, ["owner@example.com", "operator@example.com"]);
 		assert.deepEqual(gmail.updated[0].cc, ["archive@example.com"]);
 		assert.equal(gmail.updated[0].subject, "Requested follow-up");
 
@@ -268,6 +272,16 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		assert.equal(tampered.body.error, "draft_binding_changed");
 		assert.equal(gmail.sent.length, 0);
 		gmail.drafts.get("draft-1").cc = ["archive@example.com"];
+		gmail.drafts.get("draft-1").to = ["owner@example.com"];
+		const missingOwner = await post(base, "/v1/gmail/send", ownerToken, {
+			context_id: owner.contextId,
+			idempotency_key: "send-missing-owner",
+			draft_id: "draft-1",
+		});
+		assert.equal(missingOwner.response.status, 409);
+		assert.equal(missingOwner.body.error, "draft_binding_changed");
+		assert.equal(gmail.sent.length, 0);
+		gmail.drafts.get("draft-1").to = ["owner@example.com", "operator@example.com"];
 
 		const sent = await post(base, "/v1/gmail/send", ownerToken, {
 			context_id: owner.contextId,
@@ -338,7 +352,7 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 		assert.equal(replyDraft.response.status, 200);
 		assert.equal(replyDraft.body.thread_id, "thread-owner");
 		assert.deepEqual(gmail.created[1], {
-			to: "owner@example.com",
+			to: ["owner@example.com", "operator@example.com"],
 			cc: ["archive@example.com", "collaborator@example.com", "reviewer@example.com"],
 			subject: "Re: Owner request",
 			body: "Reply body",
@@ -348,6 +362,10 @@ test("Gmail tools keep search, read, draft, and send inside one verified context
 			"archive@example.com",
 			"collaborator@example.com",
 			"reviewer@example.com",
+		]);
+		assert.deepEqual(store.getGmailDraft("draft-2").toAddresses, [
+			"owner@example.com",
+			"operator@example.com",
 		]);
 
 		gmail.uncertainSends.add("draft-2");

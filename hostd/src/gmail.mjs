@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { plainTextEmailHtml } from "./email-body.mjs";
 import { emailAddresses } from "./security.mjs";
 
 const READ_COMMANDS = "gmail.messages.search,gmail.search,gmail.get,gmail.thread.get,gmail.mark-read,gmail.drafts.get";
@@ -233,6 +234,7 @@ export class GogGmail {
 	}
 
 	async createDraft({ to, cc = [], subject, body, replyToMessageId }) {
+		const toAddresses = Array.isArray(to) ? to : [to];
 		const parsed = await this.json([
 			"gmail",
 			"drafts",
@@ -240,13 +242,15 @@ export class GogGmail {
 			"--account",
 			this.account,
 			"--to",
-			to,
+			toAddresses.join(","),
 			...(cc.length > 0 ? ["--cc", cc.join(",")] : []),
 			"--subject",
 			subject,
 			...(replyToMessageId ? ["--reply-to-message-id", replyToMessageId] : []),
 			"--body-file",
 			"-",
+			"--body-html",
+			plainTextEmailHtml(body),
 		], {
 			commands: DRAFT_WRITE_COMMANDS,
 			input: body,
@@ -260,6 +264,7 @@ export class GogGmail {
 	}
 
 	async updateDraft(draftId, { to, cc = [], subject, body, replyToMessageId }) {
+		const toAddresses = Array.isArray(to) ? to : [to];
 		const parsed = await this.json([
 			"gmail",
 			"drafts",
@@ -268,13 +273,15 @@ export class GogGmail {
 			this.account,
 			draftId,
 			"--to",
-			to,
+			toAddresses.join(","),
 			...(cc.length > 0 ? ["--cc", cc.join(",")] : []),
 			"--subject",
 			subject,
 			...(replyToMessageId ? ["--reply-to-message-id", replyToMessageId] : []),
 			"--body-file",
 			"-",
+			"--body-html",
+			plainTextEmailHtml(body),
 		], {
 			commands: DRAFT_WRITE_COMMANDS,
 			input: body,
@@ -344,6 +351,8 @@ export class GogGmail {
 			"--quote",
 			"--body-file",
 			"-",
+			"--body-html",
+			plainTextEmailHtml(body),
 		], {
 			commands: DIRECT_SEND_COMMANDS,
 			allowSend: true,

@@ -37,7 +37,7 @@ if (has("gmail", "search")) {
   console.log(JSON.stringify({ draftId: "draft-1", threadId: "thread-1", message: { id: "draft-message-1", threadId: "thread-1" } }));
 } else if (has("drafts", "get")) {
   console.log(JSON.stringify({ draft: { id: "draft-1", message: { id: "draft-message-1", threadId: "thread-1", payload: { mimeType: "text/plain", headers: [
-    { name: "To", value: "person@example.com" },
+    { name: "To", value: "person@example.com, owner@example.com" },
     { name: "Cc", value: "archive@example.com" },
     { name: "Subject", value: "Example" }
   ], body: { data: Buffer.from("Draft body").toString("base64url") } } } } }));
@@ -89,7 +89,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			body: "Thread body",
 		}]);
 		assert.deepEqual(await gmail.createDraft({
-			to: "person@example.com",
+			to: ["person@example.com", "owner@example.com"],
 			cc: ["archive@example.com"],
 			subject: "Example",
 			body: "Draft body",
@@ -99,7 +99,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			draftId: "draft-1",
 			messageId: "draft-message-1",
 			threadId: "thread-1",
-			to: ["person@example.com"],
+			to: ["person@example.com", "owner@example.com"],
 			cc: ["archive@example.com"],
 			bcc: [],
 			replyTo: [],
@@ -116,7 +116,14 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 		assert.ok(create.args.includes("--enable-commands=gmail.drafts.create,gmail.drafts.update,gmail.drafts.delete"));
 		assert.equal(create.input, "Draft body");
 		assert.ok(create.args.includes("--reply-to-message-id"));
+		assert.equal(
+			create.args.at(create.args.indexOf("--to") + 1),
+			"person@example.com,owner@example.com",
+		);
 		assert.equal(create.args.at(create.args.indexOf("--cc") + 1), "archive@example.com");
+		const bodyHtml = create.args.at(create.args.indexOf("--body-html") + 1);
+		assert.ok(bodyHtml.includes("<body style=\"margin:0;padding:0\">"));
+		assert.ok(!bodyHtml.includes("max-width"));
 
 		const send = calls.find((call) => call.args.includes("send"));
 		assert.ok(!send.args.includes("--gmail-no-send"));
