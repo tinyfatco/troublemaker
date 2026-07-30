@@ -5,13 +5,15 @@
  * there is nothing to say or do. The run terminates cleanly, no message
  * is posted to the channel, and the working message (if any) is deleted.
  *
- * Primary use case: ambient engagement. The agent wakes up, reads the
- * channel, decides it has nothing to add, and yields.
+ * This is the decision-boundary loop control for ambient, heartbeat, and
+ * agent-authored turns. It never suppresses input: the agent evaluates the
+ * message first, then yields only when no substantive response is needed.
  */
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import * as log from "../log.js";
+import { YIELD_NO_ACTION_TOOL_DESCRIPTION } from "../yield-contract.js";
 
 /** Shared flag — set by the tool, read by agent.ts after the run. */
 let yielded = false;
@@ -41,12 +43,7 @@ export function createYieldNoActionTool(): AgentTool<any> {
 	return {
 		name: "yield_no_action",
 		label: "yield_no_action",
-		description:
-			"End this run without posting any message to the channel. ONLY use this during ambient " +
-			"engagement or heartbeat reflections — when you were NOT directly addressed by a person " +
-			"and you have evaluated the conversation and decided you have nothing to contribute. " +
-			"NEVER call this when someone has @mentioned you, sent you a DM, or is directly talking " +
-			"to you — in those cases you MUST respond, even if briefly.",
+		description: YIELD_NO_ACTION_TOOL_DESCRIPTION,
 		parameters: schema,
 		execute: async (
 			_toolCallId: string,

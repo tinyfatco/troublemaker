@@ -14,6 +14,7 @@ import {
 import { Check, Errors } from "typebox/value";
 import * as log from "./log.js";
 import { enforceRequiredToolLabels } from "./tools/tool-label.js";
+import { TROUBLEMAKER_MCP_INSTRUCTIONS } from "./yield-contract.js";
 import {
 	type ToolOutputEvent,
 	withToolOutputStream,
@@ -94,9 +95,7 @@ function createProtocolServer(options: ClaudeCliMcpBridgeOptions): McpProtocolSe
 		{ name: "troublemaker", version: "1.0.0" },
 		{
 			capabilities: { tools: {} },
-			instructions:
-				"Use these Troublemaker runtime tools for all computer actions and user-visible delivery. " +
-				"Use send_message for visible replies, react_to_message for exact Slack-message reactions, and yield_no_action for silent ambient completion.",
+			instructions: TROUBLEMAKER_MCP_INSTRUCTIONS,
 		},
 	);
 

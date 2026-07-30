@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { buildSystemPrompt } from "../src/core/prompt.js";
 import { createExecutor } from "../src/sandbox.js";
+import { YIELD_NO_ACTION_CONTRACT } from "../src/yield-contract.js";
 
 const prompt = buildSystemPrompt(
 	"/data",
@@ -41,6 +42,9 @@ assert(prompt.includes("busy voice-webhook routing (interrupt or steer)"), "syst
 assert(prompt.includes("set it to true only when its safe human-readable label"), "system prompt limits show:true to meaningful safe labels");
 assert(prompt.includes("never put secrets, raw arguments, private content, or sensitive paths"), "system prompt protects surfaced labels from sensitive content");
 assert(prompt.includes("yield_no_action"), "system prompt names yield_no_action");
+assert(prompt.includes(YIELD_NO_ACTION_CONTRACT), "system prompt carries the canonical evaluated-silence contract");
+assert(prompt.includes("agent-authored DM or group DM may end with `yield_no_action`"), "system prompt permits quiet direct-agent closure");
+assert(prompt.includes("human-authored DM, @mention, or direct request always requires a user-visible response"), "system prompt keeps human direct response mandatory");
 assert(prompt.includes("Active runtime model: test-provider/test-model"), "system prompt includes the exact active model identity");
 assert(!prompt.includes("Use `ping`"), "system prompt no longer instructs the ping tool");
 assert(!prompt.includes("ping (cross-channel messaging)"), "system prompt no longer lists ping as cross-channel messaging");
