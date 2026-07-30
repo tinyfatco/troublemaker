@@ -3,11 +3,14 @@ import {
 	ContactRelayVerificationError,
 	resolveInboundPrincipal,
 } from "./contact-relay.mjs";
-import { emailAddresses } from "./security.mjs";
+import {
+	GmailEnvelopeParticipantError,
+	normalizedGmailHeaderMailboxes,
+	resolveGmailEnvelopeParticipant,
+} from "./gmail-envelope.mjs";
 import { RouteParticipantDeniedError } from "./router.mjs";
 
-function suppressionReason(headers, account) {
-	const senders = emailAddresses(headers.from || "");
+function suppressionReason(headers, account, senders) {
 	if (senders.length !== 1) return "ambiguous_sender";
 	const sender = senders[0];
 	if (sender === account.toLowerCase()) return "self_mail";
@@ -96,7 +99,19 @@ export class InboxDaemon {
 
 			for (const message of fresh) {
 				const metadata = await this.gmail.getMetadata(message.id);
-				const reason = suppressionReason(metadata, this.config.gmail.account);
+				let senders;
+				try {
+					senders = normalizedGmailHeaderMailboxes(metadata.from || "");
+				} catch (error) {
+					if (!(error instanceof GmailEnvelopeParticipantError)) throw error;
+					this.store.markSeen("gmail", message.id, `quarantined:${error.code}`);
+					quarantined++;
+					console.warn(
+						`troublemaker-hostd: quarantined Gmail message ${message.id}; ${error.message}`,
+					);
+					continue;
+				}
+				const reason = suppressionReason(metadata, this.config.gmail.account, senders);
 				if (reason) {
 					this.store.markSeen("gmail", message.id, `suppressed:${reason}`);
 					suppressed++;
@@ -104,7 +119,7 @@ export class InboxDaemon {
 					continue;
 				}
 
-				const sender = emailAddresses(metadata.from || "")[0];
+				const sender = senders[0];
 				if (!sender) throw new Error(`Gmail message ${message.id} has no verified sender`);
 				let inbound;
 				try {
@@ -121,6 +136,26 @@ export class InboxDaemon {
 						`troublemaker-hostd: quarantined Gmail message ${message.id}; contact relay verification failed`,
 					);
 					continue;
+				}
+				if (!inbound.relay) {
+					try {
+						inbound = {
+							...inbound,
+							principalEmail: resolveGmailEnvelopeParticipant({
+								headers: metadata,
+								account: this.config.gmail.account,
+								internalDomains: this.config.gmail.internalDomains,
+							}),
+						};
+					} catch (error) {
+						if (!(error instanceof GmailEnvelopeParticipantError)) throw error;
+						this.store.markSeen("gmail", message.id, `quarantined:${error.code}`);
+						quarantined++;
+						console.warn(
+							`troublemaker-hostd: quarantined Gmail message ${message.id}; ${error.message}`,
+						);
+						continue;
+					}
 				}
 				let route;
 				try {

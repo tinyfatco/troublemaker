@@ -52,15 +52,21 @@ on loopback only. Do not expose the host API or child gateway ports publicly.
 
 ## Routing
 
-An existing native thread binding only wins when the current sender is an
-explicit participant in that binding. An unexpected sender is quarantined and
-left unread; it cannot inherit or rebind another principal's context. A new
-sender becomes a private principal. A new thread routes to that principal's
-sole known project when
-there is exactly one, otherwise it routes to the principal's private `intake`
-scope. Project membership is control-plane configuration: runtimes cannot name,
-move, or merge their own scope. There is no global customer context and no
-privileged master runtime.
+Ordinary Gmail identity comes only from normalized `From`, `To`, and `Cc`
+envelope headers. Hostd removes the configured inbox and every exact domain in
+`gmail.internalDomains`, then requires exactly one external address. Zero or
+multiple external candidates are durably quarantined and left unread before a
+principal, route, context, or event can be created. Message bodies and quoted
+text never supply routing identity.
+
+An existing native thread binding only wins when that one external participant
+is already explicit in the binding. An unexpected participant is quarantined
+and left unread; it cannot inherit or rebind another principal's context. A new
+external participant becomes a private principal. A new thread routes to that
+principal's sole known project when there is exactly one, otherwise it routes
+to the principal's private `intake` scope. Project membership is control-plane
+configuration: runtimes cannot name, move, or merge their own scope. There is
+no global customer context and no privileged master runtime.
 
 ```json
 {
@@ -115,11 +121,12 @@ in host configuration or a private operations repository.
 
 Website forms and other server-owned relays still enter through the native
 Gmail inbox. Configure a `gmail.contactRelays` entry with the relay sender,
-shared HMAC secret environment variable, and control-plane-owned project. A
-verified relay may substitute its one exact `Reply-To` address as the customer
-principal and may supply a display label. A matching relay sender with missing,
-invalid, or mismatched signature headers is quarantined. The form never calls
-the operator workspace directly.
+shared HMAC secret environment variable, and control-plane-owned project. This
+verified path remains separate from ordinary envelope candidate selection. A
+verified relay may substitute its one exact signed `Reply-To` address as the
+customer principal and may supply a display label. A matching relay sender with
+missing, invalid, or mismatched signature headers is quarantined. The form
+never calls the operator workspace directly.
 
 Host-owned `gmail.alwaysTo` recipients are added to every scoped draft as
 visible To participants, while `gmail.alwaysCc` recipients remain visible Cc
