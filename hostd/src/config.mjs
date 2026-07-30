@@ -391,12 +391,22 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("gmail.contactRelays cannot repeat a sender");
 	}
 	const gmailAccount = gmail ? normalizeAddress(gmail.account, "gmail.account") : undefined;
+	const alwaysTo = gmail ? emailArray(gmail.alwaysTo, "gmail.alwaysTo") : [];
 	const alwaysCc = gmail ? emailArray(gmail.alwaysCc, "gmail.alwaysCc") : [];
+	if (new Set(alwaysTo).size !== alwaysTo.length) {
+		throw new Error("gmail.alwaysTo cannot repeat an address");
+	}
 	if (new Set(alwaysCc).size !== alwaysCc.length) {
 		throw new Error("gmail.alwaysCc cannot repeat an address");
 	}
+	if (gmailAccount && alwaysTo.includes(gmailAccount)) {
+		throw new Error("gmail.alwaysTo cannot include gmail.account");
+	}
 	if (gmailAccount && alwaysCc.includes(gmailAccount)) {
 		throw new Error("gmail.alwaysCc cannot include gmail.account");
+	}
+	if (alwaysTo.some((address) => alwaysCc.includes(address))) {
+		throw new Error("gmail.alwaysTo and gmail.alwaysCc cannot overlap");
 	}
 	if ([mattermost, rocketChat, zulip].filter(Boolean).length > 1) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
@@ -437,6 +447,7 @@ export async function loadConfig(path, environment = process.env) {
 			gogPath: resolve(text(gmail.gogPath ?? "/usr/local/bin/gog", "gmail.gogPath")),
 			pollIntervalSeconds: integer(gmail.pollIntervalSeconds, 60, "gmail.pollIntervalSeconds", 15, 3600),
 			overlapSeconds: integer(gmail.overlapSeconds, 900, "gmail.overlapSeconds", 60, 86400),
+			alwaysTo,
 			alwaysCc,
 			contactRelays,
 		} : undefined,

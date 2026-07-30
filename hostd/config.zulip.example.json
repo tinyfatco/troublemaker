@@ -27,6 +27,9 @@
         }
       }
     ],
+    "alwaysTo": [
+      "owner@example.com"
+    ],
     "alwaysCc": [
       "archive@example.com"
     ]
