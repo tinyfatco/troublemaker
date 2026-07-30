@@ -7,6 +7,7 @@ import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { TROUBLEMAKER_MCP_INSTRUCTIONS } from "./yield-contract.js";
 
 export const CLAUDE_MCP_URL_ENV = "TROUBLEMAKER_CLAUDE_MCP_URL";
 export const CLAUDE_MCP_TOKEN_ENV = "TROUBLEMAKER_CLAUDE_MCP_TOKEN";
@@ -63,9 +64,7 @@ export async function runClaudeCliMcpProxy(
 		{ name: "troublemaker", version: "1.0.0" },
 		{
 			capabilities: { tools: {} },
-			instructions:
-				"Use these Troublemaker runtime tools for all computer actions and user-visible delivery. "
-				+ "Use send_message for visible replies, react_to_message for exact Slack-message reactions, and yield_no_action for silent ambient completion.",
+			instructions: TROUBLEMAKER_MCP_INSTRUCTIONS,
 		},
 	);
 	downstream.setRequestHandler(ListToolsRequestSchema, () => upstream.listTools());
