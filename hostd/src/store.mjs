@@ -1765,6 +1765,54 @@ export class HostStore {
 		return stored;
 	}
 
+	recordCompletedLedgerEvent(event) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const timestamp = now();
+			const payloadJson = event.payload === undefined ? null : JSON.stringify(event.payload);
+			let stored = this.getEventByProviderMessage(event.source, event.providerMessageId);
+			if (!stored) {
+				const awarenessSequence = this.nextAwarenessSequence(event.contextId);
+				this.database.prepare(`
+					INSERT INTO events(
+						id, source, provider_message_id, provider_thread_id,
+						principal_hash, target_id, context_id, awareness_sequence, status, payload_json,
+						received_at, available_at, updated_at, completed_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)
+				`).run(
+					event.id,
+					event.source,
+					event.providerMessageId,
+					event.providerThreadId,
+					event.principalHash,
+					event.targetId,
+					event.contextId,
+					awarenessSequence,
+					payloadJson,
+					timestamp,
+					timestamp,
+					timestamp,
+					timestamp,
+				);
+				stored = this.getEventByProviderMessage(event.source, event.providerMessageId);
+			}
+			if (!stored
+				|| stored.status !== "completed"
+				|| stored.providerThreadId !== event.providerThreadId
+				|| stored.principalHash !== event.principalHash
+				|| stored.targetId !== event.targetId
+				|| stored.contextId !== event.contextId
+				|| stored.payloadJson !== payloadJson) {
+				throw new Error("ledger event conflicts with existing provider state");
+			}
+			this.database.exec("COMMIT");
+			return stored;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
 	recordCompletedLedgerEventWithControlNotification(event) {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {

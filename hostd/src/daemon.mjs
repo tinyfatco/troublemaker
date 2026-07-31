@@ -29,6 +29,15 @@ function suppressionReason(headers, account, senders) {
 	return null;
 }
 
+function isInternalGmailSender(address, account, internalDomains) {
+	const normalized = address.trim().toLowerCase();
+	if (normalized === account.trim().toLowerCase()) return true;
+	const separator = normalized.lastIndexOf("@");
+	if (separator === -1) return false;
+	const domain = normalized.slice(separator + 1);
+	return internalDomains.some((candidate) => candidate.trim().toLowerCase() === domain);
+}
+
 function pendingReads(store) {
 	const encoded = store.getMeta("gmail:pending_read_ids");
 	if (!encoded) return [];
@@ -93,6 +102,7 @@ export class InboxDaemon {
 			const messages = await this.gmail.searchMessages(`in:inbox after:${after}`);
 			const fresh = messages.filter((message) => !this.store.hasSeen("gmail", message.id)).reverse();
 			let queued = 0;
+			let outbound = 0;
 			let suppressed = 0;
 			let quarantined = 0;
 			let failures = 0;
@@ -157,6 +167,13 @@ export class InboxDaemon {
 						continue;
 					}
 				}
+				const direction = inbound.relay || !isInternalGmailSender(
+					sender,
+					this.config.gmail.account,
+					this.config.gmail.internalDomains,
+				)
+					? "inbound"
+					: "outbound";
 				let route;
 				try {
 					route = this.router.resolve({
@@ -177,27 +194,58 @@ export class InboxDaemon {
 				}
 				try {
 					const thread = await this.gmail.getThread(message.threadId);
-					const eventInput = {
-						id: randomUUID(),
-						source: "gmail",
-						providerMessageId: message.id,
-						providerThreadId: message.threadId,
-						principalHash: route.principalHash,
-						targetId: route.targetId,
-						contextId: route.contextId,
-						payload: {
-							route,
-							message,
-							metadata,
-							sender: inbound.principalEmail,
-							thread,
-							...(inbound.relay ? { relay: inbound.relay } : {}),
-						},
-					};
-					const event = this.controlNotifier
-						? this.store.upsertEventWithControlNotification(eventInput)
-						: this.store.upsertEvent(eventInput);
-					if (event.status !== "completed") queued++;
+					if (direction === "outbound") {
+						const current = thread.find((candidate) => candidate.id === message.id) ?? {
+							...message,
+							body: "",
+						};
+						const eventInput = {
+							id: `gmail_outbound:${message.id}`,
+							source: "gmail_outbound",
+							providerMessageId: message.id,
+							providerThreadId: message.threadId,
+							principalHash: route.principalHash,
+							targetId: route.targetId,
+							contextId: route.contextId,
+							payload: {
+								direction,
+								route,
+								message: current,
+								metadata,
+								sender,
+								recipient: inbound.principalEmail,
+							},
+						};
+						if (this.controlNotifier) {
+							this.store.recordCompletedLedgerEventWithControlNotification(eventInput);
+						} else {
+							this.store.recordCompletedLedgerEvent(eventInput);
+						}
+						outbound++;
+					} else {
+						const eventInput = {
+							id: randomUUID(),
+							source: "gmail",
+							providerMessageId: message.id,
+							providerThreadId: message.threadId,
+							principalHash: route.principalHash,
+							targetId: route.targetId,
+							contextId: route.contextId,
+							payload: {
+								direction,
+								route,
+								message,
+								metadata,
+								sender: inbound.principalEmail,
+								thread,
+								...(inbound.relay ? { relay: inbound.relay } : {}),
+							},
+						};
+						const event = this.controlNotifier
+							? this.store.upsertEventWithControlNotification(eventInput)
+							: this.store.upsertEvent(eventInput);
+						if (event.status !== "completed") queued++;
+					}
 				} catch (error) {
 					failures++;
 					console.error(
@@ -207,7 +255,7 @@ export class InboxDaemon {
 					continue;
 				}
 
-				this.store.markSeen("gmail", message.id, "queued");
+				this.store.markSeen("gmail", message.id, direction === "outbound" ? "ledgered:outbound" : "queued");
 				setPendingReads(this.store, [...pendingReads(this.store), message.id]);
 				await this.gmail.markRead(message.id);
 				setPendingReads(
@@ -215,7 +263,9 @@ export class InboxDaemon {
 					pendingReads(this.store).filter((candidate) => candidate !== message.id),
 				);
 				console.log(
-					`troublemaker-hostd: durably queued Gmail message ${message.id} in ${route.contextId}`,
+					direction === "outbound"
+						? `troublemaker-hostd: durably ledgered outbound Gmail message ${message.id} in ${route.contextId}`
+						: `troublemaker-hostd: durably queued Gmail message ${message.id} in ${route.contextId}`,
 				);
 			}
 
@@ -226,12 +276,13 @@ export class InboxDaemon {
 				candidates: messages.length,
 				fresh: fresh.length,
 				queued,
+				outbound,
 				suppressed,
 				quarantined,
 				failures,
 			};
 			console.log(
-				`troublemaker-hostd: poll complete (${result.candidates} candidate(s), ${result.fresh} new, ${result.queued} queued, ${result.suppressed} suppressed, ${result.quarantined} quarantined, ${result.failures} failed)`,
+				`troublemaker-hostd: poll complete (${result.candidates} candidate(s), ${result.fresh} new, ${result.queued} queued, ${result.outbound} outbound, ${result.suppressed} suppressed, ${result.quarantined} quarantined, ${result.failures} failed)`,
 			);
 			return result;
 		} finally {
