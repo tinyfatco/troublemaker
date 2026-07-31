@@ -31,6 +31,7 @@ import {
 import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
+import { runWithModelCredentialGate } from "./model-auth-gate.js";
 import {
 	boundCompactionStreamOptions,
 	normalizeSimpleStreamOptionsForModel,
@@ -620,6 +621,7 @@ function createRunner(
 		},
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
+		modelCredentialUnavailable: false,
 		initialPromptSent: false,
 		liveSnapshot: new LiveAssistantSnapshot(),
 		liveEventSink: null as RuntimeEventSink | null,
@@ -1064,6 +1066,7 @@ function createRunner(
 			};
 			runState.stopReason = "stop";
 			runState.errorMessage = undefined;
+			runState.modelCredentialUnavailable = false;
 			runState.initialPromptSent = false;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
@@ -1163,15 +1166,30 @@ function createRunner(
 
 			log.logInfo(`[awareness] Pre-prompt: ${currentSession.messages.length} messages in context`);
 
+			const resolveCurrentModelCredential = async () => {
+				if (getClaudeCliRuntimeAuth(currentModel.provider)) return;
+				await resolveApiKey(authStorage, currentModel.provider);
+			};
 			const tPrompt = performance.now();
 			try {
-				acceptsSteering = true;
-				await withToolOutputStream(claudeCliToolOutputHandler, async () => {
-					await currentSession.prompt(finalUserMessage, {
-						...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-						streamingBehavior: "steer" as const,
-					});
+				const gated = await runWithModelCredentialGate({
+					resolveCredential: resolveCurrentModelCredential,
+					prompt: async () => {
+						acceptsSteering = true;
+						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
+							await currentSession.prompt(finalUserMessage, {
+								...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
+								streamingBehavior: "steer" as const,
+							});
+						});
+					},
 				});
+				if (gated.status === "credential_unavailable") {
+					runState.stopReason = "error";
+					runState.errorMessage = gated.error.message;
+					runState.modelCredentialUnavailable = true;
+					log.logWarning("Model credential unavailable; prompt skipped without provider output");
+				}
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
 				runState.stopReason = "error";
@@ -1183,7 +1201,7 @@ function createRunner(
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
-			if (runState.stopReason === "error") {
+			if (runState.stopReason === "error" && !runState.modelCredentialUnavailable) {
 				await agent.waitForIdle();
 
 				const msgs = currentSession.messages;
@@ -1221,12 +1239,23 @@ function createRunner(
 					log.logInfo(`[${retrySource}] Text-only turn detected, retrying with an explicit action contract`);
 					if (assistantText) log.logInfo(`[${retrySource}] Assistant said: "${assistantText.substring(0, 120)}..."`);
 					try {
-						acceptsSteering = true;
-						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
-							await currentSession.prompt(retryInstruction, {
-								streamingBehavior: "steer" as const,
-							});
+						const gated = await runWithModelCredentialGate({
+							resolveCredential: resolveCurrentModelCredential,
+							prompt: async () => {
+								acceptsSteering = true;
+								await withToolOutputStream(claudeCliToolOutputHandler, async () => {
+									await currentSession.prompt(retryInstruction, {
+										streamingBehavior: "steer" as const,
+									});
+								});
+							},
 						});
+						if (gated.status === "credential_unavailable") {
+							runState.stopReason = "error";
+							runState.errorMessage = gated.error.message;
+							runState.modelCredentialUnavailable = true;
+							log.logWarning("Model credential unavailable; retry prompt skipped without provider output");
+						}
 					} catch (err) {
 						const errMsg = err instanceof Error ? err.message : String(err);
 						runState.stopReason = "error";
@@ -1235,26 +1264,37 @@ function createRunner(
 					} finally {
 						acceptsSteering = false;
 					}
-					log.logInfo(`[${retrySource}] Retry prompt completed`);
+					log.logInfo(
+						runState.modelCredentialUnavailable
+							? `[${retrySource}] Retry prompt skipped for unavailable model credential`
+							: `[${retrySource}] Retry prompt completed`,
+					);
 				}
 			}
 
 			// Wait for queued messages
 			await queueChain;
 
-			// Handle error case
+			// Handle error case. Missing model credentials are an operational
+			// condition, not assistant-authored conversation content. Failing quiet
+			// prevents one resident's auth outage from becoming another resident's
+			// inbound message and feedback-loop trigger.
 			if (runState.stopReason === "error" && runState.errorMessage) {
-				try {
-					const visibleError = formatUserVisibleError(runState.errorMessage);
-					const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
-					const errorEvent = { type: "error" as const, message: visibleError };
-					emitLiveEvent(errorEvent);
-					ctx.emitContentBlock?.(errorEvent);
-					await ctx.sendFinalResponse(userErrorMsg, { force: true });
-					await ctx.respondInThread(`_Error: ${visibleError}_`);
-				} catch (err) {
-					const errMsg = err instanceof Error ? err.message : String(err);
-					log.logWarning("Failed to post error message", errMsg);
+				if (runState.modelCredentialUnavailable) {
+					log.logWarning("Model credential unavailable; no user-visible runtime error posted");
+				} else {
+					try {
+						const visibleError = formatUserVisibleError(runState.errorMessage);
+						const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
+						const errorEvent = { type: "error" as const, message: visibleError };
+						emitLiveEvent(errorEvent);
+						ctx.emitContentBlock?.(errorEvent);
+						await ctx.sendFinalResponse(userErrorMsg, { force: true });
+						await ctx.respondInThread(`_Error: ${visibleError}_`);
+					} catch (err) {
+						const errMsg = err instanceof Error ? err.message : String(err);
+						log.logWarning("Failed to post error message", errMsg);
+					}
 				}
 			} else {
 				// Final message update
@@ -1315,7 +1355,13 @@ function createRunner(
 			runState.liveEventSink = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
-			return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };
+			return {
+				stopReason: runState.stopReason,
+				errorMessage: runState.errorMessage,
+				...(runState.modelCredentialUnavailable
+					? { failureKind: "model_credential_unavailable" as const }
+					: {}),
+			};
 		},
 
 		abort(): void {
