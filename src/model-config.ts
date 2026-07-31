@@ -473,6 +473,28 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
 	return model;
 }
 
+export class ModelCredentialUnavailableError extends Error {
+	readonly code = "MODEL_CREDENTIAL_UNAVAILABLE";
+
+	constructor(readonly provider: string) {
+		super(
+			`No API key found for provider "${provider}".\n\n` +
+				`Set the appropriate API key environment variable, or configure auth.json.`,
+		);
+		this.name = "ModelCredentialUnavailableError";
+	}
+}
+
+export function isModelCredentialUnavailableError(error: unknown): error is ModelCredentialUnavailableError {
+	return error instanceof ModelCredentialUnavailableError
+		|| (
+			typeof error === "object"
+			&& error !== null
+			&& "code" in error
+			&& error.code === "MODEL_CREDENTIAL_UNAVAILABLE"
+		);
+}
+
 /**
  * Resolve API key for any provider via AuthStorage.
  * AuthStorage checks: runtime override → auth.json → OAuth token → env var → fallback.
@@ -480,11 +502,6 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
 export async function resolveApiKey(authStorage: AuthStorage, provider: string): Promise<string> {
 	authStorage.reload();
 	const key = await authStorage.getApiKey(provider);
-	if (!key) {
-		throw new Error(
-			`No API key found for provider "${provider}".\n\n` +
-				`Set the appropriate API key environment variable, or configure auth.json.`,
-		);
-	}
+	if (!key) throw new ModelCredentialUnavailableError(provider);
 	return key;
 }

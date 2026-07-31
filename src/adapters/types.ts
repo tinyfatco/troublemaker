@@ -52,6 +52,7 @@ export type VoiceSessionNotice =
 export interface RunResult {
 	stopReason: string;
 	errorMessage?: string;
+	failureKind?: "model_credential_unavailable";
 }
 
 export interface ChannelInfo {

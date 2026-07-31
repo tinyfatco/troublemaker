@@ -439,6 +439,10 @@ Keep responses concise and helpful.`;
 	private surfaceRunError(result: RunResult | void, writer?: SSEWriter): void {
 		if (!writer || writer.errorSent || !result) return;
 		if (result.stopReason !== "error") return;
+		// Authentication outages are monitored operationally. They must not be
+		// projected as conversation content or UI error events that can be relayed
+		// back into another resident's inbound channel.
+		if (result.failureKind === "model_credential_unavailable") return;
 
 		const message = this.formatStreamError(result.errorMessage || "Run failed");
 		writer.send({ type: "error", message });
