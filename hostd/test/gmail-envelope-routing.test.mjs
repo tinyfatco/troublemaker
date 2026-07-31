@@ -7,7 +7,7 @@ import { InboxDaemon } from "../src/daemon.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { HostStore } from "../src/store.mjs";
 
-function fixture() {
+function fixture({ notifications = true } = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-gmail-envelope-"));
 	const store = new HostStore(join(directory, "state.sqlite"));
 	const target = { id: "front-desk", driver: "oci" };
@@ -47,7 +47,8 @@ function fixture() {
 		},
 	};
 	store.setMeta("gmail:last_successful_poll_at", "2026-07-24T12:00:00.000Z");
-	const daemon = new InboxDaemon({ config, store, gmail, router });
+	const controlNotifier = notifications ? { wake() {} } : undefined;
+	const daemon = new InboxDaemon({ config, store, gmail, router, controlNotifier });
 	return {
 		store,
 		markedRead,
@@ -104,15 +105,56 @@ test("routes direct and internal-origin Gmail to the one external envelope parti
 		];
 		const result = await subject.poll(messages);
 
-		assert.equal(result.queued, 2);
+		assert.equal(result.queued, 1);
+		assert.equal(result.outbound, 1);
 		assert.equal(result.quarantined, 0);
 		assert.deepEqual(subject.markedRead, ["direct-message", "internal-origin-message"]);
 		const direct = subject.store.getEventByProviderMessage("gmail", "direct-message");
-		const internal = subject.store.getEventByProviderMessage("gmail", "internal-origin-message");
+		const internal = subject.store.getEventByProviderMessage("gmail_outbound", "internal-origin-message");
 		assert.equal(direct.contextId, internal.contextId);
+		assert.equal(direct.status, "queued");
+		assert.equal(internal.status, "completed");
+		assert.equal(JSON.parse(direct.payloadJson).direction, "inbound");
 		assert.equal(JSON.parse(direct.payloadJson).sender, "customer@example.com");
-		assert.equal(JSON.parse(internal.payloadJson).sender, "customer@example.com");
+		assert.equal(JSON.parse(internal.payloadJson).direction, "outbound");
+		assert.equal(JSON.parse(internal.payloadJson).sender, "owner@internal.example.com");
+		assert.equal(JSON.parse(internal.payloadJson).recipient, "customer@example.com");
+		assert.equal(disposition(subject.store, "internal-origin-message"), "ledgered:outbound");
+		assert.equal(
+			subject.store.getControlNotification("gmail_outbound:internal-origin-message").source,
+			"gmail_outbound",
+		);
+		assert.deepEqual(
+			subject.store.listRetryableEvents().map((event) => event.providerMessageId),
+			["direct-message"],
+		);
 		assert.equal(subject.store.getPrincipal(direct.principalHash).emailAddress, "customer@example.com");
+	} finally {
+		subject.close();
+	}
+});
+
+test("records an internal-origin copy as completed outbound state without a notifier", async () => {
+	const subject = fixture({ notifications: false });
+	try {
+		const result = await subject.poll([{
+			id: "owner-copy",
+			threadId: "owner-copy-thread",
+			metadata: {
+				from: "Owner <owner@internal.example.com>",
+				to: "customer@example.com, howdy@inbox.example.com",
+				subject: "A direct introduction",
+			},
+			body: "Hello from the owner.",
+		}]);
+
+		assert.equal(result.queued, 0);
+		assert.equal(result.outbound, 1);
+		assert.equal(count(subject.store, "control_notifications"), 0);
+		assert.deepEqual(subject.store.listRetryableEvents(), []);
+		const event = subject.store.getEventByProviderMessage("gmail_outbound", "owner-copy");
+		assert.equal(event.status, "completed");
+		assert.equal(JSON.parse(event.payloadJson).message.body, "Hello from the owner.");
 	} finally {
 		subject.close();
 	}
@@ -199,7 +241,9 @@ test("preserves thread affinity for an internal reply and denies an unbound exte
 	};
 	try {
 		assert.equal((await subject.poll([first])).queued, 1);
-		assert.equal((await subject.poll([first, internalReply])).queued, 1);
+		const internalResult = await subject.poll([first, internalReply]);
+		assert.equal(internalResult.queued, 0);
+		assert.equal(internalResult.outbound, 1);
 		const result = await subject.poll([first, internalReply, stranger]);
 
 		assert.equal(result.queued, 0);
@@ -210,9 +254,16 @@ test("preserves thread affinity for an internal reply and denies an unbound exte
 		assert.equal(count(subject.store, "routes"), 1);
 		assert.equal(count(subject.store, "events"), 2);
 		const ownerEvent = subject.store.getEventByProviderMessage("gmail", "owner-message");
-		const replyEvent = subject.store.getEventByProviderMessage("gmail", "internal-reply");
+		const replyEvent = subject.store.getEventByProviderMessage("gmail_outbound", "internal-reply");
 		assert.equal(ownerEvent.contextId, replyEvent.contextId);
-		assert.equal(JSON.parse(replyEvent.payloadJson).sender, "owner@example.com");
+		assert.equal(replyEvent.status, "completed");
+		assert.equal(JSON.parse(replyEvent.payloadJson).direction, "outbound");
+		assert.equal(JSON.parse(replyEvent.payloadJson).sender, "support@internal.example.com");
+		assert.equal(JSON.parse(replyEvent.payloadJson).recipient, "owner@example.com");
+		assert.deepEqual(
+			subject.store.listRetryableEvents().map((event) => event.providerMessageId),
+			["owner-message"],
+		);
 	} finally {
 		subject.close();
 	}
