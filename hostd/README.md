@@ -81,8 +81,10 @@ site/customer identity, validates the exact Git branch and workspace-relative
 artifact directory, rejects links and special files, enforces file and byte
 limits, creates a deterministic archive, and signs a short-lived Ed25519
 capability bound to immutable grant/customer/project/site IDs, branch slot,
-source commit, preview environment/namespace/hostname, artifact digest, actor
-reference, expiry, and idempotency key. Sites Publish independently verifies
+host-derived source commit, preview environment/namespace/hostname, artifact
+digest, actor reference, expiry, and idempotency key. Hostd requires the bound
+workspace to be one clean, attached Git repository on the requested branch;
+the runtime cannot supply the signed SHA. Sites Publish independently verifies
 those claims against site custody and recomputes the artifact digest.
 
 Preview hostnames follow the Cloudflare Pages shape:

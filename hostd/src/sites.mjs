@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import {
 	createHash,
 	createPrivateKey,
@@ -8,7 +9,9 @@ import { gzipSync } from "node:zlib";
 import { constants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
+const execFileAsync = promisify(execFile);
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
 const SOURCE_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const IDEMPOTENCY_RE = /^site_deploy:[0-9a-f]{64}$/;
@@ -64,6 +67,53 @@ export function branchPreviewHostname(siteSlug, branch, apex = "business.tinyfat
 	const hostname = `${branchPreviewLabel(branch)}.${siteSlug}.${String(apex).replace(/^\.+|\.+$/g, "")}`;
 	if (hostname.length > 253) throw new HostSitesError(500, "configured_preview_hostname_too_long");
 	return hostname;
+}
+
+export function scopedScriptName(siteId, branch) {
+	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(siteId)) {
+		throw new HostSitesError(500, "configured_site_id_invalid");
+	}
+	const branchDigest = createHash("sha256").update(normalizeGitBranch(branch), "utf8").digest("hex").slice(0, 20);
+	return `s-${siteId.replace(/-/g, "").toLowerCase()}-${branchDigest}`;
+}
+
+async function gitOutput(repository, args, failureCode) {
+	try {
+		const { stdout } = await execFileAsync("git", ["-C", repository, ...args], {
+			encoding: "utf8",
+			timeout: 10_000,
+			maxBuffer: 1024 * 1024,
+			env: {
+				PATH: process.env.PATH,
+				HOME: process.env.HOME,
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_CONFIG_GLOBAL: "/dev/null",
+				GIT_TERMINAL_PROMPT: "0",
+			},
+		});
+		return stdout.trim();
+	} catch {
+		throw new HostSitesError(409, failureCode);
+	}
+}
+
+export async function inspectWorkspaceGitSource(workspace, requestedBranch) {
+	const workspaceReal = await realpath(workspace);
+	const repository = await gitOutput(workspaceReal, ["rev-parse", "--show-toplevel"], "source_repository_required");
+	let repositoryReal;
+	try {
+		repositoryReal = await realpath(repository);
+	} catch {
+		throw new HostSitesError(409, "source_repository_required");
+	}
+	if (repositoryReal !== workspaceReal) throw new HostSitesError(409, "source_repository_root_mismatch");
+	const branch = await gitOutput(repositoryReal, ["symbolic-ref", "--quiet", "--short", "HEAD"], "source_detached_head");
+	if (branch !== normalizeGitBranch(requestedBranch)) throw new HostSitesError(409, "source_branch_mismatch");
+	const sha = (await gitOutput(repositoryReal, ["rev-parse", "--verify", "HEAD^{commit}"], "source_commit_required")).toLowerCase();
+	if (!SOURCE_SHA_RE.test(sha)) throw new HostSitesError(409, "source_commit_invalid");
+	const dirty = await gitOutput(repositoryReal, ["status", "--porcelain=v1", "--untracked-files=all", "--", "."], "source_status_unavailable");
+	if (dirty) throw new HostSitesError(409, "source_repository_dirty");
+	return { branch, sha, repository: repositoryReal };
 }
 
 export function signDeployCapability(config, claims, nowSeconds = Math.floor(Date.now() / 1000)) {
@@ -280,13 +330,17 @@ export class HostSites {
 		if (!binding.artifactKinds.includes(artifactKind)) throw new HostSitesError(403, "artifact_kind_denied");
 		const idempotencyKey = typeof body.idempotency_key === "string" ? body.idempotency_key : "";
 		if (!IDEMPOTENCY_RE.test(idempotencyKey)) throw new HostSitesError(400, "idempotency_key_invalid");
-		const sourceSha = typeof body.source_sha === "string" ? body.source_sha.toLowerCase() : "";
-		if (!SOURCE_SHA_RE.test(sourceSha)) throw new HostSitesError(400, "source_sha_required");
 		const message = typeof body.message === "string" ? body.message.trim() : "";
 		if (message.length > 500) throw new HostSitesError(400, "deploy_message_too_long");
 
 		const workspace = resolve(safeContextDirectory(target, contextId), "workspace");
+		const sourceBefore = await inspectWorkspaceGitSource(workspace, branch);
 		const artifact = await buildWorkspaceArtifact(workspace, body.directory, this.config.sites);
+		const sourceAfter = await inspectWorkspaceGitSource(workspace, branch);
+		if (sourceAfter.sha !== sourceBefore.sha || sourceAfter.repository !== sourceBefore.repository) {
+			throw new HostSitesError(409, "source_changed_during_snapshot");
+		}
+		const sourceSha = sourceBefore.sha;
 		const branchLabel = branchPreviewLabel(branch);
 		const hostname = branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
 		const nowSeconds = Math.floor(this.now() / 1000);
@@ -329,7 +383,7 @@ export class HostSites {
 				"x-artifact-sha256": artifact.sha256,
 				"x-git-branch": branch,
 				"x-idempotency-key": idempotencyKey,
-				...(sourceSha ? { "x-git-sha": sourceSha } : {}),
+				"x-git-sha": sourceSha,
 				...(message ? { "x-deploy-message": message } : {}),
 			},
 			body: artifact.body,
@@ -368,7 +422,7 @@ export class HostSites {
 		}
 		if (
 			typeof result?.scriptName !== "string"
-			|| !/^s-[0-9a-f]{32}-[0-9a-f]{20}$/.test(result.scriptName)
+			|| result.scriptName !== scopedScriptName(binding.siteId, branch)
 			|| typeof result?.deploymentId !== "string"
 			|| !result.deploymentId
 		) {

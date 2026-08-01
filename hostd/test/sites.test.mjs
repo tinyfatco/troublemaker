@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, verify as verifyBytes } from "node:crypto";
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +15,9 @@ import {
 	buildWorkspaceArtifact,
 	HostSites,
 	HostSitesError,
+	inspectWorkspaceGitSource,
 	normalizeGitBranch,
+	scopedScriptName,
 } from "../src/sites.mjs";
 import { HostStore } from "../src/store.mjs";
 
@@ -35,6 +38,22 @@ function decodeCapability(token) {
 	};
 }
 
+function git(workspace, ...args) {
+	return execFileSync("git", ["-C", workspace, ...args], {
+		encoding: "utf8",
+		env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+	}).trim();
+}
+
+function commitWorkspace(workspace, branch) {
+	git(workspace, "init", "-b", branch);
+	git(workspace, "config", "user.name", "Hostd Test");
+	git(workspace, "config", "user.email", "hostd@example.com");
+	git(workspace, "add", "--all");
+	git(workspace, "commit", "-m", "Test source");
+	return git(workspace, "rev-parse", "HEAD");
+}
+
 test("Pages-style branch labels are readable, exact-branch collision safe, and bounded", () => {
 	assert.equal(normalizeGitBranch("main"), "main");
 	assert.equal(branchPreviewLabel("main"), "main");
@@ -51,6 +70,38 @@ test("Pages-style branch labels are readable, exact-branch collision safe, and b
 	);
 	for (const invalid of ["", "../main", "main..next", "main.lock", "bad branch", "bad@{branch", "/main"]) {
 		assert.throws(() => normalizeGitBranch(invalid), (error) => error instanceof HostSitesError && error.code === "git_branch_invalid");
+	}
+});
+
+test("Hostd derives Git provenance from one clean attached workspace repository", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-git-"));
+	const workspace = join(directory, "workspace");
+	try {
+		await mkdir(join(workspace, "dist"), { recursive: true });
+		await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Git source</title>\n");
+		const sourceSha = commitWorkspace(workspace, "feature/example");
+		assert.deepEqual(await inspectWorkspaceGitSource(workspace, "feature/example"), {
+			branch: "feature/example",
+			sha: sourceSha,
+			repository: workspace,
+		});
+		await writeFile(join(workspace, "untracked.txt"), "dirty\n");
+		await assert.rejects(
+			inspectWorkspaceGitSource(workspace, "feature/example"),
+			(error) => error instanceof HostSitesError && error.code === "source_repository_dirty",
+		);
+		await rm(join(workspace, "untracked.txt"));
+		await assert.rejects(
+			inspectWorkspaceGitSource(workspace, "main"),
+			(error) => error instanceof HostSitesError && error.code === "source_branch_mismatch",
+		);
+		git(workspace, "checkout", "--detach", "HEAD");
+		await assert.rejects(
+			inspectWorkspaceGitSource(workspace, "feature/example"),
+			(error) => error instanceof HostSitesError && error.code === "source_detached_head",
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
 	}
 });
 
@@ -180,6 +231,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 	const workspace = join(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"), "workspace");
 	await mkdir(join(workspace, "dist"), { recursive: true });
 	await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Scoped</title>\n");
+	const sourceSha = commitWorkspace(workspace, "feature/example");
 	let observed;
 	let receiptOverrides = {};
 	const service = new HostSites({
@@ -198,7 +250,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 			assert.equal(capability.payload.project_id, binding.projectId);
 			assert.equal(capability.payload.site_id, binding.siteId);
 			assert.equal(capability.payload.git_branch, "feature/example");
-			assert.equal(capability.payload.git_sha, "0123456789abcdef0123456789abcdef01234567");
+			assert.equal(capability.payload.git_sha, sourceSha);
 			assert.equal(capability.payload.hostname, `${branchPreviewLabel("feature/example")}.example-business.business.tinyfat.dev`);
 			assert.equal(capability.payload.namespace, "example-sites-preview");
 			assert.equal(capability.payload.environment, "preview");
@@ -215,7 +267,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 				environment: "preview",
 				preview_slot: "branch:feature/example",
 				git_branch: "feature/example",
-				git_sha: "0123456789abcdef0123456789abcdef01234567",
+				git_sha: sourceSha,
 				branch_label: capability.payload.branch_label,
 				hostname: capability.payload.hostname,
 				namespace: "example-sites-preview",
@@ -223,7 +275,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 				artifact_sha256: capability.payload.artifact_sha256,
 				idempotency_key: capability.payload.idempotency_key,
 				url: `https://${capability.payload.hostname}/`,
-				scriptName: `s-${binding.siteId.replaceAll("-", "")}-${"d".repeat(20)}`,
+				scriptName: scopedScriptName(binding.siteId, "feature/example"),
 				deploymentId: "22222222-2222-4222-8222-222222222222",
 				...receiptOverrides,
 			}), { status: 200, headers: { "content-type": "application/json" } });
@@ -234,7 +286,6 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 			branch: "feature/example",
 			directory: "dist",
 			artifact_kind: "static",
-			source_sha: "0123456789abcdef0123456789abcdef01234567",
 			idempotency_key: `site_deploy:${"a".repeat(64)}`,
 			message: "Example preview",
 		});
@@ -252,11 +303,25 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 				branch: "feature/example",
 				directory: "dist",
 				artifact_kind: "static",
-				source_sha: "0123456789abcdef0123456789abcdef01234567",
 				idempotency_key: `site_deploy:${"c".repeat(64)}`,
 				message: "Example preview",
 			}),
 			(error) => error instanceof HostSitesError && error.code === "sites_publish_receipt_scope_mismatch",
+		);
+
+		receiptOverrides = {
+			namespace: "example-sites-preview",
+			scriptName: scopedScriptName("22222222-2222-4222-8222-222222222222", "feature/example"),
+		};
+		await assert.rejects(
+			service.deploy(target, contextId, {
+				branch: "feature/example",
+				directory: "dist",
+				artifact_kind: "static",
+				idempotency_key: `site_deploy:${"d".repeat(64)}`,
+				message: "Example preview",
+			}),
+			(error) => error instanceof HostSitesError && error.code === "sites_publish_receipt_identity_invalid",
 		);
 	} finally {
 		store.close();

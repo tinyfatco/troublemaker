@@ -44,7 +44,6 @@ const result = await tools[0].execute(callId, {
 	directory: "dist",
 	branch: "feature/example",
 	artifact_kind: "static",
-	source_sha: "0123456789abcdef0123456789abcdef01234567",
 	message: "Reviewed preview",
 });
 assert.equal(JSON.parse(text(result)).ok, true);
@@ -57,8 +56,7 @@ assert.deepEqual(seen[0], {
 		directory: "dist",
 		branch: "feature/example",
 		artifact_kind: "static",
-		source_sha: "0123456789abcdef0123456789abcdef01234567",
-		message: "Reviewed preview",
+			message: "Reviewed preview",
 	},
 });
 

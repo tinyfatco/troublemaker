@@ -71,7 +71,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 		defineTool({
 			name: "site_deploy",
 			label: "site_deploy",
-			description: "Deploy one workspace-contained build artifact to the current project's Git-branch preview slot. Hostd fixes the site and customer scope, keeps platform credentials outside the runtime, and permits preview only. This tool never promotes production.",
+			description: "Deploy one workspace-contained build artifact to the current project's checked-out Git-branch preview slot. Hostd derives Git provenance from the clean repository, fixes the site/customer scope, keeps platform credentials outside the runtime, and permits preview only. This tool never promotes production.",
 			parameters: Type.Object({
 				directory: Type.String({ description: "Workspace-relative build artifact directory.", minLength: 1, maxLength: 240 }),
 				branch: Type.String({ description: "Exact Git branch name for the preview slot.", minLength: 1, maxLength: 240 }),
@@ -79,7 +79,6 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 					Type.Literal("static"),
 					Type.Literal("worker"),
 				], { description: "Static files or a supported Worker artifact bundle." }),
-				source_sha: Type.String({ description: "Full immutable source commit SHA for this exact artifact.", minLength: 40, maxLength: 64 }),
 				message: Type.Optional(Type.String({ description: "Short deployment note.", maxLength: 500 })),
 			}),
 			execute: async (id: string, input: unknown) => {
@@ -87,7 +86,6 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 					directory?: string;
 					branch?: string;
 					artifact_kind?: string;
-					source_sha?: string;
 					message?: string;
 				};
 				return textResult(await deployRequest(options, {
@@ -95,7 +93,6 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 					directory: body.directory,
 					branch: body.branch,
 					artifact_kind: body.artifact_kind,
-					source_sha: body.source_sha,
 					message: body.message,
 				}));
 			},
