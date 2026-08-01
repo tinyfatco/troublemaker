@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, verify as verifyBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -78,6 +78,20 @@ test("workspace artifacts are deterministic and reject escaping links", async ()
 			(error) => error instanceof HostSitesError && ["artifact_links_forbidden", "artifact_file_outside_workspace"].includes(error.code),
 		);
 		await rm(raced, { force: true });
+
+		const swapped = join(workspace, "dist", "swapped.txt");
+		const replacement = join(workspace, "dist", "replacement.txt");
+		await writeFile(swapped, "original");
+		await writeFile(replacement, "replacement");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "dist", LIMITS, {
+				async afterLstat({ absolute }) {
+					if (absolute === swapped) await rename(replacement, swapped);
+				},
+			}),
+			(error) => error instanceof HostSitesError && error.code === "artifact_changed_before_snapshot",
+		);
+		await rm(swapped, { force: true });
 
 		const growing = join(workspace, "dist", "growing.txt");
 		await writeFile(growing, "small");

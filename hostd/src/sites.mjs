@@ -170,6 +170,9 @@ async function collectArtifactFiles(root, limits, hooks = {}) {
 				await hooks.afterOpen?.({ absolute, descriptor });
 				const opened = await descriptor.stat();
 				if (!opened.isFile()) throw new HostSitesError(400, "artifact_special_file_forbidden");
+				if (opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
+					throw new HostSitesError(409, "artifact_changed_before_snapshot");
+				}
 				const descriptorPath = await realpath(`/proc/self/fd/${descriptor.fd}`);
 				if (!within(root, descriptorPath)) throw new HostSitesError(400, "artifact_file_outside_workspace");
 				if (opened.size > limits.maximumFileBytes) throw new HostSitesError(413, "artifact_file_too_large");
