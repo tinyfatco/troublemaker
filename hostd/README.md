@@ -32,6 +32,59 @@ When this setting is enabled, generic email adapter delivery fails closed; the
 runtime must save a draft and may then send that exact draft autonomously within
 the verified context.
 
+## Scoped Pages-style site previews
+
+When top-level `sites` is configured, a project may bind one exact TinyFat Site
+to its verified principal/project scope. The runtime then receives one
+`site_deploy` tool and a context capability that is valid only at Hostd. It does
+not receive a Sites admin bearer, agent tools token, Cloudflare token, or the
+Hostd signing key.
+
+```json
+{
+  "sites": {
+    "publishUrl": "https://publish.example.com",
+    "capabilityPrivateKeyEnv": "SITES_CAPABILITY_PRIVATE_KEY",
+    "capabilityKeyId": "hostd-example-1",
+    "capabilityTtlSeconds": 60
+  },
+  "routing": {
+    "knownPrincipals": [
+      {
+        "email": "customer@example.com",
+        "projects": [
+          {
+            "slug": "website",
+            "name": "Example website",
+            "siteDeployment": {
+              "siteId": "11111111-1111-4111-8111-111111111111",
+              "siteSlug": "example-business",
+              "artifactKinds": ["static", "worker"],
+              "allowedBranches": ["*"]
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Hostd resolves the caller from its durable context, ignores caller-selected
+site/customer identity, validates the exact Git branch and workspace-relative
+artifact directory, rejects links and special files, enforces file and byte
+limits, creates a deterministic archive, and signs a short-lived Ed25519
+capability bound to the site UUID, branch slot, preview environment, artifact
+digest, actor reference, and idempotency key. Sites Publish independently
+verifies those claims and recomputes the artifact digest.
+
+Preview hostnames follow the Cloudflare Pages shape:
+`<branch-label>.<site-slug>.business.tinyfat.dev`. Lossy or long Git branch
+names receive a deterministic SHA-256 suffix so two exact branches cannot
+collapse into one hostname. The initial runtime tool is preview-only;
+production promotion remains a separate control-plane action bound to an
+accepted artifact.
+
 ## Commands
 
 ```bash

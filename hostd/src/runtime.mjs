@@ -452,6 +452,9 @@ export class RuntimeManager {
 				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
+				...(this.config.sites ? {
+					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
+				} : {}),
 				...(mattermost ? {
 					MOM_MATTERMOST_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/mattermost/${encodeURIComponent(contextId)}`,
 					MOM_MATTERMOST_BOT_TOKEN: contextCapability(target.outboundToken, "mattermost", contextId),
