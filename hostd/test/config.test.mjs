@@ -158,6 +158,9 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.sites = {
 			publishUrl: "https://publish.example.com",
+			previewApex: "business.example.com",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
 			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
 			capabilityKeyId: "hostd-example-1",
 		};
@@ -165,6 +168,9 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 			slug: "website",
 			name: "Example website",
 			siteDeployment: {
+				grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 				siteId: "11111111-1111-4111-8111-111111111111",
 				siteSlug: "example-business",
 				artifactKinds: ["static", "worker"],
@@ -178,8 +184,14 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		});
 		assert.equal(config.sites.publishUrl, "https://publish.example.com");
 		assert.equal(config.sites.capabilityKeyId, "hostd-example-1");
+		assert.equal(config.sites.previewApex, "business.example.com");
+		assert.equal(config.sites.previewNamespace, "example-sites-preview");
+		assert.equal(config.sites.productionNamespace, "example-sites-production");
 		assert.equal(config.sites.capabilityTtlSeconds, 60);
 		assert.deepEqual(config.routing.knownPrincipals[0].projects[0].siteDeployment, {
+			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 			siteId: "11111111-1111-4111-8111-111111111111",
 			siteSlug: "example-business",
 			artifactKinds: ["static", "worker"],
@@ -199,6 +211,9 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 	const base = JSON.parse(await readFile(examplePath, "utf8"));
 	base.sites = {
 		publishUrl: "https://publish.example.com",
+		previewApex: "business.example.com",
+		previewNamespace: "example-sites-preview",
+		productionNamespace: "example-sites-production",
 		capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
 		capabilityKeyId: "hostd-example-1",
 	};
@@ -206,6 +221,9 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 		slug: "website",
 		name: "Example website",
 		siteDeployment: {
+			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 			siteId: "11111111-1111-4111-8111-111111111111",
 			siteSlug: "example-business",
 		},
@@ -220,6 +238,17 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 			/must contain an Ed25519 private key/,
 		);
 
+		const sameNamespace = structuredClone(base);
+		sameNamespace.sites.productionNamespace = sameNamespace.sites.previewNamespace;
+		await writeFile(path, JSON.stringify(sameNamespace));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: edPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/previewNamespace and productionNamespace must differ/,
+		);
+
 		const duplicate = structuredClone(base);
 		duplicate.routing.knownPrincipals.push({
 			email: "other@example.com",
@@ -227,6 +256,9 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 				slug: "other-website",
 				name: "Other website",
 				siteDeployment: {
+					grantId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+					customerId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+					projectId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
 					siteId: "11111111-1111-4111-8111-111111111111",
 					siteSlug: "other-business",
 				},

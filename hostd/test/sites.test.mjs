@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ContextRouter } from "../src/router.mjs";
+import { siteDeploymentBinding } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability } from "../src/security.mjs";
 import {
@@ -62,6 +63,34 @@ test("workspace artifacts are deterministic and reject escaping links", async ()
 		assert.equal(first.fileCount, 2);
 		assert(first.compressedBytes > 0);
 
+		const outside = join(directory, "outside.txt");
+		const raced = join(workspace, "dist", "race.txt");
+		await writeFile(outside, "outside workspace");
+		await writeFile(raced, "inside workspace");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "dist", LIMITS, {
+				async afterLstat({ absolute }) {
+					if (absolute !== raced) return;
+					await rm(raced);
+					await symlink(outside, raced);
+				},
+			}),
+			(error) => error instanceof HostSitesError && ["artifact_links_forbidden", "artifact_file_outside_workspace"].includes(error.code),
+		);
+		await rm(raced, { force: true });
+
+		const growing = join(workspace, "dist", "growing.txt");
+		await writeFile(growing, "small");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "dist", { ...LIMITS, maximumFileBytes: 8 }, {
+				async afterLstat({ absolute }) {
+					if (absolute === growing) await writeFile(growing, "this file grew beyond the checked limit");
+				},
+			}),
+			(error) => error instanceof HostSitesError && error.code === "artifact_file_too_large",
+		);
+		await rm(growing, { force: true });
+
 		await symlink("/etc/passwd", join(workspace, "dist", "escape"));
 		await assert.rejects(
 			buildWorkspaceArtifact(workspace, "dist", LIMITS),
@@ -88,6 +117,9 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 		contextsDirectory: join(directory, "contexts"),
 	};
 	const binding = {
+		grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 		siteId: "11111111-1111-4111-8111-111111111111",
 		siteSlug: "example-business",
 		artifactKinds: ["static", "worker"],
@@ -96,6 +128,9 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 	const config = {
 		sites: {
 			publishUrl: "https://publish.example.com",
+			previewApex: "business.tinyfat.dev",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
 			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
 			capabilityKeyId: "hostd-example-1",
 			capabilityIssuer: "troublemaker-hostd",
@@ -128,6 +163,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 	await mkdir(join(workspace, "dist"), { recursive: true });
 	await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Scoped</title>\n");
 	let observed;
+	let receiptOverrides = {};
 	const service = new HostSites({
 		config,
 		store,
@@ -139,19 +175,39 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 			assert.equal(capability.header.alg, "EdDSA");
 			assert.equal(capability.header.kid, "hostd-example-1");
 			assert.equal(verifyBytes(null, capability.signed, publicKey, capability.signature), true);
+			assert.equal(capability.payload.deployment_grant_id, binding.grantId);
+			assert.equal(capability.payload.customer_id, binding.customerId);
+			assert.equal(capability.payload.project_id, binding.projectId);
 			assert.equal(capability.payload.site_id, binding.siteId);
 			assert.equal(capability.payload.git_branch, "feature/example");
+			assert.equal(capability.payload.git_sha, "0123456789abcdef0123456789abcdef01234567");
+			assert.equal(capability.payload.hostname, `${branchPreviewLabel("feature/example")}.example-business.business.tinyfat.dev`);
+			assert.equal(capability.payload.namespace, "example-sites-preview");
 			assert.equal(capability.payload.environment, "preview");
 			assert.equal(capability.payload.artifact_kind, "static");
 			assert.equal(capability.payload.exp - capability.payload.iat, 60);
 			assert.equal(new Headers(init.headers).get("x-artifact-sha256"), capability.payload.artifact_sha256);
 			return new Response(JSON.stringify({
 				ok: true,
+				site: binding.siteSlug,
 				site_id: binding.siteId,
+				deployment_grant_id: binding.grantId,
+				customer_id: binding.customerId,
+				project_id: binding.projectId,
 				environment: "preview",
+				preview_slot: "branch:feature/example",
 				git_branch: "feature/example",
+				git_sha: "0123456789abcdef0123456789abcdef01234567",
+				branch_label: capability.payload.branch_label,
+				hostname: capability.payload.hostname,
+				namespace: "example-sites-preview",
+				artifact_kind: "static",
 				artifact_sha256: capability.payload.artifact_sha256,
-				deployment_id: "22222222-2222-4222-8222-222222222222",
+				idempotency_key: capability.payload.idempotency_key,
+				url: `https://${capability.payload.hostname}/`,
+				scriptName: `s-${binding.siteId.replaceAll("-", "")}-${"d".repeat(20)}`,
+				deploymentId: "22222222-2222-4222-8222-222222222222",
+				...receiptOverrides,
 			}), { status: 200, headers: { "content-type": "application/json" } });
 		},
 	});
@@ -171,6 +227,19 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 		assert.equal(observed.url, "https://publish.example.com/v1/scoped-deploy");
 		assert.equal(new Headers(observed.init.headers).has("x-site-id"), false, "site authority stays signed, not caller-selected");
 		assert(Buffer.byteLength(observed.init.body) > 0);
+
+		receiptOverrides = { namespace: "wrong-preview-namespace" };
+		await assert.rejects(
+			service.deploy(target, contextId, {
+				branch: "feature/example",
+				directory: "dist",
+				artifact_kind: "static",
+				source_sha: "0123456789abcdef0123456789abcdef01234567",
+				idempotency_key: `site_deploy:${"c".repeat(64)}`,
+				message: "Example preview",
+			}),
+			(error) => error instanceof HostSitesError && error.code === "sites_publish_receipt_scope_mismatch",
+		);
 	} finally {
 		store.close();
 		await rm(directory, { recursive: true, force: true });
@@ -242,4 +311,35 @@ test("the Hostd deploy endpoint accepts only its separate context capability", a
 		store.close();
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+
+test("only an exact bound principal/project receives the site deploy capability", () => {
+	const binding = {
+		grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		siteId: "11111111-1111-4111-8111-111111111111",
+		siteSlug: "example-business",
+	};
+	const config = {
+		sites: {},
+		routing: {
+			knownPrincipals: [{
+				email: "owner@example.com",
+				projects: [{ slug: "website", siteDeployment: binding }],
+			}],
+		},
+	};
+	const target = { id: "front-desk" };
+	const scopes = new Map([
+		["bound", { emailAddress: "owner@example.com", projectSlug: "website" }],
+		["wrong-project", { emailAddress: "owner@example.com", projectSlug: "other" }],
+		["wrong-customer", { emailAddress: "other@example.com", projectSlug: "website" }],
+	]);
+	const store = { getContextScope(contextId) { return scopes.get(contextId) } };
+	assert.equal(siteDeploymentBinding(config, store, target, "bound"), binding);
+	assert.equal(siteDeploymentBinding(config, store, target, "wrong-project"), null);
+	assert.equal(siteDeploymentBinding(config, store, target, "wrong-customer"), null);
+	assert.equal(siteDeploymentBinding({ ...config, sites: undefined }, store, target, "bound"), null);
 });

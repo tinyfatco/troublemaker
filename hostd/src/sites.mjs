@@ -5,11 +5,12 @@ import {
 	timingSafeEqual,
 } from "node:crypto";
 import { gzipSync } from "node:zlib";
-import { lstat, opendir, readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
-const SOURCE_SHA_RE = /^[0-9a-f]{7,64}$/i;
+const SOURCE_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const IDEMPOTENCY_RE = /^site_deploy:[0-9a-f]{64}$/;
 
 export class HostSitesError extends Error {
@@ -132,32 +133,58 @@ function tarHeader(path, size) {
 	return header;
 }
 
-async function collectArtifactFiles(root, limits) {
+async function collectArtifactFiles(root, limits, hooks = {}) {
 	const files = [];
 	let totalBytes = 0;
 	async function walk(directory) {
+		const directoryReal = await realpath(directory);
+		if (!within(root, directoryReal)) throw new HostSitesError(400, "artifact_directory_outside_workspace");
 		const entries = [];
-		const handle = await opendir(directory);
+		const handle = await opendir(directoryReal);
 		for await (const entry of handle) entries.push(entry);
 		entries.sort((a, b) => a.name.localeCompare(b.name));
 		for (const entry of entries) {
-			const absolute = resolve(directory, entry.name);
+			const absolute = resolve(directoryReal, entry.name);
 			const metadata = await lstat(absolute);
+			await hooks.afterLstat?.({ absolute, metadata });
 			if (metadata.isSymbolicLink()) throw new HostSitesError(400, "artifact_links_forbidden");
 			if (metadata.isDirectory()) {
 				await walk(absolute);
 				continue;
 			}
 			if (!metadata.isFile()) throw new HostSitesError(400, "artifact_special_file_forbidden");
-			if (metadata.size > limits.maximumFileBytes) throw new HostSitesError(413, "artifact_file_too_large");
-			totalBytes += metadata.size;
-			if (totalBytes > limits.maximumArtifactBytes) throw new HostSitesError(413, "artifact_too_large");
 			if (files.length + 1 > limits.maximumFiles) throw new HostSitesError(413, "artifact_file_count_exceeded");
 			const path = relative(root, absolute).split(sep).join("/");
 			if (!path || path.startsWith("../") || path.includes("/../") || path.includes("\0")) {
 				throw new HostSitesError(400, "artifact_path_invalid");
 			}
-			files.push({ path, absolute, size: metadata.size });
+
+			let descriptor;
+			try {
+				descriptor = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW);
+			} catch (error) {
+				if (error?.code === "ELOOP") throw new HostSitesError(400, "artifact_links_forbidden");
+				throw error;
+			}
+			try {
+				await hooks.afterOpen?.({ absolute, descriptor });
+				const opened = await descriptor.stat();
+				if (!opened.isFile()) throw new HostSitesError(400, "artifact_special_file_forbidden");
+				const descriptorPath = await realpath(`/proc/self/fd/${descriptor.fd}`);
+				if (!within(root, descriptorPath)) throw new HostSitesError(400, "artifact_file_outside_workspace");
+				if (opened.size > limits.maximumFileBytes) throw new HostSitesError(413, "artifact_file_too_large");
+				const content = await descriptor.readFile();
+				const afterRead = await descriptor.stat();
+				if (content.length !== afterRead.size || afterRead.size !== opened.size) {
+					throw new HostSitesError(409, "artifact_changed_during_snapshot");
+				}
+				if (content.length > limits.maximumFileBytes) throw new HostSitesError(413, "artifact_file_too_large");
+				totalBytes += content.length;
+				if (totalBytes > limits.maximumArtifactBytes) throw new HostSitesError(413, "artifact_too_large");
+				files.push({ path, content, size: content.length });
+			} finally {
+				await descriptor.close();
+			}
 		}
 	}
 	await walk(root);
@@ -165,7 +192,7 @@ async function collectArtifactFiles(root, limits) {
 	return files;
 }
 
-export async function buildWorkspaceArtifact(workspace, requestedDirectory, limits) {
+export async function buildWorkspaceArtifact(workspace, requestedDirectory, limits, hooks = {}) {
 	const rawDirectory = typeof requestedDirectory === "string" ? requestedDirectory.trim() : "";
 	if (
 		!rawDirectory
@@ -189,12 +216,11 @@ export async function buildWorkspaceArtifact(workspace, requestedDirectory, limi
 	const rootStat = await stat(root);
 	if (!rootStat.isDirectory()) throw new HostSitesError(400, "artifact_directory_required");
 
-	const files = await collectArtifactFiles(root, limits);
+	const files = await collectArtifactFiles(root, limits, hooks);
 	const chunks = [];
 	for (const file of files) {
-		const content = await readFile(file.absolute);
-		chunks.push(tarHeader(file.path, content.length), content);
-		const padding = content.length % 512 === 0 ? 0 : 512 - (content.length % 512);
+		chunks.push(tarHeader(file.path, file.content.length), file.content);
+		const padding = file.content.length % 512 === 0 ? 0 : 512 - (file.content.length % 512);
 		if (padding) chunks.push(Buffer.alloc(padding));
 	}
 	chunks.push(Buffer.alloc(1024));
@@ -249,17 +275,15 @@ export class HostSites {
 		if (!binding.artifactKinds.includes(artifactKind)) throw new HostSitesError(403, "artifact_kind_denied");
 		const idempotencyKey = typeof body.idempotency_key === "string" ? body.idempotency_key : "";
 		if (!IDEMPOTENCY_RE.test(idempotencyKey)) throw new HostSitesError(400, "idempotency_key_invalid");
-		const sourceSha = typeof body.source_sha === "string" && body.source_sha
-			? body.source_sha.toLowerCase()
-			: null;
-		if (sourceSha && !SOURCE_SHA_RE.test(sourceSha)) throw new HostSitesError(400, "source_sha_invalid");
+		const sourceSha = typeof body.source_sha === "string" ? body.source_sha.toLowerCase() : "";
+		if (!SOURCE_SHA_RE.test(sourceSha)) throw new HostSitesError(400, "source_sha_required");
 		const message = typeof body.message === "string" ? body.message.trim() : "";
 		if (message.length > 500) throw new HostSitesError(400, "deploy_message_too_long");
 
 		const workspace = resolve(safeContextDirectory(target, contextId), "workspace");
 		const artifact = await buildWorkspaceArtifact(workspace, body.directory, this.config.sites);
 		const branchLabel = branchPreviewLabel(branch);
-		const hostname = branchPreviewHostname(binding.siteSlug, branch);
+		const hostname = branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
 		const nowSeconds = Math.floor(this.now() / 1000);
 		const jti = createHash("sha256")
 			.update(idempotencyKey)
@@ -272,12 +296,20 @@ export class HostSites {
 		const capability = signDeployCapability(this.config.sites, {
 			sub: `site:${binding.siteId}`,
 			jti,
+			deployment_grant_id: binding.grantId,
+			customer_id: binding.customerId,
+			project_id: binding.projectId,
 			site_id: binding.siteId,
 			site_slug: binding.siteSlug,
 			environment: "preview",
 			preview_slot: `branch:${branch}`,
 			git_branch: branch,
+			git_sha: sourceSha,
+			deploy_message: message,
 			branch_label: branchLabel,
+			hostname,
+			preview_apex: this.config.sites.previewApex,
+			namespace: this.config.sites.previewNamespace,
 			artifact_kind: artifactKind,
 			artifact_sha256: artifact.sha256,
 			idempotency_key: idempotencyKey,
@@ -309,8 +341,33 @@ export class HostSites {
 			const code = typeof result?.error === "string" ? result.error : "sites_publish_rejected";
 			throw new HostSitesError(response.status >= 400 && response.status < 500 ? response.status : 502, code);
 		}
-		if (result?.site_id !== binding.siteId || result?.environment !== "preview" || result?.git_branch !== branch) {
-			throw new HostSitesError(502, "sites_publish_receipt_scope_mismatch");
+		const expectedReceipt = {
+			site: binding.siteSlug,
+			site_id: binding.siteId,
+			deployment_grant_id: binding.grantId,
+			customer_id: binding.customerId,
+			project_id: binding.projectId,
+			environment: "preview",
+			preview_slot: `branch:${branch}`,
+			git_branch: branch,
+			git_sha: sourceSha,
+			branch_label: branchLabel,
+			hostname,
+			namespace: this.config.sites.previewNamespace,
+			artifact_kind: artifactKind,
+			idempotency_key: idempotencyKey,
+			url: `https://${hostname}/`,
+		};
+		for (const [key, expected] of Object.entries(expectedReceipt)) {
+			if (result?.[key] !== expected) throw new HostSitesError(502, "sites_publish_receipt_scope_mismatch");
+		}
+		if (
+			typeof result?.scriptName !== "string"
+			|| !/^s-[0-9a-f]{32}-[0-9a-f]{20}$/.test(result.scriptName)
+			|| typeof result?.deploymentId !== "string"
+			|| !result.deploymentId
+		) {
+			throw new HostSitesError(502, "sites_publish_receipt_identity_invalid");
 		}
 		const receiptDigest = typeof result?.artifact_sha256 === "string"
 			? Buffer.from(result.artifact_sha256)

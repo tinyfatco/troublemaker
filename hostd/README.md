@@ -44,6 +44,9 @@ Hostd signing key.
 {
   "sites": {
     "publishUrl": "https://publish.example.com",
+    "previewApex": "business.example.com",
+    "previewNamespace": "example-sites-preview",
+    "productionNamespace": "example-sites-production",
     "capabilityPrivateKeyEnv": "SITES_CAPABILITY_PRIVATE_KEY",
     "capabilityKeyId": "hostd-example-1",
     "capabilityTtlSeconds": 60
@@ -57,6 +60,9 @@ Hostd signing key.
             "slug": "website",
             "name": "Example website",
             "siteDeployment": {
+              "grantId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+              "customerId": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              "projectId": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
               "siteId": "11111111-1111-4111-8111-111111111111",
               "siteSlug": "example-business",
               "artifactKinds": ["static", "worker"],
@@ -74,9 +80,10 @@ Hostd resolves the caller from its durable context, ignores caller-selected
 site/customer identity, validates the exact Git branch and workspace-relative
 artifact directory, rejects links and special files, enforces file and byte
 limits, creates a deterministic archive, and signs a short-lived Ed25519
-capability bound to the site UUID, branch slot, preview environment, artifact
-digest, actor reference, and idempotency key. Sites Publish independently
-verifies those claims and recomputes the artifact digest.
+capability bound to immutable grant/customer/project/site IDs, branch slot,
+source commit, preview environment/namespace/hostname, artifact digest, actor
+reference, expiry, and idempotency key. Sites Publish independently verifies
+those claims against site custody and recomputes the artifact digest.
 
 Preview hostnames follow the Cloudflare Pages shape:
 `<branch-label>.<site-slug>.business.tinyfat.dev`. Lossy or long Git branch

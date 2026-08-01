@@ -4,6 +4,15 @@ import { basename, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
 
+export function siteDeploymentBinding(config, store, target, contextId) {
+	if (!config.sites) return null;
+	const scope = store.getContextScope(contextId, target.id);
+	if (!scope) return null;
+	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === scope.emailAddress);
+	const project = principal?.projects.find((candidate) => candidate.slug === scope.projectSlug);
+	return project?.siteDeployment || null;
+}
+
 function safeRuntimeName(contextId) {
 	const normalized = contextId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/-+/g, "-");
 	return `troublemaker-${normalized}`.slice(0, 63);
@@ -442,6 +451,7 @@ export class RuntimeManager {
 				});
 			}
 			const envPath = join(contextDirectory, "runtime.env");
+			const siteDeployment = siteDeploymentBinding(this.config, this.store, target, contextId);
 			const env = {
 				HOME: "/data",
 				...(this.config.gmail ? {
@@ -452,7 +462,7 @@ export class RuntimeManager {
 				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
-				...(this.config.sites ? {
+				...(siteDeployment ? {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
 				...(mattermost ? {

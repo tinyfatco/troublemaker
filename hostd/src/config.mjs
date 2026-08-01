@@ -328,6 +328,15 @@ function sitesConfig(raw, environment) {
 	if (!/^[a-zA-Z0-9._-]{1,64}$/.test(keyId)) {
 		throw new Error("sites.capabilityKeyId contains unsupported characters");
 	}
+	const previewNamespace = text(sites.previewNamespace, "sites.previewNamespace");
+	const productionNamespace = text(sites.productionNamespace, "sites.productionNamespace");
+	if (![previewNamespace, productionNamespace].every((value) => /^[a-z0-9][a-z0-9_-]{0,127}$/.test(value))) {
+		throw new Error("sites preview/production namespaces contain unsupported characters");
+	}
+	if (previewNamespace === productionNamespace) {
+		throw new Error("sites previewNamespace and productionNamespace must differ");
+	}
+	const previewApex = normalizeDomain(sites.previewApex, "sites.previewApex");
 	const maximumFileBytes = integer(
 		sites.maximumFileBytes,
 		25 * 1024 * 1024,
@@ -344,6 +353,9 @@ function sitesConfig(raw, environment) {
 	);
 	return {
 		publishUrl: httpUrl(sites.publishUrl, "sites.publishUrl"),
+		previewApex,
+		previewNamespace,
+		productionNamespace,
 		capabilityPrivateKey,
 		capabilityKeyId: keyId,
 		capabilityIssuer: sites.capabilityIssuer === undefined
@@ -372,13 +384,21 @@ function sitesConfig(raw, environment) {
 	};
 }
 
+function uuid(value, label) {
+	const candidate = text(value, label).toLowerCase();
+	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(candidate)) {
+		throw new Error(`${label} must be a UUID`);
+	}
+	return candidate;
+}
+
 function siteDeploymentProjectConfig(raw, label) {
 	if (raw === undefined) return undefined;
 	const deployment = object(raw, label);
-	const siteId = text(deployment.siteId, `${label}.siteId`).toLowerCase();
-	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(siteId)) {
-		throw new Error(`${label}.siteId must be a UUID`);
-	}
+	const grantId = uuid(deployment.grantId, `${label}.grantId`);
+	const customerId = uuid(deployment.customerId, `${label}.customerId`);
+	const projectId = uuid(deployment.projectId, `${label}.projectId`);
+	const siteId = uuid(deployment.siteId, `${label}.siteId`);
 	const siteSlug = text(deployment.siteSlug, `${label}.siteSlug`).toLowerCase();
 	if (!/^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(siteSlug)) {
 		throw new Error(`${label}.siteSlug is invalid`);
@@ -414,7 +434,7 @@ function siteDeploymentProjectConfig(raw, label) {
 	if (new Set(allowedBranches).size !== allowedBranches.length) {
 		throw new Error(`${label}.allowedBranches cannot repeat a branch`);
 	}
-	return { siteId, siteSlug, artifactKinds, allowedBranches };
+	return { grantId, customerId, projectId, siteId, siteSlug, artifactKinds, allowedBranches };
 }
 
 function targetConfig(raw, index, environment) {
@@ -616,6 +636,13 @@ export async function loadConfig(path, environment = process.env) {
 	));
 	if (duplicateSiteSlugs.length > 0) {
 		throw new Error("each sites deployment siteSlug must bind to exactly one principal/project");
+	}
+	for (const key of ["grantId", "projectId"]) {
+		if (siteBindings.some((binding, index) => (
+			siteBindings.findIndex((candidate) => candidate[key] === binding[key]) !== index
+		))) {
+			throw new Error(`each sites deployment ${key} must bind to exactly one principal/project`);
+		}
 	}
 
 	return {

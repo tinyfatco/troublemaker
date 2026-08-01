@@ -79,7 +79,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 					Type.Literal("static"),
 					Type.Literal("worker"),
 				], { description: "Static files or a supported Worker artifact bundle." }),
-				source_sha: Type.Optional(Type.String({ description: "Immutable source commit SHA when available.", minLength: 7, maxLength: 64 })),
+				source_sha: Type.String({ description: "Full immutable source commit SHA for this exact artifact.", minLength: 40, maxLength: 64 }),
 				message: Type.Optional(Type.String({ description: "Short deployment note.", maxLength: 500 })),
 			}),
 			execute: async (id: string, input: unknown) => {
