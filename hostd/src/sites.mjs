@@ -61,7 +61,9 @@ export function branchPreviewHostname(siteSlug, branch, apex = "business.tinyfat
 	if (!/^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(siteSlug)) {
 		throw new HostSitesError(500, "configured_site_slug_invalid");
 	}
-	return `${branchPreviewLabel(branch)}.${siteSlug}.${String(apex).replace(/^\.+|\.+$/g, "")}`;
+	const hostname = `${branchPreviewLabel(branch)}.${siteSlug}.${String(apex).replace(/^\.+|\.+$/g, "")}`;
+	if (hostname.length > 253) throw new HostSitesError(500, "configured_preview_hostname_too_long");
+	return hostname;
 }
 
 export function signDeployCapability(config, claims, nowSeconds = Math.floor(Date.now() / 1000)) {

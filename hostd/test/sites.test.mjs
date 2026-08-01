@@ -45,6 +45,10 @@ test("Pages-style branch labels are readable, exact-branch collision safe, and b
 		`${branchPreviewLabel("feature/example")}.example-business.business.tinyfat.dev`,
 	);
 	assert(branchPreviewLabel(`feature/${"long-name-".repeat(20)}`).length <= 63);
+	assert.throws(
+		() => branchPreviewHostname("example-business", "main", `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(40)}.dev`),
+		(error) => error instanceof HostSitesError && error.code === "configured_preview_hostname_too_long",
+	);
 	for (const invalid of ["", "../main", "main..next", "main.lock", "bad branch", "bad@{branch", "/main"]) {
 		assert.throws(() => normalizeGitBranch(invalid), (error) => error instanceof HostSitesError && error.code === "git_branch_invalid");
 	}
