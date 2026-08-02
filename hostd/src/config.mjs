@@ -307,14 +307,20 @@ function phoneConfig(raw, environment) {
 	};
 }
 
-function sitesConfig(raw, environment) {
+async function sitesConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const sites = object(raw, "sites");
-	const capabilityPrivateKey = envSecret(
-		sites.capabilityPrivateKeyEnv,
-		"sites.capabilityPrivateKeyEnv",
-		environment,
-	);
+	const hasPrivateKeyEnv = sites.capabilityPrivateKeyEnv !== undefined;
+	const hasPrivateKeyFile = sites.capabilityPrivateKeyFile !== undefined;
+	if (hasPrivateKeyEnv === hasPrivateKeyFile) {
+		throw new Error("sites must configure exactly one of capabilityPrivateKeyEnv or capabilityPrivateKeyFile");
+	}
+	const capabilityPrivateKey = hasPrivateKeyEnv
+		? envSecret(sites.capabilityPrivateKeyEnv, "sites.capabilityPrivateKeyEnv", environment)
+		: await readFile(
+			resolve(text(sites.capabilityPrivateKeyFile, "sites.capabilityPrivateKeyFile")),
+			"utf8",
+		);
 	let key;
 	try {
 		key = createPrivateKey(capabilityPrivateKey);
@@ -526,7 +532,7 @@ export async function loadConfig(path, environment = process.env) {
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
-	const sites = sitesConfig(raw.sites, environment);
+	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
 		throw new Error("phone.ingress.path must be an absolute URL path");
 	}
