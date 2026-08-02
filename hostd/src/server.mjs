@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
+import { HostSites, HostSitesError } from "./sites.mjs";
 
 async function readJson(request, maximumBytes = 2 * 1024 * 1024) {
 	const chunks = [];
@@ -41,11 +42,13 @@ export function createHostServer({
 	rocketChatGateway,
 	zulipGateway,
 	phoneGateway,
+	sitesGateway,
 	routingKey,
 }) {
 	const gmailTools = routingKey && gmail && config.gmail
 		? new HostGmailTools({ config, store, gmail, routingKey })
 		: null;
+	const sites = sitesGateway || (config.sites ? new HostSites({ config, store }) : null);
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {
@@ -192,6 +195,25 @@ export function createHostServer({
 					"/v1/gmail/send": () => gmailTools.send(target, contextId, body),
 				};
 				json(response, 200, await handlers[url.pathname]());
+				return;
+			}
+			if (request.method === "POST" && url.pathname === "/v1/sites/deploy") {
+				if (!sites) {
+					json(response, 503, { error: "sites_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const body = await readJson(request, 32 * 1024);
+				const contextId = typeof body.context_id === "string" ? body.context_id : "";
+				const target = authenticateContext(request, config, contextId, "site-deploy");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				json(response, 200, await sites.deploy(target, contextId, body));
 				return;
 			}
 			if (request.method === "POST" && url.pathname === "/v1/outbound/gmail") {
@@ -408,6 +430,10 @@ export function createHostServer({
 			}
 			json(response, 404, { error: "not_found" });
 		} catch (error) {
+			if (error instanceof HostSitesError) {
+				json(response, error.status, { error: error.code });
+				return;
+			}
 			if (error instanceof GmailToolError) {
 				json(response, error.status, { error: error.code });
 				return;

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,6 +142,136 @@ test("requires unique valid Gmail internal domains", async () => {
 			await writeFile(path, JSON.stringify(raw));
 			await assert.rejects(loadConfig(path, ENVIRONMENT), expected);
 		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+
+test("loads one exact principal/project Sites deploy binding with an Ed25519 signer", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-config-"));
+	const path = join(directory, "config.json");
+	const { privateKey } = generateKeyPairSync("ed25519");
+	const privatePem = privateKey.export({ type: "pkcs8", format: "pem" }).toString();
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.sites = {
+			publishUrl: "https://publish.example.com",
+			previewApex: "business.example.com",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
+			capabilityKeyId: "hostd-example-1",
+		};
+		raw.routing.knownPrincipals[0].projects.push({
+			slug: "website",
+			name: "Example website",
+			siteDeployment: {
+				grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				siteId: "11111111-1111-4111-8111-111111111111",
+				siteSlug: "example-business",
+				artifactKinds: ["static", "worker"],
+				allowedBranches: ["*"],
+			},
+		});
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, {
+			...ENVIRONMENT,
+			SITES_CAPABILITY_PRIVATE_KEY: privatePem,
+		});
+		assert.equal(config.sites.publishUrl, "https://publish.example.com");
+		assert.equal(config.sites.capabilityKeyId, "hostd-example-1");
+		assert.equal(config.sites.previewApex, "business.example.com");
+		assert.equal(config.sites.previewNamespace, "example-sites-preview");
+		assert.equal(config.sites.productionNamespace, "example-sites-production");
+		assert.equal(config.sites.capabilityTtlSeconds, 60);
+		assert.deepEqual(config.routing.knownPrincipals[0].projects[0].siteDeployment, {
+			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+			siteId: "11111111-1111-4111-8111-111111111111",
+			siteSlug: "example-business",
+			artifactKinds: ["static", "worker"],
+			allowedBranches: ["*"],
+		});
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-invalid-config-"));
+	const path = join(directory, "config.json");
+	const { privateKey: edPrivate } = generateKeyPairSync("ed25519");
+	const { privateKey: rsaPrivate } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+	const base = JSON.parse(await readFile(examplePath, "utf8"));
+	base.sites = {
+		publishUrl: "https://publish.example.com",
+		previewApex: "business.example.com",
+		previewNamespace: "example-sites-preview",
+		productionNamespace: "example-sites-production",
+		capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
+		capabilityKeyId: "hostd-example-1",
+	};
+	base.routing.knownPrincipals[0].projects.push({
+		slug: "website",
+		name: "Example website",
+		siteDeployment: {
+			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+			siteId: "11111111-1111-4111-8111-111111111111",
+			siteSlug: "example-business",
+		},
+	});
+	try {
+		await writeFile(path, JSON.stringify(base));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: rsaPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/must contain an Ed25519 private key/,
+		);
+
+		const sameNamespace = structuredClone(base);
+		sameNamespace.sites.productionNamespace = sameNamespace.sites.previewNamespace;
+		await writeFile(path, JSON.stringify(sameNamespace));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: edPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/previewNamespace and productionNamespace must differ/,
+		);
+
+		const duplicate = structuredClone(base);
+		duplicate.routing.knownPrincipals.push({
+			email: "other@example.com",
+			projects: [{
+				slug: "other-website",
+				name: "Other website",
+				siteDeployment: {
+					grantId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+					customerId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+					projectId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+					siteId: "11111111-1111-4111-8111-111111111111",
+					siteSlug: "other-business",
+				},
+			}],
+		});
+		await writeFile(path, JSON.stringify(duplicate));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: edPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/siteId must bind to exactly one principal\/project/,
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
