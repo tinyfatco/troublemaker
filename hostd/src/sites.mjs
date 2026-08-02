@@ -10,6 +10,7 @@ import { constants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { resolveSiteDeploymentBinding } from "./site-deployment-binding.mjs";
 
 const execFileAsync = promisify(execFile);
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
@@ -298,12 +299,6 @@ export async function buildWorkspaceArtifact(workspace, requestedDirectory, limi
 	};
 }
 
-function findProjectBinding(config, scope) {
-	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === scope.emailAddress);
-	const project = principal?.projects.find((candidate) => candidate.slug === scope.projectSlug);
-	return project?.siteDeployment;
-}
-
 function branchAllowed(binding, branch) {
 	return binding.allowedBranches.includes("*") || binding.allowedBranches.includes(branch);
 }
@@ -313,18 +308,23 @@ function safeContextDirectory(target, contextId) {
 }
 
 export class HostSites {
-	constructor({ config, store, fetch: request = fetch, now = () => Date.now() }) {
+	constructor({ config, store, routingKey, fetch: request = fetch, now = () => Date.now() }) {
 		this.config = config;
 		this.store = store;
+		this.routingKey = routingKey;
 		this.request = request;
 		this.now = now;
 	}
 
 	async deploy(target, contextId, body) {
 		if (!this.config.sites) throw new HostSitesError(503, "sites_unavailable");
-		const scope = this.store.getContextScope(contextId, target.id);
-		if (!scope) throw new HostSitesError(403, "site_context_unbound");
-		const binding = findProjectBinding(this.config, scope);
+		const binding = resolveSiteDeploymentBinding(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
 		if (!binding) throw new HostSitesError(403, "site_context_unbound");
 
 		const branch = normalizeGitBranch(body.branch);

@@ -48,7 +48,7 @@ export function createHostServer({
 	const gmailTools = routingKey && gmail && config.gmail
 		? new HostGmailTools({ config, store, gmail, routingKey })
 		: null;
-	const sites = sitesGateway || (config.sites ? new HostSites({ config, store }) : null);
+	const sites = sitesGateway || (config.sites ? new HostSites({ config, store, routingKey }) : null);
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {

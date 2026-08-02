@@ -9,7 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
 import { siteDeploymentBinding } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
-import { contextCapability } from "../src/security.mjs";
+import { contextCapability, stablePrivateKey } from "../src/security.mjs";
 import {
 	branchPreviewHostname,
 	branchPreviewLabel,
@@ -445,4 +445,35 @@ test("only an exact bound principal/project receives the site deploy capability"
 	assert.equal(siteDeploymentBinding(config, store, target, "wrong-project"), null);
 	assert.equal(siteDeploymentBinding(config, store, target, "wrong-customer"), null);
 	assert.equal(siteDeploymentBinding({ ...config, sites: undefined }, store, target, "bound"), null);
+});
+
+test("only the exact configured phone intake context receives its site deploy capability", () => {
+	const routingKey = Buffer.alloc(32, 9);
+	const phone = "+15551234567";
+	const binding = {
+		grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		siteId: "11111111-1111-4111-8111-111111111111",
+		siteSlug: "example-business",
+	};
+	const principalHash = stablePrivateKey(routingKey, "phone-principal", phone);
+	const config = {
+		sites: {},
+		routing: {
+			knownPrincipals: [],
+			knownPhonePrincipals: [{ phone, siteDeployment: binding }],
+		},
+	};
+	const target = { id: "front-desk" };
+	const scopes = new Map([
+		["bound", { principalHash, emailAddress: null, projectSlug: "intake" }],
+		["wrong-phone", { principalHash: "f".repeat(64), emailAddress: null, projectSlug: "intake" }],
+		["wrong-project", { principalHash, emailAddress: null, projectSlug: "website" }],
+	]);
+	const store = { getContextScope(contextId) { return scopes.get(contextId) } };
+	assert.equal(siteDeploymentBinding(config, store, target, "bound", routingKey), binding);
+	assert.equal(siteDeploymentBinding(config, store, target, "wrong-phone", routingKey), null);
+	assert.equal(siteDeploymentBinding(config, store, target, "wrong-project", routingKey), null);
+	assert.equal(siteDeploymentBinding(config, store, target, "bound"), null);
 });

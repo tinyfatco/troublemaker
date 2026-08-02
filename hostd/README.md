@@ -95,6 +95,12 @@ collapse into one hostname. The initial runtime tool is preview-only;
 production promotion remains a separate control-plane action bound to an
 accepted artifact.
 
+An existing direct-SMS `intake` context may receive one exact Sites binding
+through host-owned `routing.knownPhonePrincipals`. The phone number remains in
+Hostd configuration and is matched through the routing-key-derived principal
+hash; it is never copied into the runtime. The runtime receives only the same
+context-scoped deploy capability used by configured email/project contexts.
+
 ## Commands
 
 ```bash

@@ -518,6 +518,10 @@ export async function loadConfig(path, environment = process.env) {
 	if (selectedTarget?.driver !== "oci") throw new Error("routing.actorTarget must reference an OCI target");
 	const knownPrincipals = routing.knownPrincipals === undefined ? [] : routing.knownPrincipals;
 	if (!Array.isArray(knownPrincipals)) throw new Error("routing.knownPrincipals must be an array");
+	const knownPhonePrincipals = routing.knownPhonePrincipals === undefined ? [] : routing.knownPhonePrincipals;
+	if (!Array.isArray(knownPhonePrincipals)) {
+		throw new Error("routing.knownPhonePrincipals must be an array");
+	}
 	const mattermost = mattermostConfig(raw.mattermost, environment);
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
@@ -571,6 +575,9 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
+	if (!phone && knownPhonePrincipals.length > 0) {
+		throw new Error("routing.knownPhonePrincipals requires phone configuration");
+	}
 	if (!gmail && targets.some((target) => target.gmailToolsOnly)) {
 		throw new Error("targets cannot enable gmailToolsOnly when Gmail is not configured");
 	}
@@ -616,6 +623,25 @@ export async function loadConfig(path, environment = process.env) {
 			}),
 		};
 	});
+	const configuredPhonePrincipals = knownPhonePrincipals.map((candidate, index) => {
+		const principalLabel = `routing.knownPhonePrincipals[${index}]`;
+		const principal = object(candidate, principalLabel);
+		const siteDeployment = siteDeploymentProjectConfig(
+			principal.siteDeployment,
+			`${principalLabel}.siteDeployment`,
+		);
+		if (siteDeployment && !sites) {
+			throw new Error(`${principalLabel}.siteDeployment requires top-level sites configuration`);
+		}
+		return {
+			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
+			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			siteDeployment,
+		};
+	});
+	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
+		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
+	}
 	const siteBindings = configuredPrincipals.flatMap((principal) => (
 		principal.projects
 			.filter((project) => project.siteDeployment)
@@ -624,7 +650,9 @@ export async function loadConfig(path, environment = process.env) {
 				projectSlug: project.slug,
 				...project.siteDeployment,
 			}))
-	));
+	)).concat(configuredPhonePrincipals
+		.filter((principal) => principal.siteDeployment)
+		.map((principal) => ({ phone: principal.phone, projectSlug: "intake", ...principal.siteDeployment })));
 	const duplicateSiteIds = siteBindings.filter((binding, index) => (
 		siteBindings.findIndex((candidate) => candidate.siteId === binding.siteId) !== index
 	));
@@ -688,6 +716,7 @@ export async function loadConfig(path, environment = process.env) {
 		routing: {
 			actorTarget,
 			knownPrincipals: configuredPrincipals,
+			knownPhonePrincipals: configuredPhonePrincipals,
 		},
 		targets,
 		targetsById: new Map(targets.map((target) => [target.id, target])),
