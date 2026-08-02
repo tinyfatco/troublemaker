@@ -60,7 +60,7 @@ export function branchPreviewLabel(value) {
 	return `${head}-${digest}`;
 }
 
-export function branchPreviewHostname(siteSlug, branch, apex = "business.tinyfat.dev") {
+export function branchPreviewHostname(siteSlug, branch, apex = "tinyfat.dev") {
 	if (!/^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(siteSlug)) {
 		throw new HostSitesError(500, "configured_site_slug_invalid");
 	}
