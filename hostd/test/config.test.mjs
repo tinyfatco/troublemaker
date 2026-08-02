@@ -158,7 +158,7 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.sites = {
 			publishUrl: "https://publish.example.com",
-			previewApex: "business.example.com",
+			previewApex: "example.com",
 			previewNamespace: "example-sites-preview",
 			productionNamespace: "example-sites-production",
 			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
@@ -184,7 +184,7 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		});
 		assert.equal(config.sites.publishUrl, "https://publish.example.com");
 		assert.equal(config.sites.capabilityKeyId, "hostd-example-1");
-		assert.equal(config.sites.previewApex, "business.example.com");
+		assert.equal(config.sites.previewApex, "example.com");
 		assert.equal(config.sites.previewNamespace, "example-sites-preview");
 		assert.equal(config.sites.productionNamespace, "example-sites-production");
 		assert.equal(config.sites.capabilityTtlSeconds, 60);
@@ -211,7 +211,7 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 	const base = JSON.parse(await readFile(examplePath, "utf8"));
 	base.sites = {
 		publishUrl: "https://publish.example.com",
-		previewApex: "business.example.com",
+		previewApex: "example.com",
 		previewNamespace: "example-sites-preview",
 		productionNamespace: "example-sites-production",
 		capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",

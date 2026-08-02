@@ -44,7 +44,7 @@ Hostd signing key.
 {
   "sites": {
     "publishUrl": "https://publish.example.com",
-    "previewApex": "business.example.com",
+    "previewApex": "example.com",
     "previewNamespace": "example-sites-preview",
     "productionNamespace": "example-sites-production",
     "capabilityPrivateKeyEnv": "SITES_CAPABILITY_PRIVATE_KEY",
@@ -88,7 +88,8 @@ the runtime cannot supply the signed SHA. Sites Publish independently verifies
 those claims against site custody and recomputes the artifact digest.
 
 Preview hostnames follow the Cloudflare Pages shape:
-`<branch-label>.<site-slug>.business.tinyfat.dev`. Lossy or long Git branch
+`<branch-label>.<site-slug>.tinyfat.dev`. Here `site-slug` is the actual
+business/project slug, not a literal `business` namespace. Lossy or long Git branch
 names receive a deterministic SHA-256 suffix so two exact branches cannot
 collapse into one hostname. The initial runtime tool is preview-only;
 production promotion remains a separate control-plane action bound to an

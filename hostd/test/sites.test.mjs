@@ -79,7 +79,7 @@ test("Pages-style branch labels are readable, exact-branch collision safe, and b
 	assert.notEqual(branchPreviewLabel("feature/example"), branchPreviewLabel("feature-example"));
 	assert.equal(
 		branchPreviewHostname("example-business", "feature/example"),
-		`${branchPreviewLabel("feature/example")}.example-business.business.tinyfat.dev`,
+		`${branchPreviewLabel("feature/example")}.example-business.tinyfat.dev`,
 	);
 	assert(branchPreviewLabel(`feature/${"long-name-".repeat(20)}`).length <= 63);
 	assert.throws(
@@ -217,7 +217,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 	const config = {
 		sites: {
 			publishUrl: "https://publish.example.com",
-			previewApex: "business.tinyfat.dev",
+			previewApex: "tinyfat.dev",
 			previewNamespace: "example-sites-preview",
 			productionNamespace: "example-sites-production",
 			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
@@ -271,7 +271,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 			assert.equal(capability.payload.site_id, binding.siteId);
 			assert.equal(capability.payload.git_branch, "feature/example");
 			assert.equal(capability.payload.git_sha, sourceSha);
-			assert.equal(capability.payload.hostname, `${branchPreviewLabel("feature/example")}.example-business.business.tinyfat.dev`);
+			assert.equal(capability.payload.hostname, `${branchPreviewLabel("feature/example")}.example-business.tinyfat.dev`);
 			assert.equal(capability.payload.namespace, "example-sites-preview");
 			assert.equal(capability.payload.environment, "preview");
 			assert.equal(capability.payload.artifact_kind, "static");
@@ -312,7 +312,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 		assert.equal(result.ok, true);
 		assert.equal(result.site_id, binding.siteId);
 		assert.equal(result.git_branch, "feature/example");
-		assert.match(result.hostname, /^feature-example-[0-9a-f]{12}\.example-business\.business\.tinyfat\.dev$/);
+		assert.match(result.hostname, /^feature-example-[0-9a-f]{12}\.example-business\.tinyfat\.dev$/);
 		assert.equal(observed.url, "https://publish.example.com/v1/scoped-deploy");
 		assert.equal(new Headers(observed.init.headers).has("x-site-id"), false, "site authority stays signed, not caller-selected");
 		assert(Buffer.byteLength(observed.init.body) > 0);
