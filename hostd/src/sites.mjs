@@ -152,6 +152,12 @@ function writeAscii(buffer, offset, length, value) {
 	encoded.copy(buffer, offset);
 }
 
+function writeUtf8(buffer, offset, length, value) {
+	const encoded = Buffer.from(value, "utf8");
+	if (encoded.length > length) throw new HostSitesError(400, "artifact_path_too_long");
+	encoded.copy(buffer, offset);
+}
+
 function tarPathParts(path) {
 	const bytes = Buffer.byteLength(path, "utf8");
 	if (bytes <= 100) return { name: path, prefix: "" };
@@ -169,7 +175,7 @@ function tarPathParts(path) {
 function tarHeader(path, size) {
 	const header = Buffer.alloc(512);
 	const { name, prefix } = tarPathParts(path);
-	writeAscii(header, 0, 100, name);
+	writeUtf8(header, 0, 100, name);
 	writeAscii(header, 100, 8, tarOctal(0o644, 8));
 	writeAscii(header, 108, 8, tarOctal(0, 8));
 	writeAscii(header, 116, 8, tarOctal(0, 8));
@@ -179,7 +185,7 @@ function tarHeader(path, size) {
 	header[156] = "0".charCodeAt(0);
 	writeAscii(header, 257, 6, "ustar\0");
 	writeAscii(header, 263, 2, "00");
-	writeAscii(header, 345, 155, prefix);
+	writeUtf8(header, 345, 155, prefix);
 	const checksum = header.reduce((sum, byte) => sum + byte, 0);
 	writeAscii(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
 	return header;

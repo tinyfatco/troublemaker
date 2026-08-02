@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
 import { siteDeploymentBinding } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
@@ -52,6 +53,23 @@ function commitWorkspace(workspace, branch) {
 	git(workspace, "add", "--all");
 	git(workspace, "commit", "-m", "Test source");
 	return git(workspace, "rev-parse", "HEAD");
+}
+
+function artifactPaths(body) {
+	const archive = gunzipSync(body);
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	const paths = [];
+	for (let offset = 0; offset + 512 <= archive.length;) {
+		const header = archive.subarray(offset, offset + 512);
+		if (header.every((byte) => byte === 0)) break;
+		const readField = (start, length) => decoder.decode(header.subarray(start, start + length)).split("\0", 1)[0];
+		const name = readField(0, 100);
+		const prefix = readField(345, 155);
+		paths.push(prefix ? `${prefix}/${name}` : name);
+		const size = Number.parseInt(readField(124, 12).trim() || "0", 8);
+		offset += 512 + Math.ceil(size / 512) * 512;
+	}
+	return paths;
 }
 
 test("Pages-style branch labels are readable, exact-branch collision safe, and bounded", () => {
@@ -112,10 +130,12 @@ test("workspace artifacts are deterministic and reject escaping links", async ()
 		await mkdir(join(workspace, "dist", "assets"), { recursive: true });
 		await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Example</title>\n");
 		await writeFile(join(workspace, "dist", "assets", "app.js"), "console.log('example')\n");
+		await writeFile(join(workspace, "dist", "assets", "café.png"), "fake image\n");
 		const first = await buildWorkspaceArtifact(workspace, "dist", LIMITS);
 		const second = await buildWorkspaceArtifact(workspace, "dist", LIMITS);
 		assert.equal(first.sha256, second.sha256);
-		assert.equal(first.fileCount, 2);
+		assert.equal(first.fileCount, 3);
+		assert.deepEqual(artifactPaths(first.body), ["assets/app.js", "assets/café.png", "index.html"]);
 		assert(first.compressedBytes > 0);
 
 		const outside = join(directory, "outside.txt");
