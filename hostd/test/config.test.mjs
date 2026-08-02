@@ -251,6 +251,41 @@ test("loads one exact phone-intake Sites deploy binding without broadening phone
 	}
 });
 
+test("loads the host-owned Sites signer from a protected key file", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-key-file-"));
+	const path = join(directory, "config.json");
+	const keyPath = join(directory, "sites-signing-key.pem");
+	const { privateKey } = generateKeyPairSync("ed25519");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.sites = {
+			publishUrl: "https://publish.example.com",
+			previewApex: "example.com",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKeyFile: keyPath,
+			capabilityKeyId: "hostd-example-file-1",
+		};
+		await writeFile(keyPath, privateKey.export({ type: "pkcs8", format: "pem" }));
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.sites.capabilityKeyId, "hostd-example-file-1");
+
+		raw.sites.capabilityPrivateKeyEnv = "SITES_CAPABILITY_PRIVATE_KEY";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/exactly one of capabilityPrivateKeyEnv or capabilityPrivateKeyFile/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () => {
 	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-invalid-config-"));

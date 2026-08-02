@@ -101,6 +101,11 @@ Hostd configuration and is matched through the routing-key-derived principal
 hash; it is never copied into the runtime. The runtime receives only the same
 context-scoped deploy capability used by configured email/project contexts.
 
+The host signer may be loaded from either `sites.capabilityPrivateKeyEnv` or
+`sites.capabilityPrivateKeyFile`, but never both. Prefer the file form for a
+resident Hostd: keep the Ed25519 PEM in a host-owned, mode-restricted path and
+do not mount it into the OCI runtime.
+
 ## Commands
 
 ```bash
