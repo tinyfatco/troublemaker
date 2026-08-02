@@ -3,14 +3,10 @@ import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
+import { resolveSiteDeploymentBinding } from "./site-deployment-binding.mjs";
 
-export function siteDeploymentBinding(config, store, target, contextId) {
-	if (!config.sites) return null;
-	const scope = store.getContextScope(contextId, target.id);
-	if (!scope) return null;
-	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === scope.emailAddress);
-	const project = principal?.projects.find((candidate) => candidate.slug === scope.projectSlug);
-	return project?.siteDeployment || null;
+export function siteDeploymentBinding(config, store, target, contextId, routingKey) {
+	return resolveSiteDeploymentBinding(config, store, target, contextId, routingKey);
 }
 
 function safeRuntimeName(contextId) {
@@ -182,12 +178,13 @@ async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
 }
 
 export class RuntimeManager {
-	constructor(config, store, { mattermost, rocketChat, zulip } = {}) {
+	constructor(config, store, { mattermost, rocketChat, zulip, routingKey } = {}) {
 		this.config = config;
 		this.store = store;
 		this.mattermost = mattermost;
 		this.rocketChat = rocketChat;
 		this.zulip = zulip;
+		this.routingKey = routingKey;
 	}
 
 	async acceptEvent(event) {
@@ -451,7 +448,13 @@ export class RuntimeManager {
 				});
 			}
 			const envPath = join(contextDirectory, "runtime.env");
-			const siteDeployment = siteDeploymentBinding(this.config, this.store, target, contextId);
+			const siteDeployment = siteDeploymentBinding(
+				this.config,
+				this.store,
+				target,
+				contextId,
+				this.routingKey,
+			);
 			const env = {
 				HOME: "/data",
 				...(this.config.gmail ? {

@@ -202,6 +202,55 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 	}
 });
 
+test("loads one exact phone-intake Sites deploy binding without broadening phone custody", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-sites-config-"));
+	const path = join(directory, "config.json");
+	const { privateKey } = generateKeyPairSync("ed25519");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.sites = {
+			publishUrl: "https://publish.example.com",
+			previewApex: "example.com",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
+			capabilityKeyId: "hostd-example-1",
+		};
+		raw.routing.knownPhonePrincipals = [{
+			phone: "+15551234567",
+			name: "Example Owner",
+			siteDeployment: {
+				grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				siteId: "11111111-1111-4111-8111-111111111111",
+				siteSlug: "example-business",
+			},
+		}];
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, {
+			...ENVIRONMENT,
+			SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+		});
+		assert.equal(config.routing.knownPhonePrincipals[0].phone, "+15551234567");
+		assert.equal(config.routing.knownPhonePrincipals[0].siteDeployment.siteSlug, "example-business");
+
+		const duplicate = structuredClone(raw);
+		duplicate.routing.knownPhonePrincipals.push(structuredClone(raw.routing.knownPhonePrincipals[0]));
+		await writeFile(path, JSON.stringify(duplicate));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/cannot repeat a phone number/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () => {
 	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-invalid-config-"));
