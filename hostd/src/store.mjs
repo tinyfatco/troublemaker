@@ -1397,6 +1397,23 @@ export class HostStore {
 		return event;
 	}
 
+	completeEventWithFailure(id, leaseToken, error) {
+		if (!leaseToken) return this.getEvent(id);
+		const result = this.database.prepare(`
+			UPDATE events SET status = 'completed', completed_at = ?, updated_at = ?,
+				lease_token = NULL, lease_expires_at = NULL, last_error = ?
+			WHERE id = ? AND lease_token = ?
+				AND status IN ('leased', 'accepted', 'running')
+		`).run(now(), now(), String(error).slice(0, 1000), id, leaseToken);
+		const event = this.getEvent(id);
+		if (result.changes && event) {
+			this.updateContext(event.contextId, {
+				status: this.getContext(event.contextId)?.status ?? "online",
+			});
+		}
+		return event;
+	}
+
 	failEvent(id, error, leaseToken, retrySeconds = 15, maximumAttempts = 5) {
 		const event = this.getEvent(id);
 		if (!event || (leaseToken && event.leaseToken !== leaseToken)) return event;

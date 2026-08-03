@@ -6,6 +6,16 @@ export interface HostDeliveryReceipt {
 	leaseToken: string;
 }
 
+export type HostOperationalFailure = "model_credential_unavailable" | "model_run_error";
+
+export interface HostReceiptProgress {
+	/**
+	 * Complete the durable delivery without asking the host to retry it while
+	 * preserving a machine-readable operational failure for monitoring.
+	 */
+	completeWithOperationalFailure(failure: HostOperationalFailure): Promise<void>;
+}
+
 function validReceipt(value: unknown): value is HostDeliveryReceipt {
 	if (!value || typeof value !== "object") return false;
 	const receipt = value as Partial<HostDeliveryReceipt>;
@@ -39,10 +49,31 @@ async function report(receipt: HostDeliveryReceipt, status: string, error?: stri
 
 export async function withHostReceipt<T>(
 	rawReceipt: unknown,
-	work: () => Promise<T>,
+	work: (progress: HostReceiptProgress) => Promise<T>,
 ): Promise<T> {
-	if (!validReceipt(rawReceipt)) return await work();
+	if (!validReceipt(rawReceipt)) {
+		return await work({ completeWithOperationalFailure: async () => {} });
+	}
 	const receipt = rawReceipt;
+	let terminalReported = false;
+	const progress: HostReceiptProgress = {
+		completeWithOperationalFailure: async (failure) => {
+			if (terminalReported) return;
+			try {
+				await report(receipt, "completed_with_failure", failure);
+			} catch (error) {
+				// During a rolling host/runtime update, an older host may not know the
+				// new terminal status yet. Complete normally rather than turning a
+				// model outage into a replay of the inbound customer event.
+				log.logWarning(
+					"Host does not accept operational failure receipts; completing without retry",
+					error instanceof Error ? error.message : String(error),
+				);
+				await report(receipt, "completed");
+			}
+			terminalReported = true;
+		},
+	};
 	await report(receipt, "running");
 	const timer = setInterval(() => {
 		void report(receipt, "heartbeat").catch((error) => {
@@ -51,17 +82,19 @@ export async function withHostReceipt<T>(
 	}, 30_000);
 	timer.unref();
 	try {
-		const result = await work();
-		await report(receipt, "completed");
+		const result = await work(progress);
+		if (!terminalReported) await report(receipt, "completed");
 		return result;
 	} catch (error) {
-		try {
-			await report(receipt, "failed", error instanceof Error ? error.message : String(error));
-		} catch (receiptError) {
-			log.logWarning(
-				"Host delivery failure receipt failed",
-				receiptError instanceof Error ? receiptError.message : String(receiptError),
-			);
+		if (!terminalReported) {
+			try {
+				await report(receipt, "failed", error instanceof Error ? error.message : String(error));
+			} catch (receiptError) {
+				log.logWarning(
+					"Host delivery failure receipt failed",
+					receiptError instanceof Error ? receiptError.message : String(receiptError),
+				);
+			}
 		}
 		throw error;
 	} finally {

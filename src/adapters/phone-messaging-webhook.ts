@@ -5,7 +5,7 @@ import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
-import { withHostReceipt } from "./host-receipt.js";
+import { withHostReceipt, type HostReceiptProgress } from "./host-receipt.js";
 import { createPhoneProviderRegistryFromEnv, type PhoneProviderRegistry } from "./phone-messaging/registry.js";
 import type { PhoneChannelRecord, PhoneInboundPayload, PhoneOutboundAttachment, PhoneTransport } from "./phone-messaging/types.js";
 
@@ -90,9 +90,9 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 
 			try {
 				if (payload.hostManaged) {
-					await withHostReceipt(payload.hostReceipt, async () => {
+					await withHostReceipt(payload.hostReceipt, async (receipt) => {
 						if (payload.deliveryId && this.isCompletedDelivery(payload.deliveryId)) return;
-						await this.processInbound(payload);
+						await this.processInbound(payload, receipt);
 						if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
 					});
 				} else {
@@ -104,7 +104,7 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		});
 	}
 
-	private async processInbound(payload: PhoneInboundPayload): Promise<void> {
+	private async processInbound(payload: PhoneInboundPayload, hostReceipt?: HostReceiptProgress): Promise<void> {
 		if (payload.direction && payload.direction !== "inbound") {
 			this.logReceipt(payload);
 			return;
@@ -168,7 +168,14 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		if (this.handler.isRunning(record.channelId)) {
 			await this.handler.handleSteer(event, this);
 		} else {
-			await this.handler.handleEvent(event, this);
+			const result = await this.handler.handleEvent(event, this);
+			if (result?.stopReason === "error") {
+				const failure = result.failureKind === "model_credential_unavailable"
+					? "model_credential_unavailable"
+					: "model_run_error";
+				log.logWarning(`[phone] canonical turn failed (${failure}); delivery completed without retry`);
+				await hostReceipt?.completeWithOperationalFailure(failure);
+			}
 		}
 	}
 

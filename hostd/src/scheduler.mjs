@@ -79,6 +79,15 @@ export class EventScheduler {
 			this.pump();
 			return event;
 		}
+		if (status === "completed_with_failure") {
+			const failure = ["model_credential_unavailable", "model_run_error"].includes(error)
+				? error
+				: "runtime_model_failure";
+			const event = this.store.completeEventWithFailure(eventId, leaseToken, failure);
+			console.error(`troublemaker-hostd: runtime operational failure for ${eventId}: ${failure}`);
+			this.pump();
+			return event;
+		}
 		if (status === "failed") {
 			const event = this.store.failEvent(
 				eventId,

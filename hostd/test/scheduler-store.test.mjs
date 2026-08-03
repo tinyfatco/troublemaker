@@ -182,6 +182,36 @@ test("completion receipts are fenced by their lease token", () => {
 	}
 });
 
+test("operational failure receipts complete without making an inbound event retryable", () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-model-failure", subject.contexts[0], 1);
+		const claimed = subject.store.claimNextEvent();
+		subject.store.acceptEvent(claimed.id, claimed.leaseToken);
+		const event = subject.store.getEvent(claimed.id);
+		const scheduler = new EventScheduler({
+			config: { scheduler: { maxConcurrent: 1, maximumAttempts: 5 } },
+			store: subject.store,
+			runtime: { reconcile: async () => {}, reapIdle: async () => {} },
+		});
+		scheduler.pump = () => {};
+
+		const completed = scheduler.receipt(
+			event.id,
+			event.leaseToken,
+			"completed_with_failure",
+			"model_credential_unavailable",
+		);
+		assert.equal(completed.status, "completed");
+		assert.equal(completed.attempts, 1);
+		assert.equal(completed.lastError, "model_credential_unavailable");
+		assert.equal(completed.leaseToken, null);
+		assert.equal(subject.store.claimNextEvent(), null, "the failed model turn must not replay the inbound event");
+	} finally {
+		subject.close();
+	}
+});
+
 test("journals one durable control notification with each Gmail event", () => {
 	const subject = fixture();
 	try {
