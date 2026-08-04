@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { join, resolve } from "path";
 import { detectDiscordAdapterFromEnv, normalizeDiscordAdapterName, readDiscordBoundaryEnvironment, readDiscordGatewayEnvironment } from "../../adapters/discord-config.js";
 import { DiscordGatewayAdapter } from "../../adapters/discord-gateway.js";
@@ -1356,13 +1356,14 @@ function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): Pr
 
 function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 	const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
+	const projectionId = steeringProjectionId(event, adapter);
 	let steering: Promise<void> | null = null;
 	let queued: Promise<void> | null = null;
 	const disposition = routeBusyMessageWithoutInterrupt({
 		prompt,
 		canSteer: awareness?.running === true,
 		steer: (steeringPrompt) => {
-			steering = awareness?.runner.steer(steeringPrompt) ?? null;
+			steering = awareness?.runner.steer(steeringPrompt, { projectionId }) ?? null;
 			return steering !== null;
 		},
 		enqueue: () => {
@@ -1385,6 +1386,13 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Pro
 		log.logInfo(`[steer:${event.channel}] Active work cannot accept steering; queued a fresh turn`);
 	}
 	return steering ?? queued ?? Promise.resolve();
+}
+
+function steeringProjectionId(event: MomEvent, adapter: PlatformAdapter): string {
+	return createHash("sha256")
+		.update([adapter.name, event.channel, event.ts, event.user, event.sourceEventType || "", event.text].join("\0"))
+		.digest("hex")
+		.slice(0, 24);
 }
 
 // ============================================================================
@@ -1418,7 +1426,11 @@ const handler: MomHandler = {
 		}
 		const sameTerminalRun = activeDeliveryScope?.adapter === adapter
 			&& activeDeliveryScope.channelId === event.channel;
-		if (sameTerminalRun && awareness && tryTerminalTuiSoftSteer(event, awareness.runner)) {
+		if (
+			sameTerminalRun
+			&& awareness
+			&& tryTerminalTuiSoftSteer(event, awareness.runner, new Date(), steeringProjectionId(event, adapter))
+		) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
 			return Promise.resolve();
 		}

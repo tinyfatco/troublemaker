@@ -51,6 +51,14 @@ export interface ToolOutputContent {
 
 export type ContentBlock = TextContent | ThinkingContent | ToolCallContent | ToolOutputContent | ToolResultContent;
 
+export type SteeringProjectionState = 'accepted' | 'consumed';
+
+export interface SteeringProjection {
+  id: string;
+  state: SteeringProjectionState;
+  deliveryMode: 'steered';
+}
+
 export interface AwarenessEntry {
   id: string;
   type: 'session' | 'message';
@@ -73,6 +81,8 @@ export interface AwarenessEntry {
   isAmbient?: boolean;
   /** True if this is a system action (/model, /compact, etc.) */
   isSystemAction?: boolean;
+  /** Server-confirmed steering input that has not yet reached durable history. */
+  steeringProjection?: SteeringProjection;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */

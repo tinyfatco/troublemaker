@@ -40,6 +40,7 @@ import {
 import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
+import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
 import type { ChannelStore } from "./store.js";
@@ -127,7 +128,7 @@ export interface AgentRunner {
 	 * and the active session is idle, allowing durable ingress receipts to stay
 	 * live across the in-memory steering interval.
 	 */
-	steer(text: string): Promise<void> | null;
+	steer(text: string, options?: { projectionId?: string }): Promise<void> | null;
 	/** Describe an in-progress context compaction for status surfaces. */
 	getCompactionStatus(): CompactionStatus | null;
 	/** Get current context diagnostics */
@@ -642,6 +643,7 @@ function createRunner(
 			log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
 		}
 	};
+	const steeringProjections = new SteeringProjectionTracker(emitLiveEvent);
 
 	// Activity callback for external watchdog
 	let onActivity: (() => void) | undefined;
@@ -812,6 +814,7 @@ function createRunner(
 					? messageContent
 					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
 				const entries = parseVisibleUserInputs(promptText);
+				steeringProjections.consume(promptText);
 				if (entries.length > 0) emitLiveEvent({ type: "user_input", entries });
 
 				if (runState.initialPromptSent) {
@@ -1349,6 +1352,7 @@ function createRunner(
 			}
 
 			// Clear run state
+			steeringProjections.dismissAll();
 			runState.ctx = null;
 			runState.logCtx = null;
 			runState.queue = null;
@@ -1380,9 +1384,21 @@ function createRunner(
 			return requestCompactionAbort();
 		},
 
-		steer(text: string): Promise<void> | null {
+		steer(text: string, options?: { projectionId?: string }): Promise<void> | null {
 			if (!session || !acceptsSteering) return null;
 			const activeSession = session;
+			if (options?.projectionId) {
+				const settlement = steeringProjections.track({
+					id: options.projectionId,
+					prompt: text,
+					enqueue: () => activeSession.steer(text),
+					waitForIdle: () => activeSession.waitForIdle(),
+				});
+				void settlement.catch((err: Error) => {
+					log.logWarning(`[awareness] steer failed`, err.message);
+				});
+				return settlement;
+			}
 			const settlement = activeSession.steer(text).then(async () => {
 				await activeSession.waitForIdle();
 			});
