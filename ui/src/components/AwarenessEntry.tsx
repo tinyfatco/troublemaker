@@ -614,6 +614,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
         <div className="awareness-user-text">{text}</div>
+        {entry.steeringProjection?.state === 'accepted' && (
+          <div className="awareness-steering-status">queued · steered</div>
+        )}
       </div>
     );
   }

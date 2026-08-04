@@ -27,6 +27,8 @@ export class RuntimeLiveEventHub {
 	private readonly streamId = randomUUID();
 	private readonly history: RuntimeLiveEvent[] = [];
 	private readonly activeRuns = new Map<string, RuntimeLiveEvent>();
+	private readonly activeSteering = new Map<string, RuntimeLiveEvent>();
+	private readonly latestSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly subscribers = new Set<(event: RuntimeLiveEvent) => void>();
 
 	constructor(private readonly historyLimit = DEFAULT_HISTORY_LIMIT) {}
@@ -49,10 +51,14 @@ export class RuntimeLiveEventHub {
 
 	subscribe(listener: (event: RuntimeLiveEvent) => void, afterSequence = 0): LiveEventSubscription {
 		if (afterSequence === 0) {
-			// A newly opened terminal can attach in the middle of an external run.
+			// A newly opened live client can attach in the middle of an external run.
 			// Replay only each active run's latest cumulative state, never stale
 			// completed history from earlier in the resident process.
-			for (const event of [...this.activeRuns.values()].sort((a, b) => a.sequence - b.sequence)) {
+			const active = new Map<string, RuntimeLiveEvent>();
+			for (const event of [...this.activeRuns.values(), ...this.activeSteering.values()]) {
+				active.set(event.id, event);
+			}
+			for (const event of [...active.values()].sort((a, b) => a.sequence - b.sequence)) {
 				listener(event);
 			}
 		} else {
@@ -72,6 +78,12 @@ export class RuntimeLiveEventHub {
 	}
 
 	private publish(input: RuntimeLiveEventInput): RuntimeLiveEvent {
+		if (input.kind === "runtime" && input.event.type === "steering_input") {
+			const previous = this.latestSteering.get(input.event.id);
+			if (previous?.kind === "runtime" && previous.event.type === "steering_input") {
+				if (previous.event.state === input.event.state || input.event.state === "accepted") return previous;
+			}
+		}
 		const event = {
 			...input,
 			sequence: ++this.sequence,
@@ -82,6 +94,11 @@ export class RuntimeLiveEventHub {
 		if (event.kind === "runtime") {
 			if (event.event.type === "run_complete") this.activeRuns.delete(event.runId);
 			else this.activeRuns.set(event.runId, event);
+			if (event.event.type === "steering_input") {
+				this.latestSteering.set(event.event.id, event);
+				if (event.event.state === "accepted") this.activeSteering.set(event.event.id, event);
+				else this.activeSteering.delete(event.event.id);
+			}
 		}
 		if (event.kind === "runtime" && event.event.type === "assistant_snapshot") {
 			const previousSnapshot = this.history.findIndex((candidate) =>
@@ -92,7 +109,17 @@ export class RuntimeLiveEventHub {
 			if (previousSnapshot >= 0) this.history.splice(previousSnapshot, 1);
 		}
 		this.history.push(event);
-		while (this.history.length > this.historyLimit) this.history.shift();
+		while (this.history.length > this.historyLimit) {
+			const removed = this.history.shift();
+			if (
+				removed?.kind === "runtime"
+				&& removed.event.type === "steering_input"
+				&& this.latestSteering.get(removed.event.id)?.id === removed.id
+				&& !this.activeSteering.has(removed.event.id)
+			) {
+				this.latestSteering.delete(removed.event.id);
+			}
+		}
 		for (const subscriber of this.subscribers) subscriber(event);
 		return event;
 	}
@@ -110,12 +137,12 @@ export class RuntimeLiveEventHub {
 }
 
 /**
- * The local terminal needs visible assistant text, safe tool labels, and tool
- * completion state. Raw arguments, tool output, results, and thinking never
- * cross the shared live endpoint.
+ * Live clients need visible input, safe tool labels, and tool completion
+ * state. Raw arguments, tool output, results, and thinking never cross the
+ * shared live endpoint.
  */
 export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent {
-	if (event.type === "user_input") {
+	if (event.type === "user_input" || event.type === "steering_input") {
 		return {
 			...event,
 			entries: event.entries
