@@ -22,6 +22,7 @@ GET  /api/v2/agents
 GET  /api/v2/agents/:id/status
 GET  /api/v2/agents/:id/events?limit=50&before=:offset
 GET  /api/v2/agents/:id/events/stream
+GET  /api/v2/agents/:id/live
 POST /api/v2/agents/:id/messages
 POST /api/v2/agents/:id/messages/stop
 GET  /api/v2/agents/:id/files?path=:path
@@ -77,3 +78,9 @@ Clients still need duplicate filtering by parsed awareness entry id.
 
 The durable event stream remains the source of truth. Optimistic chat entries
 are UI affordances, not persistent state.
+
+`GET /api/v2/agents/:id/live` is the ordered in-flight companion stream. It
+replays server-accepted steering input while that input is pending and emits a
+consumed or dismissed lifecycle update before removing the projection. These
+events do not create another canonical user turn; clients reconcile them with
+the durable user message by steering ID and visible input content.

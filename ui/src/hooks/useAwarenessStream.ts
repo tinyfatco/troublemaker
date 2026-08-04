@@ -2,12 +2,13 @@
  * useAwarenessStream — tail-first awareness loading with lazy scroll-up.
  *
  * 1. Fetches the most recent entries via GET /api/v2/agents/:id/events
- * 2. Connects to GET /api/v2/agents/:id/events/stream for live SSE updates
+ * 2. Connects to the durable event stream plus the in-flight steering stream
  * 3. Exposes loadMore() for paginated scroll-up loading of older entries
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { awarenessStreamUrl, fetchAwarenessBacklog } from '../console-api';
+import { awarenessStreamUrl, fetchAwarenessBacklog, runtimeLiveStreamUrl } from '../console-api';
+import { applyRuntimeSteeringEnvelope, mergeAwarenessEntries, parseRuntimeSteeringEnvelope } from '../steeringProjection';
 import { parseContextLine, type AwarenessEntry } from '../types';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
 
@@ -97,10 +98,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       const entry = parseContextLine(event.data);
       if (!entry) return;
       setLastEventAt(new Date().toISOString());
-      setEntries((prev) => {
-        if (prev.some((e) => e.id === entry.id)) return prev;
-        return [...prev, entry];
-      });
+      setEntries((prev) => mergeAwarenessEntries(prev, [entry]));
     };
 
     es.onerror = () => {
@@ -118,6 +116,19 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
 
     return () => { es.close(); };
   }, [refreshRecentBacklog]);
+
+  // The companion live stream replays only server-confirmed steering state.
+  // Durable awareness delivery above remains unchanged.
+  useEffect(() => {
+    const es = new EventSource(runtimeLiveStreamUrl());
+    es.onmessage = (event) => {
+      const steering = parseRuntimeSteeringEnvelope(event.data);
+      if (!steering) return;
+      setLastEventAt(new Date().toISOString());
+      setEntries((prev) => applyRuntimeSteeringEnvelope(prev, steering));
+    };
+    return () => { es.close(); };
+  }, []);
 
   useEffect(() => {
     const refreshIfVisible = () => {
@@ -177,17 +188,6 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     lastEventAt,
     error,
   };
-}
-
-function mergeAwarenessEntries(existing: AwarenessEntry[], incoming: AwarenessEntry[]): AwarenessEntry[] {
-  const seen = new Set(existing.map((entry) => entry.id));
-  const merged = [...existing];
-  for (const entry of incoming) {
-    if (seen.has(entry.id)) continue;
-    seen.add(entry.id);
-    merged.push(entry);
-  }
-  return merged;
 }
 
 function prependAwarenessEntries(existing: AwarenessEntry[], incoming: AwarenessEntry[]): AwarenessEntry[] {

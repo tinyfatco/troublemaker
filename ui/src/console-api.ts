@@ -243,6 +243,10 @@ export function awarenessStreamUrl(): string {
   return consoleAgentUrl('/events/stream');
 }
 
+export function runtimeLiveStreamUrl(): string {
+  return consoleAgentUrl('/live');
+}
+
 export async function createRealtimeClientSecret(input: { voice?: string; ttlSeconds?: number } = {}): Promise<string> {
   const body: Record<string, unknown> = {
     ttl_seconds: input.ttlSeconds ?? 600,

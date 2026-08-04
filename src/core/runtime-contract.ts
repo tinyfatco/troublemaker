@@ -142,6 +142,16 @@ export interface RuntimeUserInputEvent {
 	mode?: RuntimeMode;
 }
 
+export interface RuntimeSteeringInputEvent {
+	type: "steering_input";
+	id: string;
+	state: "accepted" | "consumed" | "dismissed";
+	deliveryMode: "steered";
+	acceptedAt: string;
+	entries: RuntimeUserInputEntry[];
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeTextDeltaEvent {
 	type: "text_delta";
 	contentIndex?: number;
@@ -221,6 +231,7 @@ export type RuntimeStreamEvent =
 	| RuntimeErrorEvent
 	| RuntimeAssistantSnapshotEvent
 	| RuntimeUserInputEvent
+	| RuntimeSteeringInputEvent
 	| RuntimeTextDeltaEvent
 	| RuntimeTextPatchEvent
 	| RuntimeThinkingDeltaEvent

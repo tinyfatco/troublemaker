@@ -1581,6 +1581,14 @@ html, body, #root {
   color: var(--text);
 }
 
+.awareness-steering-status {
+  margin-top: 0.35rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* Event triggers — compact indicator with optional description */
 .awareness-entry.event-entry {
   --entry-color: var(--entry-system);
