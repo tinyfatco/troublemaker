@@ -273,6 +273,13 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
+			const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+			if (!deliveryId) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "delivery_id_required" }));
+				return;
+			}
+
 			const assistantOrigin = this.isAssistantOriginPayload(payload);
 			const suppression = assistantOrigin
 				? { suppress: true, reason: "assistant_origin_metadata" }
@@ -287,15 +294,6 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
-			const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
-			if (!deliveryId) {
-				res.writeHead(202, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
-				this.processMessage(normalized).catch((err) => {
-					log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
-				});
-				return;
-			}
 
 			void this.processIdempotentWebhook(payload, normalized, res).catch((error) => {
 				log.logWarning("Idempotent web webhook processing error", error instanceof Error ? error.message : String(error));
@@ -358,9 +356,7 @@ Keep responses concise and helpful.`;
 			sessionId: normalized.sessionId || "",
 			sourceEventType: normalized.sourceEventType || "",
 		})).digest("hex");
-		const key = createHash("sha256")
-			.update([normalized.userName, normalized.channelId, normalized.sessionId || "", deliveryId].join("\0"))
-			.digest("hex");
+		const key = createHash("sha256").update(deliveryId).digest("hex");
 		const directory = join(this.workingDir, "awareness", "webhook-deliveries");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const markerPath = join(directory, `${key}.json`);

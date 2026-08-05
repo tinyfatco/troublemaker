@@ -89,7 +89,7 @@ async function run(): Promise<void> {
 		let optedInEvents = 0;
 		const optedIn = new WebAdapter({ workingDir, allowUnauthenticatedWebhook: true });
 		optedIn.setHandler(handler(() => optedInEvents++, () => {}));
-		const optedInWebhook = await request(optedIn, "dispatchWebhook", { message: "explicit legacy webhook" });
+		const optedInWebhook = await request(optedIn, "dispatchWebhook", { message: "explicit legacy webhook", deliveryId: "legacy-opt-in-1" });
 		assert(optedInWebhook.statusCode === 202 && optedInEvents === 1, "unauthenticated legacy webhook behavior requires explicit opt-in");
 
 		let protectedEvents = 0;
@@ -141,10 +141,13 @@ async function run(): Promise<void> {
 		assert(splitMissing.statusCode === 401, "the independent webhook token rejects unauthenticated webhook input");
 		assert(splitEvents === 1, "rejected independent webhook input never reaches the handler");
 
-		const splitAccepted = await request(splitAdapter, "dispatchWebhook", { message: "accepted split webhook" }, `Bearer ${webhookOnlyToken}`);
+		const splitAccepted = await request(splitAdapter, "dispatchWebhook", { message: "accepted split webhook", deliveryId: "split-accepted-1" }, `Bearer ${webhookOnlyToken}`);
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert(splitAccepted.statusCode === 202, "the independent webhook token accepts the correct bearer token");
 		assert(splitEvents === 2, "accepted independent webhook input reaches the handler exactly once");
+		const missingDeliveryId = await request(splitAdapter, "dispatchWebhook", { message: "authenticated but no delivery ID" }, `Bearer ${webhookOnlyToken}`);
+		assert(missingDeliveryId.statusCode === 400 && missingDeliveryId.body.includes("delivery_id_required"), "authenticated webhook input without a delivery ID fails before processing");
+		assert(splitEvents === 2, "a no-ID webhook never reaches the handler or receives false success");
 
 		const deliveryPayload = { message: "idempotent webhook", source: "voice", channelId: "voice-call_test_abc", sessionId: "call_test_abc", deliveryId: "tool-call-1" };
 		const firstDelivery = await request(splitAdapter, "dispatchWebhook", deliveryPayload, `Bearer ${webhookOnlyToken}`);
@@ -160,6 +163,9 @@ async function run(): Promise<void> {
 		const conflictingDelivery = await request(splitAdapter, "dispatchWebhook", { ...deliveryPayload, message: "changed body" }, `Bearer ${webhookOnlyToken}`);
 		assert(conflictingDelivery.statusCode === 409 && conflictingDelivery.body.includes("delivery_id_body_conflict"), "reusing a delivery ID with a changed body is rejected as a conflict");
 		assert(splitEvents === 3, "a conflicting delivery body never reaches the handler");
+		const conflictingNamespace = await request(splitAdapter, "dispatchWebhook", { ...deliveryPayload, channelId: "voice-call_other_abc123" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingNamespace.statusCode === 409 && conflictingNamespace.body.includes("delivery_id_body_conflict"), "one delivery ID cannot bypass body binding by changing channel or session namespace");
+		assert(splitEvents === 3, "a namespace-changing delivery ID reuse never executes twice");
 
 		const freshPayload = { message: "context behavior", source: "voice", channelId: "voice-call_fresh_abc123", sessionId: "call_fresh_abc123", deliveryId: "tool-fresh-1", freshContext: false };
 		const firstFreshDelivery = await request(splitAdapter, "dispatchWebhook", freshPayload, `Bearer ${webhookOnlyToken}`);
