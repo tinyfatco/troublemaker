@@ -750,6 +750,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				workingDir,
 				inputToken: process.env.MOM_WEB_INPUT_TOKEN,
 				webhookToken,
+				allowUnauthenticatedWebhook: process.env.MOM_WEBHOOK_INPUT_ALLOW_UNAUTHENTICATED === "true",
 			});
 		}
 		case "mcp": {

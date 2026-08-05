@@ -83,6 +83,14 @@ async function run(): Promise<void> {
 		const openResponse = await request(open, "dispatch", { message: "legacy open input" });
 		assert(openResponse.statusCode === 200, "unset token preserves existing open input behavior");
 		assert(openEvents === 1, "unset token still reaches the event handler");
+		const closedWebhook = await request(open, "dispatchWebhook", { message: "unconfigured webhook" });
+		assert(closedWebhook.statusCode === 503 && closedWebhook.body.includes("webhook_auth_not_configured"), "webhook input fails closed when its independent auth is not configured");
+		assert(openEvents === 1, "an unconfigured webhook never reaches the handler");
+		let optedInEvents = 0;
+		const optedIn = new WebAdapter({ workingDir, allowUnauthenticatedWebhook: true });
+		optedIn.setHandler(handler(() => optedInEvents++, () => {}));
+		const optedInWebhook = await request(optedIn, "dispatchWebhook", { message: "explicit legacy webhook" });
+		assert(optedInWebhook.statusCode === 202 && optedInEvents === 1, "unauthenticated legacy webhook behavior requires explicit opt-in");
 
 		let protectedEvents = 0;
 		let protectedStops = 0;
@@ -108,12 +116,11 @@ async function run(): Promise<void> {
 		assert(protectedEvents === 1, "correct bearer token reaches the event handler exactly once");
 
 		const webhookMissing = await request(protectedAdapter, "dispatchWebhook", { message: "missing webhook" });
-		assert(webhookMissing.statusCode === 401, "asynchronous webhook also rejects a missing token");
+		assert(webhookMissing.statusCode === 503, "an input-only token does not silently become webhook authority");
 
 		const webhookAccepted = await request(protectedAdapter, "dispatchWebhook", { message: "accepted webhook" }, `Bearer ${token}`);
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		assert(webhookAccepted.statusCode === 202, "correct token reaches asynchronous webhook input");
-		assert(protectedEvents === 2, "authenticated webhook reaches the event handler exactly once");
+		assert(webhookAccepted.statusCode === 503, "the broader synchronous input token cannot authorize webhook input");
+		assert(protectedEvents === 1, "input-token fallback never reaches the webhook handler");
 
 		const stopMissing = await request(protectedAdapter, "dispatchStop", {});
 		assert(stopMissing.statusCode === 401, "stop input rejects a missing token");

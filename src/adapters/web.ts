@@ -95,8 +95,10 @@ export interface WebAdapterConfig {
 	workingDir: string;
 	/** Optional bearer token required by synchronous web-chat and stop routes. */
 	inputToken?: string;
-	/** Optional independent bearer token for the asynchronous webhook route. */
+	/** Independent bearer token for the asynchronous webhook route. */
 	webhookToken?: string;
+	/** Explicit compatibility escape hatch; webhook ingress otherwise fails closed without its own token. */
+	allowUnauthenticatedWebhook?: boolean;
 }
 
 /**
@@ -146,6 +148,7 @@ Keep responses concise and helpful.`;
 	private workingDir: string;
 	private inputToken?: string;
 	private webhookToken?: string;
+	private allowUnauthenticatedWebhook: boolean;
 	private readonly webhookClaimOwner = randomUUID();
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
@@ -155,7 +158,8 @@ Keep responses concise and helpful.`;
 	constructor(config: WebAdapterConfig) {
 		this.workingDir = config.workingDir;
 		this.inputToken = config.inputToken?.trim() || undefined;
-		this.webhookToken = config.webhookToken?.trim() || this.inputToken;
+		this.webhookToken = config.webhookToken?.trim() || undefined;
+		this.allowUnauthenticatedWebhook = config.allowUnauthenticatedWebhook === true;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -255,6 +259,11 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatchWebhook(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.webhookToken && !this.allowUnauthenticatedWebhook) {
+			res.writeHead(503, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ error: "webhook_auth_not_configured" }));
+			return;
+		}
 		if (!this.authorize(req, res, this.webhookToken)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
