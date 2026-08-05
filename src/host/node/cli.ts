@@ -83,6 +83,7 @@ import {
 } from "../../goal-continuation.js";
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 import { FirstClassVoiceContract } from "../../voice-contract.js";
+import { readProtectedTokenFile } from "../../protected-token-file.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -743,7 +744,13 @@ function createAdapter(name: string): AdapterWithHandler {
 			return new FormWebhookAdapter({ workingDir });
 		}
 		case "web": {
-			return new WebAdapter({ workingDir, inputToken: process.env.MOM_WEB_INPUT_TOKEN });
+			const webhookToken = process.env.MOM_WEBHOOK_INPUT_TOKEN?.trim()
+				|| readProtectedTokenFile(process.env.MOM_WEBHOOK_INPUT_TOKEN_FILE);
+			return new WebAdapter({
+				workingDir,
+				inputToken: process.env.MOM_WEB_INPUT_TOKEN,
+				webhookToken,
+			});
 		}
 		case "mcp": {
 			return new McpAdapter({ workingDir });

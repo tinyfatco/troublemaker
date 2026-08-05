@@ -1,7 +1,7 @@
-import { appendFileSync } from "fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
-import { timingSafeEqual } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
@@ -48,6 +48,8 @@ interface WebChatPayload {
 	speaker?: string;
 	isBot?: boolean;
 	assistant?: boolean;
+	deliveryId?: string;
+	delivery_id?: string;
 }
 
 interface NormalizedWebChatPayload {
@@ -71,8 +73,10 @@ interface WriterScope {
 
 export interface WebAdapterConfig {
 	workingDir: string;
-	/** Optional bearer token required by every POST input route. */
+	/** Optional bearer token required by synchronous web-chat and stop routes. */
 	inputToken?: string;
+	/** Optional independent bearer token for the asynchronous webhook route. */
+	webhookToken?: string;
 }
 
 /**
@@ -121,6 +125,7 @@ Keep responses concise and helpful.`;
 
 	private workingDir: string;
 	private inputToken?: string;
+	private webhookToken?: string;
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
@@ -129,6 +134,7 @@ Keep responses concise and helpful.`;
 	constructor(config: WebAdapterConfig) {
 		this.workingDir = config.workingDir;
 		this.inputToken = config.inputToken?.trim() || undefined;
+		this.webhookToken = config.webhookToken?.trim() || this.inputToken;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -149,12 +155,12 @@ Keep responses concise and helpful.`;
 	// HTTP request handling — called by Gateway
 	// ==========================================================================
 
-	private authorize(req: IncomingMessage, res: ServerResponse): boolean {
-		if (!this.inputToken) return true;
+	private authorize(req: IncomingMessage, res: ServerResponse, token: string | undefined): boolean {
+		if (!token) return true;
 		const header = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
 		const match = header.match(/^Bearer\s+(.+)$/i);
 		const supplied = Buffer.from(match?.[1] || "", "utf8");
-		const expected = Buffer.from(this.inputToken, "utf8");
+		const expected = Buffer.from(token, "utf8");
 		const authorized = supplied.length === expected.length && timingSafeEqual(supplied, expected);
 		if (authorized) return true;
 		res.writeHead(401, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -163,7 +169,7 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.authorize(req, res)) return;
+		if (!this.authorize(req, res, this.inputToken)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {
@@ -195,7 +201,7 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatchStop(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.authorize(req, res)) return;
+		if (!this.authorize(req, res, this.inputToken)) return;
 		const chunks: Buffer[] = [];
 		req.on("data", (chunk: Buffer) => chunks.push(chunk));
 		req.on("end", () => {
@@ -228,7 +234,7 @@ Keep responses concise and helpful.`;
 	}
 
 	dispatchWebhook(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.authorize(req, res)) return;
+		if (!this.authorize(req, res, this.webhookToken)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {
@@ -251,6 +257,20 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
+			let duplicate = false;
+			try {
+				duplicate = !this.claimWebhookDelivery(payload, normalized);
+			} catch (error) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Invalid delivery ID" }));
+				return;
+			}
+			if (duplicate) {
+				res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, duplicate: true }));
+				return;
+			}
+
 			res.writeHead(202, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
 
@@ -258,6 +278,31 @@ Keep responses concise and helpful.`;
 				log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
 			});
 		});
+	}
+
+	private claimWebhookDelivery(payload: WebChatPayload, normalized: NormalizedWebChatPayload): boolean {
+		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+		if (!deliveryId) return true;
+		if (deliveryId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(deliveryId)) {
+			throw new Error("Invalid webhook delivery ID");
+		}
+
+		const key = createHash("sha256")
+			.update([normalized.userName, normalized.channelId, normalized.sessionId || "", deliveryId].join("\0"))
+			.digest("hex");
+		const directory = join(this.workingDir, "awareness", "webhook-deliveries");
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		try {
+			writeFileSync(
+				join(directory, `${key}.json`),
+				`${JSON.stringify({ deliveryId, channelId: normalized.channelId, sessionId: normalized.sessionId, receivedAt: new Date().toISOString() })}\n`,
+				{ encoding: "utf8", flag: "wx", mode: 0o600 },
+			);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+			throw error;
+		}
 	}
 
 	private readPayload(

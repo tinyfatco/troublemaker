@@ -120,6 +120,35 @@ async function run(): Promise<void> {
 		const stopAccepted = await request(protectedAdapter, "dispatchStop", {}, `Bearer ${token}`);
 		assert(stopAccepted.statusCode === 200, "stop input accepts the correct token");
 		assert(protectedStops === 1, "authenticated stop reaches the stop handler exactly once");
+
+		let splitEvents = 0;
+		const webhookOnlyToken = "webhook-only-token-123456";
+		const splitAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		splitAdapter.setHandler(handler(() => splitEvents++, () => {}));
+
+		const splitWeb = await request(splitAdapter, "dispatch", { message: "interactive remains open" });
+		assert(splitWeb.statusCode === 200, "a webhook-only token does not protect synchronous web chat");
+		assert(splitEvents === 1, "open synchronous web chat still reaches the handler exactly once");
+
+		const splitMissing = await request(splitAdapter, "dispatchWebhook", { message: "missing split token" });
+		assert(splitMissing.statusCode === 401, "the independent webhook token rejects unauthenticated webhook input");
+		assert(splitEvents === 1, "rejected independent webhook input never reaches the handler");
+
+		const splitAccepted = await request(splitAdapter, "dispatchWebhook", { message: "accepted split webhook" }, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(splitAccepted.statusCode === 202, "the independent webhook token accepts the correct bearer token");
+		assert(splitEvents === 2, "accepted independent webhook input reaches the handler exactly once");
+
+		const deliveryPayload = { message: "idempotent webhook", source: "voice", channelId: "voice-call_test_abc", sessionId: "call_test_abc", deliveryId: "tool-call-1" };
+		const firstDelivery = await request(splitAdapter, "dispatchWebhook", deliveryPayload, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(firstDelivery.statusCode === 202, "the first webhook delivery ID is accepted");
+		assert(splitEvents === 3, "the first webhook delivery reaches the handler");
+
+		const duplicateDelivery = await request(splitAdapter, "dispatchWebhook", deliveryPayload, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(duplicateDelivery.statusCode === 202 && duplicateDelivery.body.includes('"duplicate":true'), "a repeated webhook delivery ID returns an idempotent receipt");
+		assert(splitEvents === 3, "a repeated webhook delivery ID never reaches the handler twice");
 	} finally {
 		rmSync(workingDir, { recursive: true, force: true });
 	}
