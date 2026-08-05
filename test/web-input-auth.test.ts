@@ -83,6 +83,14 @@ async function run(): Promise<void> {
 		const openResponse = await request(open, "dispatch", { message: "legacy open input" });
 		assert(openResponse.statusCode === 200, "unset token preserves existing open input behavior");
 		assert(openEvents === 1, "unset token still reaches the event handler");
+		const closedWebhook = await request(open, "dispatchWebhook", { message: "unconfigured webhook" });
+		assert(closedWebhook.statusCode === 503 && closedWebhook.body.includes("webhook_auth_not_configured"), "webhook input fails closed when its independent auth is not configured");
+		assert(openEvents === 1, "an unconfigured webhook never reaches the handler");
+		let optedInEvents = 0;
+		const optedIn = new WebAdapter({ workingDir, allowUnauthenticatedWebhook: true });
+		optedIn.setHandler(handler(() => optedInEvents++, () => {}));
+		const optedInWebhook = await request(optedIn, "dispatchWebhook", { message: "explicit legacy webhook", deliveryId: "legacy-opt-in-1" });
+		assert(optedInWebhook.statusCode === 202 && optedInEvents === 1, "unauthenticated legacy webhook behavior requires explicit opt-in");
 
 		let protectedEvents = 0;
 		let protectedStops = 0;
@@ -108,18 +116,114 @@ async function run(): Promise<void> {
 		assert(protectedEvents === 1, "correct bearer token reaches the event handler exactly once");
 
 		const webhookMissing = await request(protectedAdapter, "dispatchWebhook", { message: "missing webhook" });
-		assert(webhookMissing.statusCode === 401, "asynchronous webhook also rejects a missing token");
+		assert(webhookMissing.statusCode === 503, "an input-only token does not silently become webhook authority");
 
 		const webhookAccepted = await request(protectedAdapter, "dispatchWebhook", { message: "accepted webhook" }, `Bearer ${token}`);
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		assert(webhookAccepted.statusCode === 202, "correct token reaches asynchronous webhook input");
-		assert(protectedEvents === 2, "authenticated webhook reaches the event handler exactly once");
+		assert(webhookAccepted.statusCode === 503, "the broader synchronous input token cannot authorize webhook input");
+		assert(protectedEvents === 1, "input-token fallback never reaches the webhook handler");
 
 		const stopMissing = await request(protectedAdapter, "dispatchStop", {});
 		assert(stopMissing.statusCode === 401, "stop input rejects a missing token");
 		const stopAccepted = await request(protectedAdapter, "dispatchStop", {}, `Bearer ${token}`);
 		assert(stopAccepted.statusCode === 200, "stop input accepts the correct token");
 		assert(protectedStops === 1, "authenticated stop reaches the stop handler exactly once");
+
+		let splitEvents = 0;
+		const webhookOnlyToken = "webhook-only-token-123456";
+		const splitAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		splitAdapter.setHandler(handler(() => splitEvents++, () => {}));
+
+		const splitWeb = await request(splitAdapter, "dispatch", { message: "interactive remains open" });
+		assert(splitWeb.statusCode === 200, "a webhook-only token does not protect synchronous web chat");
+		assert(splitEvents === 1, "open synchronous web chat still reaches the handler exactly once");
+
+		const splitMissing = await request(splitAdapter, "dispatchWebhook", { message: "missing split token" });
+		assert(splitMissing.statusCode === 401, "the independent webhook token rejects unauthenticated webhook input");
+		assert(splitEvents === 1, "rejected independent webhook input never reaches the handler");
+
+		const splitAccepted = await request(splitAdapter, "dispatchWebhook", { message: "accepted split webhook", deliveryId: "split-accepted-1" }, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(splitAccepted.statusCode === 202, "the independent webhook token accepts the correct bearer token");
+		assert(splitEvents === 2, "accepted independent webhook input reaches the handler exactly once");
+		const missingDeliveryId = await request(splitAdapter, "dispatchWebhook", { message: "authenticated but no delivery ID" }, `Bearer ${webhookOnlyToken}`);
+		assert(missingDeliveryId.statusCode === 400 && missingDeliveryId.body.includes("delivery_id_required"), "authenticated webhook input without a delivery ID fails before processing");
+		assert(splitEvents === 2, "a no-ID webhook never reaches the handler or receives false success");
+
+		const deliveryPayload = { message: "idempotent webhook", source: "voice", channelId: "voice-call_test_abc", sessionId: "call_test_abc", deliveryId: "tool-call-1" };
+		const firstDelivery = await request(splitAdapter, "dispatchWebhook", deliveryPayload, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(firstDelivery.statusCode === 202, "the first webhook delivery ID is accepted");
+		assert(splitEvents === 3, "the first webhook delivery reaches the handler");
+
+		const duplicateDelivery = await request(splitAdapter, "dispatchWebhook", deliveryPayload, `Bearer ${webhookOnlyToken}`);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		assert(duplicateDelivery.statusCode === 202 && duplicateDelivery.body.includes('"duplicate":true'), "a repeated webhook delivery ID returns an idempotent receipt");
+		assert(splitEvents === 3, "a repeated webhook delivery ID never reaches the handler twice");
+
+		const conflictingDelivery = await request(splitAdapter, "dispatchWebhook", { ...deliveryPayload, message: "changed body" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingDelivery.statusCode === 409 && conflictingDelivery.body.includes("delivery_id_body_conflict"), "reusing a delivery ID with a changed body is rejected as a conflict");
+		assert(splitEvents === 3, "a conflicting delivery body never reaches the handler");
+		const conflictingNamespace = await request(splitAdapter, "dispatchWebhook", { ...deliveryPayload, channelId: "voice-call_other_abc123" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingNamespace.statusCode === 409 && conflictingNamespace.body.includes("delivery_id_body_conflict"), "one delivery ID cannot bypass body binding by changing channel or session namespace");
+		assert(splitEvents === 3, "a namespace-changing delivery ID reuse never executes twice");
+
+		const freshPayload = { message: "context behavior", source: "voice", channelId: "voice-call_fresh_abc123", sessionId: "call_fresh_abc123", deliveryId: "tool-fresh-1", freshContext: false };
+		const firstFreshDelivery = await request(splitAdapter, "dispatchWebhook", freshPayload, `Bearer ${webhookOnlyToken}`);
+		assert(firstFreshDelivery.statusCode === 202 && splitEvents === 4, "the first context-behavior body executes");
+		const conflictingFreshDelivery = await request(splitAdapter, "dispatchWebhook", { ...freshPayload, freshContext: true }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingFreshDelivery.statusCode === 409 && conflictingFreshDelivery.body.includes("delivery_id_body_conflict"), "fresh/reset context behavior is bound to the delivery body digest");
+		assert(splitEvents === 4, "a changed context-reset behavior never hides behind duplicate success");
+
+		const beforeSuppression = splitEvents;
+		const suppressedPayload = { message: "assistant echo", role: "assistant", deliveryId: "tool-suppressed-1" };
+		const firstSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
+		assert(firstSuppressed.statusCode === 202 && firstSuppressed.body.includes("suppressed"), "assistant-origin suppression completes under a durable delivery claim");
+		const duplicateSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
+		assert(duplicateSuppressed.statusCode === 202 && duplicateSuppressed.body.includes("duplicate") && duplicateSuppressed.body.includes("suppressed"), "repeated suppressed delivery IDs preserve the durable suppression outcome");
+		const conflictingSuppression = await request(splitAdapter, "dispatchWebhook", { ...suppressedPayload, role: "user" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingSuppression.statusCode === 409, "changing assistant-origin suppression behavior conflicts under the same delivery ID");
+		assert(splitEvents === beforeSuppression, "suppressed, duplicate, and conflicting assistant-origin payloads never reach the handler");
+
+		let recoveryAttempts = 0;
+		const recoveryAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		recoveryAdapter.setHandler({
+			...handler(() => {}, () => {}),
+			handleEvent: async () => {
+				recoveryAttempts++;
+				return recoveryAttempts === 1 ? { stopReason: "error", errorMessage: "synthetic failure" } : undefined;
+			},
+		});
+		const recoveryPayload = { message: "recoverable webhook", source: "voice", channelId: "voice-call_recover_abc123", sessionId: "call_recover_abc123", deliveryId: "tool-recover-1" };
+		const failedDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(failedDelivery.statusCode === 500 && failedDelivery.body.includes("retryable"), "a failed handler never receives a successful delivery receipt");
+		const recoveredDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(recoveredDelivery.statusCode === 202 && recoveredDelivery.body.includes('"processed":true'), "the exact failed delivery ID can be retried safely");
+		assert(recoveryAttempts === 2, "a failed durable claim executes exactly once more on retry");
+		const recoveredDuplicate = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(recoveredDuplicate.statusCode === 202 && recoveredDuplicate.body.includes('"duplicate":true'), "a completed recovery becomes a non-executing duplicate");
+		assert(recoveryAttempts === 2, "a completed recovered delivery never executes again");
+
+		let releaseBusy!: () => void;
+		let markBusyStarted!: () => void;
+		const busyStarted = new Promise<void>((resolve) => { markBusyStarted = resolve; });
+		const releaseBusyPromise = new Promise<void>((resolve) => { releaseBusy = resolve; });
+		let secondProcessEvents = 0;
+		const busyAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		busyAdapter.setHandler({
+			...handler(() => {}, () => {}),
+			handleEvent: async () => { markBusyStarted(); await releaseBusyPromise; },
+		});
+		const competingAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		competingAdapter.setHandler(handler(() => { secondProcessEvents++; }, () => {}));
+		const busyPayload = { message: "one live claimant", source: "voice", channelId: "voice-call_busy_abc123", sessionId: "call_busy_abc123", deliveryId: "tool-busy-1" };
+		const firstBusyRequest = request(busyAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
+		await busyStarted;
+		const competingRequest = await request(competingAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
+		assert(competingRequest.statusCode === 425 && competingRequest.body.includes('"state":"processing"'), "a second live process sees the durable delivery as in progress");
+		assert(secondProcessEvents === 0, "a second live process cannot execute the same delivery");
+		releaseBusy();
+		const completedBusyRequest = await firstBusyRequest;
+		assert(completedBusyRequest.statusCode === 202 && completedBusyRequest.body.includes('"processed":true'), "the original live claimant completes authoritatively");
 	} finally {
 		rmSync(workingDir, { recursive: true, force: true });
 	}
