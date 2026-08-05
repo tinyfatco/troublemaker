@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readProtectedTokenFile } from "../src/protected-token-file.js";
@@ -21,6 +21,9 @@ try {
 	assert(readProtectedTokenFile(secure) === "secret-value", "reads and trims a private owner token file");
 	assert(readProtectedTokenFile(undefined) === undefined, "an unset token file remains optional");
 	assert(throws(() => readProtectedTokenFile("relative-token"), /must be absolute/), "rejects relative token paths");
+	const linked = join(dir, "linked");
+	symlinkSync(secure, linked);
+	assert(throws(() => readProtectedTokenFile(linked), /symbolic link/), "rejects symbolic-link token paths");
 
 	const broad = join(dir, "broad");
 	writeFileSync(broad, "secret", { mode: 0o600 });

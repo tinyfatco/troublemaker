@@ -149,6 +149,51 @@ async function run(): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		assert(duplicateDelivery.statusCode === 202 && duplicateDelivery.body.includes('"duplicate":true'), "a repeated webhook delivery ID returns an idempotent receipt");
 		assert(splitEvents === 3, "a repeated webhook delivery ID never reaches the handler twice");
+
+		const conflictingDelivery = await request(splitAdapter, "dispatchWebhook", { ...deliveryPayload, message: "changed body" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingDelivery.statusCode === 409 && conflictingDelivery.body.includes("delivery_id_body_conflict"), "reusing a delivery ID with a changed body is rejected as a conflict");
+		assert(splitEvents === 3, "a conflicting delivery body never reaches the handler");
+
+		let recoveryAttempts = 0;
+		const recoveryAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		recoveryAdapter.setHandler({
+			...handler(() => {}, () => {}),
+			handleEvent: async () => {
+				recoveryAttempts++;
+				return recoveryAttempts === 1 ? { stopReason: "error", errorMessage: "synthetic failure" } : undefined;
+			},
+		});
+		const recoveryPayload = { message: "recoverable webhook", source: "voice", channelId: "voice-call_recover_abc123", sessionId: "call_recover_abc123", deliveryId: "tool-recover-1" };
+		const failedDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(failedDelivery.statusCode === 500 && failedDelivery.body.includes("retryable"), "a failed handler never receives a successful delivery receipt");
+		const recoveredDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(recoveredDelivery.statusCode === 202 && recoveredDelivery.body.includes('"processed":true'), "the exact failed delivery ID can be retried safely");
+		assert(recoveryAttempts === 2, "a failed durable claim executes exactly once more on retry");
+		const recoveredDuplicate = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
+		assert(recoveredDuplicate.statusCode === 202 && recoveredDuplicate.body.includes('"duplicate":true'), "a completed recovery becomes a non-executing duplicate");
+		assert(recoveryAttempts === 2, "a completed recovered delivery never executes again");
+
+		let releaseBusy!: () => void;
+		let markBusyStarted!: () => void;
+		const busyStarted = new Promise<void>((resolve) => { markBusyStarted = resolve; });
+		const releaseBusyPromise = new Promise<void>((resolve) => { releaseBusy = resolve; });
+		let secondProcessEvents = 0;
+		const busyAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		busyAdapter.setHandler({
+			...handler(() => {}, () => {}),
+			handleEvent: async () => { markBusyStarted(); await releaseBusyPromise; },
+		});
+		const competingAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		competingAdapter.setHandler(handler(() => { secondProcessEvents++; }, () => {}));
+		const busyPayload = { message: "one live claimant", source: "voice", channelId: "voice-call_busy_abc123", sessionId: "call_busy_abc123", deliveryId: "tool-busy-1" };
+		const firstBusyRequest = request(busyAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
+		await busyStarted;
+		const competingRequest = await request(competingAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
+		assert(competingRequest.statusCode === 425 && competingRequest.body.includes('"state":"processing"'), "a second live process sees the durable delivery as in progress");
+		assert(secondProcessEvents === 0, "a second live process cannot execute the same delivery");
+		releaseBusy();
+		const completedBusyRequest = await firstBusyRequest;
+		assert(completedBusyRequest.statusCode === 202 && completedBusyRequest.body.includes('"processed":true'), "the original live claimant completes authoritatively");
 	} finally {
 		rmSync(workingDir, { recursive: true, force: true });
 	}

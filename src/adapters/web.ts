@@ -1,7 +1,7 @@
-import { appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
-import { createHash, timingSafeEqual } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
 import * as log from "../log.js";
@@ -61,6 +61,26 @@ interface NormalizedWebChatPayload {
 	sessionId?: string;
 	sourceEventType?: string;
 }
+
+interface WebhookDeliveryRecord {
+	deliveryId: string;
+	bodyDigest: string;
+	status: "processing" | "completed" | "failed";
+	owner: string;
+	pid: number;
+	attempts: number;
+	updatedAt: string;
+	channelId: string;
+	sessionId?: string;
+}
+
+interface WebhookDeliveryClaim {
+	path: string;
+	record: WebhookDeliveryRecord;
+	state: "execute" | "duplicate" | "processing";
+}
+
+class WebhookDeliveryConflictError extends Error {}
 
 interface WebStopPayload {
 	channelId?: string;
@@ -126,6 +146,7 @@ Keep responses concise and helpful.`;
 	private workingDir: string;
 	private inputToken?: string;
 	private webhookToken?: string;
+	private readonly webhookClaimOwner = randomUUID();
 	private handler!: MomHandler;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
@@ -257,52 +278,134 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
-			let duplicate = false;
-			try {
-				duplicate = !this.claimWebhookDelivery(payload, normalized);
-			} catch (error) {
-				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-				res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : "Invalid delivery ID" }));
-				return;
-			}
-			if (duplicate) {
-				res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, duplicate: true }));
+			const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+			if (!deliveryId) {
+				res.writeHead(202, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
+				this.processMessage(normalized).catch((err) => {
+					log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
+				});
 				return;
 			}
 
-			res.writeHead(202, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
-
-			this.processMessage(normalized).catch((err) => {
-				log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
+			void this.processIdempotentWebhook(payload, normalized, res).catch((error) => {
+				log.logWarning("Idempotent web webhook processing error", error instanceof Error ? error.message : String(error));
+				if (!res.headersSent) {
+					res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+					res.end(JSON.stringify({ ok: false, error: "processing_failed", retryable: true }));
+				}
 			});
 		});
 	}
 
-	private claimWebhookDelivery(payload: WebChatPayload, normalized: NormalizedWebChatPayload): boolean {
+	private async processIdempotentWebhook(
+		payload: WebChatPayload,
+		normalized: NormalizedWebChatPayload,
+		res: ServerResponse,
+	): Promise<void> {
+		let claim: WebhookDeliveryClaim;
+		try {
+			claim = this.claimWebhookDelivery(payload, normalized);
+		} catch (error) {
+			const conflict = error instanceof WebhookDeliveryConflictError;
+			res.writeHead(conflict ? 409 : 400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, error: conflict ? "delivery_id_body_conflict" : "invalid_delivery_id" }));
+			return;
+		}
+		if (claim.state === "duplicate") {
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, duplicate: true, processed: true }));
+			return;
+		}
+		if (claim.state === "processing") {
+			res.writeHead(425, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, state: "processing", retryable: true }));
+			return;
+		}
+
+		try {
+			await this.processMessage(normalized, undefined, true);
+			this.finishWebhookDelivery(claim, "completed");
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, processed: true }));
+		} catch (error) {
+			this.finishWebhookDelivery(claim, "failed");
+			res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, error: "processing_failed", retryable: true }));
+		}
+	}
+
+	private claimWebhookDelivery(payload: WebChatPayload, normalized: NormalizedWebChatPayload): WebhookDeliveryClaim {
 		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
-		if (!deliveryId) return true;
 		if (deliveryId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(deliveryId)) {
 			throw new Error("Invalid webhook delivery ID");
 		}
-
+		const bodyDigest = createHash("sha256").update(JSON.stringify({
+			message: normalized.message,
+			channelId: normalized.channelId,
+			userName: normalized.userName,
+			sessionId: normalized.sessionId || "",
+			sourceEventType: normalized.sourceEventType || "",
+		})).digest("hex");
 		const key = createHash("sha256")
 			.update([normalized.userName, normalized.channelId, normalized.sessionId || "", deliveryId].join("\0"))
 			.digest("hex");
 		const directory = join(this.workingDir, "awareness", "webhook-deliveries");
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		const markerPath = join(directory, `${key}.json`);
+		const createRecord = (attempts: number): WebhookDeliveryRecord => ({
+			deliveryId,
+			bodyDigest,
+			status: "processing",
+			owner: this.webhookClaimOwner,
+			pid: process.pid,
+			attempts,
+			updatedAt: new Date().toISOString(),
+			channelId: normalized.channelId,
+			...(normalized.sessionId ? { sessionId: normalized.sessionId } : {}),
+		});
 		try {
-			writeFileSync(
-				join(directory, `${key}.json`),
-				`${JSON.stringify({ deliveryId, channelId: normalized.channelId, sessionId: normalized.sessionId, receivedAt: new Date().toISOString() })}\n`,
-				{ encoding: "utf8", flag: "wx", mode: 0o600 },
-			);
+			const record = createRecord(1);
+			writeFileSync(markerPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+			return { path: markerPath, record, state: "execute" };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+
+		const existing = JSON.parse(readFileSync(markerPath, "utf8")) as WebhookDeliveryRecord;
+		if (existing.deliveryId !== deliveryId || existing.bodyDigest !== bodyDigest) {
+			throw new WebhookDeliveryConflictError("Webhook delivery ID was reused with a different body");
+		}
+		if (existing.status === "completed") return { path: markerPath, record: existing, state: "duplicate" };
+		if (existing.status === "processing" && this.webhookOwnerMayBeAlive(existing)) {
+			return { path: markerPath, record: existing, state: "processing" };
+		}
+		const retry = createRecord((existing.attempts || 0) + 1);
+		this.writeWebhookDelivery(markerPath, retry);
+		return { path: markerPath, record: retry, state: "execute" };
+	}
+
+	private finishWebhookDelivery(claim: WebhookDeliveryClaim, status: "completed" | "failed"): void {
+		const current = JSON.parse(readFileSync(claim.path, "utf8")) as WebhookDeliveryRecord;
+		if (current.owner !== claim.record.owner || current.bodyDigest !== claim.record.bodyDigest || current.status !== "processing") return;
+		this.writeWebhookDelivery(claim.path, { ...claim.record, status, updatedAt: new Date().toISOString() });
+	}
+
+	private webhookOwnerMayBeAlive(record: WebhookDeliveryRecord): boolean {
+		if (record.owner === this.webhookClaimOwner || record.pid === process.pid) return true;
+		if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
+		try {
+			process.kill(record.pid, 0);
 			return true;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-			throw error;
+			return (error as NodeJS.ErrnoException).code !== "ESRCH";
 		}
+	}
+
+	private writeWebhookDelivery(markerPath: string, record: WebhookDeliveryRecord): void {
+		const temporary = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+		renameSync(temporary, markerPath);
 	}
 
 	private readPayload(
@@ -386,7 +489,7 @@ Keep responses concise and helpful.`;
 	// Message processing
 	// ==========================================================================
 
-	private async processMessage(payload: NormalizedWebChatPayload, writer?: SSEWriter): Promise<void> {
+	private async processMessage(payload: NormalizedWebChatPayload, writer?: SSEWriter, authoritative = false): Promise<void> {
 		const channelId = payload.channelId;
 		const ts = String(Date.now());
 		let ownsWriter = false;
@@ -449,18 +552,22 @@ Keep responses concise and helpful.`;
 			}
 
 			if (this.handler.isRunning(channelId)) {
-				log.logInfo(`[web] Steering active run for ${channelId}`);
-				if (writer) {
-					this.pendingWriters.set(channelId, writer);
-					ownsWriter = true;
-					keepalive = setInterval(() => {
-						writer.send({ type: "heartbeat", ts: Date.now() });
-					}, 12000);
-					writer.send({ type: "status", status: "steering", message: "Updating active run" });
+				if (authoritative) {
+					await this.waitUntilIdle(channelId);
+				} else {
+					log.logInfo(`[web] Steering active run for ${channelId}`);
+					if (writer) {
+						this.pendingWriters.set(channelId, writer);
+						ownsWriter = true;
+						keepalive = setInterval(() => {
+							writer.send({ type: "heartbeat", ts: Date.now() });
+						}, 12000);
+						writer.send({ type: "status", status: "steering", message: "Updating active run" });
+					}
+					await this.handler.handleSteer(event, this);
+					if (writer) await this.waitForIdle(channelId, writer);
+					return;
 				}
-				this.handler.handleSteer(event, this);
-				if (writer) await this.waitForIdle(channelId, writer);
-				return;
 			}
 
 			if (writer) {
@@ -471,6 +578,9 @@ Keep responses concise and helpful.`;
 				}, 12000);
 			}
 			const result = await this.handler.handleEvent(event, this);
+			if (authoritative && result?.stopReason === "error") {
+				throw new Error(result.errorMessage || "Authoritative webhook run failed");
+			}
 			this.surfaceRunError(result, writer);
 		} finally {
 			if (keepalive) clearInterval(keepalive);
@@ -499,6 +609,14 @@ Keep responses concise and helpful.`;
 			.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
 			.replace(/\b(?:sk|sess|ghp|gho|github_pat)_[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
+	}
+
+	private async waitUntilIdle(channelId: string): Promise<void> {
+		const deadline = Date.now() + 10 * 60 * 1000;
+		while (this.handler.isRunning(channelId)) {
+			if (Date.now() > deadline) throw new Error("Timed out waiting to process authoritative webhook");
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
 	}
 
 	private async waitForIdle(channelId: string, writer: SSEWriter): Promise<void> {
