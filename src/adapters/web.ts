@@ -284,18 +284,13 @@ Keep responses concise and helpful.`;
 			const suppression = assistantOrigin
 				? { suppress: true, reason: "assistant_origin_metadata" }
 				: shouldSuppressAssistantSpeechEcho(normalized.message);
-			if (suppression.suppress) {
-				log.logInfo(
-					`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} ` +
-					`(${suppression.reason}${"similarity" in suppression && typeof suppression.similarity === "number" ? `, similarity=${suppression.similarity.toFixed(2)}` : ""})`,
-				);
-				res.writeHead(202, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppression.reason }));
-				return;
-			}
 
-
-			void this.processIdempotentWebhook(payload, normalized, res).catch((error) => {
+			void this.processIdempotentWebhook(
+				payload,
+				normalized,
+				res,
+				suppression.suppress ? suppression.reason : undefined,
+			).catch((error) => {
 				log.logWarning("Idempotent web webhook processing error", error instanceof Error ? error.message : String(error));
 				if (!res.headersSent) {
 					res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -309,6 +304,7 @@ Keep responses concise and helpful.`;
 		payload: WebChatPayload,
 		normalized: NormalizedWebChatPayload,
 		res: ServerResponse,
+		suppressionReason?: string,
 	): Promise<void> {
 		let claim: WebhookDeliveryClaim;
 		try {
@@ -327,6 +323,13 @@ Keep responses concise and helpful.`;
 		if (claim.state === "processing") {
 			res.writeHead(425, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify({ ok: false, state: "processing", retryable: true }));
+			return;
+		}
+		if (suppressionReason) {
+			this.finishWebhookDelivery(claim, "completed");
+			log.logInfo(`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} (${suppressionReason})`);
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppressionReason, processed: true }));
 			return;
 		}
 
@@ -355,6 +358,7 @@ Keep responses concise and helpful.`;
 			freshContext: normalized.freshContext,
 			sessionId: normalized.sessionId || "",
 			sourceEventType: normalized.sourceEventType || "",
+			assistantOrigin: this.isAssistantOriginPayload(payload),
 		})).digest("hex");
 		const key = createHash("sha256").update(deliveryId).digest("hex");
 		const directory = join(this.workingDir, "awareness", "webhook-deliveries");

@@ -174,6 +174,16 @@ async function run(): Promise<void> {
 		assert(conflictingFreshDelivery.statusCode === 409 && conflictingFreshDelivery.body.includes("delivery_id_body_conflict"), "fresh/reset context behavior is bound to the delivery body digest");
 		assert(splitEvents === 4, "a changed context-reset behavior never hides behind duplicate success");
 
+		const beforeSuppression = splitEvents;
+		const suppressedPayload = { message: "assistant echo", role: "assistant", deliveryId: "tool-suppressed-1" };
+		const firstSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
+		assert(firstSuppressed.statusCode === 202 && firstSuppressed.body.includes("suppressed"), "assistant-origin suppression completes under a durable delivery claim");
+		const duplicateSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
+		assert(duplicateSuppressed.statusCode === 202 && duplicateSuppressed.body.includes("duplicate"), "repeated suppressed delivery IDs return durable duplicate receipts");
+		const conflictingSuppression = await request(splitAdapter, "dispatchWebhook", { ...suppressedPayload, role: "user" }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingSuppression.statusCode === 409, "changing assistant-origin suppression behavior conflicts under the same delivery ID");
+		assert(splitEvents === beforeSuppression, "suppressed, duplicate, and conflicting assistant-origin payloads never reach the handler");
+
 		let recoveryAttempts = 0;
 		const recoveryAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
 		recoveryAdapter.setHandler({
