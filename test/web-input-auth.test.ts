@@ -179,7 +179,7 @@ async function run(): Promise<void> {
 		const firstSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
 		assert(firstSuppressed.statusCode === 202 && firstSuppressed.body.includes("suppressed"), "assistant-origin suppression completes under a durable delivery claim");
 		const duplicateSuppressed = await request(splitAdapter, "dispatchWebhook", suppressedPayload, `Bearer ${webhookOnlyToken}`);
-		assert(duplicateSuppressed.statusCode === 202 && duplicateSuppressed.body.includes("duplicate"), "repeated suppressed delivery IDs return durable duplicate receipts");
+		assert(duplicateSuppressed.statusCode === 202 && duplicateSuppressed.body.includes("duplicate") && duplicateSuppressed.body.includes("suppressed"), "repeated suppressed delivery IDs preserve the durable suppression outcome");
 		const conflictingSuppression = await request(splitAdapter, "dispatchWebhook", { ...suppressedPayload, role: "user" }, `Bearer ${webhookOnlyToken}`);
 		assert(conflictingSuppression.statusCode === 409, "changing assistant-origin suppression behavior conflicts under the same delivery ID");
 		assert(splitEvents === beforeSuppression, "suppressed, duplicate, and conflicting assistant-origin payloads never reach the handler");

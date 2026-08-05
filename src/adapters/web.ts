@@ -72,6 +72,8 @@ interface WebhookDeliveryRecord {
 	updatedAt: string;
 	channelId: string;
 	sessionId?: string;
+	suppressed?: boolean;
+	suppressionReason?: string;
 }
 
 interface WebhookDeliveryClaim {
@@ -317,7 +319,13 @@ Keep responses concise and helpful.`;
 		}
 		if (claim.state === "duplicate") {
 			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, duplicate: true, processed: true }));
+			res.end(JSON.stringify({
+				ok: true,
+				channelId: normalized.channelId,
+				duplicate: true,
+				processed: true,
+				...(claim.record.suppressed ? { suppressed: true, reason: claim.record.suppressionReason || "suppressed" } : {}),
+			}));
 			return;
 		}
 		if (claim.state === "processing") {
@@ -326,7 +334,7 @@ Keep responses concise and helpful.`;
 			return;
 		}
 		if (suppressionReason) {
-			this.finishWebhookDelivery(claim, "completed");
+			this.finishWebhookDelivery(claim, "completed", { suppressed: true, suppressionReason });
 			log.logInfo(`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} (${suppressionReason})`);
 			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppressionReason, processed: true }));
@@ -396,10 +404,14 @@ Keep responses concise and helpful.`;
 		return { path: markerPath, record: retry, state: "execute" };
 	}
 
-	private finishWebhookDelivery(claim: WebhookDeliveryClaim, status: "completed" | "failed"): void {
+	private finishWebhookDelivery(
+		claim: WebhookDeliveryClaim,
+		status: "completed" | "failed",
+		outcome: Pick<WebhookDeliveryRecord, "suppressed" | "suppressionReason"> = {},
+	): void {
 		const current = JSON.parse(readFileSync(claim.path, "utf8")) as WebhookDeliveryRecord;
 		if (current.owner !== claim.record.owner || current.bodyDigest !== claim.record.bodyDigest || current.status !== "processing") return;
-		this.writeWebhookDelivery(claim.path, { ...claim.record, status, updatedAt: new Date().toISOString() });
+		this.writeWebhookDelivery(claim.path, { ...claim.record, ...outcome, status, updatedAt: new Date().toISOString() });
 	}
 
 	private webhookOwnerMayBeAlive(record: WebhookDeliveryRecord): boolean {
