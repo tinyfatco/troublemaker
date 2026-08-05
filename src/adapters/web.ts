@@ -352,7 +352,9 @@ Keep responses concise and helpful.`;
 		const bodyDigest = createHash("sha256").update(JSON.stringify({
 			message: normalized.message,
 			channelId: normalized.channelId,
+			user: normalized.user,
 			userName: normalized.userName,
+			freshContext: normalized.freshContext,
 			sessionId: normalized.sessionId || "",
 			sourceEventType: normalized.sourceEventType || "",
 		})).digest("hex");

@@ -161,6 +161,13 @@ async function run(): Promise<void> {
 		assert(conflictingDelivery.statusCode === 409 && conflictingDelivery.body.includes("delivery_id_body_conflict"), "reusing a delivery ID with a changed body is rejected as a conflict");
 		assert(splitEvents === 3, "a conflicting delivery body never reaches the handler");
 
+		const freshPayload = { message: "context behavior", source: "voice", channelId: "voice-call_fresh_abc123", sessionId: "call_fresh_abc123", deliveryId: "tool-fresh-1", freshContext: false };
+		const firstFreshDelivery = await request(splitAdapter, "dispatchWebhook", freshPayload, `Bearer ${webhookOnlyToken}`);
+		assert(firstFreshDelivery.statusCode === 202 && splitEvents === 4, "the first context-behavior body executes");
+		const conflictingFreshDelivery = await request(splitAdapter, "dispatchWebhook", { ...freshPayload, freshContext: true }, `Bearer ${webhookOnlyToken}`);
+		assert(conflictingFreshDelivery.statusCode === 409 && conflictingFreshDelivery.body.includes("delivery_id_body_conflict"), "fresh/reset context behavior is bound to the delivery body digest");
+		assert(splitEvents === 4, "a changed context-reset behavior never hides behind duplicate success");
+
 		let recoveryAttempts = 0;
 		const recoveryAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
 		recoveryAdapter.setHandler({
