@@ -768,7 +768,12 @@ function createAdapter(name: string): AdapterWithHandler {
 	}
 }
 
-const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
+const configuredAdapterNames = new Map<AdapterWithHandler, string>();
+const adapters: AdapterWithHandler[] = parsedArgs.adapters.map((adapterName) => {
+	const adapter = createAdapter(adapterName);
+	configuredAdapterNames.set(adapter, adapterName);
+	return adapter;
+});
 
 // Follow-up events must be claimed by a dedicated headless adapter before any
 // external adapter sees them. Deliberate send_message calls still route through
@@ -1717,11 +1722,11 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 }
 
 // Register routes first (so gateway can accept traffic), then start adapters in parallel.
-// Each adapter starts independently — a slow Slack backfill doesn't block Telegram.
-for (let i = 0; i < adapters.length; i++) {
-	const adapter = adapters[i];
-	const adapterName = parsedArgs.adapters[i];
-	const path = DISPATCH_PATHS[adapterName];
+// Each adapter stays bound to its configured name even when headless adapters are
+// inserted before or after it in the runtime list.
+for (const adapter of adapters) {
+	const adapterName = configuredAdapterNames.get(adapter);
+	const path = adapterName ? DISPATCH_PATHS[adapterName] : undefined;
 
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
@@ -1738,9 +1743,9 @@ for (let i = 0; i < adapters.length; i++) {
 	}
 }
 
-await Promise.all(adapters.map(async (adapter, i) => {
-	const adapterName = parsedArgs.adapters[i];
-	const path = DISPATCH_PATHS[adapterName];
+await Promise.all(adapters.map(async (adapter) => {
+	const adapterName = configuredAdapterNames.get(adapter);
+	const path = adapterName ? DISPATCH_PATHS[adapterName] : undefined;
 	const t = performance.now();
 	try {
 		await adapter.start();
