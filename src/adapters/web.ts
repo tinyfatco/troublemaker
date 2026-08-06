@@ -74,6 +74,7 @@ interface WebhookDeliveryRecord {
 	sessionId?: string;
 	suppressed?: boolean;
 	suppressionReason?: string;
+	accepted?: boolean;
 }
 
 interface WebhookDeliveryClaim {
@@ -323,7 +324,7 @@ Keep responses concise and helpful.`;
 				ok: true,
 				channelId: normalized.channelId,
 				duplicate: true,
-				processed: true,
+				...(claim.record.accepted ? { accepted: true } : { processed: true }),
 				...(claim.record.suppressed ? { suppressed: true, reason: claim.record.suppressionReason || "suppressed" } : {}),
 			}));
 			return;
@@ -338,6 +339,18 @@ Keep responses concise and helpful.`;
 			log.logInfo(`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} (${suppressionReason})`);
 			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
 			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppressionReason, processed: true }));
+			return;
+		}
+
+		if (this.isVoiceWebhook(normalized)) {
+			void this.processMessage(normalized)
+				.then(() => this.finishWebhookDelivery(claim, "completed", { accepted: true }))
+				.catch((error) => {
+					this.finishWebhookDelivery(claim, "failed");
+					log.logWarning("Accepted voice webhook failed during asynchronous dispatch", error instanceof Error ? error.message : String(error));
+				});
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, accepted: true }));
 			return;
 		}
 
@@ -407,7 +420,7 @@ Keep responses concise and helpful.`;
 	private finishWebhookDelivery(
 		claim: WebhookDeliveryClaim,
 		status: "completed" | "failed",
-		outcome: Pick<WebhookDeliveryRecord, "suppressed" | "suppressionReason"> = {},
+		outcome: Pick<WebhookDeliveryRecord, "suppressed" | "suppressionReason" | "accepted"> = {},
 	): void {
 		const current = JSON.parse(readFileSync(claim.path, "utf8")) as WebhookDeliveryRecord;
 		if (current.owner !== claim.record.owner || current.bodyDigest !== claim.record.bodyDigest || current.status !== "processing") return;
@@ -506,6 +519,13 @@ Keep responses concise and helpful.`;
 		if (["assistant", "bot", "noodle", "troublemaker"].includes(origin)) return true;
 		const source = this.firstString(payload.source).trim().toLowerCase();
 		return ["assistant", "bot"].includes(source);
+	}
+
+	private isVoiceWebhook(payload: NormalizedWebChatPayload): boolean {
+		const sourceType = payload.sourceEventType?.toLowerCase().replace(/-/g, "_") ?? "";
+		return sourceType.includes("voice")
+			|| payload.channelId === "voice"
+			|| payload.channelId.startsWith("voice-");
 	}
 
 	// ==========================================================================

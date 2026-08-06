@@ -103,7 +103,7 @@
 		"test:audio-capture-gate": "npx tsx test/audio-capture-gate.test.ts",
 		"test:audio-feedback-guard": "npx tsx test/audio-feedback-guard.test.ts",
 		"test:realtime-voice": "npx tsx test/realtime-voice.test.ts",
-		"test:voice-contract": "npx tsx test/voice-contract.test.ts && npx tsx test/voice-adapter-hooks.test.ts && npx tsx test/slack-broadcast-mention.test.ts && npm run test:noninterrupting-steering && npm run test:email-busy-steering",
+		"test:voice-contract": "npx tsx test/voice-contract.test.ts && npx tsx test/voice-adapter-hooks.test.ts && npx tsx test/web-input-auth.test.ts && npx tsx test/slack-broadcast-mention.test.ts && npm run test:noninterrupting-steering && npm run test:email-busy-steering",
 		"test:read-thread": "npx tsx test/read-thread.test.ts",
 		"test:read-image": "npx tsx test/read-image.test.ts",
 		"test:sanitize": "npx tsx test/sanitize.test.ts",

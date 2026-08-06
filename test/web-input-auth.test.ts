@@ -167,6 +167,24 @@ async function run(): Promise<void> {
 		assert(conflictingNamespace.statusCode === 409 && conflictingNamespace.body.includes("delivery_id_body_conflict"), "one delivery ID cannot bypass body binding by changing channel or session namespace");
 		assert(splitEvents === 3, "a namespace-changing delivery ID reuse never executes twice");
 
+		let voiceBusyChecks = 0;
+		let voiceSteers = 0;
+		let voiceFreshRuns = 0;
+		const voiceSteerAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
+		voiceSteerAdapter.setHandler({
+			...handler(() => { voiceFreshRuns++; }, () => {}),
+			isRunning: () => voiceBusyChecks++ === 0,
+			handleSteer: async () => { voiceSteers++; },
+		});
+		const voiceSteerPayload = { message: "voice steering", source: "voice", channelId: "voice", sessionId: "voice_session_example", deliveryId: "voice-steer-1" };
+		const voiceSteerResponse = await request(voiceSteerAdapter, "dispatchWebhook", voiceSteerPayload, `Bearer ${webhookOnlyToken}`);
+		await Promise.resolve();
+		assert(voiceSteerResponse.statusCode === 202 && voiceSteerResponse.body.includes('"accepted":true'), "a primary voice webhook receives immediate asynchronous acceptance");
+		assert(voiceSteers === 1 && voiceFreshRuns === 0, "busy primary voice input steers the active run instead of waiting or starting a competing turn");
+		const duplicateVoiceSteer = await request(voiceSteerAdapter, "dispatchWebhook", voiceSteerPayload, `Bearer ${webhookOnlyToken}`);
+		assert(duplicateVoiceSteer.statusCode === 202 && duplicateVoiceSteer.body.includes('"duplicate":true') && duplicateVoiceSteer.body.includes('"accepted":true'), "a completed voice retry receives the same accepted idempotent outcome");
+		assert(voiceSteers === 1 && voiceFreshRuns === 0, "a duplicate primary voice delivery never steers twice");
+
 		const freshPayload = { message: "context behavior", source: "voice", channelId: "voice-call_fresh_abc123", sessionId: "call_fresh_abc123", deliveryId: "tool-fresh-1", freshContext: false };
 		const firstFreshDelivery = await request(splitAdapter, "dispatchWebhook", freshPayload, `Bearer ${webhookOnlyToken}`);
 		assert(firstFreshDelivery.statusCode === 202 && splitEvents === 4, "the first context-behavior body executes");
@@ -193,7 +211,7 @@ async function run(): Promise<void> {
 				return recoveryAttempts === 1 ? { stopReason: "error", errorMessage: "synthetic failure" } : undefined;
 			},
 		});
-		const recoveryPayload = { message: "recoverable webhook", source: "voice", channelId: "voice-call_recover_abc123", sessionId: "call_recover_abc123", deliveryId: "tool-recover-1" };
+		const recoveryPayload = { message: "recoverable webhook", source: "automation", channelId: "job-recover-example", sessionId: "job_recover_example", deliveryId: "tool-recover-1" };
 		const failedDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
 		assert(failedDelivery.statusCode === 500 && failedDelivery.body.includes("retryable"), "a failed handler never receives a successful delivery receipt");
 		const recoveredDelivery = await request(recoveryAdapter, "dispatchWebhook", recoveryPayload, `Bearer ${webhookOnlyToken}`);
@@ -215,7 +233,7 @@ async function run(): Promise<void> {
 		});
 		const competingAdapter = new WebAdapter({ workingDir, webhookToken: webhookOnlyToken });
 		competingAdapter.setHandler(handler(() => { secondProcessEvents++; }, () => {}));
-		const busyPayload = { message: "one live claimant", source: "voice", channelId: "voice-call_busy_abc123", sessionId: "call_busy_abc123", deliveryId: "tool-busy-1" };
+		const busyPayload = { message: "one live claimant", source: "automation", channelId: "job-busy-example", sessionId: "job_busy_example", deliveryId: "tool-busy-1" };
 		const firstBusyRequest = request(busyAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
 		await busyStarted;
 		const competingRequest = await request(competingAdapter, "dispatchWebhook", busyPayload, `Bearer ${webhookOnlyToken}`);
