@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const installerScript = path.join(root, "scripts", "install-macos-resident-updater.sh");
 const requestScript = path.join(root, "scripts", "macos-resident-request-update.sh");
 const updaterScript = path.join(root, "scripts", "macos-resident-updater.sh");
 
@@ -162,6 +163,12 @@ test("request helper pins the release branch commit", async () => {
 		assert.equal(requests.length, 1);
 		assert.equal(readFileSync(path.join(queue, requests[0]), "utf8"), `release\t${commit}\n`);
 	});
+});
+
+test("installer wakes the updater from a non-empty request queue", () => {
+	const installer = readFileSync(installerScript, "utf8");
+	assert.match(installer, /QueueDirectories/);
+	assert.doesNotMatch(installer, /StartInterval/);
 });
 
 test("independent updater activates a clean, healthy candidate", async () => {
