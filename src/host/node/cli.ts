@@ -40,7 +40,8 @@ import { MomSettingsManager, type WorkingOutputTarget } from "../../context.js";
 import { downloadChannel } from "../../download.js";
 import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
-import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
+import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR } from "../../attention/paths.js";
+import { removeUnconditionalCompactionSchedules } from "../../compaction-schedule.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import {
 	armPendingFollowUps,
@@ -2253,29 +2254,16 @@ To change these, edit \`settings.json\` directly.
 	syncHeartbeatFromSpontaneity(workingDir, settings.getSpontaneitySettings());
 }
 
-// Seed auto-compaction event — runs at 4am daily, cleans up context
+// Semantic compaction is pressure-driven or explicitly requested. Remove old
+// clock-driven jobs instead of summarizing a healthy context on a schedule.
 {
-	const { existsSync: existsCompaction, unlinkSync: unlinkCompaction, writeFileSync: writeCompaction } = await import("fs");
-	const compactionFile = join(workingDir, ATTENTION_QUEUE_DIR, "compaction.json");
-	const legacyCompactionFile = join(workingDir, LEGACY_EVENTS_DIR, "compaction.json");
-	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-	const compactionEvent = {
-		type: "periodic",
-		schedule: "0 10 * * *",
-		timezone: tz,
-		text: "auto-compaction",
-		action: "compact",
-	};
-	writeCompaction(compactionFile, JSON.stringify(compactionEvent, null, 2), "utf-8");
-	if (existsCompaction(legacyCompactionFile)) {
-		try {
-			unlinkCompaction(legacyCompactionFile);
-			log.logInfo("Removed legacy events/compaction.json after attention queue migration");
-		} catch (err) {
-			log.logWarning("Failed to remove legacy events/compaction.json", err instanceof Error ? err.message : String(err));
-		}
+	const cleanup = removeUnconditionalCompactionSchedules(workingDir);
+	for (const removed of cleanup.removed) {
+		log.logInfo(`Removed unconditional scheduled compaction file ${removed}`);
 	}
-	log.logInfo(`Wrote ${ATTENTION_QUEUE_DIR}/compaction.json (daily 4am, tz=${tz})`);
+	for (const failure of cleanup.failures) {
+		log.logWarning(`Failed to remove scheduled compaction file ${failure.path}`, failure.error);
+	}
 }
 
 // Restore any follow-up queue files interrupted between authoritative state

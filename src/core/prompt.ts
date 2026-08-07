@@ -211,7 +211,7 @@ ${YIELD_NO_ACTION_CONTRACT}`;
 	return `## Context
 - For current date/time, use: date
 - For older history beyond your context, search log.jsonl with jq/grep.
-- Each message includes a <session_context> block with current channels, users, skills, memory, and which channel you're attending. Always use the latest one.
+- The current <runtime_context> in your system prompt contains current channels, users, skills, memory, and the channel you're attending. Each message also includes a small <session_context> routing block. Always use the latest context.
 
 ${formatInstructions}
 
@@ -261,6 +261,79 @@ ${toolGuidance}
 ${overlaySuffix}`;
 }
 
+export interface SessionPreambleSections {
+	Attending: string;
+	Channels: string;
+	Users: string;
+	Skills: string;
+	Workspace: string;
+}
+
+export interface SessionPreambleOptions {
+	workspaceContext: string;
+	channels: ChannelInfo[];
+	users: UserInfo[];
+	skills: PromptSkill[];
+	displayChannelId: string;
+	displayChannelName?: string;
+	verbosity?: VerbosityLevel;
+	model?: { provider?: string };
+}
+
+export function buildSessionPreambleSections(options: SessionPreambleOptions): SessionPreambleSections {
+	const channelMappings = options.channels.length > 0
+		? options.channels.map((channel) => `${channel.id}\t#${channel.name}`).join("\n")
+		: "(none)";
+	const userMappings = options.users.length > 0
+		? options.users.map((user) => `${user.id}\t@${user.userName}\t${user.displayName}`).join("\n")
+		: "(none)";
+	const skillsSection = options.skills.length > 0
+		? formatSkillsForSessionPreamble(options.skills) || "(none)"
+		: "(none)";
+	const attending = options.displayChannelName
+		? `${options.displayChannelName} (${options.displayChannelId})`
+		: options.displayChannelId;
+
+	const isWebDirectChat = [options.displayChannelId, options.displayChannelName]
+		.filter((value): value is string => typeof value === "string")
+		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
+
+	let channelPolicyNote = "";
+	if (options.verbosity === "messages-only" && !isWebDirectChat) {
+		channelPolicyNote = "\nChannel delivery policy: ordinary assistant text and harness finals will NOT be delivered here. Safe tool-label progress may follow the configured working-output route. Use send_message with an explicit target for ALL user-visible communication.";
+		if (options.model?.provider === "claude-cli") {
+			channelPolicyNote += ` Before writing assistant text, call ToolSearch with \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, then call \`mcp__troublemaker__send_message\`. If no response is appropriate, select \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\` and call \`mcp__troublemaker__yield_no_action\`. Direct assistant text is discarded.`;
+		}
+	}
+
+	return {
+		Attending: `${attending}${channelPolicyNote}`,
+		Channels: channelMappings,
+		Users: userMappings,
+		Skills: skillsSection,
+		Workspace: options.workspaceContext,
+	};
+}
+
+function renderSections(sections: SessionPreambleSections, names: Array<keyof SessionPreambleSections>): string {
+	return names.map((name) => {
+		if (name === "Attending") return `Attending: ${sections.Attending}`;
+		if (name === "Workspace") return sections.Workspace;
+		return `${name}:\n${sections[name]}`;
+	}).join("\n");
+}
+
+export function buildRuntimeContext(options: SessionPreambleOptions): string {
+	const sections = buildSessionPreambleSections(options);
+	return `<runtime_context>\n${renderSections(sections, ["Attending", "Channels", "Users", "Skills", "Workspace"])}\n</runtime_context>`;
+}
+
+export function buildSessionRoutingPreamble(options: SessionPreambleOptions): string {
+	const sections = buildSessionPreambleSections(options);
+	return `<session_context>\n${renderSections(sections, ["Attending", "Channels", "Users"])}\n</session_context>`;
+}
+
+/** Backward-compatible full transcript context for callers outside the resident runner. */
 export function buildSessionPreamble(
 	workspaceContext: string,
 	channels: ChannelInfo[],
@@ -271,33 +344,16 @@ export function buildSessionPreamble(
 	verbosity?: VerbosityLevel,
 	model?: { provider?: string },
 ): string {
-	const channelMappings =
-		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
-	const userMappings =
-		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
-	const skillsSection = skills.length > 0 ? formatSkillsForSessionPreamble(skills) || "(none)" : "(none)";
-	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
-
-	const isWebDirectChat = [displayChannelId, displayChannelName]
-		.filter((value): value is string => typeof value === "string")
-		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
-
-	let channelPolicyNote = "";
-	if (verbosity === "messages-only" && !isWebDirectChat) {
-		channelPolicyNote = "\nChannel delivery policy: ordinary assistant text and harness finals will NOT be delivered here. Safe tool-label progress may follow the configured working-output route. Use send_message with an explicit target for ALL user-visible communication.";
-		if (model?.provider === "claude-cli") {
-			channelPolicyNote += ` Before writing assistant text, call ToolSearch with \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, then call \`mcp__troublemaker__send_message\`. If no response is appropriate, select \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\` and call \`mcp__troublemaker__yield_no_action\`. Direct assistant text is discarded.`;
-		}
-	}
-
-	return `<session_context>
-Attending: ${attending}${channelPolicyNote}
-Channels:
-${channelMappings}
-Users:
-${userMappings}
-Skills:
-${skillsSection}
-${workspaceContext}
-</session_context>`;
+	const options = {
+		workspaceContext,
+		channels,
+		users,
+		skills,
+		displayChannelId,
+		displayChannelName,
+		verbosity,
+		model,
+	};
+	const sections = buildSessionPreambleSections(options);
+	return `<session_context>\n${renderSections(sections, ["Attending", "Channels", "Users", "Skills", "Workspace"])}\n</session_context>`;
 }

@@ -173,11 +173,15 @@ export interface MomSettings {
 	speak?: MomSpeakSettings;
 }
 
-const DEFAULT_COMPACTION: MomCompactionSettings = {
+export const DEFAULT_COMPACTION: MomCompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
-	keepRecentTokens: 20000,
-	thresholdPercent: 0.5,
+	// Retain multiple complete recent turns instead of reducing a healthy session
+	// to a tiny tail after every pressure event.
+	keepRecentTokens: 60000,
+	// Compact after substantial real transcript growth. Dynamic workspace context
+	// is supplied once in the system prompt rather than accumulated per message.
+	thresholdPercent: 0.75,
 };
 
 const DEFAULT_RETRY: MomRetrySettings = {

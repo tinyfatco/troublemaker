@@ -21,7 +21,8 @@ import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
-	buildSessionPreamble,
+	buildRuntimeContext,
+	buildSessionRoutingPreamble,
 	buildSystemPrompt,
 	getWorkspaceContext,
 	getWorkspaceSkillsMtime,
@@ -54,6 +55,7 @@ import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
 import hostSitesExtension from "./extensions/host-sites.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
+import { createDynamicRuntimeContextExtension } from "./extensions/dynamic-runtime-context.js";
 import {
 	createClaudeCliStream,
 	getClaudeCliRuntimeAuth,
@@ -458,11 +460,22 @@ function createRunner(
 
 	log.logInfo(`[perf] createRunner (no R2 reads): ${(performance.now() - t0).toFixed(0)}ms`);
 
+	let activeSystemPrompt = systemPrompt;
+	let activeRuntimeContext = "";
+	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
+		() => activeSystemPrompt,
+		() => activeRuntimeContext,
+	);
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
-		extensionFactories: [hostGmailExtension, hostSitesExtension, tinyfatDomainsExtension],
+		extensionFactories: [
+			dynamicRuntimeContextExtension,
+			hostGmailExtension,
+			hostSitesExtension,
+			tinyfatDomainsExtension,
+		],
 		extensionsOverride: (base) => {
 			for (const extension of base.extensions) {
 				for (const registered of extension.tools.values()) {
@@ -561,6 +574,8 @@ function createRunner(
 		toolSearchRegistry.current = null;
 		sessionManager = null;
 		resourceLoaderReady = false;
+		activeSystemPrompt = systemPrompt;
+		activeRuntimeContext = "";
 		agent.state.messages = [];
 	};
 
@@ -1028,21 +1043,26 @@ function createRunner(
 			}
 
 			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
+			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
-			// Build dynamic preamble (injected into user message below)
+			// Keep large, mostly stable workspace context in the per-turn system
+			// prompt. Only lightweight routing metadata is appended to the user
+			// transcript, so repeated wakes do not accumulate another memory copy.
 			settingsManager.reload();
 			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
-			const sessionPreamble = buildSessionPreamble(
+			const sessionContextOptions = {
 				workspaceContext,
-				ctx.channels,
-				ctx.users,
+				channels: ctx.channels,
+				users: ctx.users,
 				skills,
-				ctx.message.channel,
-				ctx.channelName,
-				channelVerbosity,
-				currentModel,
-			);
+				displayChannelId: ctx.message.channel,
+				displayChannelName: ctx.channelName,
+				verbosity: channelVerbosity,
+				model: currentModel,
+			};
+			activeRuntimeContext = buildRuntimeContext(sessionContextOptions);
+			const sessionPreamble = buildSessionRoutingPreamble(sessionContextOptions);
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
@@ -1107,7 +1127,7 @@ function createRunner(
 			};
 
 			// Log context info
-			log.logInfo(`Context sizes - preamble: ${sessionPreamble.length} chars, workspace: ${workspaceContext.length} chars`);
+			log.logInfo(`Context sizes - routing: ${sessionPreamble.length} chars, runtime: ${activeRuntimeContext.length} chars, workspace: ${workspaceContext.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
 			// Build user message with timestamp, channel tag, and username
@@ -1161,6 +1181,8 @@ function createRunner(
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
+				runtimeContext: activeRuntimeContext,
+				runtimeContextPlacement: "system",
 				sessionPreamble,
 				messages: currentSession.messages,
 				newUserMessage: finalUserMessage,
