@@ -172,6 +172,7 @@ test("installer wakes the updater from a non-empty request queue", () => {
 	assert.match(installer, /EnvironmentVariables/);
 	assert.match(installer, /command -v node/);
 	assert.doesNotMatch(installer, /StartInterval/);
+	assert.doesNotMatch(installer, /ProcessType[^\n]*Background/);
 });
 
 test("independent updater activates a clean, healthy candidate", async () => {
