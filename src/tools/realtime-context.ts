@@ -242,7 +242,7 @@ function extractContentText(content: unknown): string {
 }
 
 function normalizeAgentText(text: string): string {
-	let normalized = text.replace(/<session_context>[\s\S]*?<\/session_context>/g, "");
+	let normalized = text.replace(/<(session_context(?:_delta|_ref)?)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g, "");
 	const userRequestMarker = "\n\nUser request:\n";
 	const markerIndex = normalized.lastIndexOf(userRequestMarker);
 	if (normalized.startsWith("Cloud awareness primer ") && markerIndex >= 0) {

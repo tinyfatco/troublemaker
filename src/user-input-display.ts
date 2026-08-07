@@ -1,4 +1,4 @@
-const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
+const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context(?:_delta|_ref)?|delivery_context)(?:\s[^>]*)?>[\s\S]*?<\/\1>\s*/g;
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 
 export interface VisibleUserInput {

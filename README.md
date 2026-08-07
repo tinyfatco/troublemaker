@@ -80,6 +80,16 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 
 **Auto-detection:** If no `--adapter` flag is given, troublemaker detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
 
+## Zulip Topics as Runtime Threads
+
+Each topic in a numeric Zulip stream owns a separate Pi transcript and compaction lifecycle. Topics still share the agent's workspace, durable memory, settings, tools, and searchable channel log, but messages from one topic cannot steer or enter another topic's model context. Zulip direct messages and non-Zulip transports retain the unified context.
+
+A practical operating policy is one dated topic per day for an ongoing work stream, plus a new topic when the task needs a deliberate fresh context. Do not create a fresh context for every message: it destroys continuity and prompt-cache reuse. Topic names are normalized for case and surrounding whitespace; renaming a topic deliberately starts a new runtime context.
+
+Dynamic session context is sent in full once per runtime thread. Later turns carry a content-hash reference when nothing changed, or only changed sections when workspace state changed. Oversized tool results are stored as owner-only artifacts and represented inline by a bounded excerpt, path, and SHA-256.
+
+Automatic semantic compaction is pressure-driven at 75% of the active model window and retains about 60,000 recent tokens on ordinary sessions. Troublemaker no longer seeds an unconditional daily LLM compaction job. Each topic records content-free turn and compaction metrics for trigger reason, prompt projection, token composition, provider cache reads/writes, cost, latency, duration, and before/after occupancy.
+
 ## CLI
 
 ```

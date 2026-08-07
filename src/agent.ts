@@ -21,13 +21,19 @@ import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
-	buildSessionPreamble,
+	buildSessionPreambleSections,
 	buildSystemPrompt,
 	getWorkspaceContext,
 	getWorkspaceSkillsMtime,
 	resolveClaudeCliDeliveryRetry,
 	resolveThinkingLevel,
 } from "./core/prompt.js";
+import { SessionContextProjector } from "./session-context-projection.js";
+import {
+	appendCompactionMetric,
+	appendContextMetric,
+	measureContextComposition,
+} from "./compaction-observability.js";
 import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
@@ -47,12 +53,14 @@ import type { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
+import { boundAllToolResults, boundToolResults } from "./tools/tool-result-artifacts.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
+import structuredCompactionExtension from "./extensions/structured-compaction.js";
 import {
 	createClaudeCliStream,
 	getClaudeCliRuntimeAuth,
@@ -233,8 +241,7 @@ function partialThinking(event: Record<string, unknown>): string | undefined {
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
 const skillsCache = new Map<string, { skills: Skill[]; workspaceMtime: number }>();
 
-function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
-	const hostWorkspacePath = join(awarenessDir, "..");
+function loadMomSkills(awarenessDir: string, workspacePath: string, hostWorkspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
 	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
 	const workspaceStore = new FilesystemWorkspaceStore(hostWorkspacePath);
 
@@ -358,17 +365,27 @@ export function getOrCreateRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	workspaceDirOverride?: string,
 ): AgentRunner {
 	const existing = runners.get(awarenessDir);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, awarenessDir, formatInstructions, extraSkillsDirs, extraTools);
+	const runner = createRunner(
+		sandboxConfig,
+		awarenessDir,
+		formatInstructions,
+		extraSkillsDirs,
+		extraTools,
+		workspaceDirOverride,
+	);
 	runners.set(awarenessDir, runner);
 	return runner;
 }
 
 /**
- * Create a new AgentRunner for the unified awareness.
+ * Create an AgentRunner with isolated awareness and an optionally shared
+ * workspace root. Zulip topic contexts use this to share tools/memory without
+ * sharing their Pi transcript.
  */
 function createRunner(
 	sandboxConfig: SandboxConfig,
@@ -376,9 +393,10 @@ function createRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	workspaceDirOverride?: string,
 ): AgentRunner {
 	const t0 = performance.now();
-	const workspaceDir = join(awarenessDir, "..");
+	const workspaceDir = workspaceDirOverride ?? join(awarenessDir, "..");
 	const executor = withExecutorCwd(createExecutor(sandboxConfig), workspaceDir);
 	const workspacePath = executor.getWorkspacePath(workspaceDir);
 
@@ -386,11 +404,11 @@ function createRunner(
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
-	const tools = enforceRequiredToolLabels([
+	const tools = boundAllToolResults(enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
 		createSearchToolsTool(() => toolSearchRegistry.current),
-	]);
+	]), workspaceDir);
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
 	const systemPrompt = "Initializing...";
@@ -461,11 +479,12 @@ function createRunner(
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
-		extensionFactories: [hostGmailExtension, tinyfatDomainsExtension],
+		extensionFactories: [hostGmailExtension, tinyfatDomainsExtension, structuredCompactionExtension],
 		extensionsOverride: (base) => {
 			for (const extension of base.extensions) {
 				for (const registered of extension.tools.values()) {
 					enforceRequiredToolLabel(registered.definition as any);
+					boundToolResults(registered.definition as any, workspaceDir);
 				}
 			}
 			return base;
@@ -510,7 +529,9 @@ function createRunner(
 		},
 	});
 
-	// Session created lazily on first run
+	// Session created lazily on first run. The projector emits one full dynamic
+	// context per runner, then only references or changed sections.
+	const sessionContextProjector = new SessionContextProjector();
 	let session: AgentSession | null = null;
 	let acceptsSteering = false;
 	let unsubscribeSession: (() => void) | null = null;
@@ -560,6 +581,7 @@ function createRunner(
 		toolSearchRegistry.current = null;
 		sessionManager = null;
 		resourceLoaderReady = false;
+		sessionContextProjector.reset();
 		agent.state.messages = [];
 	};
 
@@ -649,6 +671,7 @@ function createRunner(
 	const compactionTimeoutMs = resolveCompactionTimeoutMs();
 	let compactionStatus: CompactionStatus | null = null;
 	let compactionTimer: ReturnType<typeof setTimeout> | undefined;
+	let activeCompactionMetric: { id: string; startedAt: number; reason: string } | null = null;
 	const requestCompactionAbort = (): boolean => {
 		if (!session || !compactionStatus) return false;
 		compactionStatus.abortRequestedAt ??= Date.now();
@@ -659,12 +682,31 @@ function createRunner(
 		const alreadyCompacting = compactionStatus !== null;
 		if (compactionTimer) clearTimeout(compactionTimer);
 		const startedAt = Date.now();
+		const normalizedReason = typeof reason === "string" && reason ? reason : "unknown";
 		compactionStatus = {
-			reason: typeof reason === "string" && reason ? reason : "unknown",
+			reason: normalizedReason,
 			startedAt,
 			timeoutAt: startedAt + compactionTimeoutMs,
 		};
 		if (!alreadyCompacting) playCompactionCue();
+		if (!alreadyCompacting) {
+			activeCompactionMetric = { id: randomUUID(), startedAt, reason: normalizedReason };
+			try {
+				settingsManager.reload();
+				appendCompactionMetric(awarenessDir, {
+					type: "compaction_start",
+					id: activeCompactionMetric.id,
+					at: new Date(startedAt).toISOString(),
+					reason: normalizedReason,
+					model: agent.state.model ? `${agent.state.model.provider}/${agent.state.model.id}` : "unknown",
+					contextWindow: agent.state.model?.contextWindow ?? null,
+					settings: settingsManager.getCompactionSettings(),
+					before: measureContextComposition(session?.messages ?? agent.state.messages),
+				});
+			} catch (error) {
+				log.logWarning("[compaction] Failed to persist start metrics", error instanceof Error ? error.message : String(error));
+			}
+		}
 		compactionTimer = setTimeout(() => {
 			if (!compactionStatus || compactionStatus.startedAt !== startedAt) return;
 			log.logWarning(`[compaction] Timed out after ${compactionTimeoutMs}ms; requesting cancellation`);
@@ -672,7 +714,28 @@ function createRunner(
 		}, compactionTimeoutMs);
 		compactionTimer.unref?.();
 	};
-	const finishCompaction = () => {
+	const finishCompaction = (event?: any) => {
+		if (activeCompactionMetric) {
+			try {
+				appendCompactionMetric(awarenessDir, {
+					type: "compaction_end",
+					id: activeCompactionMetric.id,
+					at: new Date().toISOString(),
+					reason: activeCompactionMetric.reason,
+					durationMs: Date.now() - activeCompactionMetric.startedAt,
+					aborted: event?.aborted === true,
+					error: typeof event?.errorMessage === "string" ? event.errorMessage : null,
+					result: event?.result ?? null,
+					after: measureContextComposition(session?.messages ?? agent.state.messages),
+				});
+			} catch (error) {
+				log.logWarning("[compaction] Failed to persist end metrics", error instanceof Error ? error.message : String(error));
+			}
+		}
+		activeCompactionMetric = null;
+		// A compaction may discard the full context block referenced by later
+		// deltas, so the next turn must establish a fresh complete projection.
+		sessionContextProjector.reset();
 		if (compactionTimer) clearTimeout(compactionTimer);
 		compactionTimer = undefined;
 		compactionStatus = null;
@@ -682,7 +745,7 @@ function createRunner(
 	let _eventSeq = 0;
 	const eventHandler = async (event: any) => {
 		if (event.type === "compaction_start") beginCompaction(event.reason);
-		else if (event.type === "compaction_end") finishCompaction();
+		else if (event.type === "compaction_end") finishCompaction(event);
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
 
 		_eventSeq++;
@@ -1003,7 +1066,7 @@ function createRunner(
 			log.logInfo(`[perf] getWorkspaceContext: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
-			const skills = loadMomSkills(awarenessDir, workspacePath, extraSkillsDirs);
+			const skills = loadMomSkills(awarenessDir, workspacePath, workspaceDir, extraSkillsDirs);
 			log.logInfo(`[perf] loadMomSkills (${skills.length} skills): ${(performance.now() - tSkills).toFixed(0)}ms`);
 
 			log.logInfo(`[perf] total R2 reads: ${(performance.now() - tR2).toFixed(0)}ms`);
@@ -1032,20 +1095,21 @@ function createRunner(
 			// Build dynamic preamble (injected into user message below)
 			settingsManager.reload();
 			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
-			const sessionPreamble = buildSessionPreamble(
+			const sessionContextProjection = sessionContextProjector.project(buildSessionPreambleSections({
 				workspaceContext,
-				ctx.channels,
-				ctx.users,
+				channels: ctx.channels,
+				users: ctx.users,
 				skills,
-				ctx.message.channel,
-				ctx.channelName,
-				channelVerbosity,
-				currentModel,
-			);
+				displayChannelId: ctx.message.channel,
+				displayChannelName: ctx.channelName,
+				verbosity: channelVerbosity,
+				model: currentModel,
+			}));
+			const sessionPreamble = sessionContextProjection.text;
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
-				const hostPath = translateToHostPath(filePath, awarenessDir, workspacePath);
+				const hostPath = translateToHostPath(filePath, workspaceDir, workspacePath);
 				await ctx.uploadFile(hostPath, title);
 			});
 
@@ -1161,6 +1225,11 @@ function createRunner(
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
 				sessionPreamble,
+				sessionContextProjection: {
+					mode: sessionContextProjection.mode,
+					hash: sessionContextProjection.hash,
+					changedSections: sessionContextProjection.changedSections,
+				},
 				messages: currentSession.messages,
 				newUserMessage: finalUserMessage,
 				imageAttachmentCount: imageAttachments.length,
@@ -1348,6 +1417,38 @@ function createRunner(
 				const summary = log.logUsageSummary(runState.logCtx, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
 				await queueChain;
+			}
+
+			// Persist cache, latency, and context-composition telemetry without any
+			// message contents. This makes full/delta/reference behavior measurable
+			// per isolated runtime context and across model providers.
+			try {
+				const messages = currentSession.messages;
+				const lastAssistant = messages.slice().reverse().find((message) => message.role === "assistant") as any;
+				const latestUsage = lastAssistant?.usage ?? null;
+				appendContextMetric(awarenessDir, {
+					type: "turn",
+					at: new Date().toISOString(),
+					model: `${currentModel.provider}/${currentModel.id}`,
+					projection: {
+						mode: sessionContextProjection.mode,
+						hash: sessionContextProjection.hash,
+						characters: sessionPreamble.length,
+						changedSections: sessionContextProjection.changedSections,
+					},
+					latencyMs: Math.round(performance.now() - tRun),
+					usage: latestUsage ? {
+						input: latestUsage.input ?? 0,
+						output: latestUsage.output ?? 0,
+						cacheRead: latestUsage.cacheRead ?? 0,
+						cacheWrite: latestUsage.cacheWrite ?? 0,
+						totalTokens: latestUsage.totalTokens ?? null,
+						cost: latestUsage.cost ?? null,
+					} : null,
+					composition: measureContextComposition(messages),
+				});
+			} catch (error) {
+				log.logWarning("[context] Failed to persist turn metrics", error instanceof Error ? error.message : String(error));
 			}
 
 			// Clear run state
@@ -1557,14 +1658,14 @@ async function archiveContext(contextFile: string): Promise<void> {
  */
 function translateToHostPath(
 	containerPath: string,
-	awarenessDir: string,
+	workspaceDir: string,
 	workspacePath: string,
 ): string {
 	if (workspacePath === "/data" || workspacePath === "/workspace") {
 		const prefixes = workspacePath === "/data" ? ["/data/", "/workspace/"] : ["/workspace/", "/data/"];
 		for (const prefix of prefixes) {
 			if (containerPath.startsWith(prefix)) {
-				return join(awarenessDir, "..", containerPath.slice(prefix.length));
+				return join(workspaceDir, containerPath.slice(prefix.length));
 			}
 		}
 	}

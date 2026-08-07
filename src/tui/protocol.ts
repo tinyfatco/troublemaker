@@ -371,7 +371,7 @@ function visibleAssistantTokens(content: RuntimeAssistantSnapshotContent[]): str
 
 function extractSlackUsers(text: string): Map<string, string> {
 	const users = new Map<string, string>();
-	const sessionContext = text.match(/<session_context>([\s\S]*?)<\/session_context>/)?.[1];
+	const sessionContext = text.match(/<session_context(?:\s[^>]*)?>([\s\S]*?)<\/session_context>/)?.[1];
 	if (!sessionContext) return users;
 
 	let readingUsers = false;

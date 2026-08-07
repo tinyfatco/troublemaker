@@ -83,6 +83,7 @@ import {
 } from "../../goal-continuation.js";
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 import { FirstClassVoiceContract } from "../../voice-contract.js";
+import { resolveRuntimeContextIdentity, type RuntimeContextIdentity } from "../../runtime-context.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -836,6 +837,7 @@ interface StopResponse {
 }
 
 interface Awareness {
+	identity: RuntimeContextIdentity;
 	running: boolean;
 	/** Timestamp of last substantive activity during a run (LLM token, tool call, etc.) */
 	lastActivity: number;
@@ -862,8 +864,11 @@ function clearStopResponse(state: Awareness): void {
 	state.stopResponse = undefined;
 }
 
+// `awareness` is the currently active/most-recent runner for legacy status and
+// steering paths. The map retains one durable runner per isolated context.
 let awareness: Awareness | null = null;
-let awarenessInitPromise: Promise<Awareness> | null = null;
+const awarenessByContext = new Map<string, Awareness>();
+const awarenessInitPromises = new Map<string, Promise<Awareness>>();
 
 interface ActiveRun {
 	label: string;
@@ -875,6 +880,7 @@ interface ActiveDeliveryScope {
 	channelId: string;
 	teamId?: string;
 	threadTs?: string;
+	contextKey: string;
 }
 
 let activeRun: ActiveRun | null = null;
@@ -962,75 +968,76 @@ async function withGlobalRunSlot<T>(label: string, fn: () => Promise<T>): Promis
 	}
 }
 
-async function getAwareness(channelId: string, adapter: PlatformAdapter, formatInstructions: string): Promise<Awareness> {
-	if (!awareness && !awarenessInitPromise) {
-		awarenessInitPromise = (async () => {
-		// Wait (with bounded timeout) for the MCP bridge to finish connecting so
-		// its tools are present when we build the runner. Runner tools are static
-		// after creation, so missing them here means missing them forever.
-		const BRIDGE_READY_TIMEOUT_MS = 15_000;
-		const timeout = new Promise<void>((resolve) => setTimeout(resolve, BRIDGE_READY_TIMEOUT_MS));
-		const bridgeStart = performance.now();
-		await Promise.race([mcpBridge.ready(), timeout]);
-		const bridgeTools = mcpBridge.tools();
-		log.logInfo(`[mcp-client] getAwareness waited ${(performance.now() - bridgeStart).toFixed(0)}ms for bridge, got ${bridgeTools.length} tools`);
+async function getAwareness(event: Pick<MomEvent, "channel" | "threadTs">, adapter: PlatformAdapter, formatInstructions: string): Promise<Awareness> {
+	const identity = resolveRuntimeContextIdentity(workingDir, event, adapter.name);
+	const existing = awarenessByContext.get(identity.key);
+	if (existing) return existing;
 
-		const awarenessDir = join(workingDir, AWARENESS_DIR);
-		const extraTools = [
-			createSendMessageTool(adapters),
-			createReactToMessageTool(adapters),
-			createListChannelsTool(workingDir, adapters),
-			createReadThreadTool(workingDir, adapters),
-			createSelfConfigureTool(workingDir, {
-				resolveWorkingOutputTarget: resolveActiveWorkingOutputTarget,
-			}),
-			createSetGoalTool(workingDir),
-			createCompleteGoalTool(workingDir),
-			createBlockGoalTool(workingDir),
-			createAbandonGoalTool(workingDir),
-			createYieldNoActionTool(),
-			...mcpBridge.tools(),
-		];
+	let initialization = awarenessInitPromises.get(identity.key);
+	if (!initialization) {
+		initialization = (async () => {
+			// Wait (with bounded timeout) for the MCP bridge to finish connecting so
+			// its tools are present when we build the runner. Runner tools are static
+			// after creation, so missing them here means missing them forever.
+			const BRIDGE_READY_TIMEOUT_MS = 15_000;
+			const timeout = new Promise<void>((resolve) => setTimeout(resolve, BRIDGE_READY_TIMEOUT_MS));
+			const bridgeStart = performance.now();
+			await Promise.race([mcpBridge.ready(), timeout]);
+			const bridgeTools = mcpBridge.tools();
+			log.logInfo(`[mcp-client] getAwareness(${identity.label}) waited ${(performance.now() - bridgeStart).toFixed(0)}ms for bridge, got ${bridgeTools.length} tools`);
 
-		const runner = getOrCreateRunner(
-			sandbox,
-			awarenessDir,
-			formatInstructions,
-			parsedArgs.skillsDirs,
-			extraTools,
-		);
+			const extraTools = [
+				createSendMessageTool(adapters),
+				createReactToMessageTool(adapters),
+				createListChannelsTool(workingDir, adapters),
+				createReadThreadTool(workingDir, adapters),
+				createSelfConfigureTool(workingDir, {
+					resolveWorkingOutputTarget: resolveActiveWorkingOutputTarget,
+				}),
+				createSetGoalTool(workingDir),
+				createCompleteGoalTool(workingDir),
+				createBlockGoalTool(workingDir),
+				createAbandonGoalTool(workingDir),
+				createYieldNoActionTool(),
+				...mcpBridge.tools(),
+			];
 
-		awareness = {
-			running: false,
-			lastActivity: 0,
-			runner,
-			store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
-			stopRequested: false,
-			interruptRequested: false,
-			displayChannelId: channelId,
-			displayAdapter: adapter,
-		};
+			const runner = getOrCreateRunner(
+				sandbox,
+				identity.awarenessDir,
+				formatInstructions,
+				parsedArgs.skillsDirs,
+				extraTools,
+				workingDir,
+			);
 
-			// Wire activity callback for stuck-run watchdog
-			runner.onActivity = () => {
-				if (awareness) awareness.lastActivity = Date.now();
+			const state: Awareness = {
+				identity,
+				running: false,
+				lastActivity: 0,
+				runner,
+				store: new ChannelStore({ workingDir, botToken: process.env.MOM_SLACK_BOT_TOKEN || "" }),
+				stopRequested: false,
+				interruptRequested: false,
+				displayChannelId: event.channel,
+				displayAdapter: adapter,
 			};
 
-			return awareness;
+			// Wire activity to this exact context rather than whichever context most
+			// recently became active.
+			runner.onActivity = () => {
+				state.lastActivity = Date.now();
+			};
+			awarenessByContext.set(identity.key, state);
+			log.logInfo(`[awareness] Ready context ${identity.label} at ${identity.awarenessDir}`);
+			return state;
 		})().finally(() => {
-			awarenessInitPromise = null;
+			awarenessInitPromises.delete(identity.key);
 		});
+		awarenessInitPromises.set(identity.key, initialization);
 	}
 
-	if (awarenessInitPromise) {
-		await awarenessInitPromise;
-	}
-
-	if (!awareness) {
-		throw new Error("Awareness failed to initialize");
-	}
-
-	return awareness;
+	return initialization;
 }
 
 interface PendingInterrupt {
@@ -1134,7 +1141,8 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	}
 
 	// Ensure awareness is initialized for agent runs and runner-backed commands.
-	const state = await getAwareness(event.channel, platform, platform.formatInstructions);
+	const state = await getAwareness(event, platform, platform.formatInstructions);
+	awareness = state;
 
 	// Route display output to the channel for the active run only. Queued runs
 	// must not steal the display pointer from the in-flight run.
@@ -1158,6 +1166,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		channelId: event.channel,
 		teamId: event.teamId,
 		threadTs: event.threadTs,
+		contextKey: state.identity.key,
 	};
 	activeDeliveryScope = deliveryScope;
 
@@ -1415,7 +1424,7 @@ const handler: MomHandler = {
 			return executeSlashCommand(trimmed, event.channel, workingDir, adapter);
 		}
 
-		const state = await getAwareness(event.channel, adapter, adapter.formatInstructions);
+		const state = await getAwareness(event, adapter, adapter.formatInstructions);
 		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
 	},
 
@@ -1424,8 +1433,21 @@ const handler: MomHandler = {
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
+		const incomingIdentity = resolveRuntimeContextIdentity(workingDir, event, adapter.name);
+		if (activeDeliveryScope && activeDeliveryScope.contextKey !== incomingIdentity.key) {
+			log.logInfo(`[steer:${event.channel}] Queuing ${incomingIdentity.label}; active run belongs to another context`);
+			const queued = withGlobalRunSlot(
+				`context:${incomingIdentity.key}`,
+				() => runEventInSlot(event, adapter, false),
+			).then(() => undefined);
+			void queued.catch((error) => {
+				log.logWarning(`[steer:${event.channel}] Isolated queued turn failed`, error instanceof Error ? error.message : String(error));
+			});
+			return queued;
+		}
 		const sameTerminalRun = activeDeliveryScope?.adapter === adapter
-			&& activeDeliveryScope.channelId === event.channel;
+			&& activeDeliveryScope.channelId === event.channel
+			&& activeDeliveryScope.contextKey === incomingIdentity.key;
 		if (
 			sameTerminalRun
 			&& awareness
@@ -1529,7 +1551,7 @@ gateway.registerGet("/status", async (_req, res) => {
 	const now = Date.now();
 	const compaction = awareness?.runner.getCompactionStatus() ?? null;
 	const busy = isRunBusy();
-	const running = busy ? [AWARENESS_DIR] : [];
+	const running = busy ? [awareness?.identity.key ?? AWARENESS_DIR] : [];
 	const queuedVoiceTurns = voiceContract?.pendingCount ?? 0;
 	const queuedInterrupts = pendingInterrupts.length;
 	const phase = compaction ? "compacting" : busy ? "running" : "idle";
@@ -1546,6 +1568,18 @@ gateway.registerGet("/status", async (_req, res) => {
 		activeRun: describeActiveRun(),
 		activeRunLabel: activeRun?.label ?? null,
 		activeRunStartedAt: activeRun?.startedAt ?? null,
+		activeContext: awareness ? {
+			key: awareness.identity.key,
+			kind: awareness.identity.kind,
+			label: awareness.identity.label,
+		} : null,
+		contextCount: awarenessByContext.size,
+		contexts: Array.from(awarenessByContext.values()).map((state) => ({
+			key: state.identity.key,
+			kind: state.identity.kind,
+			label: state.identity.label,
+			running: state.running,
+		})),
 		queuedRuns: queuedRunCount,
 		queuedInterrupts,
 		queuedVoiceTurns,
@@ -2245,29 +2279,23 @@ To change these, edit \`settings.json\` directly.
 	syncHeartbeatFromSpontaneity(workingDir, settings.getSpontaneitySettings());
 }
 
-// Seed auto-compaction event — runs at 4am daily, cleans up context
+// Semantic compaction is pressure-driven or explicitly requested. Remove the
+// legacy unconditional daily LLM job; ordinary daily maintenance must not
+// summarize a healthy context merely because the clock changed.
 {
-	const { existsSync: existsCompaction, unlinkSync: unlinkCompaction, writeFileSync: writeCompaction } = await import("fs");
-	const compactionFile = join(workingDir, ATTENTION_QUEUE_DIR, "compaction.json");
-	const legacyCompactionFile = join(workingDir, LEGACY_EVENTS_DIR, "compaction.json");
-	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-	const compactionEvent = {
-		type: "periodic",
-		schedule: "0 10 * * *",
-		timezone: tz,
-		text: "auto-compaction",
-		action: "compact",
-	};
-	writeCompaction(compactionFile, JSON.stringify(compactionEvent, null, 2), "utf-8");
-	if (existsCompaction(legacyCompactionFile)) {
+	const { existsSync: existsCompaction, unlinkSync: unlinkCompaction } = await import("fs");
+	for (const compactionFile of [
+		join(workingDir, ATTENTION_QUEUE_DIR, "compaction.json"),
+		join(workingDir, LEGACY_EVENTS_DIR, "compaction.json"),
+	]) {
+		if (!existsCompaction(compactionFile)) continue;
 		try {
-			unlinkCompaction(legacyCompactionFile);
-			log.logInfo("Removed legacy events/compaction.json after attention queue migration");
+			unlinkCompaction(compactionFile);
+			log.logInfo(`Removed unconditional scheduled compaction file ${compactionFile}`);
 		} catch (err) {
-			log.logWarning("Failed to remove legacy events/compaction.json", err instanceof Error ? err.message : String(err));
+			log.logWarning("Failed to remove scheduled compaction file", err instanceof Error ? err.message : String(err));
 		}
 	}
-	log.logInfo(`Wrote ${ATTENTION_QUEUE_DIR}/compaction.json (daily 4am, tz=${tz})`);
 }
 
 // Restore any follow-up queue files interrupted between authoritative state

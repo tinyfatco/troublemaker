@@ -211,7 +211,7 @@ ${YIELD_NO_ACTION_CONTRACT}`;
 	return `## Context
 - For current date/time, use: date
 - For older history beyond your context, search log.jsonl with jq/grep.
-- Each message includes a <session_context> block with current channels, users, skills, memory, and which channel you're attending. Always use the latest one.
+- The first message in a runtime context includes a full <session_context>. Later messages may include <session_context_delta> or <session_context_ref>; apply deltas to the prior hashed context and do not treat references as missing context.
 
 ${formatInstructions}
 
@@ -261,6 +261,48 @@ ${toolGuidance}
 ${overlaySuffix}`;
 }
 
+export interface SessionPreambleSectionOptions {
+	workspaceContext: string;
+	channels: ChannelInfo[];
+	users: UserInfo[];
+	skills: PromptSkill[];
+	displayChannelId: string;
+	displayChannelName?: string;
+	verbosity?: VerbosityLevel;
+	model?: { provider?: string };
+}
+
+export function buildSessionPreambleSections(options: SessionPreambleSectionOptions): Record<string, string> {
+	const channelMappings =
+		options.channels.length > 0 ? options.channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
+	const userMappings =
+		options.users.length > 0 ? options.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
+	const skillsSection = options.skills.length > 0 ? formatSkillsForSessionPreamble(options.skills) || "(none)" : "(none)";
+	const attending = options.displayChannelName
+		? `${options.displayChannelName} (${options.displayChannelId})`
+		: options.displayChannelId;
+
+	const isWebDirectChat = [options.displayChannelId, options.displayChannelName]
+		.filter((value): value is string => typeof value === "string")
+		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
+
+	let channelPolicyNote = "";
+	if (options.verbosity === "messages-only" && !isWebDirectChat) {
+		channelPolicyNote = "\nChannel delivery policy: ordinary assistant text and harness finals will NOT be delivered here. Safe tool-label progress may follow the configured working-output route. Use send_message with an explicit target for ALL user-visible communication.";
+		if (options.model?.provider === "claude-cli") {
+			channelPolicyNote += ` Before writing assistant text, call ToolSearch with \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, then call \`mcp__troublemaker__send_message\`. If no response is appropriate, select \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\` and call \`mcp__troublemaker__yield_no_action\`. Direct assistant text is discarded.`;
+		}
+	}
+
+	return {
+		Attending: `${attending}${channelPolicyNote}`,
+		Channels: channelMappings,
+		Users: userMappings,
+		Skills: skillsSection,
+		Workspace: options.workspaceContext,
+	};
+}
+
 export function buildSessionPreamble(
 	workspaceContext: string,
 	channels: ChannelInfo[],
@@ -271,33 +313,16 @@ export function buildSessionPreamble(
 	verbosity?: VerbosityLevel,
 	model?: { provider?: string },
 ): string {
-	const channelMappings =
-		channels.length > 0 ? channels.map((c) => `${c.id}\t#${c.name}`).join("\n") : "(none)";
-	const userMappings =
-		users.length > 0 ? users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n") : "(none)";
-	const skillsSection = skills.length > 0 ? formatSkillsForSessionPreamble(skills) || "(none)" : "(none)";
-	const attending = displayChannelName ? `${displayChannelName} (${displayChannelId})` : displayChannelId;
+	const sections = buildSessionPreambleSections({
+		workspaceContext,
+		channels,
+		users,
+		skills,
+		displayChannelId,
+		displayChannelName,
+		verbosity,
+		model,
+	});
 
-	const isWebDirectChat = [displayChannelId, displayChannelName]
-		.filter((value): value is string => typeof value === "string")
-		.some((value) => value.toLowerCase() === "web" || value.toLowerCase().startsWith("web:"));
-
-	let channelPolicyNote = "";
-	if (verbosity === "messages-only" && !isWebDirectChat) {
-		channelPolicyNote = "\nChannel delivery policy: ordinary assistant text and harness finals will NOT be delivered here. Safe tool-label progress may follow the configured working-output route. Use send_message with an explicit target for ALL user-visible communication.";
-		if (model?.provider === "claude-cli") {
-			channelPolicyNote += ` Before writing assistant text, call ToolSearch with \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, then call \`mcp__troublemaker__send_message\`. If no response is appropriate, select \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\` and call \`mcp__troublemaker__yield_no_action\`. Direct assistant text is discarded.`;
-		}
-	}
-
-	return `<session_context>
-Attending: ${attending}${channelPolicyNote}
-Channels:
-${channelMappings}
-Users:
-${userMappings}
-Skills:
-${skillsSection}
-${workspaceContext}
-</session_context>`;
+	return `<session_context>\nAttending: ${sections.Attending}\nChannels:\n${sections.Channels}\nUsers:\n${sections.Users}\nSkills:\n${sections.Skills}\n${sections.Workspace}\n</session_context>`;
 }

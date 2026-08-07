@@ -173,11 +173,15 @@ export interface MomSettings {
 	speak?: MomSpeakSettings;
 }
 
-const DEFAULT_COMPACTION: MomCompactionSettings = {
+export const DEFAULT_COMPACTION: MomCompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
-	keepRecentTokens: 20000,
-	thresholdPercent: 0.5,
+	// Keep several complete recent turns in ordinary sessions. Pi only splits a
+	// turn when one turn itself exceeds this budget.
+	keepRecentTokens: 60000,
+	// Leave the model most of its window; post-compaction occupancy is normally
+	// far below this threshold, providing natural hysteresis.
+	thresholdPercent: 0.75,
 };
 
 const DEFAULT_RETRY: MomRetrySettings = {
