@@ -168,6 +168,7 @@ test("request helper pins the release branch commit", async () => {
 test("installer wakes the updater from a non-empty request queue", () => {
 	const installer = readFileSync(installerScript, "utf8");
 	assert.match(installer, /QueueDirectories/);
+	assert.match(installer, /JSON\.stringify\(\[process\.argv\[1\]\]\)/);
 	assert.doesNotMatch(installer, /StartInterval/);
 });
 

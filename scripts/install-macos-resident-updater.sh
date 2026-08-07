@@ -88,7 +88,7 @@ chmod 0600 "$CONFIG_TMP"
 mv "$CONFIG_TMP" "$CONFIG_PATH"
 
 PLIST_TMP="$UPDATER_PLIST.tmp.$$"
-QUEUE_JSON="$(node -e 'process.stdout.write(JSON.stringify({[process.argv[1]]: true}))' "$QUEUE_DIR")"
+QUEUE_JSON="$(node -e 'process.stdout.write(JSON.stringify([process.argv[1]]))' "$QUEUE_DIR")"
 /usr/bin/plutil -create xml1 "$PLIST_TMP"
 /usr/bin/plutil -insert Label -string "$UPDATER_LABEL" "$PLIST_TMP"
 /usr/bin/plutil -insert ProgramArguments -json '[]' "$PLIST_TMP"
