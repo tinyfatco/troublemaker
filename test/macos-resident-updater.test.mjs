@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -172,6 +172,7 @@ test("installer wakes the updater from a non-empty request queue", () => {
 	assert.match(installer, /EnvironmentVariables/);
 	assert.match(installer, /command -v node/);
 	assert.match(installer, /launchctl print/);
+	assert.match(installer, /ExitTimeOut/);
 	assert.doesNotMatch(installer, /StartInterval/);
 	assert.doesNotMatch(installer, /ProcessType[^\n]*Background/);
 });
@@ -194,5 +195,26 @@ test("failed candidate health restores the previous plist", async () => {
 		assert.equal(activeRuntime, oldRuntime);
 		const receipt = readFileSync(path.join(runtimeRoot, "host-updater", "state", "last-rollback"), "utf8");
 		assert.match(receipt, /pid=4242/);
+	});
+});
+
+test("stale locks and orphaned requests recover after updater termination", async () => {
+	await withFixture(true, async ({ config, commit, queue, runtimeRoot }) => {
+		const state = path.join(runtimeRoot, "host-updater", "state");
+		const request = readdirSync(queue).find((name) => name.startsWith("request."));
+		assert.ok(request);
+		mkdirSync(state, { recursive: true });
+		mkdirSync(path.join(state, "update.lock"));
+		writeFileSync(path.join(state, "update.lock", "pid"), "999999\n");
+		writeFileSync(path.join(state, "processing.999999.request"), readFileSync(path.join(queue, request)));
+		rmSync(path.join(queue, request));
+
+		run("/bin/bash", [updaterScript, config]);
+		const receipt = readFileSync(path.join(state, "last-success"), "utf8");
+		assert.match(receipt, new RegExp(`commit=${commit}`));
+		const staleLocks = readdirSync(path.join(runtimeRoot, "failed-releases")).filter((name) =>
+			name.startsWith("update.lock-stale-"),
+		);
+		assert.equal(staleLocks.length, 1);
 	});
 });

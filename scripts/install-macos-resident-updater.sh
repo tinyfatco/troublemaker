@@ -100,6 +100,7 @@ ENVIRONMENT_JSON="$(node -e 'process.stdout.write(JSON.stringify({PATH: process.
 /usr/bin/plutil -insert ProgramArguments.1 -string "$CONFIG_PATH" "$PLIST_TMP"
 /usr/bin/plutil -insert EnvironmentVariables -json "$ENVIRONMENT_JSON" "$PLIST_TMP"
 /usr/bin/plutil -insert QueueDirectories -json "$QUEUE_JSON" "$PLIST_TMP"
+/usr/bin/plutil -insert ExitTimeOut -integer 90 "$PLIST_TMP"
 /usr/bin/plutil -insert StandardOutPath -string "$LOG_DIR/$(basename "$UPDATER_LABEL").log" "$PLIST_TMP"
 /usr/bin/plutil -insert StandardErrorPath -string "$LOG_DIR/$(basename "$UPDATER_LABEL").log" "$PLIST_TMP"
 /usr/bin/plutil -lint "$PLIST_TMP" >/dev/null

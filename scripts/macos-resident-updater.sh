@@ -58,9 +58,19 @@ SERVICE_TARGET="$GUI_DOMAIN/$RESIDENT_LABEL"
 mkdir -p "$STATE_DIR" "$RELEASES_DIR" "$FAILED_DIR" "$QUEUE_DIR"
 
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-	echo "resident-updater: another update is already running"
-	exit 0
+	LOCK_OWNER="$(cat "$LOCK_DIR/pid" 2>/dev/null || true)"
+	if printf '%s\n' "$LOCK_OWNER" | grep -Eq '^[0-9]+$' && kill -0 "$LOCK_OWNER" 2>/dev/null; then
+		echo "resident-updater: another update is already running"
+		exit 0
+	fi
+	STALE_LOCK="$FAILED_DIR/update.lock-stale-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+	if ! mv "$LOCK_DIR" "$STALE_LOCK" 2>/dev/null || ! mkdir "$LOCK_DIR" 2>/dev/null; then
+		echo "resident-updater: could not recover a stale update lock" >&2
+		exit 1
+	fi
+	echo "resident-updater: recovered a stale update lock"
 fi
+printf '%s\n' "$$" > "$LOCK_DIR/pid"
 
 REQUEST_PROCESSING=""
 CANDIDATE_DIR=""
@@ -162,11 +172,21 @@ cleanup() {
 		fi
 	fi
 
+	rm -f "$LOCK_DIR/pid"
 	rmdir "$LOCK_DIR" 2>/dev/null || true
 	exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
+
+for ORPHANED_REQUEST in "$STATE_DIR"/processing.*.request; do
+	if [ ! -f "$ORPHANED_REQUEST" ]; then
+		continue
+	fi
+	RECOVERED_REQUEST="$QUEUE_DIR/request.recovered.$(date -u +%Y%m%dT%H%M%SZ).$(basename "$ORPHANED_REQUEST")"
+	mv "$ORPHANED_REQUEST" "$RECOVERED_REQUEST"
+	echo "resident-updater: recovered orphaned request $(basename "$ORPHANED_REQUEST")"
+done
 
 REQUEST_FILE="$(find "$QUEUE_DIR" -maxdepth 1 -type f -name 'request.*' -print | LC_ALL=C sort | head -n 1 || true)"
 if [ -z "$REQUEST_FILE" ]; then
