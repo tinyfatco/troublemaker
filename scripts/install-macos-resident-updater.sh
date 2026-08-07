@@ -107,6 +107,15 @@ chmod 0644 "$PLIST_TMP"
 mv "$PLIST_TMP" "$UPDATER_PLIST"
 
 /bin/launchctl bootout "$GUI_DOMAIN/$UPDATER_LABEL" >/dev/null 2>&1 || true
+ATTEMPT=0
+while /bin/launchctl print "$GUI_DOMAIN/$UPDATER_LABEL" >/dev/null 2>&1; do
+	if [ "$ATTEMPT" -ge 20 ]; then
+		echo "previous updater job did not finish unloading" >&2
+		exit 1
+	fi
+	ATTEMPT=$((ATTEMPT + 1))
+	sleep 1
+done
 /bin/launchctl bootstrap "$GUI_DOMAIN" "$UPDATER_PLIST"
 /bin/launchctl enable "$GUI_DOMAIN/$UPDATER_LABEL" >/dev/null 2>&1 || true
 /bin/launchctl kickstart -k "$GUI_DOMAIN/$UPDATER_LABEL" >/dev/null 2>&1 || true

@@ -171,6 +171,7 @@ test("installer wakes the updater from a non-empty request queue", () => {
 	assert.match(installer, /JSON\.stringify\(\[process\.argv\[1\]\]\)/);
 	assert.match(installer, /EnvironmentVariables/);
 	assert.match(installer, /command -v node/);
+	assert.match(installer, /launchctl print/);
 	assert.doesNotMatch(installer, /StartInterval/);
 	assert.doesNotMatch(installer, /ProcessType[^\n]*Background/);
 });
