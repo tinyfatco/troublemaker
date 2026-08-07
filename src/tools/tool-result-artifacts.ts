@@ -15,6 +15,19 @@ export interface BoundedToolResult {
 	};
 }
 
+function containsModelImageContent(result: unknown): boolean {
+	if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+	const content = (result as { content?: unknown }).content;
+	if (!Array.isArray(content)) return false;
+	return content.some((block) => {
+		if (!block || typeof block !== "object" || Array.isArray(block)) return false;
+		const candidate = block as { type?: unknown; data?: unknown; mimeType?: unknown };
+		return candidate.type === "image"
+			&& typeof candidate.data === "string"
+			&& typeof candidate.mimeType === "string";
+	});
+}
+
 function serializeResult(result: unknown): { text: string; structured: boolean } {
 	if (typeof result === "string") return { text: result, structured: false };
 	try {
@@ -40,6 +53,9 @@ export function boundToolResultToArtifact(options: {
 	maxInlineChars?: number;
 }): BoundedToolResult {
 	const maxInlineChars = Math.max(2_000, options.maxInlineChars ?? DEFAULT_INLINE_TOOL_RESULT_CHARS);
+	// Image data is model input, not textual context. Replacing it with an artifact
+	// notice would silently remove vision capability from tools such as read.
+	if (containsModelImageContent(options.result)) return { result: options.result };
 	const serialized = serializeResult(options.result);
 	if (serialized.text.length <= maxInlineChars) return { result: options.result };
 

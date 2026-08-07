@@ -71,6 +71,24 @@ try {
 	assert.match(String(large.result), /Full output: awareness\/artifacts\/tool-results/);
 	assert.match(String(large.result), /TAIL-MARKER/);
 	assert.ok(String(large.result).length < 5_000, "large output is bounded in model context");
+
+	const imageResult = {
+		content: [
+			{ type: "text", text: "Read image file [image/png]" },
+			{ type: "image", data: "a".repeat(40_000), mimeType: "image/png" },
+		],
+		details: undefined,
+	};
+	const image = boundToolResultToArtifact({
+		workspaceDir: temp,
+		toolName: "read",
+		toolCallId: "call-image",
+		result: imageResult,
+		maxInlineChars: 4_000,
+	});
+	assert.equal(image.result, imageResult, "large image result reaches the model unchanged");
+	assert.equal(image.artifact, undefined, "model-visible image data is never replaced with a text artifact");
+	assert.deepEqual((image.result as typeof imageResult).content[1], imageResult.content[1]);
 } finally {
 	rmSync(temp, { recursive: true, force: true });
 }
