@@ -182,6 +182,33 @@ test("completion receipts are fenced by their lease token", () => {
 	}
 });
 
+test("expired post-running leases become uncertain instead of replaying side effects", () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-recoverable", subject.contexts[0], 1);
+		let event = subject.store.claimNextEvent();
+		subject.store.acceptEvent(event.id, event.leaseToken);
+		subject.store.database.prepare(`
+			UPDATE events SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?
+		`).run(event.id);
+		assert.deepEqual(subject.store.recoverExpiredEvents(), { recovered: 1, uncertain: 0 });
+		assert.equal(subject.store.getEvent(event.id).status, "queued");
+
+		event = subject.store.claimNextEvent();
+		subject.store.acceptEvent(event.id, event.leaseToken);
+		subject.store.heartbeatEvent(event.id, event.leaseToken);
+		subject.store.database.prepare(`
+			UPDATE events SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?
+		`).run(event.id);
+		assert.deepEqual(subject.store.recoverExpiredEvents(), { recovered: 0, uncertain: 1 });
+		assert.equal(subject.store.getEvent(event.id).status, "uncertain");
+		assert.equal(subject.store.claimNextEvent(), null, "uncertain work is never replayed automatically");
+		assert.equal(subject.store.status().uncertainEvents, 1);
+	} finally {
+		subject.close();
+	}
+});
+
 test("journals one durable control notification with each Gmail event", () => {
 	const subject = fixture();
 	try {

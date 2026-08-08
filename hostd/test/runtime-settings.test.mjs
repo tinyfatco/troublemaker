@@ -5,9 +5,13 @@ import { join } from "node:path";
 import test from "node:test";
 import {
 	initializeChannelWorkingOutput,
+	hostOwnsScheduledWakes,
 	initializeMattermostWorkingOutput,
+	RuntimeManager,
 	runtimeEngineRunFlags,
+	scheduledWakeRuntimeVersion,
 } from "../src/runtime.mjs";
+import { contextCapability } from "../src/security.mjs";
 
 const CHANNEL_ID = "cccccccccccccccccccccccccc";
 
@@ -113,6 +117,115 @@ test("Zulip cutover migrates only old fixed customer-channel working output", as
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Hostd schedule ownership is exact-context and host-mode only", () => {
+	const contextId = "front-desk:example:intake";
+	assert.equal(hostOwnsScheduledWakes({ scheduledWakes: { mode: "off", contextIds: [contextId] } }, contextId), false);
+	assert.equal(hostOwnsScheduledWakes({ scheduledWakes: { mode: "shadow", contextIds: [contextId] } }, contextId), false);
+	assert.equal(hostOwnsScheduledWakes({ scheduledWakes: { mode: "host", contextIds: [contextId] } }, contextId), true);
+	assert.equal(hostOwnsScheduledWakes({ scheduledWakes: { mode: "host", contextIds: [contextId] } }, "front-desk:other:intake"), false);
+	const target = { runtimeVersion: "runtime-v1" };
+	assert.equal(
+		scheduledWakeRuntimeVersion({ scheduledWakes: { mode: "host", contextIds: [contextId] } }, target, contextId),
+		"runtime-v1:scheduled-host-v1",
+	);
+	assert.equal(
+		scheduledWakeRuntimeVersion({ scheduledWakes: { mode: "shadow", contextIds: [contextId] } }, target, contextId),
+		"runtime-v1",
+	);
+});
+
+test("schedule ownership startup stops dual-owner runtimes and restarts only local rollback owners", async () => {
+	const contextId = "front-desk:example:intake";
+	const target = { id: "front-desk", runtimeVersion: "runtime-v1" };
+	const context = {
+		id: contextId,
+		targetId: target.id,
+		status: "online",
+		runtimeVersion: "runtime-v1",
+		runtimeName: "runtime-example",
+	};
+	const store = { listContexts: () => [context] };
+	const config = {
+		scheduledWakes: { mode: "host", contextIds: [contextId] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const manager = new RuntimeManager(config, store, {});
+	const actions = [];
+	manager.stopOciContext = async (_target, selected) => { actions.push(`stop:${selected.contextId}`); };
+	manager.ensureOciContext = async (_target, selectedContextId) => { actions.push(`start:${selectedContextId}`); return {}; };
+	await manager.reconcileScheduledWakeOwnership();
+	assert.deepEqual(actions, [`stop:${contextId}`]);
+
+	actions.length = 0;
+	config.scheduledWakes.mode = "off";
+	context.runtimeVersion = "runtime-v1:scheduled-host-v1";
+	await manager.reconcileScheduledWakeOwnership();
+	assert.deepEqual(actions, [`stop:${contextId}`, `start:${contextId}`]);
+});
+
+test("scheduled occurrences use only the exact context ingress capability", async () => {
+	const contextId = "front-desk:example:intake";
+	const target = {
+		id: "front-desk",
+		inboundToken: "synthetic-inbound-secret",
+		hostGateway: "host.example",
+	};
+	const config = {
+		server: { port: 3099 },
+		scheduledWakes: { mode: "host", contextIds: [contextId] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const manager = new RuntimeManager(config, {}, {});
+	manager.ensureOciContext = async () => ({
+		contextId,
+		scheduledPromptEndpoint: "http://127.0.0.1:32000/scheduled-prompt/inbound",
+	});
+	const originalFetch = globalThis.fetch;
+	let request;
+	globalThis.fetch = async (input, init) => {
+		request = { input: String(input), init, body: JSON.parse(String(init?.body)) };
+		return new Response(JSON.stringify({ ok: true }), { status: 202 });
+	};
+	try {
+		await manager.acceptEvent({
+			id: `scheduled:${"a".repeat(64)}`,
+			source: "scheduled-prompt",
+			targetId: target.id,
+			contextId,
+			leaseToken: "lease-example",
+			deliveryMode: "turn",
+			payloadJson: JSON.stringify({
+				schedule: { filename: "example.json", generation: 1, canonicalSlotAt: "2026-06-01T00:00:00.000Z", fireAt: "2026-06-01T00:00:00.000Z" },
+				event: { type: "one-shot", at: "2026-06-01T00:00:00.000Z", text: "wake" },
+			}),
+		});
+		assert.equal(request.input, "http://127.0.0.1:32000/scheduled-prompt/inbound");
+		assert.equal(
+			new Headers(request.init.headers).get("authorization"),
+			`Bearer ${contextCapability(target.inboundToken, "scheduled-prompt-inbound", contextId)}`,
+		);
+		assert.equal(request.body.hostContextId, contextId);
+		assert.equal(request.body.deliveryId, `scheduled:${"a".repeat(64)}`);
+		assert.equal(request.body.hostReceipt.leaseToken, "lease-example");
+
+		config.scheduledWakes.contextIds = ["front-desk:other:intake"];
+		await assert.rejects(
+			manager.acceptEvent({
+				id: `scheduled:${"b".repeat(64)}`,
+				source: "scheduled-prompt",
+				targetId: target.id,
+				contextId,
+				leaseToken: "lease-other",
+				deliveryMode: "turn",
+				payloadJson: JSON.stringify({ schedule: {}, event: {} }),
+			}),
+			/does not own schedules/,
+		);
+	} finally {
+		globalThis.fetch = originalFetch;
 	}
 });
 

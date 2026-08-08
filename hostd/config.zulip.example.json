@@ -45,6 +45,10 @@
     "tickSeconds": 2,
     "maximumAttempts": 5
   },
+  "scheduledWakes": {
+    "mode": "off",
+    "contextIds": []
+  },
   "zulip": {
     "url": "http://127.0.0.1:3110",
     "administratorEmail": "operator@example.com",
