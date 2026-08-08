@@ -374,8 +374,9 @@ test("one context selects between two exact Sites grants and cannot use an impli
 		projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
 		siteId: "22222222-2222-4222-8222-222222222222",
 		siteSlug: "second-example",
+		previewHostname: "second-example.tinyfat.dev",
 		artifactKinds: ["static"],
-		allowedBranches: ["*"],
+		allowedBranches: ["main"],
 	};
 	const config = {
 		sites: {
@@ -470,7 +471,8 @@ test("one context selects between two exact Sites grants and cannot use an impli
 		assert.equal(result.site, second.siteSlug);
 		assert.equal(selectedCapability.payload.site_id, second.siteId);
 		assert.equal(selectedCapability.payload.deployment_grant_id, second.grantId);
-		assert.equal(result.hostname, "main.second-example.tinyfat.dev");
+		assert.equal(selectedCapability.payload.hostname_mode, "site-root-preview");
+		assert.equal(result.hostname, "second-example.tinyfat.dev");
 		assert.equal(calls, 1);
 	} finally {
 		store.close();

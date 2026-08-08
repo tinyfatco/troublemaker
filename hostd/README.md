@@ -38,8 +38,11 @@ When top-level `sites` is configured, a project may bind one or more exact
 TinyFat Sites to its verified principal/project scope. The runtime then receives
 one `site_deploy` tool and a context capability that is valid only at Hostd. A
 multi-site context must name the exact configured site slug on every deploy;
-Hostd never chooses an implicit default. The runtime does not receive a Sites
-admin bearer, agent tools token, Cloudflare token, or the Hostd signing key.
+Hostd never chooses an implicit default. A grant may fix `previewHostname` to
+the exact `<site-slug>.<preview-apex>` root only when `allowedBranches` is exactly
+`["main"]`; otherwise Pages-style branch preview hosts remain the default. The
+runtime does not receive a Sites admin bearer, agent tools token, Cloudflare
+token, or the Hostd signing key.
 
 ```json
 {

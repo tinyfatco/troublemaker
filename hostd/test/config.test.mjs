@@ -280,6 +280,8 @@ test("loads two exact Sites grants for one phone intake without merging their id
 				projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
 				siteId: "22222222-2222-4222-8222-222222222222",
 				siteSlug: "second-example",
+				previewHostname: "second-example.example.com",
+				allowedBranches: ["main"],
 			}],
 		}];
 		await writeFile(path, JSON.stringify(raw));
@@ -292,6 +294,21 @@ test("loads two exact Sites grants for one phone intake without merging their id
 			["example-business", "second-example"],
 		);
 		assert.equal(config.routing.knownPhonePrincipals[0].siteDeployment, undefined);
+		assert.equal(
+			config.routing.knownPhonePrincipals[0].siteDeployments[1].previewHostname,
+			"second-example.example.com",
+		);
+
+		const broadRoot = structuredClone(raw);
+		broadRoot.routing.knownPhonePrincipals[0].siteDeployments[1].allowedBranches = ["*"];
+		await writeFile(path, JSON.stringify(broadRoot));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/previewHostname requires allowedBranches to be exactly main/,
+		);
 
 		raw.routing.knownPhonePrincipals[0].siteDeployment = raw.routing.knownPhonePrincipals[0].siteDeployments[0];
 		await writeFile(path, JSON.stringify(raw));
