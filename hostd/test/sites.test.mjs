@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
-import { siteDeploymentBinding } from "../src/runtime.mjs";
+import { siteDeploymentBinding, siteDeploymentBindings } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability, stablePrivateKey } from "../src/security.mjs";
 import {
@@ -349,6 +349,134 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 	}
 });
 
+
+test("one context selects between two exact Sites grants and cannot use an implicit default", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-multiple-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey } = generateKeyPairSync("ed25519");
+	const target = {
+		id: "front-desk",
+		driver: "oci",
+		contextsDirectory: join(directory, "contexts"),
+	};
+	const first = {
+		grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		siteId: "11111111-1111-4111-8111-111111111111",
+		siteSlug: "example-business",
+		artifactKinds: ["static"],
+		allowedBranches: ["*"],
+	};
+	const second = {
+		grantId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		customerId: first.customerId,
+		projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+		siteId: "22222222-2222-4222-8222-222222222222",
+		siteSlug: "second-example",
+		artifactKinds: ["static"],
+		allowedBranches: ["*"],
+	};
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+			...LIMITS,
+		},
+		routing: {
+			actorTarget: target.id,
+			knownPrincipals: [{
+				email: "owner@example.com",
+				projects: [{ slug: "website", name: "Example website", siteDeployments: [first, second] }],
+			}],
+		},
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, Buffer.alloc(32, 5));
+	const owner = router.resolve({ source: "gmail", threadId: "thread-owner", sender: "owner@example.com" });
+	store.ensureProject(owner.principalHash, "website", "Example website");
+	const contextId = `${target.id}:${owner.principalHash}:website`;
+	store.bindRoute({
+		source: "gmail",
+		providerThreadId: "thread-website",
+		principalHash: owner.principalHash,
+		projectSlug: "website",
+		targetId: target.id,
+		contextId,
+	});
+	const workspace = join(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"), "workspace");
+	await mkdir(join(workspace, "dist"), { recursive: true });
+	await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Second</title>\n");
+	const sourceSha = commitWorkspace(workspace, "main");
+	let calls = 0;
+	let selectedCapability;
+	const service = new HostSites({
+		config,
+		store,
+		fetch: async (_url, init) => {
+			calls++;
+			selectedCapability = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, ""));
+			const binding = selectedCapability.payload.site_slug === second.siteSlug ? second : first;
+			return new Response(JSON.stringify({
+				ok: true,
+				site: binding.siteSlug,
+				site_id: binding.siteId,
+				deployment_grant_id: binding.grantId,
+				customer_id: binding.customerId,
+				project_id: binding.projectId,
+				environment: "preview",
+				preview_slot: "branch:main",
+				git_branch: "main",
+				git_sha: sourceSha,
+				branch_label: selectedCapability.payload.branch_label,
+				hostname: selectedCapability.payload.hostname,
+				namespace: "example-sites-preview",
+				artifact_kind: "static",
+				artifact_sha256: selectedCapability.payload.artifact_sha256,
+				idempotency_key: selectedCapability.payload.idempotency_key,
+				url: `https://${selectedCapability.payload.hostname}/`,
+				scriptName: scopedScriptName(binding.siteId, "main"),
+				deploymentId: "33333333-3333-4333-8333-333333333333",
+			}), { status: 200 });
+		},
+	});
+	const request = {
+		branch: "main",
+		directory: "dist",
+		artifact_kind: "static",
+		idempotency_key: `site_deploy:${"a".repeat(64)}`,
+	};
+	try {
+		assert.equal(siteDeploymentBindings(config, store, target, contextId).length, 2);
+		assert.equal(siteDeploymentBinding(config, store, target, contextId), null);
+		assert.equal(siteDeploymentBinding(config, store, target, contextId, undefined, second.siteSlug), second);
+		await assert.rejects(
+			service.deploy(target, contextId, request),
+			(error) => error instanceof HostSitesError && error.code === "site_slug_required",
+		);
+		await assert.rejects(
+			service.deploy(target, contextId, { ...request, site_slug: "not-granted" }),
+			(error) => error instanceof HostSitesError && error.code === "site_context_unbound",
+		);
+		assert.equal(calls, 0);
+		const result = await service.deploy(target, contextId, { ...request, site_slug: second.siteSlug });
+		assert.equal(result.site, second.siteSlug);
+		assert.equal(selectedCapability.payload.site_id, second.siteId);
+		assert.equal(selectedCapability.payload.deployment_grant_id, second.grantId);
+		assert.equal(result.hostname, "main.second-example.tinyfat.dev");
+		assert.equal(calls, 1);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 test("the Hostd deploy endpoint accepts only its separate context capability", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-server-"));

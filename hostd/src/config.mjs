@@ -443,6 +443,25 @@ function siteDeploymentProjectConfig(raw, label) {
 	return { grantId, customerId, projectId, siteId, siteSlug, artifactKinds, allowedBranches };
 }
 
+function siteDeploymentProjectConfigs(container, label) {
+	const hasSingle = container.siteDeployment !== undefined;
+	const hasMultiple = container.siteDeployments !== undefined;
+	if (hasSingle && hasMultiple) {
+		throw new Error(`${label} must configure siteDeployment or siteDeployments, not both`);
+	}
+	if (!hasMultiple) {
+		const single = siteDeploymentProjectConfig(container.siteDeployment, `${label}.siteDeployment`);
+		return single ? [single] : [];
+	}
+	if (!Array.isArray(container.siteDeployments) || container.siteDeployments.length === 0) {
+		throw new Error(`${label}.siteDeployments must contain at least one deployment`);
+	}
+	return container.siteDeployments.map((deployment, index) => siteDeploymentProjectConfig(
+		deployment,
+		`${label}.siteDeployments[${index}]`,
+	));
+}
+
 function targetConfig(raw, index, environment) {
 	const target = object(raw, `targets[${index}]`);
 	const id = text(target.id, `targets[${index}].id`);
@@ -614,17 +633,16 @@ export async function loadConfig(path, environment = process.env) {
 				if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || slug === "intake") {
 					throw new Error(`project slug ${slug} is invalid or reserved`);
 				}
-				const siteDeployment = siteDeploymentProjectConfig(
-					project.siteDeployment,
-					`${projectLabel}.siteDeployment`,
-				);
-				if (siteDeployment && !sites) {
-					throw new Error(`${projectLabel}.siteDeployment requires top-level sites configuration`);
+				const siteDeployments = siteDeploymentProjectConfigs(project, projectLabel);
+				if (siteDeployments.length > 0 && !sites) {
+					throw new Error(`${projectLabel}.siteDeployments requires top-level sites configuration`);
 				}
 				return {
 					slug,
 					name: text(project.name ?? project.slug, `${projectLabel}.name`),
-					siteDeployment,
+					siteDeployments,
+					// Preserve the original normalized field for single-site consumers.
+					siteDeployment: siteDeployments.length === 1 ? siteDeployments[0] : undefined,
 				};
 			}),
 		};
@@ -632,33 +650,34 @@ export async function loadConfig(path, environment = process.env) {
 	const configuredPhonePrincipals = knownPhonePrincipals.map((candidate, index) => {
 		const principalLabel = `routing.knownPhonePrincipals[${index}]`;
 		const principal = object(candidate, principalLabel);
-		const siteDeployment = siteDeploymentProjectConfig(
-			principal.siteDeployment,
-			`${principalLabel}.siteDeployment`,
-		);
-		if (siteDeployment && !sites) {
-			throw new Error(`${principalLabel}.siteDeployment requires top-level sites configuration`);
+		const siteDeployments = siteDeploymentProjectConfigs(principal, principalLabel);
+		if (siteDeployments.length > 0 && !sites) {
+			throw new Error(`${principalLabel}.siteDeployments requires top-level sites configuration`);
 		}
 		return {
 			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
 			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
-			siteDeployment,
+			siteDeployments,
+			// Preserve the original normalized field for single-site consumers.
+			siteDeployment: siteDeployments.length === 1 ? siteDeployments[0] : undefined,
 		};
 	});
 	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
 		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
 	}
 	const siteBindings = configuredPrincipals.flatMap((principal) => (
-		principal.projects
-			.filter((project) => project.siteDeployment)
-			.map((project) => ({
-				email: principal.email,
-				projectSlug: project.slug,
-				...project.siteDeployment,
-			}))
-	)).concat(configuredPhonePrincipals
-		.filter((principal) => principal.siteDeployment)
-		.map((principal) => ({ phone: principal.phone, projectSlug: "intake", ...principal.siteDeployment })));
+		principal.projects.flatMap((project) => project.siteDeployments.map((deployment) => ({
+			email: principal.email,
+			projectSlug: project.slug,
+			...deployment,
+		})))
+	)).concat(configuredPhonePrincipals.flatMap((principal) => (
+		principal.siteDeployments.map((deployment) => ({
+			phone: principal.phone,
+			projectSlug: "intake",
+			...deployment,
+		}))
+	)));
 	const duplicateSiteIds = siteBindings.filter((binding, index) => (
 		siteBindings.findIndex((candidate) => candidate.siteId === binding.siteId) !== index
 	));

@@ -251,6 +251,62 @@ test("loads one exact phone-intake Sites deploy binding without broadening phone
 	}
 });
 
+test("loads two exact Sites grants for one phone intake without merging their identities", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-multi-sites-config-"));
+	const path = join(directory, "config.json");
+	const { privateKey } = generateKeyPairSync("ed25519");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.sites = {
+			publishUrl: "https://publish.example.com",
+			previewApex: "example.com",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
+			capabilityKeyId: "hostd-example-1",
+		};
+		raw.routing.knownPhonePrincipals = [{
+			phone: "+15551234567",
+			siteDeployments: [{
+				grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+				siteId: "11111111-1111-4111-8111-111111111111",
+				siteSlug: "example-business",
+			}, {
+				grantId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				projectId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+				siteId: "22222222-2222-4222-8222-222222222222",
+				siteSlug: "second-example",
+			}],
+		}];
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, {
+			...ENVIRONMENT,
+			SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+		});
+		assert.deepEqual(
+			config.routing.knownPhonePrincipals[0].siteDeployments.map((binding) => binding.siteSlug),
+			["example-business", "second-example"],
+		);
+		assert.equal(config.routing.knownPhonePrincipals[0].siteDeployment, undefined);
+
+		raw.routing.knownPhonePrincipals[0].siteDeployment = raw.routing.knownPhonePrincipals[0].siteDeployments[0];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/must configure siteDeployment or siteDeployments, not both/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("loads the host-owned Sites signer from a protected key file", async () => {
 	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-key-file-"));

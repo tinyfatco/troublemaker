@@ -34,11 +34,12 @@ the verified context.
 
 ## Scoped Pages-style site previews
 
-When top-level `sites` is configured, a project may bind one exact TinyFat Site
-to its verified principal/project scope. The runtime then receives one
-`site_deploy` tool and a context capability that is valid only at Hostd. It does
-not receive a Sites admin bearer, agent tools token, Cloudflare token, or the
-Hostd signing key.
+When top-level `sites` is configured, a project may bind one or more exact
+TinyFat Sites to its verified principal/project scope. The runtime then receives
+one `site_deploy` tool and a context capability that is valid only at Hostd. A
+multi-site context must name the exact configured site slug on every deploy;
+Hostd never chooses an implicit default. The runtime does not receive a Sites
+admin bearer, agent tools token, Cloudflare token, or the Hostd signing key.
 
 ```json
 {
@@ -95,8 +96,9 @@ collapse into one hostname. The initial runtime tool is preview-only;
 production promotion remains a separate control-plane action bound to an
 accepted artifact.
 
-An existing direct-SMS `intake` context may receive one exact Sites binding
-through host-owned `routing.knownPhonePrincipals`. The phone number remains in
+An existing direct-SMS `intake` context may receive exact Sites bindings through
+host-owned `routing.knownPhonePrincipals`. Use legacy `siteDeployment` for one
+binding or `siteDeployments` for a nonempty array. The phone number remains in
 Hostd configuration and is matched through the routing-key-derived principal
 hash; it is never copied into the runtime. The runtime receives only the same
 context-scoped deploy capability used by configured email/project contexts.
