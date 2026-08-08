@@ -440,7 +440,22 @@ function siteDeploymentProjectConfig(raw, label) {
 	if (new Set(allowedBranches).size !== allowedBranches.length) {
 		throw new Error(`${label}.allowedBranches cannot repeat a branch`);
 	}
-	return { grantId, customerId, projectId, siteId, siteSlug, artifactKinds, allowedBranches };
+	const previewHostname = deployment.previewHostname === undefined
+		? undefined
+		: normalizeDomain(deployment.previewHostname, `${label}.previewHostname`);
+	if (previewHostname && (allowedBranches.length !== 1 || allowedBranches[0] !== "main")) {
+		throw new Error(`${label}.previewHostname requires allowedBranches to be exactly main`);
+	}
+	return {
+		grantId,
+		customerId,
+		projectId,
+		siteId,
+		siteSlug,
+		artifactKinds,
+		allowedBranches,
+		...(previewHostname ? { previewHostname } : {}),
+	};
 }
 
 function siteDeploymentProjectConfigs(container, label) {
@@ -678,6 +693,11 @@ export async function loadConfig(path, environment = process.env) {
 			...deployment,
 		}))
 	)));
+	for (const binding of siteBindings) {
+		if (binding.previewHostname && binding.previewHostname !== `${binding.siteSlug}.${sites.previewApex}`) {
+			throw new Error("each Sites previewHostname must be the exact site slug under sites.previewApex");
+		}
+	}
 	const duplicateSiteIds = siteBindings.filter((binding, index) => (
 		siteBindings.findIndex((candidate) => candidate.siteId === binding.siteId) !== index
 	));

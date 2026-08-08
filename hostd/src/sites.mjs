@@ -365,7 +365,9 @@ export class HostSites {
 		}
 		const sourceSha = sourceBefore.sha;
 		const branchLabel = branchPreviewLabel(branch);
-		const hostname = branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
+		const hostname = binding.previewHostname
+			|| branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
+		const hostnameMode = binding.previewHostname ? "site-root-preview" : "branch-preview";
 		const nowSeconds = Math.floor(this.now() / 1000);
 		const jti = createHash("sha256")
 			.update(idempotencyKey)
@@ -390,6 +392,7 @@ export class HostSites {
 			deploy_message: message,
 			branch_label: branchLabel,
 			hostname,
+			hostname_mode: hostnameMode,
 			preview_apex: this.config.sites.previewApex,
 			namespace: this.config.sites.previewNamespace,
 			artifact_kind: artifactKind,
