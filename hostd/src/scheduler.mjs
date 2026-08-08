@@ -9,9 +9,10 @@ export class EventScheduler {
 	}
 
 	async start() {
-		const recovery = this.store.recoverExpiredEvents();
+		const recovery = this.store.recoverExpiredEvents(this.config.scheduler.maximumAttempts);
 		if (recovery.recovered) console.warn(`troublemaker-hostd: recovered ${recovery.recovered} pre-running event lease(s)`);
 		if (recovery.uncertain) console.warn(`troublemaker-hostd: marked ${recovery.uncertain} post-running event(s) uncertain`);
+		if (recovery.exhausted) console.warn(`troublemaker-hostd: terminally classified ${recovery.exhausted} exhausted event(s)`);
 		await this.runtime.reconcile();
 		await this.runtime.reconcileScheduledWakeOwnership?.();
 		this.lastReconciledAt = Date.now();
@@ -96,9 +97,10 @@ export class EventScheduler {
 	}
 
 	async tick() {
-		const recovery = this.store.recoverExpiredEvents();
+		const recovery = this.store.recoverExpiredEvents(this.config.scheduler.maximumAttempts);
 		if (recovery.recovered) console.warn(`troublemaker-hostd: recovered ${recovery.recovered} pre-running event lease(s)`);
 		if (recovery.uncertain) console.warn(`troublemaker-hostd: marked ${recovery.uncertain} post-running event(s) uncertain`);
+		if (recovery.exhausted) console.warn(`troublemaker-hostd: terminally classified ${recovery.exhausted} exhausted event(s)`);
 		this.pump();
 		if (this.reaping) return;
 		this.reaping = true;

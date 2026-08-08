@@ -143,9 +143,12 @@ Human-readable channel names are labels only and never authorize reuse.
 Ingress only journals work; it never waits for an agent turn. The scheduler
 leases up to `scheduler.maxConcurrent` contexts globally and one turn per
 context, then relies on fenced runtime heartbeats and completion receipts.
-Expired pre-running leases are recovered after a crash. A lease that expires
-after the runtime reported `running` becomes `uncertain` and is not replayed,
-because an external side effect may already have happened. Idle runtimes are
+Expired pre-running leases are recovered after a crash only while they remain
+below `scheduler.maximumAttempts`. Queued or expired pre-running work at that
+limit is terminally classified as `dead`, retains its failure evidence, and is
+not reported as runnable queue depth. A lease that expires after the runtime
+reported `running` becomes `uncertain` and is not replayed, because an external
+side effect may already have happened. Idle runtimes are
 stopped after `scheduler.idleSeconds`, and the least-recently-active idle runtime is evicted
 when a new context needs a full host's slot. Workspaces remain durable.
 

@@ -1749,7 +1749,7 @@ export class HostStore {
 		return this.getEvent(id);
 	}
 
-	recoverExpiredEvents() {
+	recoverExpiredEvents(maximumAttempts = 5) {
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -1759,13 +1759,29 @@ export class HostStore {
 					last_error = 'runtime became unreachable after reporting running', updated_at = ?
 				WHERE status = 'running' AND lease_expires_at < ?
 			`).run(timestamp, timestamp).changes;
+			const exhaustedQueued = this.database.prepare(`
+				UPDATE events SET status = 'dead', lease_token = NULL,
+					lease_expires_at = NULL,
+					last_error = COALESCE(last_error, 'maximum delivery attempts exhausted before running'),
+					updated_at = ?
+				WHERE status IN ('queued', 'failed') AND attempts >= ?
+			`).run(timestamp, maximumAttempts).changes;
+			const exhaustedExpired = this.database.prepare(`
+				UPDATE events SET status = 'dead', lease_token = NULL,
+					lease_expires_at = NULL,
+					last_error = COALESCE(last_error, 'delivery lease expired before running after maximum attempts'),
+					updated_at = ?
+				WHERE status IN ('leased', 'accepted') AND lease_expires_at < ?
+					AND attempts >= ?
+			`).run(timestamp, timestamp, maximumAttempts).changes;
 			const recovered = this.database.prepare(`
 				UPDATE events SET status = 'queued', available_at = ?, lease_token = NULL,
 					lease_expires_at = NULL, last_error = 'delivery lease expired before running', updated_at = ?
 				WHERE status IN ('leased', 'accepted') AND lease_expires_at < ?
-			`).run(timestamp, timestamp, timestamp).changes;
+					AND attempts < ?
+			`).run(timestamp, timestamp, timestamp, maximumAttempts).changes;
 			this.database.exec("COMMIT");
-			return { recovered, uncertain };
+			return { recovered, uncertain, exhausted: exhaustedQueued + exhaustedExpired };
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;

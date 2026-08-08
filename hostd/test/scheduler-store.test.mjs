@@ -191,7 +191,11 @@ test("expired post-running leases become uncertain instead of replaying side eff
 		subject.store.database.prepare(`
 			UPDATE events SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?
 		`).run(event.id);
-		assert.deepEqual(subject.store.recoverExpiredEvents(), { recovered: 1, uncertain: 0 });
+		assert.deepEqual(subject.store.recoverExpiredEvents(5), {
+			recovered: 1,
+			uncertain: 0,
+			exhausted: 0,
+		});
 		assert.equal(subject.store.getEvent(event.id).status, "queued");
 
 		event = subject.store.claimNextEvent();
@@ -200,10 +204,96 @@ test("expired post-running leases become uncertain instead of replaying side eff
 		subject.store.database.prepare(`
 			UPDATE events SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?
 		`).run(event.id);
-		assert.deepEqual(subject.store.recoverExpiredEvents(), { recovered: 0, uncertain: 1 });
+		assert.deepEqual(subject.store.recoverExpiredEvents(5), {
+			recovered: 0,
+			uncertain: 1,
+			exhausted: 0,
+		});
 		assert.equal(subject.store.getEvent(event.id).status, "uncertain");
 		assert.equal(subject.store.claimNextEvent(), null, "uncertain work is never replayed automatically");
 		assert.equal(subject.store.status().uncertainEvents, 1);
+	} finally {
+		subject.close();
+	}
+});
+
+test("exhausted pre-running events become terminal without losing failure evidence", () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-exhausted-queued", subject.contexts[0], 1);
+		subject.store.database.prepare(`
+			UPDATE events SET attempts = 5, last_error = 'preserved cold-start failure'
+			WHERE id = 'event-exhausted-queued'
+		`).run();
+
+		enqueue(subject.store, "event-exhausted-accepted", subject.contexts[1], 2);
+		const accepted = subject.store.claimNextEvent({ maximumAttempts: 5 });
+		assert.equal(accepted.id, "event-exhausted-accepted");
+		subject.store.acceptEvent(accepted.id, accepted.leaseToken);
+		subject.store.database.prepare(`
+			UPDATE events SET attempts = 5, lease_expires_at = '2000-01-01T00:00:00.000Z'
+			WHERE id = ?
+		`).run(accepted.id);
+
+		assert.equal(subject.store.status().queuedEvents, 1);
+		assert.deepEqual(subject.store.recoverExpiredEvents(5), {
+			recovered: 0,
+			uncertain: 0,
+			exhausted: 2,
+		});
+		assert.deepEqual(subject.store.recoverExpiredEvents(5), {
+			recovered: 0,
+			uncertain: 0,
+			exhausted: 0,
+		}, "terminal classification is idempotent");
+
+		const queued = subject.store.getEvent("event-exhausted-queued");
+		assert.equal(queued.status, "dead");
+		assert.equal(queued.attempts, 5);
+		assert.equal(queued.lastError, "preserved cold-start failure");
+		const expired = subject.store.getEvent("event-exhausted-accepted");
+		assert.equal(expired.status, "dead");
+		assert.equal(expired.attempts, 5);
+		assert.equal(expired.startedAt, null);
+		assert.equal(expired.lastError, "delivery lease expired before running after maximum attempts");
+		assert.equal(subject.store.claimNextEvent({ maximumAttempts: 5 }), null);
+		assert.equal(subject.store.status().queuedEvents, 0);
+		assert.equal(subject.store.status().deadEvents, 2);
+	} finally {
+		subject.close();
+	}
+});
+
+test("scheduler startup applies its configured attempt limit before pumping", async () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-configured-exhaustion", subject.contexts[0], 1);
+		subject.store.database.prepare(`
+			UPDATE events SET attempts = 1 WHERE id = 'event-configured-exhaustion'
+		`).run();
+		let delivered = 0;
+		const scheduler = new EventScheduler({
+			config: {
+				scheduler: {
+					maxConcurrent: 1,
+					leaseSeconds: 60,
+					turnLeaseSeconds: 900,
+					maximumAttempts: 1,
+				},
+			},
+			store: subject.store,
+			runtime: {
+				reconcile: async () => {},
+				reapIdle: async () => {},
+				acceptEvent: async () => { delivered += 1; },
+			},
+		});
+
+		await scheduler.start();
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+		assert.equal(subject.store.getEvent("event-configured-exhaustion").status, "dead");
+		assert.equal(subject.store.status().queuedEvents, 0);
+		assert.equal(delivered, 0, "exhausted work is terminal before the scheduler pump");
 	} finally {
 		subject.close();
 	}
