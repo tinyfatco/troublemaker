@@ -10,7 +10,10 @@ import { constants } from "node:fs";
 import { lstat, open, opendir, realpath, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-import { resolveSiteDeploymentBinding } from "./site-deployment-binding.mjs";
+import {
+	resolveSiteDeploymentBinding,
+	resolveSiteDeploymentBindings,
+} from "./site-deployment-binding.mjs";
 
 const execFileAsync = promisify(execFile);
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
@@ -318,12 +321,26 @@ export class HostSites {
 
 	async deploy(target, contextId, body) {
 		if (!this.config.sites) throw new HostSitesError(503, "sites_unavailable");
+		const bindings = resolveSiteDeploymentBindings(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
+		const requestedSiteSlug = typeof body.site_slug === "string"
+			? body.site_slug.trim().toLowerCase()
+			: "";
+		if (!requestedSiteSlug && bindings.length > 1) {
+			throw new HostSitesError(400, "site_slug_required");
+		}
 		const binding = resolveSiteDeploymentBinding(
 			this.config,
 			this.store,
 			target,
 			contextId,
 			this.routingKey,
+			requestedSiteSlug,
 		);
 		if (!binding) throw new HostSitesError(403, "site_context_unbound");
 

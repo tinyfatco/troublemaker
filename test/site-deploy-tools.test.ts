@@ -41,6 +41,7 @@ assert.doesNotMatch(tools[0].description, /Cloudflare credential/i);
 const callId = `fc_${"a".repeat(36)}|call_${"b".repeat(38)}`;
 const result = await tools[0].execute(callId, {
 	label: "Deploying the reviewed branch preview",
+	site: "second-example",
 	directory: "dist",
 	branch: "feature/example",
 	artifact_kind: "static",
@@ -53,6 +54,7 @@ assert.deepEqual(seen[0], {
 	body: {
 		context_id: "front-desk:principal:website",
 		idempotency_key: `site_deploy:${createHash("sha256").update(callId, "utf8").digest("hex")}`,
+		site_slug: "second-example",
 		directory: "dist",
 		branch: "feature/example",
 		artifact_kind: "static",

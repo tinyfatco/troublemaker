@@ -73,6 +73,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 			label: "site_deploy",
 			description: "Deploy one workspace-contained build artifact to the current project's checked-out Git-branch preview slot. Hostd derives Git provenance from the clean repository, fixes the site/customer scope, keeps platform credentials outside the runtime, and permits preview only. This tool never promotes production.",
 			parameters: Type.Object({
+				site: Type.Optional(Type.String({ description: "Exact configured site slug. Required when this context can deploy more than one site.", minLength: 1, maxLength: 55, pattern: "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" })),
 				directory: Type.String({ description: "Workspace-relative build artifact directory.", minLength: 1, maxLength: 240 }),
 				branch: Type.String({ description: "Exact Git branch name for the preview slot.", minLength: 1, maxLength: 240 }),
 				artifact_kind: Type.Union([
@@ -83,6 +84,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 			}),
 			execute: async (id: string, input: unknown) => {
 				const body = input as {
+					site?: string;
 					directory?: string;
 					branch?: string;
 					artifact_kind?: string;
@@ -90,6 +92,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 				};
 				return textResult(await deployRequest(options, {
 					idempotency_key: deployIdempotencyKey(id),
+					site_slug: body.site,
 					directory: body.directory,
 					branch: body.branch,
 					artifact_kind: body.artifact_kind,

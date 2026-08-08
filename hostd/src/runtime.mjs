@@ -3,10 +3,17 @@ import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
-import { resolveSiteDeploymentBinding } from "./site-deployment-binding.mjs";
+import {
+	resolveSiteDeploymentBinding,
+	resolveSiteDeploymentBindings,
+} from "./site-deployment-binding.mjs";
 
-export function siteDeploymentBinding(config, store, target, contextId, routingKey) {
-	return resolveSiteDeploymentBinding(config, store, target, contextId, routingKey);
+export function siteDeploymentBinding(config, store, target, contextId, routingKey, siteSlug) {
+	return resolveSiteDeploymentBinding(config, store, target, contextId, routingKey, siteSlug);
+}
+
+export function siteDeploymentBindings(config, store, target, contextId, routingKey) {
+	return resolveSiteDeploymentBindings(config, store, target, contextId, routingKey);
 }
 
 function safeRuntimeName(contextId) {
@@ -448,7 +455,7 @@ export class RuntimeManager {
 				});
 			}
 			const envPath = join(contextDirectory, "runtime.env");
-			const siteDeployment = siteDeploymentBinding(
+			const siteDeployments = siteDeploymentBindings(
 				this.config,
 				this.store,
 				target,
@@ -465,7 +472,7 @@ export class RuntimeManager {
 				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
-				...(siteDeployment ? {
+				...(siteDeployments.length > 0 ? {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
 				...(mattermost ? {
