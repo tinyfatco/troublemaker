@@ -91,6 +91,26 @@ export class HostStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS contexts_port_unique
 				ON contexts(port) WHERE port IS NOT NULL;
 
+			CREATE TABLE IF NOT EXISTS site_deployment_bindings (
+				context_id TEXT NOT NULL,
+				site_slug TEXT NOT NULL UNIQUE,
+				display_name TEXT NOT NULL,
+				site_id TEXT NOT NULL UNIQUE,
+				grant_id TEXT NOT NULL UNIQUE,
+				customer_id TEXT NOT NULL,
+				user_id TEXT NOT NULL,
+				project_id TEXT NOT NULL UNIQUE,
+				preview_hostname TEXT NOT NULL UNIQUE,
+				artifact_kinds_json TEXT NOT NULL,
+				allowed_branches_json TEXT NOT NULL,
+				status TEXT NOT NULL,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (context_id, site_slug),
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
 			CREATE TABLE IF NOT EXISTS mattermost_bindings (
 				context_id TEXT PRIMARY KEY,
 				team_id TEXT NOT NULL,
@@ -710,6 +730,117 @@ export class HostStore {
 		this.database.prepare(`
 			UPDATE routes SET last_seen_at = ? WHERE source = ? AND provider_thread_id = ?
 		`).run(now(), source, threadId);
+	}
+
+	getSiteDeploymentBinding(contextId, siteSlug) {
+		const row = this.database.prepare(`
+			SELECT context_id AS contextId, site_slug AS siteSlug, display_name AS displayName, site_id AS siteId,
+				grant_id AS grantId, customer_id AS customerId, user_id AS userId,
+				project_id AS projectId, preview_hostname AS previewHostname,
+				artifact_kinds_json AS artifactKindsJson,
+				allowed_branches_json AS allowedBranchesJson,
+				status, last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt
+			FROM site_deployment_bindings WHERE context_id = ? AND site_slug = ?
+		`).get(contextId, siteSlug);
+		return row ? {
+			...row,
+			artifactKinds: JSON.parse(row.artifactKindsJson),
+			allowedBranches: JSON.parse(row.allowedBranchesJson),
+		} : null;
+	}
+
+	getSiteDeploymentBindingBySlug(siteSlug) {
+		const row = this.database.prepare(`
+			SELECT context_id AS contextId FROM site_deployment_bindings WHERE site_slug = ?
+		`).get(siteSlug);
+		return row ? this.getSiteDeploymentBinding(row.contextId, siteSlug) : null;
+	}
+
+	listSiteDeploymentBindings(contextId) {
+		return this.database.prepare(`
+			SELECT site_slug AS siteSlug FROM site_deployment_bindings
+			WHERE context_id = ? ORDER BY created_at, site_slug
+		`).all(contextId).map((row) => this.getSiteDeploymentBinding(contextId, row.siteSlug));
+	}
+
+	beginSiteDeploymentBinding({
+		contextId,
+		siteSlug,
+		displayName,
+		siteId,
+		grantId,
+		customerId,
+		userId,
+		projectId,
+		previewHostname,
+		artifactKinds,
+		allowedBranches,
+		maximumSites,
+	}) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existing = this.getSiteDeploymentBinding(contextId, siteSlug);
+			if (existing) {
+				if (existing.status === "failed") {
+					this.database.prepare(`
+						UPDATE site_deployment_bindings SET status = 'creating', last_error = NULL, updated_at = ?
+						WHERE context_id = ? AND site_slug = ? AND status = 'failed'
+					`).run(now(), contextId, siteSlug);
+				}
+				this.database.exec("COMMIT");
+				return this.getSiteDeploymentBinding(contextId, siteSlug);
+			}
+			if (this.getSiteDeploymentBindingBySlug(siteSlug)) {
+				throw new Error("site_slug_unavailable");
+			}
+			const count = this.database.prepare(`
+				SELECT COUNT(*) AS count FROM site_deployment_bindings WHERE context_id = ?
+			`).get(contextId).count;
+			if (count >= maximumSites) throw new Error("site_factory_limit_reached");
+			const timestamp = now();
+			this.database.prepare(`
+				INSERT INTO site_deployment_bindings(
+					context_id, site_slug, display_name, site_id, grant_id, customer_id, user_id,
+					project_id, preview_hostname, artifact_kinds_json,
+					allowed_branches_json, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?)
+			`).run(
+				contextId,
+				siteSlug,
+				displayName,
+				siteId,
+				grantId,
+				customerId,
+				userId,
+				projectId,
+				previewHostname,
+				JSON.stringify(artifactKinds),
+				JSON.stringify(allowedBranches),
+				timestamp,
+				timestamp,
+			);
+			this.database.exec("COMMIT");
+			return this.getSiteDeploymentBinding(contextId, siteSlug);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	activateSiteDeploymentBinding(contextId, siteSlug) {
+		this.database.prepare(`
+			UPDATE site_deployment_bindings SET status = 'active', last_error = NULL, updated_at = ?
+			WHERE context_id = ? AND site_slug = ? AND status IN ('creating', 'failed')
+		`).run(now(), contextId, siteSlug);
+		return this.getSiteDeploymentBinding(contextId, siteSlug);
+	}
+
+	failSiteDeploymentBinding(contextId, siteSlug, error) {
+		this.database.prepare(`
+			UPDATE site_deployment_bindings SET status = 'failed', last_error = ?, updated_at = ?
+			WHERE context_id = ? AND site_slug = ? AND status = 'creating'
+		`).run(String(error).slice(0, 1000), now(), contextId, siteSlug);
+		return this.getSiteDeploymentBinding(contextId, siteSlug);
 	}
 
 	getContext(id) {
@@ -1886,6 +2017,12 @@ export class HostStore {
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,
 			contexts: this.database.prepare("SELECT COUNT(*) AS count FROM contexts").get().count,
+			dynamicSiteBindings: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM site_deployment_bindings WHERE status = 'active'
+			`).get().count,
+			failedSiteBindings: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM site_deployment_bindings WHERE status = 'failed'
+			`).get().count,
 			mattermostBindings: this.database.prepare("SELECT COUNT(*) AS count FROM mattermost_bindings").get().count,
 			rocketChatBindings: this.database.prepare("SELECT COUNT(*) AS count FROM rocket_chat_bindings").get().count,
 			zulipBindings: this.database.prepare("SELECT COUNT(*) AS count FROM zulip_bindings").get().count,

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import {
 	createHash,
 	createPrivateKey,
+	randomUUID,
 	sign as signBytes,
 	timingSafeEqual,
 } from "node:crypto";
@@ -13,6 +14,7 @@ import { promisify } from "node:util";
 import {
 	resolveSiteDeploymentBinding,
 	resolveSiteDeploymentBindings,
+	resolveSiteFactory,
 } from "./site-deployment-binding.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -62,6 +64,28 @@ export function branchPreviewLabel(value) {
 	const digest = createHash("sha256").update(branch, "utf8").digest("hex").slice(0, 12);
 	const head = readable.slice(0, 63 - digest.length - 1).replace(/-+$/g, "") || "branch";
 	return `${head}-${digest}`;
+}
+
+export function normalizeSiteSlug(value) {
+	const siteSlug = typeof value === "string" ? value.trim().toLowerCase() : "";
+	if (!/^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(siteSlug)) {
+		throw new HostSitesError(400, "site_slug_invalid");
+	}
+	return siteSlug;
+}
+
+function configuredSiteBinding(config, siteSlug) {
+	for (const principal of config.routing.knownPrincipals || []) {
+		for (const project of principal.projects || []) {
+			const match = (project.siteDeployments || []).find((binding) => binding.siteSlug === siteSlug);
+			if (match) return match;
+		}
+	}
+	for (const principal of config.routing.knownPhonePrincipals || []) {
+		const match = (principal.siteDeployments || []).find((binding) => binding.siteSlug === siteSlug);
+		if (match) return match;
+	}
+	return null;
 }
 
 export function branchPreviewHostname(siteSlug, branch, apex = "tinyfat.dev") {
@@ -317,6 +341,139 @@ export class HostSites {
 		this.routingKey = routingKey;
 		this.request = request;
 		this.now = now;
+	}
+
+	async create(target, contextId, body) {
+		if (!this.config.sites) throw new HostSitesError(503, "sites_unavailable");
+		const factory = resolveSiteFactory(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
+		if (!factory) throw new HostSitesError(403, "site_factory_unbound");
+		const siteSlug = normalizeSiteSlug(body.site_slug);
+		const displayName = typeof body.display_name === "string" ? body.display_name.trim() : "";
+		if (!displayName || displayName.length > 120) {
+			throw new HostSitesError(400, "site_display_name_invalid");
+		}
+		const configured = resolveSiteDeploymentBindings(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		).find((binding) => binding.siteSlug === siteSlug);
+		if (configured) {
+			return {
+				ok: true,
+				created: false,
+				site: configured.siteSlug,
+				site_id: configured.siteId,
+				project_id: configured.projectId,
+				deployment_grant_id: configured.grantId,
+				hostname: configured.previewHostname
+					|| branchPreviewHostname(configured.siteSlug, "main", this.config.sites.previewApex),
+			};
+		}
+		if (configuredSiteBinding(this.config, siteSlug)) {
+			throw new HostSitesError(409, "site_slug_unavailable");
+		}
+		let binding;
+		try {
+			binding = this.store.beginSiteDeploymentBinding({
+				contextId,
+				siteSlug,
+				displayName,
+				siteId: randomUUID(),
+				grantId: randomUUID(),
+				customerId: factory.customerId,
+				userId: factory.userId,
+				projectId: randomUUID(),
+				previewHostname: `${siteSlug}.${this.config.sites.previewApex}`,
+				artifactKinds: factory.artifactKinds,
+				allowedBranches: factory.allowedBranches,
+				maximumSites: factory.maximumSites,
+			});
+		} catch (error) {
+			if (error instanceof Error && error.message === "site_factory_limit_reached") {
+				throw new HostSitesError(429, error.message);
+			}
+			if (error instanceof Error && error.message === "site_slug_unavailable") {
+				throw new HostSitesError(409, error.message);
+			}
+			throw error;
+		}
+		if (binding.status === "active") {
+			return {
+				ok: true,
+				created: false,
+				site: binding.siteSlug,
+				site_id: binding.siteId,
+				project_id: binding.projectId,
+				deployment_grant_id: binding.grantId,
+				hostname: binding.previewHostname,
+			};
+		}
+		const contextReference = createHash("sha256").update(contextId).digest("hex");
+		const capability = signDeployCapability(this.config.sites, {
+			sub: `user:${binding.userId}`,
+			jti: createHash("sha256")
+				.update(`site-create\0${binding.contextId}\0${binding.siteId}`)
+				.digest("hex"),
+			action: "site:create",
+			customer_id: binding.customerId,
+			user_id: binding.userId,
+			project_id: binding.projectId,
+			deployment_grant_id: binding.grantId,
+			site_id: binding.siteId,
+			site_slug: binding.siteSlug,
+			display_name: binding.displayName,
+			hostname: binding.previewHostname,
+			hostname_mode: "site-root-preview",
+			preview_apex: this.config.sites.previewApex,
+			actor_ref: `hostd-context:${contextReference}`,
+		}, Math.floor(this.now() / 1000));
+		try {
+			const response = await this.request(`${this.config.sites.publishUrl}/v1/scoped-sites`, {
+				method: "POST",
+				headers: {
+					"authorization": `Bearer ${capability}`,
+					"content-type": "application/json",
+				},
+				body: "{}",
+				signal: AbortSignal.timeout(30_000),
+			});
+			const responseText = await response.text();
+			let result;
+			try { result = JSON.parse(responseText); } catch {
+				throw new HostSitesError(502, "sites_publish_invalid_response");
+			}
+			if (!response.ok) {
+				throw new HostSitesError(
+					response.status >= 400 && response.status < 500 ? response.status : 502,
+					typeof result?.error === "string" ? result.error : "sites_publish_rejected",
+				);
+			}
+			const expected = {
+				site: binding.siteSlug,
+				site_id: binding.siteId,
+				customer_id: binding.customerId,
+				user_id: binding.userId,
+				project_id: binding.projectId,
+				deployment_grant_id: binding.grantId,
+				hostname: binding.previewHostname,
+			};
+			for (const [key, value] of Object.entries(expected)) {
+				if (result?.[key] !== value) throw new HostSitesError(502, "sites_publish_receipt_scope_mismatch");
+			}
+			this.store.activateSiteDeploymentBinding(contextId, siteSlug);
+			return { ok: true, created: result.created === true, ...expected };
+		} catch (error) {
+			this.store.failSiteDeploymentBinding(contextId, siteSlug, error instanceof Error ? error.message : String(error));
+			throw error;
+		}
 	}
 
 	async deploy(target, contextId, body) {

@@ -101,10 +101,19 @@ accepted artifact.
 
 An existing direct-SMS `intake` context may receive exact Sites bindings through
 host-owned `routing.knownPhonePrincipals`. Use legacy `siteDeployment` for one
-binding or `siteDeployments` for a nonempty array. The phone number remains in
-Hostd configuration and is matched through the routing-key-derived principal
-hash; it is never copied into the runtime. The runtime receives only the same
-context-scoped deploy capability used by configured email/project contexts.
+binding or `siteDeployments` for a nonempty array. To let that same verified
+context create future sites without another config edit or restart, configure a
+`siteFactory` with one exact `customerId`, `userId`, and bounded `maximumSites`.
+The runtime then receives `site_create` and `site_deploy`; Hostd assigns and
+persists each site/project/grant identity before asking Sites Publish to create
+only that signed metadata. The factory is fixed to main-branch root review hosts
+under `sites.previewApex` and cannot configure DNS/custom domains, billing,
+promotion, deletion, or another user/customer scope.
+
+The phone number remains in Hostd configuration and is matched through the
+routing-key-derived principal hash; it is never copied into the runtime. The
+runtime receives only the same context-scoped Hostd capability used by
+configured email/project contexts, never provider credentials or the signer.
 
 The host signer may be loaded from either `sites.capabilityPrivateKeyEnv` or
 `sites.capabilityPrivateKeyFile`, but never both. Prefer the file form for a

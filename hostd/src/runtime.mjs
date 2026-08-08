@@ -6,6 +6,7 @@ import { contextCapability } from "./security.mjs";
 import {
 	resolveSiteDeploymentBinding,
 	resolveSiteDeploymentBindings,
+	resolveSiteFactory,
 } from "./site-deployment-binding.mjs";
 
 export function siteDeploymentBinding(config, store, target, contextId, routingKey, siteSlug) {
@@ -462,6 +463,13 @@ export class RuntimeManager {
 				contextId,
 				this.routingKey,
 			);
+			const siteFactory = resolveSiteFactory(
+				this.config,
+				this.store,
+				target,
+				contextId,
+				this.routingKey,
+			);
 			const env = {
 				HOME: "/data",
 				...(this.config.gmail ? {
@@ -472,9 +480,10 @@ export class RuntimeManager {
 				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
-				...(siteDeployments.length > 0 ? {
+				...(siteDeployments.length > 0 || siteFactory ? {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
+				...(siteFactory ? { MOM_SITE_FACTORY_ENABLED: "1" } : {}),
 				...(mattermost ? {
 					MOM_MATTERMOST_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/mattermost/${encodeURIComponent(contextId)}`,
 					MOM_MATTERMOST_BOT_TOKEN: contextCapability(target.outboundToken, "mattermost", contextId),

@@ -268,6 +268,11 @@ test("loads two exact Sites grants for one phone intake without merging their id
 		};
 		raw.routing.knownPhonePrincipals = [{
 			phone: "+15551234567",
+			siteFactory: {
+				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+				userId: "99999999-9999-4999-8999-999999999999",
+				maximumSites: 25,
+			},
 			siteDeployments: [{
 				grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 				customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -294,6 +299,14 @@ test("loads two exact Sites grants for one phone intake without merging their id
 			["example-business", "second-example"],
 		);
 		assert.equal(config.routing.knownPhonePrincipals[0].siteDeployment, undefined);
+		assert.deepEqual(config.routing.knownPhonePrincipals[0].siteFactory, {
+			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			userId: "99999999-9999-4999-8999-999999999999",
+			maximumSites: 25,
+			artifactKinds: ["static", "worker"],
+			allowedBranches: ["main"],
+			hostnameMode: "site-root-preview",
+		});
 		assert.equal(
 			config.routing.knownPhonePrincipals[0].siteDeployments[1].previewHostname,
 			"second-example.example.com",

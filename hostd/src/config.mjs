@@ -477,6 +477,36 @@ function siteDeploymentProjectConfigs(container, label) {
 	));
 }
 
+function siteFactoryConfig(raw, label) {
+	if (raw === undefined) return undefined;
+	const factory = object(raw, label);
+	const customerId = uuid(factory.customerId, `${label}.customerId`);
+	const userId = uuid(factory.userId, `${label}.userId`);
+	const maximumSites = integer(factory.maximumSites, 128, `${label}.maximumSites`, 1, 1000);
+	const rawKinds = factory.artifactKinds ?? ["static", "worker"];
+	if (!Array.isArray(rawKinds) || rawKinds.length === 0) {
+		throw new Error(`${label}.artifactKinds must contain static or worker`);
+	}
+	const artifactKinds = rawKinds.map((kind, index) => {
+		const value = text(kind, `${label}.artifactKinds[${index}]`).toLowerCase();
+		if (!["static", "worker"].includes(value)) {
+			throw new Error(`${label}.artifactKinds must contain only static or worker`);
+		}
+		return value;
+	});
+	if (new Set(artifactKinds).size !== artifactKinds.length) {
+		throw new Error(`${label}.artifactKinds cannot repeat a value`);
+	}
+	return {
+		customerId,
+		userId,
+		maximumSites,
+		artifactKinds,
+		allowedBranches: ["main"],
+		hostnameMode: "site-root-preview",
+	};
+}
+
 function targetConfig(raw, index, environment) {
 	const target = object(raw, `targets[${index}]`);
 	const id = text(target.id, `targets[${index}].id`);
@@ -649,13 +679,15 @@ export async function loadConfig(path, environment = process.env) {
 					throw new Error(`project slug ${slug} is invalid or reserved`);
 				}
 				const siteDeployments = siteDeploymentProjectConfigs(project, projectLabel);
-				if (siteDeployments.length > 0 && !sites) {
-					throw new Error(`${projectLabel}.siteDeployments requires top-level sites configuration`);
+				const siteFactory = siteFactoryConfig(project.siteFactory, `${projectLabel}.siteFactory`);
+				if ((siteDeployments.length > 0 || siteFactory) && !sites) {
+					throw new Error(`${projectLabel} Sites configuration requires top-level sites configuration`);
 				}
 				return {
 					slug,
 					name: text(project.name ?? project.slug, `${projectLabel}.name`),
 					siteDeployments,
+					siteFactory,
 					// Preserve the original normalized field for single-site consumers.
 					siteDeployment: siteDeployments.length === 1 ? siteDeployments[0] : undefined,
 				};
@@ -666,19 +698,35 @@ export async function loadConfig(path, environment = process.env) {
 		const principalLabel = `routing.knownPhonePrincipals[${index}]`;
 		const principal = object(candidate, principalLabel);
 		const siteDeployments = siteDeploymentProjectConfigs(principal, principalLabel);
-		if (siteDeployments.length > 0 && !sites) {
-			throw new Error(`${principalLabel}.siteDeployments requires top-level sites configuration`);
+		const siteFactory = siteFactoryConfig(principal.siteFactory, `${principalLabel}.siteFactory`);
+		if ((siteDeployments.length > 0 || siteFactory) && !sites) {
+			throw new Error(`${principalLabel} Sites configuration requires top-level sites configuration`);
 		}
 		return {
 			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
 			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
 			siteDeployments,
+			siteFactory,
 			// Preserve the original normalized field for single-site consumers.
 			siteDeployment: siteDeployments.length === 1 ? siteDeployments[0] : undefined,
 		};
 	});
 	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
 		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
+	}
+	const siteFactories = configuredPrincipals.flatMap((principal) => (
+		principal.projects
+			.filter((project) => project.siteFactory)
+			.map((project) => ({ email: principal.email, projectSlug: project.slug, ...project.siteFactory }))
+	)).concat(configuredPhonePrincipals
+		.filter((principal) => principal.siteFactory)
+		.map((principal) => ({ phone: principal.phone, projectSlug: "intake", ...principal.siteFactory })));
+	for (const key of ["customerId", "userId"]) {
+		if (siteFactories.some((factory, index) => (
+			siteFactories.findIndex((candidate) => candidate[key] === factory[key]) !== index
+		))) {
+			throw new Error(`each Sites factory ${key} must bind to exactly one principal/project`);
+		}
 	}
 	const siteBindings = configuredPrincipals.flatMap((principal) => (
 		principal.projects.flatMap((project) => project.siteDeployments.map((deployment) => ({

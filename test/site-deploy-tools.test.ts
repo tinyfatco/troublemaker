@@ -32,14 +32,39 @@ const tools = createSiteDeployToolDefinitions({
 	baseUrl: "http://127.0.0.1:3099/",
 	token: "fake-site-context-capability",
 	contextId: "front-desk:principal:website",
+	factoryEnabled: true,
 	fetch: fakeFetch,
 });
-assert.deepEqual(tools.map((tool) => tool.name), ["site_deploy"]);
-assert.match(tools[0].description, /preview only/i);
+assert.deepEqual(tools.map((tool) => tool.name), ["site_create", "site_deploy"]);
+assert.deepEqual(createSiteDeployToolDefinitions({
+	baseUrl: "http://127.0.0.1:3099/",
+	token: "fake-site-context-capability",
+	contextId: "front-desk:static:website",
+	factoryEnabled: false,
+	fetch: fakeFetch,
+}).map((tool) => tool.name), ["site_deploy"], "static-only contexts do not see site_create");
+assert.match(tools[0].description, /verified user scope/i);
 assert.doesNotMatch(tools[0].description, /Cloudflare credential/i);
+assert.match(tools[1].description, /preview only/i);
+
+const created = await tools[0].execute("create-call", {
+	label: "Creating an isolated preview site",
+	site: "new-example",
+	display_name: "New Example",
+});
+assert.equal(JSON.parse(text(created)).ok, true);
+assert.deepEqual(seen[0], {
+	url: "http://127.0.0.1:3099/v1/sites/create",
+	authorization: "Bearer fake-site-context-capability",
+	body: {
+		context_id: "front-desk:principal:website",
+		site_slug: "new-example",
+		display_name: "New Example",
+	},
+});
 
 const callId = `fc_${"a".repeat(36)}|call_${"b".repeat(38)}`;
-const result = await tools[0].execute(callId, {
+const result = await tools[1].execute(callId, {
 	label: "Deploying the reviewed branch preview",
 	site: "second-example",
 	directory: "dist",
@@ -48,7 +73,7 @@ const result = await tools[0].execute(callId, {
 	message: "Reviewed preview",
 });
 assert.equal(JSON.parse(text(result)).ok, true);
-assert.deepEqual(seen[0], {
+assert.deepEqual(seen[1], {
 	url: "http://127.0.0.1:3099/v1/sites/deploy",
 	authorization: "Bearer fake-site-context-capability",
 	body: {
@@ -64,7 +89,7 @@ assert.deepEqual(seen[0], {
 
 const beforeMissingId = seen.length;
 await assert.rejects(
-	() => tools[0].execute("", {
+	() => tools[1].execute("", {
 		label: "Rejecting an unidentifiable deploy",
 		directory: "dist",
 		branch: "main",

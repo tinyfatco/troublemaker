@@ -6,6 +6,7 @@ interface SiteDeployToolOptions {
 	baseUrl?: string;
 	token?: string;
 	contextId?: string;
+	factoryEnabled?: boolean;
 	fetch?: typeof fetch;
 }
 
@@ -24,18 +25,19 @@ function deployIdempotencyKey(toolCallId: string): string {
 	return `site_deploy:${createHash("sha256").update(toolCallId, "utf8").digest("hex")}`;
 }
 
-async function deployRequest(
+async function siteRequest(
 	options: SiteDeployToolOptions,
+	path: "/v1/sites/create" | "/v1/sites/deploy",
 	body: Record<string, unknown>,
 ): Promise<string> {
 	const baseUrl = hostBase(options);
 	const token = options.token || process.env.MOM_SITE_DEPLOY_TOKEN;
 	const contextId = options.contextId || process.env.TROUBLEMAKER_CONTEXT_ID;
 	if (!baseUrl || !token || !contextId) {
-		throw new Error("Site deploy requires the Hostd URL, context, and scoped capability.");
+		throw new Error("Sites tools require the Hostd URL, context, and scoped capability.");
 	}
 	const request = options.fetch || fetch;
-	const response = await request(`${baseUrl}/v1/sites/deploy`, {
+	const response = await request(`${baseUrl}${path}`, {
 		method: "POST",
 		headers: {
 			"authorization": `Bearer ${token}`,
@@ -67,7 +69,24 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 	const contextId = options.contextId || process.env.TROUBLEMAKER_CONTEXT_ID;
 	if (!baseUrl || !token || !contextId) return [];
 
+	const factoryEnabled = options.factoryEnabled ?? process.env.MOM_SITE_FACTORY_ENABLED === "1";
 	return [
+		...(factoryEnabled ? [defineTool({
+			name: "site_create",
+			label: "site_create",
+			description: "Create one new TinyFat preview site inside the current Hostd context's verified user scope. Hostd assigns and persists exact site, project, and deployment-grant identities; no platform credential enters the runtime. This does not deploy content, configure DNS/custom domains, promote production, bill, or delete anything.",
+			parameters: Type.Object({
+				site: Type.String({ description: "New unique site slug under tinyfat.dev.", minLength: 1, maxLength: 55, pattern: "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$" }),
+				display_name: Type.String({ description: "Human-readable site name.", minLength: 1, maxLength: 120 }),
+			}),
+			execute: async (_id: string, input: unknown) => {
+				const body = input as { site?: string; display_name?: string };
+				return textResult(await siteRequest(options, "/v1/sites/create", {
+					site_slug: body.site,
+					display_name: body.display_name,
+				}));
+			},
+		})] : []),
 		defineTool({
 			name: "site_deploy",
 			label: "site_deploy",
@@ -90,7 +109,7 @@ export function createSiteDeployToolDefinitions(options: SiteDeployToolOptions =
 					artifact_kind?: string;
 					message?: string;
 				};
-				return textResult(await deployRequest(options, {
+				return textResult(await siteRequest(options, "/v1/sites/deploy", {
 					idempotency_key: deployIdempotencyKey(id),
 					site_slug: body.site,
 					directory: body.directory,

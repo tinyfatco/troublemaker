@@ -480,6 +480,149 @@ test("one context selects between two exact Sites grants and cannot use an impli
 	}
 });
 
+test("a verified user scope creates durable exact site grants without per-site config", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-site-factory-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+	const target = { id: "front-desk", driver: "oci" };
+	const factory = {
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		userId: "99999999-9999-4999-8999-999999999999",
+		maximumSites: 2,
+		artifactKinds: ["static", "worker"],
+		allowedBranches: ["main"],
+		hostnameMode: "site-root-preview",
+	};
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+		},
+		routing: {
+			actorTarget: target.id,
+			knownPrincipals: [{
+				email: "owner@example.com",
+				projects: [{ slug: "website", name: "Example website", siteDeployments: [], siteFactory: factory }],
+			}],
+		},
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, Buffer.alloc(32, 3));
+	const owner = router.resolve({ source: "gmail", threadId: "thread-owner", sender: "owner@example.com" });
+	store.ensureProject(owner.principalHash, "website", "Example website");
+	const contextId = `${target.id}:${owner.principalHash}:website`;
+	store.createContext({
+		id: contextId,
+		targetId: target.id,
+		driver: "oci",
+		runtimeName: "runtime-site-factory",
+		port: 32000,
+	});
+	store.bindRoute({
+		source: "gmail", providerThreadId: "thread-website", principalHash: owner.principalHash,
+		projectSlug: "website", targetId: target.id, contextId,
+	});
+	let calls = 0;
+	let signed;
+	const service = new HostSites({
+		config,
+		store,
+		now: () => 1_800_000_000_000,
+		fetch: async (_url, init) => {
+			calls++;
+			signed = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, ""));
+			assert.equal(verifyBytes(null, signed.signed, publicKey, signed.signature), true);
+			assert.equal(signed.payload.action, "site:create");
+			assert.equal(signed.payload.user_id, factory.userId);
+			assert.equal(signed.payload.customer_id, factory.customerId);
+			assert.equal(signed.payload.site_slug, "new-example");
+			assert.equal(signed.payload.hostname, "new-example.tinyfat.dev");
+			return new Response(JSON.stringify({
+				ok: true,
+				created: true,
+				site: signed.payload.site_slug,
+				site_id: signed.payload.site_id,
+				customer_id: signed.payload.customer_id,
+				user_id: signed.payload.user_id,
+				project_id: signed.payload.project_id,
+				deployment_grant_id: signed.payload.deployment_grant_id,
+				hostname: signed.payload.hostname,
+			}), { status: 201 });
+		},
+	});
+	try {
+		const created = await service.create(target, contextId, {
+			site_slug: "new-example",
+			display_name: "New Example",
+		});
+		assert.equal(created.created, true);
+		assert.equal(created.hostname, "new-example.tinyfat.dev");
+		const durable = store.getSiteDeploymentBinding(contextId, "new-example");
+		assert.equal(durable.status, "active");
+		assert.equal(durable.userId, factory.userId);
+		assert.equal(durable.siteId, signed.payload.site_id);
+
+		const retry = await service.create(target, contextId, {
+			site_slug: "new-example",
+			display_name: "New Example",
+		});
+		assert.equal(retry.created, false);
+		assert.equal(retry.site_id, durable.siteId);
+		assert.equal(calls, 1, "durable active grants do not recreate provider state");
+		store.createContext({
+			id: "front-desk:other:website",
+			targetId: target.id,
+			driver: "oci",
+			runtimeName: "runtime-other-site-factory",
+			port: 32001,
+		});
+		assert.throws(() => store.beginSiteDeploymentBinding({
+			contextId: "front-desk:other:website",
+			siteSlug: "new-example",
+			displayName: "Wrong Owner",
+			siteId: "77777777-7777-4777-8777-777777777777",
+			grantId: "88888888-8888-4888-8888-888888888888",
+			customerId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			userId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+			projectId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+			previewHostname: "new-example.tinyfat.dev",
+			artifactKinds: ["static"],
+			allowedBranches: ["main"],
+			maximumSites: 10,
+		}), /site_slug_unavailable/);
+		assert.throws(() => store.beginSiteDeploymentBinding({
+			contextId,
+			siteSlug: "over-limit",
+			displayName: "Over Limit",
+			siteId: "44444444-4444-4444-8444-444444444444",
+			grantId: "55555555-5555-4555-8555-555555555555",
+			customerId: factory.customerId,
+			userId: factory.userId,
+			projectId: "66666666-6666-4666-8666-666666666666",
+			previewHostname: "over-limit.tinyfat.dev",
+			artifactKinds: ["static"],
+			allowedBranches: ["main"],
+			maximumSites: 1,
+		}), /site_factory_limit_reached/);
+
+		await assert.rejects(
+			service.create(target, "front-desk:other:website", {
+				site_slug: "other-example",
+				display_name: "Other Example",
+			}),
+			(error) => error instanceof HostSitesError && error.code === "site_factory_unbound",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("the Hostd deploy endpoint accepts only its separate context capability", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-server-"));
 	const store = new HostStore(join(directory, "state.sqlite"));
@@ -500,8 +643,12 @@ test("the Hostd deploy endpoint accepts only its separate context capability", a
 		store,
 		daemon: { polling: false },
 		sitesGateway: {
+			async create(selectedTarget, selectedContext, body) {
+				calls.push({ operation: "create", selectedTarget, selectedContext, body });
+				return { ok: true, created: true };
+			},
 			async deploy(selectedTarget, selectedContext, body) {
-				calls.push({ selectedTarget, selectedContext, body });
+				calls.push({ operation: "deploy", selectedTarget, selectedContext, body });
 				return { ok: true, environment: "preview" };
 			},
 		},
@@ -510,7 +657,7 @@ test("the Hostd deploy endpoint accepts only its separate context capability", a
 	const address = server.address();
 	assert(address && typeof address === "object");
 	const base = `http://127.0.0.1:${address.port}`;
-	const post = (token, selectedContext = contextId) => fetch(`${base}/v1/sites/deploy`, {
+	const post = (token, selectedContext = contextId, action = "deploy") => fetch(`${base}/v1/sites/${action}`, {
 		method: "POST",
 		headers: {
 			authorization: `Bearer ${token}`,
@@ -537,8 +684,15 @@ test("the Hostd deploy endpoint accepts only its separate context capability", a
 		const accepted = await post(siteToken);
 		assert.equal(accepted.status, 200);
 		assert.equal(calls.length, 1);
+		assert.equal(calls[0].operation, "deploy");
 		assert.equal(calls[0].selectedContext, contextId);
 		assert.equal(calls[0].selectedTarget, target);
+
+		const created = await post(siteToken, contextId, "create");
+		assert.equal(created.status, 200);
+		assert.equal(calls.length, 2);
+		assert.equal(calls[1].operation, "create");
+		assert.equal(calls[1].selectedContext, contextId);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();

@@ -197,7 +197,7 @@ export function createHostServer({
 				json(response, 200, await handlers[url.pathname]());
 				return;
 			}
-			if (request.method === "POST" && url.pathname === "/v1/sites/deploy") {
+			if (request.method === "POST" && ["/v1/sites/create", "/v1/sites/deploy"].includes(url.pathname)) {
 				if (!sites) {
 					json(response, 503, { error: "sites_unavailable" });
 					return;
@@ -213,7 +213,9 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
-				json(response, 200, await sites.deploy(target, contextId, body));
+				json(response, 200, url.pathname === "/v1/sites/create"
+					? await sites.create(target, contextId, body)
+					: await sites.deploy(target, contextId, body));
 				return;
 			}
 			if (request.method === "POST" && url.pathname === "/v1/outbound/gmail") {
