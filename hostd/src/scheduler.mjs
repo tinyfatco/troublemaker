@@ -9,9 +9,11 @@ export class EventScheduler {
 	}
 
 	async start() {
-		const recovered = this.store.recoverExpiredEvents();
-		if (recovered) console.warn(`troublemaker-hostd: recovered ${recovered} expired event lease(s)`);
+		const recovery = this.store.recoverExpiredEvents();
+		if (recovery.recovered) console.warn(`troublemaker-hostd: recovered ${recovery.recovered} pre-running event lease(s)`);
+		if (recovery.uncertain) console.warn(`troublemaker-hostd: marked ${recovery.uncertain} post-running event(s) uncertain`);
 		await this.runtime.reconcile();
+		await this.runtime.reconcileScheduledWakeOwnership?.();
 		this.lastReconciledAt = Date.now();
 		this.pump();
 	}
@@ -94,8 +96,9 @@ export class EventScheduler {
 	}
 
 	async tick() {
-		const recovered = this.store.recoverExpiredEvents();
-		if (recovered) console.warn(`troublemaker-hostd: recovered ${recovered} expired event lease(s)`);
+		const recovery = this.store.recoverExpiredEvents();
+		if (recovery.recovered) console.warn(`troublemaker-hostd: recovered ${recovery.recovered} pre-running event lease(s)`);
+		if (recovery.uncertain) console.warn(`troublemaker-hostd: marked ${recovery.uncertain} post-running event(s) uncertain`);
 		this.pump();
 		if (this.reaping) return;
 		this.reaping = true;

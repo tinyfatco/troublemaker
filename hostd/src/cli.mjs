@@ -17,6 +17,7 @@ import { ContextRouter } from "./router.mjs";
 import { RuntimeManager } from "./runtime.mjs";
 import { readRoutingKey, stablePrivateKey } from "./security.mjs";
 import { EventScheduler } from "./scheduler.mjs";
+import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
 import { createHostServer } from "./server.mjs";
 import { HostStore } from "./store.mjs";
 
@@ -82,6 +83,7 @@ async function components(configPath) {
 		: undefined;
 	const runtime = new RuntimeManager(config, store, { mattermost, rocketChat, zulip });
 	const scheduler = new EventScheduler({ config, store, runtime });
+	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail
 		? new InboxDaemon({
 			config,
@@ -123,6 +125,7 @@ async function components(configPath) {
 		zulip,
 		controlNotifier,
 		scheduler,
+		scheduledWakes,
 		mattermostGateway,
 		rocketChatGateway,
 		zulipGateway,
@@ -147,6 +150,8 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
+	const initialScheduledWake = await state.scheduledWakes.tick();
+	if (initialScheduledWake.materialized > 0) state.scheduler.pump();
 
 	let stopped = false;
 	let pollTimer;
@@ -193,9 +198,19 @@ async function serve(configPath) {
 	}
 	if (!stopped) {
 		schedulerTimer = setInterval(
-			() => void state.scheduler.tick().catch((error) => {
-				console.error("troublemaker-hostd: scheduler tick failed:", error);
-			}),
+			() => void (async () => {
+				try {
+					const scheduledWake = await state.scheduledWakes.tick();
+					if (scheduledWake.materialized > 0) state.scheduler.pump();
+				} catch (error) {
+					console.error("troublemaker-hostd: scheduled wake tick failed:", error);
+				}
+				try {
+					await state.scheduler.tick();
+				} catch (error) {
+					console.error("troublemaker-hostd: scheduler tick failed:", error);
+				}
+			})(),
 			state.config.scheduler.tickSeconds * 1000,
 		);
 		schedulerTimer.unref();
@@ -272,7 +287,11 @@ async function main() {
 			return;
 		}
 		if (command === "status") {
-			console.log(JSON.stringify(state.store.status(state.config.scheduler.maxConcurrent), null, 2));
+			console.log(JSON.stringify({
+				...state.store.status(state.config.scheduler.maxConcurrent),
+				scheduledWakeMode: state.config.scheduledWakes.mode,
+				scheduledWakeContextCount: state.config.scheduledWakes.contextIds.length,
+			}, null, 2));
 			return;
 		}
 		usage();

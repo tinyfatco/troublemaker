@@ -158,6 +158,19 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 		return true;
 	}
 
+	async runScheduledEvent(event: MomEvent): Promise<void> {
+		const heartbeat = this.readHeartbeatFile();
+		if (heartbeat.exists && isEffectivelyEmpty(heartbeat.content)) {
+			log.logInfo("Heartbeat skipped (HEARTBEAT.md empty)");
+			return;
+		}
+		if (heartbeat.exists && heartbeat.content.trim()) {
+			event.text += `\n\n## Heartbeat Checklist\n${heartbeat.content.trim()}`;
+			log.logInfo("Heartbeat: injected HEARTBEAT.md content");
+		}
+		await this.handler.handleEvent(event, this, true);
+	}
+
 	private async processQueue(): Promise<void> {
 		if (this.processing) return;
 		this.processing = true;
@@ -166,19 +179,7 @@ If nothing needs attention, note a brief thought and go back to sleep. Avoid say
 			while (this.queue.length > 0) {
 				const event = this.queue.shift()!;
 				try {
-					const heartbeat = this.readHeartbeatFile();
-
-					if (heartbeat.exists && isEffectivelyEmpty(heartbeat.content)) {
-						log.logInfo("Heartbeat skipped (HEARTBEAT.md empty)");
-						continue;
-					}
-
-					if (heartbeat.exists && heartbeat.content.trim()) {
-						event.text += `\n\n## Heartbeat Checklist\n${heartbeat.content.trim()}`;
-						log.logInfo("Heartbeat: injected HEARTBEAT.md content");
-					}
-
-					await this.handler.handleEvent(event, this, true);
+					await this.runScheduledEvent(event);
 				} catch (err) {
 					log.logWarning("Heartbeat run failed", err instanceof Error ? err.message : String(err));
 				}

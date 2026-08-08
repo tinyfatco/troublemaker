@@ -21,6 +21,7 @@ import { MattermostSocketAdapter } from "../../adapters/mattermost-socket.js";
 import { RocketChatWebhookAdapter } from "../../adapters/rocket-chat-webhook.js";
 import { ZulipWebhookAdapter } from "../../adapters/zulip-webhook.js";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
+import { ScheduledPromptWebhookIngress } from "../../adapters/scheduled-prompt-webhook.js";
 import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
 import { dispatchPathForAdapter, indexAdaptersByIdentity } from "./adapter-route-identity.js";
 import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
@@ -1492,6 +1493,14 @@ const handler: MomHandler = {
 	},
 };
 
+async function runScheduledCompaction(): Promise<void> {
+	if (!awareness) throw new Error("No awareness — nothing to compact");
+	await withGlobalRunSlot("compaction:scheduled", async () => {
+		const result = await awareness!.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");
+		log.logInfo(`[auto-compact] ${result.messagesBefore} → ${result.messagesAfter} messages`);
+	});
+}
+
 voiceContract = new FirstClassVoiceContract({
 	workspace: goalWorkspace,
 	isCanonicalBusy: isCanonicalExecutionBusy,
@@ -1523,6 +1532,26 @@ const gateway = new Gateway({
 	uiDir: parsedArgs.uiDir,
 	workspaceDir: workingDir,
 });
+
+const hostOwnsDelayedSchedules = process.env.MOM_HOSTD_SCHEDULE_OWNER === "host";
+const scheduledPromptToken = process.env.MOM_SCHEDULED_PROMPT_INBOUND_TOKEN;
+const hostContextId = process.env.TROUBLEMAKER_CONTEXT_ID;
+if (hostOwnsDelayedSchedules !== Boolean(scheduledPromptToken && hostContextId)) {
+	throw new Error("Hostd schedule ownership requires one exact context and inbound token");
+}
+const scheduledPromptIngress = hostOwnsDelayedSchedules
+	? new ScheduledPromptWebhookIngress({
+		workingDir,
+		inboundToken: scheduledPromptToken!,
+		hostContextId: hostContextId!,
+		adapters,
+		onCompact: runScheduledCompaction,
+	})
+	: null;
+if (scheduledPromptIngress) {
+	scheduledPromptIngress.setHandler(handler);
+	gateway.register("/scheduled-prompt/inbound", (req, res) => scheduledPromptIngress.dispatch(req, res));
+}
 
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
@@ -1758,6 +1787,7 @@ await Promise.all(adapters.map(async (adapter) => {
 		log.logWarning(`[${adapter.name}] adapter.start() failed, skipping: ${err instanceof Error ? err.message : String(err)}`);
 	}
 }));
+if (scheduledPromptIngress) gateway.markReady("/scheduled-prompt/inbound");
 log.logInfo(`[perf] all adapters started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 if (enqueueActiveGoalContinuationWake(true)) {
@@ -2278,13 +2308,8 @@ reconcileFollowUpSchedules(workingDir);
 // first web turns after cold boot are not starved by background scheduling.
 const eventsWatcher = createEventsWatcher(workingDir, adapters, {
 	initialScanDelayMs: INITIAL_EVENTS_SCAN_DELAY_MS,
-	onCompact: async () => {
-		if (!awareness) throw new Error("No awareness — nothing to compact");
-		await withGlobalRunSlot("compaction:scheduled", async () => {
-			const result = await awareness!.runner.compact("Summarize the conversation history. Preserve key facts, decisions, pending tasks, and recent tool results. Discard redundant exchanges.");
-			log.logInfo(`[auto-compact] ${result.messagesBefore} → ${result.messagesAfter} messages`);
-		});
-	},
+	hostOwnsDelayedSchedules,
+	onCompact: runScheduledCompaction,
 });
 eventsWatcher.start();
 log.logInfo(`[perf] scheduled prompt watcher started: ${(performance.now() - T_BOOT).toFixed(0)}ms`);

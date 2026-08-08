@@ -71,6 +71,8 @@
 		"test:ambient-context": "npx tsx test/ambient-context.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
 		"test:events-initial-scan-delay": "npx tsx test/events-initial-scan-delay.test.ts",
+		"test:events-hostd-ownership": "npx tsx test/events-hostd-ownership.test.ts",
+		"test:scheduled-prompt-webhook": "npx tsx test/scheduled-prompt-webhook.test.ts",
 		"test:events-jittered-periodic": "npx tsx test/events-jittered-periodic.test.ts",
 		"test:events-source-revalidation": "npx tsx test/events-source-revalidation.test.ts",
 		"test:email-thread-headers": "npx tsx test/email-thread-headers.test.ts",
