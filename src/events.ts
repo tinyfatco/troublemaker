@@ -159,11 +159,12 @@ export class EventsWatcher {
 	private historyDir?: string;
 	private ensureDir: boolean;
 	private label: string;
+	private hostOwnsDelayedSchedules: boolean;
 
 	constructor(
 		private eventsDir: string,
 		private adapters: PlatformAdapter[],
-		options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number; historyDir?: string; ensureDir?: boolean; label?: string },
+		options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number; historyDir?: string; ensureDir?: boolean; label?: string; hostOwnsDelayedSchedules?: boolean },
 	) {
 		this.startTime = Date.now();
 		this.onCompact = options?.onCompact;
@@ -171,6 +172,7 @@ export class EventsWatcher {
 		this.historyDir = options?.historyDir;
 		this.ensureDir = options?.ensureDir ?? true;
 		this.label = options?.label ?? basename(eventsDir);
+		this.hostOwnsDelayedSchedules = options?.hostOwnsDelayedSchedules ?? false;
 	}
 
 	/**
@@ -356,6 +358,10 @@ export class EventsWatcher {
 		}
 
 		this.knownFiles.add(filename);
+		if (this.hostOwnsDelayedSchedules && (event.type === "one-shot" || event.type === "periodic")) {
+			log.logInfo(`Hostd owns delayed scheduled prompt: ${filename}`);
+			return;
+		}
 
 		// Schedule based on type
 		switch (event.type) {
@@ -679,7 +685,7 @@ export class EventsWatcher {
 export function createEventsWatcher(
 	workspaceDir: string,
 	adapters: PlatformAdapter[],
-	options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number },
+	options?: { onCompact?: () => Promise<void>; initialScanDelayMs?: number; hostOwnsDelayedSchedules?: boolean },
 ): ScheduledWatcher {
 	const primary = new EventsWatcher(attentionQueueDir(workspaceDir), adapters, {
 		...options,
@@ -688,7 +694,12 @@ export function createEventsWatcher(
 	});
 	const legacyDir = legacyEventsDir(workspaceDir);
 	const legacy = existsSync(legacyDir)
-		? new EventsWatcher(legacyDir, adapters, { ...options, ensureDir: false, label: "events (legacy)" })
+		? new EventsWatcher(legacyDir, adapters, {
+			...options,
+			ensureDir: false,
+			label: "events (legacy)",
+			hostOwnsDelayedSchedules: false,
+		})
 		: null;
 
 	return {

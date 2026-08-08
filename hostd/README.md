@@ -231,8 +231,10 @@ Human-readable channel names are labels only and never authorize reuse.
 Ingress only journals work; it never waits for an agent turn. The scheduler
 leases up to `scheduler.maxConcurrent` contexts globally and one turn per
 context, then relies on fenced runtime heartbeats and completion receipts.
-Expired leases are recovered after a crash. Idle runtimes are stopped after
-`scheduler.idleSeconds`, and the least-recently-active idle runtime is evicted
+Expired pre-running leases are recovered after a crash. A lease that expires
+after the runtime reported `running` becomes `uncertain` and is not replayed,
+because an external side effect may already have happened. Idle runtimes are
+stopped after `scheduler.idleSeconds`, and the least-recently-active idle runtime is evicted
 when a new context needs a full host's slot. Workspaces remain durable.
 
 Build `hostd/Containerfile.runtime` from a verified checkout and set
@@ -249,6 +251,37 @@ Hostd supports native `docker` and Podman-style engine commands. Docker
 launches use its host-gateway mapping and remove only the deterministic stopped
 context container before recreation. Podman launchers retain `--replace`,
 `keep-id`, and rootless slirp host-loopback flags.
+
+## Scheduled wakes for stopped contexts
+
+`scheduledWakes.mode` defaults to `off`, which leaves every runtime's existing
+attention watcher unchanged. `shadow` indexes and validates delayed prompts
+without materializing an event or waking a context. An empty shadow
+`contextIds` list observes all Hostd contexts; optional exact IDs narrow it.
+
+`host` mode requires at least one exact `contextId`. Only those contexts move
+one-shot and periodic ownership to Hostd. Immediate prompts and legacy
+`events/` schedules remain runtime-owned. Hostd reads only bounded regular
+files under that context's derived `attention/queue/`, stores schedule
+generations and deterministic periodic fire times in SQLite, revalidates the
+source bytes before each occurrence, and atomically advances the schedule with
+one unique queued event. A stopped context is cold-started through the normal
+capacity manager and receives the occurrence on an authenticated
+context-scoped `/scheduled-prompt/inbound` route.
+
+Periodic downtime coalesces to at most the newest eligible slot inside the
+grace window; backlog replay is bounded. Configured limits cap contexts per
+scan, files and schedules per context, file/prompt size, due events per tick,
+catch-up slots, hourly occurrences, cron frequency, and one-shot horizon.
+One-shot sources are archived after durable materialization. A signed `noop`
+action exists for isolated rollout canaries; it exercises cold start,
+authentication, receipts, and idempotency without invoking a model or external
+side effect.
+
+Roll out only from `off` to zero-wake `shadow`, then one exact no-op canary,
+and finally the intended bounded exact context set. Returning to `off` is the
+runtime ownership rollback; the per-context runtime-version fence replaces an
+online container before ownership changes, preventing dual timers.
 
 ## Rocket.Chat relationship work and Omnichannel conversations
 

@@ -180,6 +180,31 @@ export class HostStore {
 				UNIQUE (source, provider_message_id)
 			);
 
+			CREATE TABLE IF NOT EXISTS scheduled_prompts (
+				context_id TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				filename TEXT NOT NULL,
+				source_sha256 TEXT NOT NULL,
+				generation INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				status TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				canonical_slot_at TEXT,
+				next_fire_at TEXT,
+				last_indexed_at TEXT NOT NULL,
+				last_materialized_at TEXT,
+				last_error TEXT,
+				archive_outcome TEXT,
+				archived_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				PRIMARY KEY (context_id, filename),
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS scheduled_prompts_due_index
+				ON scheduled_prompts(status, next_fire_at);
+
 			CREATE TABLE IF NOT EXISTS outbox (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				idempotency_key TEXT NOT NULL UNIQUE,
@@ -1259,6 +1284,307 @@ export class HostStore {
 		`).get(contextId).sequence;
 	}
 
+	getScheduledPrompt(contextId, filename) {
+		return this.database.prepare(`
+			SELECT context_id AS contextId, target_id AS targetId, filename,
+				source_sha256 AS sourceSha256, generation, kind, status,
+				payload_json AS payloadJson, canonical_slot_at AS canonicalSlotAt,
+				next_fire_at AS nextFireAt, last_indexed_at AS lastIndexedAt,
+				last_materialized_at AS lastMaterializedAt, last_error AS lastError,
+				archive_outcome AS archiveOutcome, archived_at AS archivedAt,
+				created_at AS createdAt, updated_at AS updatedAt
+			FROM scheduled_prompts WHERE context_id = ? AND filename = ?
+		`).get(contextId, filename);
+	}
+
+	listScheduledPrompts(contextId) {
+		const query = contextId === undefined
+			? this.database.prepare(`
+				SELECT context_id AS contextId, target_id AS targetId, filename,
+					source_sha256 AS sourceSha256, generation, kind, status,
+					payload_json AS payloadJson, canonical_slot_at AS canonicalSlotAt,
+					next_fire_at AS nextFireAt, last_indexed_at AS lastIndexedAt,
+					last_materialized_at AS lastMaterializedAt, last_error AS lastError,
+					archive_outcome AS archiveOutcome, archived_at AS archivedAt,
+					created_at AS createdAt, updated_at AS updatedAt
+				FROM scheduled_prompts ORDER BY context_id, filename
+			`)
+			: this.database.prepare(`
+				SELECT context_id AS contextId, target_id AS targetId, filename,
+					source_sha256 AS sourceSha256, generation, kind, status,
+					payload_json AS payloadJson, canonical_slot_at AS canonicalSlotAt,
+					next_fire_at AS nextFireAt, last_indexed_at AS lastIndexedAt,
+					last_materialized_at AS lastMaterializedAt, last_error AS lastError,
+					archive_outcome AS archiveOutcome, archived_at AS archivedAt,
+					created_at AS createdAt, updated_at AS updatedAt
+				FROM scheduled_prompts WHERE context_id = ? ORDER BY filename
+			`);
+		return contextId === undefined ? query.all() : query.all(contextId);
+	}
+
+	upsertScheduledPrompt({
+		contextId,
+		targetId,
+		filename,
+		sourceSha256,
+		kind,
+		status,
+		payload,
+		canonicalSlotAt,
+		nextFireAt,
+		lastError,
+	}) {
+		const timestamp = now();
+		const existing = this.getScheduledPrompt(contextId, filename);
+		if (!existing) {
+			this.database.prepare(`
+				INSERT INTO scheduled_prompts(
+					context_id, target_id, filename, source_sha256, generation,
+					kind, status, payload_json, canonical_slot_at, next_fire_at,
+					last_indexed_at, last_error, created_at, updated_at
+				) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				contextId,
+				targetId,
+				filename,
+				sourceSha256,
+				kind,
+				status,
+				JSON.stringify(payload),
+				canonicalSlotAt,
+				nextFireAt,
+				timestamp,
+				lastError ? String(lastError).slice(0, 1000) : null,
+				timestamp,
+				timestamp,
+			);
+			return this.getScheduledPrompt(contextId, filename);
+		}
+		if (existing.sourceSha256 === sourceSha256) {
+			const rearm = ["disarmed", "throttled"].includes(existing.status) && status === "armed";
+			this.database.prepare(`
+				UPDATE scheduled_prompts SET target_id = ?, last_indexed_at = ?,
+					status = CASE WHEN ? THEN 'armed' ELSE status END,
+					last_error = CASE WHEN ? THEN NULL ELSE last_error END,
+					updated_at = ?
+				WHERE context_id = ? AND filename = ?
+			`).run(targetId, timestamp, rearm ? 1 : 0, rearm ? 1 : 0, timestamp, contextId, filename);
+			return this.getScheduledPrompt(contextId, filename);
+		}
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET target_id = ?, source_sha256 = ?,
+				generation = generation + 1, kind = ?, status = ?, payload_json = ?,
+				canonical_slot_at = ?, next_fire_at = ?, last_indexed_at = ?,
+				last_materialized_at = NULL, last_error = ?, archive_outcome = NULL,
+				archived_at = NULL, updated_at = ?
+			WHERE context_id = ? AND filename = ?
+		`).run(
+			targetId,
+			sourceSha256,
+			kind,
+			status,
+			JSON.stringify(payload),
+			canonicalSlotAt,
+			nextFireAt,
+			timestamp,
+			lastError ? String(lastError).slice(0, 1000) : null,
+			timestamp,
+			contextId,
+			filename,
+		);
+		return this.getScheduledPrompt(contextId, filename);
+	}
+
+	disarmMissingScheduledPrompts(contextId, filenames) {
+		const seen = new Set(filenames);
+		let changes = 0;
+		for (const schedule of this.listScheduledPrompts(contextId)) {
+			if (seen.has(schedule.filename) || !["armed", "throttled", "invalid", "runtime-owned"].includes(schedule.status)) continue;
+			changes += this.database.prepare(`
+				UPDATE scheduled_prompts SET status = 'disarmed', next_fire_at = NULL,
+					last_error = 'source file is absent', updated_at = ?
+				WHERE context_id = ? AND filename = ? AND generation = ?
+			`).run(now(), contextId, schedule.filename, schedule.generation).changes;
+		}
+		return changes;
+	}
+
+	disarmScheduledPrompt(schedule, error) {
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET status = 'disarmed', next_fire_at = NULL,
+				last_error = ?, updated_at = ?
+			WHERE context_id = ? AND filename = ? AND generation = ? AND status = 'armed'
+		`).run(
+			String(error).slice(0, 1000),
+			now(),
+			schedule.contextId,
+			schedule.filename,
+			schedule.generation,
+		);
+		return this.getScheduledPrompt(schedule.contextId, schedule.filename);
+	}
+
+	listDueScheduledPrompts(timestamp = now(), limit = 32, contextIds) {
+		if (contextIds !== undefined && !Array.isArray(contextIds)) {
+			throw new Error("scheduled contextIds must be an array");
+		}
+		if (contextIds?.length === 0) return [];
+		const placeholders = contextIds?.map(() => "?").join(", ");
+		const contextClause = contextIds ? `AND context_id IN (${placeholders})` : "";
+		return this.database.prepare(`
+			SELECT context_id AS contextId, target_id AS targetId, filename,
+				source_sha256 AS sourceSha256, generation, kind, status,
+				payload_json AS payloadJson, canonical_slot_at AS canonicalSlotAt,
+				next_fire_at AS nextFireAt, last_indexed_at AS lastIndexedAt,
+				last_materialized_at AS lastMaterializedAt, last_error AS lastError,
+				archive_outcome AS archiveOutcome, archived_at AS archivedAt,
+				created_at AS createdAt, updated_at AS updatedAt
+			FROM scheduled_prompts
+			WHERE status = 'armed' AND next_fire_at IS NOT NULL AND next_fire_at <= ?
+				${contextClause}
+			ORDER BY next_fire_at, context_id, filename
+			LIMIT ?
+		`).all(timestamp, ...(contextIds || []), limit);
+	}
+
+	materializeScheduledPrompt({
+		schedule,
+		occurrenceId,
+		canonicalSlotAt,
+		fireAt,
+		nextCanonicalSlotAt,
+		nextFireAt,
+		completeSchedule,
+	}) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const current = this.getScheduledPrompt(schedule.contextId, schedule.filename);
+			if (
+				!current
+				|| current.status !== "armed"
+				|| current.generation !== schedule.generation
+				|| current.sourceSha256 !== schedule.sourceSha256
+				|| current.canonicalSlotAt !== schedule.canonicalSlotAt
+				|| current.nextFireAt !== schedule.nextFireAt
+			) {
+				this.database.exec("COMMIT");
+				return null;
+			}
+			const awarenessSequence = this.nextAwarenessSequence(schedule.contextId);
+			const payload = {
+				schedule: {
+					filename: schedule.filename,
+					generation: schedule.generation,
+					canonicalSlotAt,
+					fireAt,
+				},
+				event: JSON.parse(schedule.payloadJson),
+			};
+			const inserted = this.database.prepare(`
+				INSERT INTO events(
+					id, source, provider_message_id, provider_thread_id,
+					principal_hash, target_id, context_id, awareness_sequence, status,
+					payload_json, received_at, available_at, updated_at
+				) VALUES (?, 'scheduled-prompt', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+				ON CONFLICT(source, provider_message_id) DO NOTHING
+			`).run(
+				occurrenceId,
+				occurrenceId,
+				`attention:${schedule.filename}`,
+				`scheduled:${schedule.contextId}`,
+				schedule.targetId,
+				schedule.contextId,
+				awarenessSequence,
+				JSON.stringify(payload),
+				timestamp,
+				timestamp,
+				timestamp,
+			);
+			if (inserted.changes !== 1) {
+				throw new Error("scheduled occurrence conflicts with durable event state");
+			}
+			this.database.prepare(`
+				UPDATE scheduled_prompts SET status = ?, canonical_slot_at = ?,
+					next_fire_at = ?, last_materialized_at = ?, last_error = NULL,
+					updated_at = ?
+				WHERE context_id = ? AND filename = ? AND generation = ?
+			`).run(
+				completeSchedule ? "completed" : "armed",
+				nextCanonicalSlotAt,
+				nextFireAt,
+				timestamp,
+				timestamp,
+				schedule.contextId,
+				schedule.filename,
+				schedule.generation,
+			);
+			this.database.exec("COMMIT");
+			return this.getEventByProviderMessage("scheduled-prompt", occurrenceId);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	advanceScheduledPrompt(schedule, next, lastError = null) {
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET canonical_slot_at = ?, next_fire_at = ?,
+				last_error = ?, updated_at = ?
+			WHERE context_id = ? AND filename = ? AND generation = ? AND status = 'armed'
+		`).run(
+			new Date(next.slotMs).toISOString(),
+			new Date(next.fireMs).toISOString(),
+			lastError,
+			now(),
+			schedule.contextId,
+			schedule.filename,
+			schedule.generation,
+		);
+		return this.getScheduledPrompt(schedule.contextId, schedule.filename);
+	}
+
+	expireScheduledPrompt(schedule, error) {
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET status = 'expired', next_fire_at = NULL,
+				last_error = ?, updated_at = ?
+			WHERE context_id = ? AND filename = ? AND generation = ? AND status = 'armed'
+		`).run(String(error).slice(0, 1000), now(), schedule.contextId, schedule.filename, schedule.generation);
+		return this.getScheduledPrompt(schedule.contextId, schedule.filename);
+	}
+
+	noteScheduledPromptError(schedule, error) {
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET last_error = ?, updated_at = ?
+			WHERE context_id = ? AND filename = ? AND generation = ?
+		`).run(String(error).slice(0, 1000), now(), schedule.contextId, schedule.filename, schedule.generation);
+	}
+
+	markScheduledPromptArchived(schedule, outcome) {
+		this.database.prepare(`
+			UPDATE scheduled_prompts SET archive_outcome = ?, archived_at = ?, updated_at = ?
+			WHERE context_id = ? AND filename = ? AND generation = ?
+		`).run(outcome, now(), now(), schedule.contextId, schedule.filename, schedule.generation);
+	}
+
+	countRecentScheduledEvents(contextId, since) {
+		return this.database.prepare(`
+			SELECT COUNT(*) AS count FROM events
+			WHERE source = 'scheduled-prompt' AND context_id = ? AND received_at >= ?
+		`).get(contextId, since).count;
+	}
+
+	markEventUncertain(id, error, leaseToken) {
+		const event = this.getEvent(id);
+		if (!event || (leaseToken && event.leaseToken !== leaseToken)) return event;
+		this.database.prepare(`
+			UPDATE events SET status = 'uncertain', last_error = ?, lease_token = NULL,
+				lease_expires_at = NULL, updated_at = ?
+			WHERE id = ? AND status IN ('leased', 'accepted', 'running')
+		`).run(String(error).slice(0, 1000), now(), id);
+		return this.getEvent(id);
+	}
+
 	nextAvailablePort(basePort, maxPort) {
 		const rows = this.database.prepare(`
 			SELECT port FROM contexts WHERE port BETWEEN ? AND ? ORDER BY port
@@ -1556,11 +1882,25 @@ export class HostStore {
 
 	recoverExpiredEvents() {
 		const timestamp = now();
-		return this.database.prepare(`
-			UPDATE events SET status = 'queued', available_at = ?, lease_token = NULL,
-				lease_expires_at = NULL, last_error = 'delivery lease expired', updated_at = ?
-			WHERE status IN ('leased', 'accepted', 'running') AND lease_expires_at < ?
-		`).run(timestamp, timestamp, timestamp).changes;
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const uncertain = this.database.prepare(`
+				UPDATE events SET status = 'uncertain', lease_token = NULL,
+					lease_expires_at = NULL,
+					last_error = 'runtime became unreachable after reporting running', updated_at = ?
+				WHERE status = 'running' AND lease_expires_at < ?
+			`).run(timestamp, timestamp).changes;
+			const recovered = this.database.prepare(`
+				UPDATE events SET status = 'queued', available_at = ?, lease_token = NULL,
+					lease_expires_at = NULL, last_error = 'delivery lease expired before running', updated_at = ?
+				WHERE status IN ('leased', 'accepted') AND lease_expires_at < ?
+			`).run(timestamp, timestamp, timestamp).changes;
+			this.database.exec("COMMIT");
+			return { recovered, uncertain };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	countActiveEvents() {
@@ -2035,6 +2375,22 @@ export class HostStore {
 			oldestQueuedAt: queue.oldest ?? null,
 			deadEvents: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM events WHERE status = 'dead'
+			`).get().count,
+			uncertainEvents: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM events WHERE status = 'uncertain'
+			`).get().count,
+			scheduledPrompts: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM scheduled_prompts
+			`).get().count,
+			armedScheduledPrompts: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM scheduled_prompts WHERE status = 'armed'
+			`).get().count,
+			invalidScheduledPrompts: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM scheduled_prompts WHERE status = 'invalid'
+			`).get().count,
+			completedScheduledOccurrences: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM events
+				WHERE source = 'scheduled-prompt' AND status = 'completed'
 			`).get().count,
 			quarantinedMessages: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM seen_messages WHERE disposition LIKE 'quarantined:%'

@@ -39,6 +39,10 @@
     "tickSeconds": 2,
     "maximumAttempts": 5
   },
+  "scheduledWakes": {
+    "mode": "off",
+    "contextIds": []
+  },
   "rocketChat": {
     "url": "http://127.0.0.1:3100",
     "adminUserIdEnv": "ROCKETCHAT_HOSTD_ADMIN_USER_ID",

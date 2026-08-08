@@ -35,6 +35,8 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		},
 	}]);
 	assert.equal(config.zulip.agentDisplayName, "Operator");
+	assert.equal(config.scheduledWakes.mode, "off");
+	assert.deepEqual(config.scheduledWakes.contextIds, []);
 	assert.deepEqual(config.phone, {
 		provider: "sendly",
 		directOnly: true,
@@ -442,6 +444,64 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 			}),
 			/siteId must bind to exactly one principal\/project/,
 		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+test("loads bounded scheduled wake shadow and exact host ownership", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-scheduled-wakes-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		delete raw.scheduledWakes;
+		await writeFile(path, JSON.stringify(raw));
+		let config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.scheduledWakes.mode, "off");
+		assert.deepEqual(config.scheduledWakes.contextIds, []);
+
+		raw.scheduledWakes = {
+			mode: "shadow",
+			contextIds: [],
+			maximumContextsPerTick: 7,
+			maximumSchedulesPerContext: 12,
+			maximumScanFilesPerTick: 9,
+			maximumOccurrencesPerHour: 4,
+		};
+		await writeFile(path, JSON.stringify(raw));
+		config = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual({
+			mode: config.scheduledWakes.mode,
+			contextIds: config.scheduledWakes.contextIds,
+			maximumContextsPerTick: config.scheduledWakes.maximumContextsPerTick,
+			maximumSchedulesPerContext: config.scheduledWakes.maximumSchedulesPerContext,
+			maximumScanFilesPerTick: config.scheduledWakes.maximumScanFilesPerTick,
+			maximumOccurrencesPerHour: config.scheduledWakes.maximumOccurrencesPerHour,
+		}, {
+			mode: "shadow",
+			contextIds: [],
+			maximumContextsPerTick: 7,
+			maximumSchedulesPerContext: 12,
+			maximumScanFilesPerTick: 9,
+			maximumOccurrencesPerHour: 4,
+		});
+
+		raw.scheduledWakes = { mode: "host", contextIds: [] };
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /host mode requires at least one exact contextId/);
+
+		raw.scheduledWakes = { mode: "host", contextIds: ["front-desk:example:intake", "front-desk:example:intake"] };
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /cannot repeat a context/);
+
+		raw.scheduledWakes = {
+			mode: "host",
+			contextIds: ["front-desk:example:intake"],
+			maximumSchedulesPerContext: 2,
+			maximumScanFilesPerTick: 3,
+		};
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /maximumScanFilesPerTick must be an integer from 1 to 2/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

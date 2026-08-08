@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
 import {
@@ -20,6 +20,30 @@ export function siteDeploymentBindings(config, store, target, contextId, routing
 function safeRuntimeName(contextId) {
 	const normalized = contextId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/-+/g, "-");
 	return `troublemaker-${normalized}`.slice(0, 63);
+}
+
+export function hostOwnsScheduledWakes(config, contextId) {
+	return config.scheduledWakes?.mode === "host"
+		&& config.scheduledWakes.contextIds.includes(contextId);
+}
+
+export function scheduledWakeRuntimeVersion(config, target, contextId) {
+	return hostOwnsScheduledWakes(config, contextId)
+		? `${target.runtimeVersion}:scheduled-host-v1`
+		: target.runtimeVersion;
+}
+
+/** Derive one context workspace without accepting path input from schedule files. */
+export function contextWorkspacePath(target, contextId) {
+	const contextDirectory = resolve(
+		target.contextsDirectory,
+		contextId.replace(/[^a-z0-9_.-]/gi, "_"),
+	);
+	const root = `${resolve(target.contextsDirectory)}/`;
+	if (!`${contextDirectory}/`.startsWith(root)) {
+		throw new Error(`context ${contextId} escaped its configured contexts directory`);
+	}
+	return join(contextDirectory, "workspace");
 }
 
 async function exists(path) {
@@ -226,6 +250,10 @@ export class RuntimeManager {
 			await this.deliverPhoneWebhook(target, context, event, payload);
 			return;
 		}
+		if (event.source === "scheduled-prompt") {
+			await this.deliverScheduledPromptWebhook(target, context, event, payload);
+			return;
+		}
 		throw new Error(`unsupported event source ${event.source}`);
 	}
 
@@ -375,6 +403,36 @@ export class RuntimeManager {
 		}
 	}
 
+	async deliverScheduledPromptWebhook(target, context, event, input) {
+		if (!hostOwnsScheduledWakes(this.config, event.contextId)) {
+			throw new Error(`Hostd does not own schedules for context ${event.contextId}`);
+		}
+		const inboundToken = contextCapability(
+			target.inboundToken,
+			"scheduled-prompt-inbound",
+			context.contextId,
+		);
+		const response = await fetch(context.scheduledPromptEndpoint, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${inboundToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				deliveryId: event.id,
+				hostContextId: event.contextId,
+				schedule: input.schedule,
+				event: input.event,
+				hostReceipt: this.hostReceipt(target, event),
+			}),
+			signal: AbortSignal.timeout(30_000),
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(`scheduled prompt runtime returned HTTP ${response.status}: ${text.slice(0, 200)}`);
+		}
+	}
+
 	async provisionOciContext(target, contextId) {
 		let context = this.store.getContext(contextId);
 		if (!context) {
@@ -391,8 +449,8 @@ export class RuntimeManager {
 		const rocketChat = this.rocketChat ? await this.rocketChat.ensureContext(contextId) : null;
 		const zulip = this.zulip ? await this.zulip.ensureContext(contextId) : null;
 
-		const contextDirectory = resolve(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"));
-		const workspace = join(contextDirectory, "workspace");
+		const workspace = contextWorkspacePath(target, contextId);
+		const contextDirectory = dirname(workspace);
 		if (!(await exists(workspace))) {
 			await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
 			await cp(target.workspaceTemplate, workspace, {
@@ -427,6 +485,7 @@ export class RuntimeManager {
 			contextDirectory,
 			workspace,
 		} = await this.provisionOciContext(target, contextId);
+		const expectedRuntimeVersion = scheduledWakeRuntimeVersion(this.config, target, contextId);
 
 		let inspect = await run(
 			target.engine,
@@ -436,10 +495,10 @@ export class RuntimeManager {
 		if (
 			inspect.code === 0
 			&& inspect.stdout.trim() === "true"
-			&& context.runtimeVersion !== target.runtimeVersion
+			&& context.runtimeVersion !== expectedRuntimeVersion
 		) {
 			console.log(
-				`troublemaker-hostd: replacing ${contextId} runtime ${context.runtimeVersion || "unknown"} with ${target.runtimeVersion}`,
+				`troublemaker-hostd: replacing ${contextId} runtime ${context.runtimeVersion || "unknown"} with ${expectedRuntimeVersion}`,
 			);
 			await this.stopOciContext(target, { ...context, contextId });
 			inspect = { ...inspect, code: 1, stdout: "false" };
@@ -470,6 +529,7 @@ export class RuntimeManager {
 				contextId,
 				this.routingKey,
 			);
+			const scheduledWakesOwned = hostOwnsScheduledWakes(this.config, contextId);
 			const env = {
 				HOME: "/data",
 				...(this.config.gmail ? {
@@ -484,6 +544,14 @@ export class RuntimeManager {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
 				...(siteFactory ? { MOM_SITE_FACTORY_ENABLED: "1" } : {}),
+				...(scheduledWakesOwned ? {
+					MOM_HOSTD_SCHEDULE_OWNER: "host",
+					MOM_SCHEDULED_PROMPT_INBOUND_TOKEN: contextCapability(
+						target.inboundToken,
+						"scheduled-prompt-inbound",
+						contextId,
+					),
+				} : {}),
 				...(mattermost ? {
 					MOM_MATTERMOST_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/mattermost/${encodeURIComponent(contextId)}`,
 					MOM_MATTERMOST_BOT_TOKEN: contextCapability(target.outboundToken, "mattermost", contextId),
@@ -578,13 +646,13 @@ export class RuntimeManager {
 			this.store.updateContext(contextId, {
 				status: "starting",
 				lastStartedAt: new Date().toISOString(),
-				runtimeVersion: target.runtimeVersion,
+				runtimeVersion: expectedRuntimeVersion,
 			});
 		}
 
 		const endpoint = `http://127.0.0.1:${context.port}/email/inbound`;
 		await waitForHealth(`http://127.0.0.1:${context.port}/health`);
-		this.store.updateContext(contextId, { status: "online", runtimeVersion: target.runtimeVersion });
+		this.store.updateContext(contextId, { status: "online", runtimeVersion: expectedRuntimeVersion });
 		return {
 			...this.store.getContext(contextId),
 			contextId,
@@ -593,6 +661,7 @@ export class RuntimeManager {
 			rocketChatEndpoint: `http://127.0.0.1:${context.port}/rocketchat/inbound`,
 			zulipEndpoint: `http://127.0.0.1:${context.port}/zulip/inbound`,
 			phoneEndpoint: `http://127.0.0.1:${context.port}/phone-messaging/webhook`,
+			scheduledPromptEndpoint: `http://127.0.0.1:${context.port}/scheduled-prompt/inbound`,
 			statusEndpoint: `http://127.0.0.1:${context.port}/status`,
 		};
 	}
@@ -607,6 +676,25 @@ export class RuntimeManager {
 		if (!candidate) throw new Error("all runtime slots are active");
 		console.log(`troublemaker-hostd: evicting idle runtime ${candidate.id} for ${requestedContextId}`);
 		await this.stopOciContext(target, { ...candidate, contextId: candidate.id });
+	}
+
+	async reconcileScheduledWakeOwnership() {
+		for (const context of this.store.listContexts()) {
+			if (context.status !== "online") continue;
+			const target = this.config.targetsById.get(context.targetId);
+			if (!target) continue;
+			const hostOwned = hostOwnsScheduledWakes(this.config, context.id);
+			const expected = scheduledWakeRuntimeVersion(this.config, target, context.id);
+			const wasHostOwned = context.runtimeVersion?.endsWith(":scheduled-host-v1") === true;
+			if (context.runtimeVersion === expected || (!hostOwned && !wasHostOwned)) continue;
+			await this.stopOciContext(target, { ...context, contextId: context.id });
+			if (!hostOwned && wasHostOwned) {
+				// Rollback to local ownership must restart an already-online runtime so
+				// its historical in-process timers resume. Previously stopped contexts
+				// remain stopped, preserving the pre-Hostd behavior.
+				await this.ensureOciContext(target, context.id);
+			}
+		}
 	}
 
 	async reconcile() {

@@ -30,6 +30,109 @@ function boolean(value, fallback, label) {
 	return candidate;
 }
 
+function scheduledWakesConfig(raw) {
+	const scheduled = raw === undefined ? {} : object(raw, "scheduledWakes");
+	const mode = scheduled.mode === undefined ? "off" : text(scheduled.mode, "scheduledWakes.mode").toLowerCase();
+	if (!["off", "shadow", "host"].includes(mode)) {
+		throw new Error("scheduledWakes.mode must be off, shadow, or host");
+	}
+	const rawContextIds = scheduled.contextIds ?? [];
+	if (!Array.isArray(rawContextIds)) throw new Error("scheduledWakes.contextIds must be an array");
+	const contextIds = rawContextIds.map((value, index) => {
+		const contextId = text(value, `scheduledWakes.contextIds[${index}]`);
+		if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId)) {
+			throw new Error(`scheduledWakes.contextIds[${index}] is invalid`);
+		}
+		return contextId;
+	});
+	if (new Set(contextIds).size !== contextIds.length) {
+		throw new Error("scheduledWakes.contextIds cannot repeat a context");
+	}
+	if (contextIds.length > 64) throw new Error("scheduledWakes.contextIds cannot exceed 64 contexts");
+	if (mode === "host" && contextIds.length === 0) {
+		throw new Error("scheduledWakes.host mode requires at least one exact contextId");
+	}
+	const maximumSchedulesPerContext = integer(
+		scheduled.maximumSchedulesPerContext,
+		64,
+		"scheduledWakes.maximumSchedulesPerContext",
+		1,
+		256,
+	);
+	const maximumScanFilesPerTick = integer(
+		scheduled.maximumScanFilesPerTick,
+		64,
+		"scheduledWakes.maximumScanFilesPerTick",
+		1,
+		maximumSchedulesPerContext,
+	);
+	const maximumFileBytes = integer(
+		scheduled.maximumFileBytes,
+		64 * 1024,
+		"scheduledWakes.maximumFileBytes",
+		1024,
+		1024 * 1024,
+	);
+	const maximumPromptBytes = integer(
+		scheduled.maximumPromptBytes,
+		32 * 1024,
+		"scheduledWakes.maximumPromptBytes",
+		1,
+		maximumFileBytes,
+	);
+	return {
+		mode,
+		contextIds,
+		maximumContextsPerTick: integer(
+			scheduled.maximumContextsPerTick,
+			64,
+			"scheduledWakes.maximumContextsPerTick",
+			1,
+			256,
+		),
+		maximumSchedulesPerContext,
+		maximumScanFilesPerTick,
+		maximumFileBytes,
+		maximumPromptBytes,
+		minimumPeriodicSeconds: integer(
+			scheduled.minimumPeriodicSeconds,
+			300,
+			"scheduledWakes.minimumPeriodicSeconds",
+			300,
+			86_400,
+		),
+		maximumHorizonDays: integer(
+			scheduled.maximumHorizonDays,
+			366,
+			"scheduledWakes.maximumHorizonDays",
+			1,
+			366,
+		),
+		graceSeconds: integer(scheduled.graceSeconds, 600, "scheduledWakes.graceSeconds", 0, 86_400),
+		maximumDuePerTick: integer(
+			scheduled.maximumDuePerTick,
+			4,
+			"scheduledWakes.maximumDuePerTick",
+			1,
+			64,
+		),
+		maximumCatchUpSlots: integer(
+			scheduled.maximumCatchUpSlots,
+			64,
+			"scheduledWakes.maximumCatchUpSlots",
+			1,
+			1024,
+		),
+		maximumOccurrencesPerHour: integer(
+			scheduled.maximumOccurrencesPerHour,
+			12,
+			"scheduledWakes.maximumOccurrencesPerHour",
+			1,
+			120,
+		),
+	};
+}
+
 function envSecret(name, label, environment) {
 	const key = text(name, label);
 	const value = environment[key];
@@ -577,6 +680,7 @@ export async function loadConfig(path, environment = process.env) {
 	const gmail = raw.gmail === undefined ? undefined : object(raw.gmail, "gmail");
 	const routing = object(raw.routing, "routing");
 	const scheduler = object(raw.scheduler ?? {}, "scheduler");
+	const scheduledWakes = scheduledWakesConfig(raw.scheduledWakes);
 	if (!Array.isArray(raw.targets) || raw.targets.length === 0) {
 		throw new Error("targets must contain at least one target");
 	}
@@ -801,6 +905,7 @@ export async function loadConfig(path, environment = process.env) {
 			tickSeconds: integer(scheduler.tickSeconds, 2, "scheduler.tickSeconds", 1, 60),
 			maximumAttempts: integer(scheduler.maximumAttempts, 5, "scheduler.maximumAttempts", 1, 20),
 		},
+		scheduledWakes,
 		mattermost,
 		rocketChat,
 		zulip,
