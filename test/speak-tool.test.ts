@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -86,6 +87,34 @@ try {
 	await waitForFile(spokenPath, "hello from speak");
 	await resetSpeechOutputCoordinatorsForTests();
 
+	const startupCancelTracePath = join(tempDir, "startup-cancel-trace.txt");
+	const startupCancelScriptPath = join(tempDir, "startup-cancel.sh");
+	await writeFile(startupCancelScriptPath, `#!/bin/sh
+printf 'launched\\n' >> ${shellEscape(startupCancelTracePath)}
+sleep 2
+printf 'finished\\n' >> ${shellEscape(startupCancelTracePath)}
+`);
+	await chmod(startupCancelScriptPath, 0o700);
+	await writeFile(join(tempDir, "settings.json"), `${JSON.stringify({
+		speak: {
+			backend: "command",
+			command: `exec ${shellEscape(startupCancelScriptPath)}`,
+			maxChars: 80,
+		},
+	}, null, 2)}\n`);
+	const startupCancelTool = createSpeakTool(tempDir, { env: {}, platform: "darwin", laneId: "process-startup-cancel-test" });
+	const startupController = new AbortController();
+	const startupAttempt = startupCancelTool.execute("startup-cancel-id", {
+		label: "cancel while process starts",
+		text: "must stop during startup",
+	}, startupController.signal);
+	startupController.abort();
+	await assert.rejects(startupAttempt, /caller_aborted/);
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 900));
+	const startupTrace = await readFile(startupCancelTracePath, "utf-8").catch(() => "");
+	assert.equal(startupTrace.includes("finished"), false, "startup cancellation terminates a child immediately after spawn");
+	await resetSpeechOutputCoordinatorsForTests();
+
 	const queueTracePath = join(tempDir, "queue-trace.txt");
 	const queueScriptPath = join(tempDir, "queue-speech.sh");
 	await writeFile(queueScriptPath, `#!/bin/sh
@@ -109,10 +138,14 @@ printf 'end:%s\\n' "$text" >> ${shellEscape(queueTracePath)}
 	await waitForLines(queueTracePath, ["start:first", "end:first", "start:second", "end:second"]);
 
 	const originalDuplicate = await queuedTool.execute("duplicate-id", { label: "original duplicate", text: "only-once" });
-	const suppressedDuplicate = await queuedTool.execute("duplicate-id", { label: "suppressed duplicate", text: "must-not-play" });
+	const suppressedDuplicate = await queuedTool.execute("duplicate-id", { label: "suppressed duplicate", text: "only-once" });
 	assert.equal(originalDuplicate.details?.duplicate, false);
 	assert.equal(suppressedDuplicate.details?.duplicate, true);
 	assert.match(suppressedDuplicate.content[0]?.type === "text" ? suppressedDuplicate.content[0].text : "", /duplicate.*suppressed/i);
+	await assert.rejects(
+		queuedTool.execute("duplicate-id", { label: "changed duplicate", text: "must-not-play" }),
+		/different request content/,
+	);
 	await waitForLines(queueTracePath, [
 		"start:first", "end:first", "start:second", "end:second", "start:only-once", "end:only-once",
 	]);
@@ -181,6 +214,7 @@ printf 'end:%s\\n' "$text" >> ${shellEscape(queueTracePath)}
 		env: {
 			MOM_SPEAK_BACKEND: "http",
 			MOM_SPEAK_URL: "http://127.0.0.1:32123/speak",
+			MOM_SPEAK_STOP_URL: "http://127.0.0.1:32123/stop",
 			MOM_SPEAK_TOKEN: "bridge-token",
 			MOM_SPEAK_TOKEN_HEADER: "x-openclicky-token",
 			MOM_SPEAK_TOKEN_PREFIX: "",
@@ -189,7 +223,68 @@ printf 'end:%s\\n' "$text" >> ${shellEscape(queueTracePath)}
 	});
 	assert.equal(httpConfig.backend, "http");
 	assert.equal(httpConfig.http?.url, "http://127.0.0.1:32123/speak");
+	assert.equal(httpConfig.http?.stopUrl, "http://127.0.0.1:32123/stop");
 	assert.equal(httpConfig.http?.headers["x-openclicky-token"], "bridge-token");
+
+	const httpEvents: string[] = [];
+	const httpServer = createServer(async (req, res) => {
+		let raw = "";
+		for await (const chunk of req) raw += chunk.toString();
+		const body = JSON.parse(raw) as { speechId: string; text?: string; reason?: string };
+		if (req.url === "/stop") {
+			httpEvents.push(`stop:${body.speechId}:${body.reason}`);
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ stopped: true, speechId: body.speechId }));
+			return;
+		}
+		httpEvents.push(`speak:${body.speechId}:${body.text}`);
+		res.writeHead(202, { "Content-Type": "application/json" });
+		res.end("{}");
+	});
+	await new Promise<void>((resolveListen) => httpServer.listen(0, "127.0.0.1", resolveListen));
+	const address = httpServer.address();
+	assert.ok(address && typeof address === "object");
+	const baseUrl = `http://127.0.0.1:${address.port}`;
+	await writeFile(join(tempDir, "settings.json"), `${JSON.stringify({
+		speak: {
+			backend: "http",
+			url: `${baseUrl}/speak`,
+			stopUrl: `${baseUrl}/stop`,
+		},
+	}, null, 2)}\n`);
+	const httpTool = createSpeakTool(tempDir, { env: {}, platform: "linux", laneId: "http-stop-ack-test" });
+	await httpTool.execute("remote-old", { label: "old remote speech", text: "old remote speech" });
+	await httpTool.execute("remote-new", {
+		label: "interrupt remote speech",
+		text: "new remote speech",
+		interrupt: true,
+	});
+	assert.deepEqual(httpEvents.slice(0, 3), [
+		"speak:remote-old:old remote speech",
+		"stop:remote-old:superseded_by:remote-new",
+		"speak:remote-new:new remote speech",
+	]);
+
+	await writeFile(join(tempDir, "settings.json"), `${JSON.stringify({
+		speak: { backend: "http", url: `${baseUrl}/speak` },
+	}, null, 2)}\n`);
+	const noAckTool = createSpeakTool(tempDir, { env: {}, platform: "linux", laneId: "http-no-stop-ack-test" });
+	await noAckTool.execute("no-ack-old", { label: "unacknowledged remote speech", text: "hold the lane" });
+	const noAckStartedAt = Date.now();
+	const noAckReplacement = noAckTool.execute("no-ack-new", {
+		label: "wait for remote active window",
+		text: "do not overlap",
+		interrupt: true,
+	});
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+	assert.equal(httpEvents.some((event) => event.startsWith("speak:no-ack-new:")), false);
+	await noAckReplacement;
+	assert.ok(Date.now() - noAckStartedAt >= 1000, "an HTTP backend without stop acknowledgement cannot cancel early");
+
+	await resetSpeechOutputCoordinatorsForTests();
+	await new Promise<void>((resolveClose, rejectClose) => {
+		httpServer.close((error) => error ? rejectClose(error) : resolveClose());
+	});
 
 	const disabledConfig = resolveSpeakConfig(tempDir, {
 		env: { MOM_SPEAK_ENABLED: "false" },

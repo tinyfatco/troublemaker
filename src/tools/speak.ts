@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -46,6 +46,7 @@ export interface ResolvedSpeakConfig {
 	command?: string;
 	http?: {
 		url: string;
+		stopUrl?: string;
 		headers: Record<string, string>;
 	};
 	sag: {
@@ -231,6 +232,7 @@ export function resolveSpeakConfig(
 		&& speak.enabled !== false;
 
 	const url = stringSetting(env.MOM_SPEAK_URL) ?? stringSetting(speak.url);
+	const stopUrl = stringSetting(env.MOM_SPEAK_STOP_URL) ?? stringSetting(speak.stopUrl);
 
 	return {
 		enabled,
@@ -243,7 +245,7 @@ export function resolveSpeakConfig(
 			rate: numberSetting(env.MOM_SPEAK_RATE) ?? numberSetting(speak.rate),
 		},
 		command: stringSetting(env.MOM_SPEAK_COMMAND) ?? stringSetting(speak.command),
-		http: url ? { url, headers: resolveHttpHeaders(speak, env) } : undefined,
+		http: url ? { url, stopUrl, headers: resolveHttpHeaders(speak, env) } : undefined,
 		sag: {
 			command: stringSetting(env.MOM_SPEAK_SAG_COMMAND)
 				?? stringSetting(sag.command)
@@ -277,6 +279,8 @@ function startManagedSpeechProcess(
 		let startSettled = false;
 		let completionSettled = false;
 		let cancelRequested = false;
+		let spawned = false;
+		let terminationSent = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
 		let complete!: () => void;
 		let fail!: (error: unknown) => void;
@@ -298,31 +302,38 @@ function startManagedSpeechProcess(
 			signal.removeEventListener("abort", onAbort);
 			fn();
 		};
-		const cancel = async (_reason: string) => {
-			if (!completionSettled && !cancelRequested) {
-				cancelRequested = true;
-				try {
-					child.kill("SIGTERM");
-					killTimer = setTimeout(() => {
-						if (child.exitCode === null && child.signalCode === null) {
-							try { child.kill("SIGKILL"); } catch { /* best effort */ }
-						}
-					}, 750);
-					killTimer.unref();
-				} catch {
-					// The close/error event remains the inactivity proof.
-				}
+		const terminate = () => {
+			if (completionSettled || terminationSent || !spawned) return;
+			terminationSent = true;
+			try {
+				child.kill("SIGTERM");
+				killTimer = setTimeout(() => {
+					if (child.exitCode === null && child.signalCode === null) {
+						try { child.kill("SIGKILL"); } catch { /* best effort */ }
+					}
+				}, 750);
+				killTimer.unref();
+			} catch {
+				// The close/error event remains the inactivity proof.
 			}
+		};
+		const cancel = async (_reason: string) => {
+			cancelRequested = true;
+			terminate();
 			await completed.catch(() => {});
 		};
 		const onAbort = () => { void cancel("aborted"); };
 		signal.addEventListener("abort", onAbort, { once: true });
 
 		child.once("spawn", () => {
-			if (stdin !== undefined && !cancelRequested) child.stdin?.end(stdin);
+			spawned = true;
+			if (stdin !== undefined && !cancelRequested && !signal.aborted) child.stdin?.end(stdin);
 			else child.stdin?.end();
 			settleStart(() => resolve({ child, completed, cancel }));
-			if (signal.aborted) void cancel("aborted");
+			if (cancelRequested || signal.aborted) {
+				cancelRequested = true;
+				terminate();
+			}
 		});
 
 		child.once("error", (error) => {
@@ -408,6 +419,7 @@ async function runSagBackend(
 
 async function runHttpBackend(
 	text: string,
+	speechId: string,
 	interrupt: boolean,
 	config: ResolvedSpeakConfig,
 	signal: AbortSignal,
@@ -422,7 +434,7 @@ async function runHttpBackend(
 		response = await fetch(config.http.url, {
 			method: "POST",
 			headers: config.http.headers,
-			body: JSON.stringify({ text, interrupt }),
+			body: JSON.stringify({ text, interrupt, speechId }),
 			signal,
 		});
 	} catch (error) {
@@ -443,10 +455,37 @@ async function runHttpBackend(
 		timer.unref();
 	});
 	const completed = activeWindow.finally(() => finishAssistantSpeech(guardId));
-	const cancel = async () => {
+	const cancel = async (reason: string) => {
+		if (!config.http?.stopUrl) {
+			// An accepted HTTP request has no local playback handle. Without a
+			// remote stop acknowledgement, retain the lane for its full active window.
+			await completed;
+			return;
+		}
+		const stopController = new AbortController();
+		const stopTimer = setTimeout(() => stopController.abort(new Error("HTTP speech stop acknowledgement timed out.")), 5000);
+		stopTimer.unref();
+		try {
+			const stopResponse = await fetch(config.http.stopUrl, {
+				method: "POST",
+				headers: config.http.headers,
+				body: JSON.stringify({ speechId, reason }),
+				signal: stopController.signal,
+			});
+			if (!stopResponse.ok) {
+				throw new Error(`speak HTTP stop failed: ${stopResponse.status} ${stopResponse.statusText}`);
+			}
+			const acknowledgement: unknown = await stopResponse.json();
+			if (!isRecord(acknowledgement)
+				|| acknowledgement.stopped !== true
+				|| acknowledgement.speechId !== speechId) {
+				throw new Error("speak HTTP stop did not acknowledge the exact speech id.");
+			}
+		} finally {
+			clearTimeout(stopTimer);
+		}
 		if (timer) clearTimeout(timer);
 		timer = undefined;
-		finishAssistantSpeech(guardId);
 		finish();
 		await completed;
 	};
@@ -483,6 +522,7 @@ async function runElevenLabsBackend(
 		voiceId: elevenlabs.voiceId,
 		modelId: elevenlabs.modelId,
 		outputFormat: elevenlabs.outputFormat,
+		signal,
 	});
 	if (signal.aborted) throw signal.reason;
 	const audio = Buffer.concat(result.audioChunks.map((chunk) => Buffer.from(chunk, "base64")));
@@ -509,13 +549,14 @@ async function runElevenLabsBackend(
 
 async function dispatchSpeech(
 	text: string,
+	speechId: string,
 	config: ResolvedSpeakConfig,
 	interrupt: boolean,
 	signal: AbortSignal,
 ): Promise<SpeechOutputExecution<string>> {
 	if (config.backend === "macos-say") return runMacSay(text, config, signal);
 	if (config.backend === "command") return runCommandBackend(text, config, signal);
-	if (config.backend === "http") return runHttpBackend(text, interrupt, config, signal);
+	if (config.backend === "http") return runHttpBackend(text, speechId, interrupt, config, signal);
 	if (config.backend === "elevenlabs") return runElevenLabsBackend(text, config, signal);
 	if (config.backend === "sag") return runSagBackend(text, config, signal);
 	return {
@@ -523,6 +564,29 @@ async function dispatchSpeech(
 		completed: Promise.resolve(),
 		cancel: async () => {},
 	};
+}
+
+function speechRequestDigest(text: string, config: ResolvedSpeakConfig): string {
+	const backendIdentity = config.backend === "macos-say"
+		? { backend: config.backend, ...config.macosSay }
+		: config.backend === "command"
+			? { backend: config.backend, command: config.command }
+			: config.backend === "http"
+				? { backend: config.backend, url: config.http?.url, stopUrl: config.http?.stopUrl }
+				: config.backend === "elevenlabs"
+					? {
+						backend: config.backend,
+						voiceId: config.elevenlabs?.voiceId,
+						modelId: config.elevenlabs?.modelId,
+						outputFormat: config.elevenlabs?.outputFormat,
+						playerCommand: config.elevenlabs?.playerCommand,
+					}
+					: config.backend === "sag"
+						? { backend: config.backend, ...config.sag }
+						: { backend: config.backend };
+	return createHash("sha256")
+		.update(JSON.stringify({ text: text.normalize("NFC"), backend: backendIdentity }))
+		.digest("hex");
 }
 
 export interface SpeakConfiguredResult {
@@ -561,12 +625,29 @@ export async function speakConfiguredText(
 	}
 
 	const speechId = request.speechId?.trim() || randomUUID();
+	const requestDigest = speechRequestDigest(cleanText, config);
 	const coordinator = getSpeechOutputCoordinator(workspaceDir, options);
+	let startPromise: Promise<SpeechOutputExecution<string>> | undefined;
 	const ticket = coordinator.enqueue({
 		speechId,
+		requestDigest,
 		interrupt: request.interrupt === true,
 		signal: request.signal,
-		start: (signal) => dispatchSpeech(cleanText, config, request.interrupt === true, signal),
+		start: (signal) => {
+			startPromise = dispatchSpeech(cleanText, speechId, config, request.interrupt === true, signal);
+			return startPromise;
+		},
+		cancelStart: async (reason) => {
+			if (!startPromise) return;
+			let execution: SpeechOutputExecution<string>;
+			try {
+				execution = await startPromise;
+			} catch {
+				// Rejected startup is acknowledgement that it cannot produce output.
+				return;
+			}
+			await execution.cancel(reason);
+		},
 	});
 	const started = await ticket.started;
 	if (!ticket.duplicate) {

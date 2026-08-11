@@ -77,6 +77,8 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const outputs = new Map<string, FakeOutput>();
 	const enqueue = (id: string) => coordinator.enqueue({
 		speechId: id,
+		requestDigest: id,
+		cancelStart: async () => {},
 		start: async () => {
 			events.push(`start:${id}`);
 			const output = fakeOutput(id, running, events);
@@ -125,6 +127,8 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	let output!: FakeOutput;
 	const request = {
 		speechId: "same-speech-id",
+		requestDigest: "same-speech-id",
+		cancelStart: async () => {},
 		start: async () => {
 			starts += 1;
 			output = fakeOutput("same-speech-id", running, events);
@@ -135,6 +139,10 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const duplicateWhileActive = coordinator.enqueue(request);
 	assert.equal(duplicateWhileActive.duplicate, true);
 	assert.equal((await duplicateWhileActive.started).duplicate, true);
+	assert.throws(
+		() => coordinator.enqueue({ ...request, requestDigest: "changed-text-or-backend" }),
+		/different request content/,
+	);
 	output.complete();
 	await original.settled;
 	const duplicateAfterCompletion = coordinator.enqueue(request);
@@ -154,7 +162,9 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const outputs = new Map<string, FakeOutput>();
 	const request = (id: string, interrupt = false) => coordinator.enqueue({
 		speechId: id,
+		requestDigest: id,
 		interrupt,
+		cancelStart: async () => {},
 		start: async () => {
 			const output = fakeOutput(id, running, events);
 			outputs.set(id, output);
@@ -197,6 +207,8 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	let lateOutput!: FakeOutput;
 	const late = coordinator.enqueue({
 		speechId: "late",
+		requestDigest: "late",
+		cancelStart: async () => {},
 		start: async () => {
 			await startGate.promise;
 			lateOutput = fakeOutput("late", running, events);
@@ -205,7 +217,9 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	});
 	const next = coordinator.enqueue({
 		speechId: "next",
+		requestDigest: "next",
 		interrupt: true,
+		cancelStart: async () => {},
 		start: async () => fakeOutput("next", running, events).execution,
 	});
 	startGate.resolve();
@@ -232,6 +246,8 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const coordinator = new SpeechOutputCoordinator("agent-e:local");
 	const failed = coordinator.enqueue({
 		speechId: "failed",
+		requestDigest: "failed",
+		cancelStart: async () => {},
 		start: async () => { throw new Error("backend start exploded"); },
 	});
 	const running = new Set<string>();
@@ -239,6 +255,8 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	let recoveryOutput!: FakeOutput;
 	const recovery = coordinator.enqueue({
 		speechId: "recovery",
+		requestDigest: "recovery",
+		cancelStart: async () => {},
 		start: async () => {
 			recoveryOutput = fakeOutput("recovery", running, events);
 			return recoveryOutput.execution;
@@ -261,13 +279,20 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const running = new Set<string>();
 	const events: string[] = [];
 	const activeOutput = fakeOutput("active", running, events);
-	const active = coordinator.enqueue({ speechId: "active", start: async () => activeOutput.execution });
+	const active = coordinator.enqueue({
+		speechId: "active",
+		requestDigest: "active",
+		start: async () => activeOutput.execution,
+		cancelStart: async () => {},
+	});
 	await active.started;
 	const controller = new AbortController();
 	let queuedStarts = 0;
 	const queued = coordinator.enqueue({
 		speechId: "aborted-queued",
+		requestDigest: "aborted-queued",
 		signal: controller.signal,
+		cancelStart: async () => {},
 		start: async () => {
 			queuedStarts += 1;
 			return fakeOutput("aborted-queued", running, events).execution;
@@ -282,6 +307,33 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	await active.settled;
 }
 
+// An already-aborted request is terminal before it can enter the lane or invoke
+// the backend startup callback.
+{
+	const coordinator = new SpeechOutputCoordinator("agent-f-preaborted:local");
+	const controller = new AbortController();
+	controller.abort();
+	let starts = 0;
+	const ticket = coordinator.enqueue({
+		speechId: "preaborted",
+		requestDigest: "preaborted:v1",
+		signal: controller.signal,
+		cancelStart: async () => {},
+		start: async () => {
+			starts += 1;
+			return {
+				value: "must-not-start",
+				completed: Promise.resolve(),
+				cancel: async () => {},
+			};
+		},
+	});
+	assert.equal((await ticket.settled).status, "canceled");
+	await assert.rejects(ticket.started, /caller_aborted/);
+	assert.equal(starts, 0);
+	assert.equal(coordinator.activeSpeechId, null);
+}
+
 // Teardown cancels active and queued work. A fresh coordinator after restart has
 // no replay queue or stale duplicate registry.
 {
@@ -289,10 +341,17 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	const running = new Set<string>();
 	const events: string[] = [];
 	const activeOutput = fakeOutput("restart-id", running, events);
-	const active = coordinator.enqueue({ speechId: "restart-id", start: async () => activeOutput.execution });
+	const active = coordinator.enqueue({
+		speechId: "restart-id",
+		requestDigest: "restart-id",
+		start: async () => activeOutput.execution,
+		cancelStart: async () => {},
+	});
 	await active.started;
 	const queued = coordinator.enqueue({
 		speechId: "never-start",
+		requestDigest: "never-start",
+		cancelStart: async () => {},
 		start: async () => fakeOutput("never-start", running, events).execution,
 	});
 	await coordinator.shutdown();
@@ -300,18 +359,91 @@ function fakeOutput(id: string, running: Set<string>, events: string[]): FakeOut
 	assert.equal((await queued.settled).status, "canceled");
 	await assert.rejects(queued.started, /lane_shutdown/);
 	assert.throws(
-		() => coordinator.enqueue({ speechId: "after-shutdown", start: async () => fakeOutput("after", running, events).execution }),
+		() => coordinator.enqueue({
+			speechId: "after-shutdown",
+			requestDigest: "after-shutdown",
+			start: async () => fakeOutput("after", running, events).execution,
+			cancelStart: async () => {},
+		}),
 		/shut down/,
 	);
 	assert.equal(running.size, 0);
 
 	const restarted = new SpeechOutputCoordinator("agent-g:local");
 	const restartedOutput = fakeOutput("restart-id", running, events);
-	const replaySafe = restarted.enqueue({ speechId: "restart-id", start: async () => restartedOutput.execution });
+	const replaySafe = restarted.enqueue({
+		speechId: "restart-id",
+		requestDigest: "restart-id",
+		start: async () => restartedOutput.execution,
+		cancelStart: async () => {},
+	});
 	assert.equal((await replaySafe.started).duplicate, false);
 	restartedOutput.complete();
 	assert.equal((await replaySafe.settled).status, "completed");
 	assert.equal(running.size, 0);
+}
+
+// A never-settling backend startup can still be canceled and shut down when its
+// startup-cancel contract acknowledges that no output can appear later.
+{
+	const cancelCoordinator = new SpeechOutputCoordinator("agent-h:local");
+	const cancelReasons: string[] = [];
+	const hung = cancelCoordinator.enqueue({
+		speechId: "hung-start",
+		requestDigest: "hung-start:v1",
+		start: async () => new Promise<SpeechOutputExecution<string>>(() => {}),
+		cancelStart: async (reason) => { cancelReasons.push(reason); },
+	});
+	await tick();
+	hung.cancel("stop-hung-start");
+	assert.equal((await hung.settled).status, "canceled");
+	await assert.rejects(hung.started, /stop-hung-start/);
+	assert.deepEqual(cancelReasons, ["stop-hung-start"]);
+
+	const shutdownCoordinator = new SpeechOutputCoordinator("agent-i:local");
+	const shutdownReasons: string[] = [];
+	const hungDuringShutdown = shutdownCoordinator.enqueue({
+		speechId: "hung-shutdown",
+		requestDigest: "hung-shutdown:v1",
+		start: async () => new Promise<SpeechOutputExecution<string>>(() => {}),
+		cancelStart: async (reason) => { shutdownReasons.push(reason); },
+	});
+	await tick();
+	await shutdownCoordinator.shutdown();
+	assert.equal((await hungDuringShutdown.settled).status, "canceled");
+	await assert.rejects(hungDuringShutdown.started, /lane_shutdown/);
+	assert.deepEqual(shutdownReasons, ["lane_shutdown"]);
+}
+
+// Terminal idempotency entries are bounded. Eviction is oldest-first and never
+// removes active work; an evicted id may execute again within the same process.
+{
+	const coordinator = new SpeechOutputCoordinator("agent-j:local", { maxJobs: 2 });
+	let starts = 0;
+	const execute = async (speechId: string) => {
+		const ticket = coordinator.enqueue({
+			speechId,
+			requestDigest: `${speechId}:v1`,
+			start: async () => {
+				starts += 1;
+				return {
+					value: speechId,
+					completed: Promise.resolve(),
+					cancel: async () => {},
+				};
+			},
+			cancelStart: async () => {},
+		});
+		await ticket.started;
+		await ticket.settled;
+		return ticket;
+	};
+	await execute("bounded-1");
+	await execute("bounded-2");
+	await execute("bounded-3");
+	assert.equal((await execute("bounded-2")).duplicate, true);
+	assert.equal((await execute("bounded-1")).duplicate, false);
+	assert.equal(starts, 4);
 }
 
 console.log("speech output coordinator tests passed");

@@ -20,9 +20,13 @@ export interface SpeechOutputExecution<T> {
 
 export interface SpeechOutputRequest<T> {
 	speechId: string;
+	/** Stable digest of the normalized text and backend identity. */
+	requestDigest: string;
 	interrupt?: boolean;
 	signal?: AbortSignal;
 	start: (signal: AbortSignal) => Promise<SpeechOutputExecution<T>>;
+	/** Resolves only after a canceled startup cannot later produce output. */
+	cancelStart: (reason: string) => Promise<void>;
 }
 
 export interface SpeechOutputStarted<T> {
@@ -52,9 +56,11 @@ interface SpeechJob<T> {
 	started: Deferred<SpeechOutputStarted<T>>;
 	settled: Deferred<SpeechOutputReceipt>;
 	receipts: SpeechOutputReceipt[];
+	startPromise?: Promise<SpeechOutputExecution<T>>;
 	execution?: SpeechOutputExecution<T>;
 	cancelRequested?: string;
 	cancelRequestedSignal: Deferred<void>;
+	startupCancelPromise?: Promise<void>;
 	cancelPromise?: Promise<void>;
 	terminal?: SpeechOutputReceipt;
 	removeAbortListener?: () => void;
@@ -94,7 +100,8 @@ function isTerminal(status: SpeechOutputStatus): boolean {
  * Jobs are FIFO unless a request explicitly sets `interrupt`. Interruption
  * cancels only the active utterance and places the new request at the front;
  * already queued requests keep their relative order. A speech id is idempotent
- * for the coordinator's full process lifetime; restart begins with no replay queue.
+ * while retained in a bounded process-local window. Terminal entries are evicted
+ * oldest-first after `maxJobs`; restart begins with no replay queue.
  */
 export class SpeechOutputCoordinator {
 	private readonly jobs = new Map<string, SpeechJob<unknown>>();
@@ -106,23 +113,30 @@ export class SpeechOutputCoordinator {
 
 	constructor(
 		public readonly laneId: string,
-		private readonly options: { maxReceipts?: number } = {},
+		private readonly options: { maxReceipts?: number; maxJobs?: number } = {},
 	) {}
 
 	enqueue<T>(request: SpeechOutputRequest<T>): SpeechOutputTicket<T> {
 		if (this.disposed) throw new Error(`Speech output lane ${this.laneId} is shut down.`);
 		const speechId = request.speechId.trim();
 		if (!speechId) throw new Error("speechId must be non-empty.");
+		const requestDigest = request.requestDigest.trim();
+		if (!requestDigest) throw new Error("requestDigest must be non-empty.");
 
 		const existing = this.jobs.get(speechId) as SpeechJob<T> | undefined;
-		if (existing) return this.ticketFor(existing, true);
+		if (existing) {
+			if (existing.request.requestDigest !== requestDigest) {
+				throw new Error(`Speech id ${speechId} was reused with different request content.`);
+			}
+			return this.ticketFor(existing, true);
+		}
 
 		const started = deferred<SpeechOutputStarted<T>>();
 		// Queue cancellation can reject before a caller has attached its await.
 		// Mark the rejection observed without changing the promise returned to callers.
 		void started.promise.catch(() => {});
 		const job: SpeechJob<T> = {
-			request: { ...request, speechId },
+			request: { ...request, speechId, requestDigest },
 			controller: new AbortController(),
 			started,
 			settled: deferred<SpeechOutputReceipt>(),
@@ -140,6 +154,10 @@ export class SpeechOutputCoordinator {
 				request.signal.addEventListener("abort", onAbort, { once: true });
 				job.removeAbortListener = () => request.signal?.removeEventListener("abort", onAbort);
 			}
+		}
+
+		if (job.cancelRequested && !job.terminal) {
+			this.terminalize(job, "canceled", { reason: job.cancelRequested });
 		}
 
 		if (!job.terminal) {
@@ -219,12 +237,26 @@ export class SpeechOutputCoordinator {
 			job.started.reject(new Error(detail.error ?? `Speech ${job.request.speechId} failed.`));
 		}
 		job.settled.resolve(receipt);
+		job.startPromise = undefined;
 		job.execution = undefined;
 		job.request = {
 			speechId: job.request.speechId,
+			requestDigest: job.request.requestDigest,
 			start: async () => { throw new Error("Terminal speech jobs cannot restart."); },
+			cancelStart: async () => {},
 		};
+		this.pruneTerminalJobs();
 		return receipt;
+	}
+
+	private pruneTerminalJobs(): void {
+		const maxJobs = Math.max(1, this.options.maxJobs ?? 1024);
+		if (this.jobs.size <= maxJobs) return;
+		for (const [speechId, job] of this.jobs) {
+			if (!job.terminal) continue;
+			this.jobs.delete(speechId);
+			if (this.jobs.size <= maxJobs) break;
+		}
 	}
 
 	private requestCancel<T>(job: SpeechJob<T>, reason: string): void {
@@ -242,11 +274,36 @@ export class SpeechOutputCoordinator {
 		if (job.execution) this.beginExecutionCancel(job);
 	}
 
+	private beginStartupCancel<T>(job: SpeechJob<T>): Promise<void> {
+		if (job.startupCancelPromise) return job.startupCancelPromise;
+		const reason = job.cancelRequested ?? "canceled";
+		job.startupCancelPromise = Promise.resolve()
+			.then(() => job.request.cancelStart(reason))
+			.catch(async () => {
+				// If explicit startup acknowledgement fails, a later rejected start also
+				// proves no output began; a later execution must acknowledge its own stop.
+				if (!job.startPromise) throw new Error("Speech startup cancellation was not acknowledged.");
+				let execution: SpeechOutputExecution<T>;
+				try {
+					execution = await job.startPromise;
+				} catch {
+					return;
+				}
+				await Promise.resolve()
+					.then(() => execution.cancel(reason))
+					.catch(async () => {
+						await execution.completed.catch(() => {});
+					});
+			});
+		return job.startupCancelPromise;
+	}
+
 	private beginExecutionCancel<T>(job: SpeechJob<T>): Promise<void> {
 		if (job.cancelPromise) return job.cancelPromise;
 		const execution = job.execution;
 		if (!execution) return Promise.resolve();
-		job.cancelPromise = Promise.resolve(execution.cancel(job.cancelRequested ?? "canceled"))
+		job.cancelPromise = Promise.resolve()
+			.then(() => execution.cancel(job.cancelRequested ?? "canceled"))
 			.catch(async () => {
 				// Never release the lane merely because cancellation reporting failed.
 				// The execution's completion is the fallback proof that output stopped.
@@ -272,7 +329,47 @@ export class SpeechOutputCoordinator {
 
 	private async run(job: SpeechJob<unknown>): Promise<void> {
 		try {
-			const execution = await job.request.start(job.controller.signal);
+			const startPromise = Promise.resolve().then(() => job.request.start(job.controller.signal));
+			job.startPromise = startPromise;
+			let startSettled = false;
+			const startOutcome = await Promise.race([
+				startPromise.then(
+					(execution) => {
+						startSettled = true;
+						return { status: "started" as const, execution };
+					},
+					(error) => {
+						startSettled = true;
+						return { status: "failed" as const, error };
+					},
+				),
+				job.cancelRequestedSignal.promise.then(async () => {
+					// Once start has settled, playback cancellation owns this signal.
+					// Do not invoke the startup-cancel contract a second time.
+					if (startSettled) await new Promise<void>(() => {});
+					await this.beginStartupCancel(job);
+					return { status: "canceled" as const };
+				}),
+			]);
+
+			if (startOutcome.status === "canceled") {
+				const reason = job.cancelRequested ?? "caller_aborted";
+				// A truthful startup-cancel acknowledgement promises no late output.
+				// Still cancel a buggy late execution defensively if one appears.
+				void startPromise.then((execution) => execution.cancel(reason)).catch(() => {});
+				this.terminalize(job, "canceled", { reason });
+				return;
+			}
+			if (startOutcome.status === "failed") {
+				if (job.cancelRequested || job.controller.signal.aborted) {
+					this.terminalize(job, "canceled", { reason: job.cancelRequested ?? "caller_aborted" });
+				} else {
+					this.terminalize(job, "failed", { error: errorMessage(startOutcome.error) });
+				}
+				return;
+			}
+
+			const execution = startOutcome.execution;
 			job.execution = execution;
 			if (job.cancelRequested || job.controller.signal.aborted) {
 				await this.beginExecutionCancel(job);
@@ -302,10 +399,12 @@ export class SpeechOutputCoordinator {
 			}
 		} catch (error) {
 			if (job.cancelRequested || job.controller.signal.aborted) {
-				this.terminalize(job, "canceled", { reason: job.cancelRequested ?? "caller_aborted" });
-			} else {
-				this.terminalize(job, "failed", { error: errorMessage(error) });
+				// A failed cancellation acknowledgement is not proof that output stopped.
+				// Keep the lane active rather than emitting a false canceled receipt.
+				await new Promise<void>(() => {});
+				return;
 			}
+			this.terminalize(job, "failed", { error: errorMessage(error) });
 		}
 	}
 }
