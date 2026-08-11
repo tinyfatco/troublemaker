@@ -125,6 +125,8 @@ export interface MomSpeakSettings {
 	maxChars?: number;
 	command?: string;
 	url?: string;
+	/** Optional endpoint that returns { stopped: true, speechId } after remote playback is inactive. */
+	stopUrl?: string;
 	headers?: Record<string, string>;
 	token?: string;
 	tokenEnv?: string;

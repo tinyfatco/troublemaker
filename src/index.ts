@@ -26,3 +26,14 @@ export type {
 } from "./modes/edge/host-bridge.js";
 export { createHostBashRoute } from "./modes/host/index.js";
 export type { HostBashRequest, HostBashResponse, HostToolRequest, HostToolResponse } from "./modes/host/protocol.js";
+export {
+	SpeechOutputCanceledError,
+	SpeechOutputCoordinator,
+	assertMonotonicSpeechReceipts,
+	type SpeechOutputExecution,
+	type SpeechOutputReceipt,
+	type SpeechOutputRequest,
+	type SpeechOutputStarted,
+	type SpeechOutputStatus,
+	type SpeechOutputTicket,
+} from "./speech-output-coordinator.js";

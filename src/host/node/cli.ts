@@ -68,6 +68,7 @@ import { createBlockGoalTool } from "../../tools/block-goal.js";
 import { createReadThreadTool } from "../../tools/read-thread.js";
 import { createReactToMessageTool } from "../../tools/react-to-message.js";
 import { createSendMessageTool } from "../../tools/send-message.js";
+import { shutdownSpeechOutputCoordinators } from "../../tools/speak.js";
 import { createYieldNoActionTool } from "../../tools/yield-no-action.js";
 import { routeWorkingOutputContext } from "../../streaming/working-output.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
@@ -2325,6 +2326,7 @@ async function shutdown(): Promise<void> {
 	log.logInfo("Shutting down...");
 	eventsWatcher.stop();
 	const cleanup = Promise.allSettled([
+		shutdownSpeechOutputCoordinators(),
 		mcpBridge.disconnect(),
 		gateway.stop(),
 		...adapters.map((adapter) => adapter.stop()),

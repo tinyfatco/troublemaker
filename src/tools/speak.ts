@@ -1,8 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { textToSpeech } from "../adapters/voice-tts.js";
@@ -13,6 +14,11 @@ import {
 	holdAssistantSpeech,
 } from "../audio-feedback-guard.js";
 import type { MomSettings, MomSpeakBackend, MomSpeakSettings } from "../context.js";
+import {
+	SpeechOutputCoordinator,
+	type SpeechOutputExecution,
+	type SpeechOutputReceipt,
+} from "../speech-output-coordinator.js";
 import * as log from "../log.js";
 
 const DEFAULT_MAX_CHARS = 1200;
@@ -40,6 +46,7 @@ export interface ResolvedSpeakConfig {
 	command?: string;
 	http?: {
 		url: string;
+		stopUrl?: string;
 		headers: Record<string, string>;
 	};
 	sag: {
@@ -59,9 +66,47 @@ export interface ResolvedSpeakConfig {
 export interface SpeakToolOptions {
 	env?: NodeJS.ProcessEnv;
 	platform?: NodeJS.Platform;
+	laneId?: string;
 }
 
-let activeSpeech: ChildProcess | null = null;
+const speechOutputCoordinators = new Map<string, SpeechOutputCoordinator>();
+
+export function speechOutputLaneId(workspaceDir: string, options: SpeakToolOptions = {}): string {
+	if (options.laneId?.trim()) return options.laneId.trim();
+	const resolvedWorkspace = resolve(workspaceDir);
+	let canonicalWorkspace = resolvedWorkspace;
+	try {
+		canonicalWorkspace = realpathSync.native(resolvedWorkspace);
+	} catch {
+		// A not-yet-created workspace still receives a stable absolute lane id.
+	}
+	return `${canonicalWorkspace}::speak`;
+}
+
+export function getSpeechOutputCoordinator(
+	workspaceDir: string,
+	options: SpeakToolOptions = {},
+): SpeechOutputCoordinator {
+	const laneId = speechOutputLaneId(workspaceDir, options);
+	let coordinator = speechOutputCoordinators.get(laneId);
+	if (!coordinator) {
+		coordinator = new SpeechOutputCoordinator(laneId);
+		speechOutputCoordinators.set(laneId, coordinator);
+	}
+	return coordinator;
+}
+
+export async function shutdownSpeechOutputCoordinators(reason = "runtime_shutdown"): Promise<void> {
+	const coordinators = [...speechOutputCoordinators.values()];
+	await Promise.allSettled(coordinators.map((coordinator) => coordinator.shutdown(reason)));
+	for (const [laneId, coordinator] of speechOutputCoordinators) {
+		if (coordinators.includes(coordinator)) speechOutputCoordinators.delete(laneId);
+	}
+}
+
+export async function resetSpeechOutputCoordinatorsForTests(): Promise<void> {
+	await shutdownSpeechOutputCoordinators("test_reset");
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
@@ -187,6 +232,7 @@ export function resolveSpeakConfig(
 		&& speak.enabled !== false;
 
 	const url = stringSetting(env.MOM_SPEAK_URL) ?? stringSetting(speak.url);
+	const stopUrl = stringSetting(env.MOM_SPEAK_STOP_URL) ?? stringSetting(speak.stopUrl);
 
 	return {
 		enabled,
@@ -199,7 +245,7 @@ export function resolveSpeakConfig(
 			rate: numberSetting(env.MOM_SPEAK_RATE) ?? numberSetting(speak.rate),
 		},
 		command: stringSetting(env.MOM_SPEAK_COMMAND) ?? stringSetting(speak.command),
-		http: url ? { url, headers: resolveHttpHeaders(speak, env) } : undefined,
+		http: url ? { url, stopUrl, headers: resolveHttpHeaders(speak, env) } : undefined,
 		sag: {
 			command: stringSetting(env.MOM_SPEAK_SAG_COMMAND)
 				?? stringSetting(sag.command)
@@ -215,49 +261,139 @@ export function resolveSpeakConfig(
 	};
 }
 
-function stopActiveSpeech(): void {
-	const child = activeSpeech;
-	if (!child) return;
-	activeSpeech = null;
-	try {
-		child.kill("SIGTERM");
-		setTimeout(() => {
-			if (!child.killed) child.kill("SIGKILL");
-		}, 750).unref();
-	} catch {
-		// Best effort only.
-	}
+interface ManagedSpeechProcess {
+	child: ChildProcess;
+	completed: Promise<void>;
+	cancel: (reason: string) => Promise<void>;
 }
 
 function startManagedSpeechProcess(
 	command: string,
 	args: string[],
-	stdin?: string,
-): Promise<ChildProcess> {
+	stdin: string | undefined,
+	signal: AbortSignal,
+): Promise<ManagedSpeechProcess> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+		const useProcessGroup = process.platform !== "win32";
+		const child = spawn(command, args, {
+			stdio: ["pipe", "ignore", "pipe"],
+			// A dedicated Unix process group lets cancellation own descendants too.
+			detached: useProcessGroup,
+		});
 		let stderr = "";
-		let settled = false;
+		let startSettled = false;
+		let completionSettled = false;
+		let cancelRequested = false;
+		let spawned = false;
+		let parentClosed = false;
+		let parentExitCode: number | null = null;
+		let parentError: unknown;
+		let terminationSent = false;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let treeCheckTimer: ReturnType<typeof setTimeout> | undefined;
+		let complete!: () => void;
+		let fail!: (error: unknown) => void;
+		const completed = new Promise<void>((resolveCompletion, rejectCompletion) => {
+			complete = resolveCompletion;
+			fail = rejectCompletion;
+		});
+		void completed.catch(() => {});
 
-		const settle = (fn: () => void) => {
-			if (settled) return;
-			settled = true;
+		const settleStart = (fn: () => void) => {
+			if (startSettled) return;
+			startSettled = true;
 			fn();
 		};
+		const settleCompletion = (fn: () => void) => {
+			if (completionSettled) return;
+			completionSettled = true;
+			if (killTimer) clearTimeout(killTimer);
+			if (treeCheckTimer) clearTimeout(treeCheckTimer);
+			signal.removeEventListener("abort", onAbort);
+			fn();
+		};
+		const processTreeActive = (): boolean => {
+			if (!spawned) return false;
+			if (useProcessGroup && child.pid) {
+				try {
+					process.kill(-child.pid, 0);
+					return true;
+				} catch (error) {
+					return (error as NodeJS.ErrnoException).code !== "ESRCH";
+				}
+			}
+			return child.exitCode === null && child.signalCode === null;
+		};
+		const signalProcessTree = (treeSignal: NodeJS.Signals) => {
+			if (!spawned) return;
+			if (useProcessGroup && child.pid) {
+				try {
+					process.kill(-child.pid, treeSignal);
+					return;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+				}
+			}
+			try { child.kill(treeSignal); } catch { /* best effort */ }
+		};
+		const scheduleTreeCheck = () => {
+			if (completionSettled || treeCheckTimer) return;
+			treeCheckTimer = setTimeout(() => {
+				treeCheckTimer = undefined;
+				maybeSettleCompletion();
+			}, 25);
+		};
+		const maybeSettleCompletion = () => {
+			if (completionSettled || !parentClosed) return;
+			if (processTreeActive()) {
+				scheduleTreeCheck();
+				return;
+			}
+			if (parentError !== undefined) {
+				settleCompletion(() => fail(parentError));
+				return;
+			}
+			if (parentExitCode && parentExitCode !== 0 && !cancelRequested) {
+				const detail = stderr.trim().slice(0, 500);
+				log.logWarning(`[speak] process exited with code ${parentExitCode}`, detail);
+				settleCompletion(() => fail(new Error(`Speech process exited with code ${parentExitCode}${detail ? `: ${detail}` : ""}`)));
+				return;
+			}
+			settleCompletion(complete);
+		};
+		const terminate = () => {
+			if (completionSettled || terminationSent || !spawned) return;
+			terminationSent = true;
+			signalProcessTree("SIGTERM");
+			killTimer = setTimeout(() => {
+				if (processTreeActive()) signalProcessTree("SIGKILL");
+				maybeSettleCompletion();
+			}, 750);
+		};
+		const cancel = async (_reason: string) => {
+			cancelRequested = true;
+			terminate();
+			await completed.catch(() => {});
+		};
+		const onAbort = () => { void cancel("aborted"); };
+		signal.addEventListener("abort", onAbort, { once: true });
 
 		child.once("spawn", () => {
-			activeSpeech = child;
-			if (stdin !== undefined) {
-				child.stdin?.end(stdin);
-			} else {
-				child.stdin?.end();
+			spawned = true;
+			if (stdin !== undefined && !cancelRequested && !signal.aborted) child.stdin?.end(stdin);
+			else child.stdin?.end();
+			settleStart(() => resolve({ child, completed, cancel }));
+			if (cancelRequested || signal.aborted) {
+				cancelRequested = true;
+				terminate();
 			}
-			settle(() => resolve(child));
 		});
 
-		child.once("error", (err) => {
-			if (activeSpeech === child) activeSpeech = null;
-			settle(() => reject(err));
+		child.once("error", (error) => {
+			settleStart(() => reject(error));
+			parentError = error;
+			parentClosed = true;
+			maybeSettleCompletion();
 		});
 
 		child.stderr?.on("data", (chunk: Buffer) => {
@@ -266,82 +402,149 @@ function startManagedSpeechProcess(
 		});
 
 		child.once("close", (code) => {
-			if (activeSpeech === child) activeSpeech = null;
-			if (code && code !== 0) {
-				log.logWarning(`[speak] process exited with code ${code}`, stderr.trim().slice(0, 500));
-			}
+			parentExitCode = code;
+			parentClosed = true;
+			maybeSettleCompletion();
 		});
+
+		if (signal.aborted) void cancel("aborted");
 	});
 }
 
-async function runMacSay(text: string, config: ResolvedSpeakConfig): Promise<string> {
+function withSpeechGuard(
+	text: string,
+	managed: ManagedSpeechProcess,
+	message: string,
+): SpeechOutputExecution<string> {
+	const guardId = beginAssistantSpeech(text);
+	const completed = managed.completed.finally(() => finishAssistantSpeech(guardId));
+	return {
+		value: message,
+		completed,
+		cancel: managed.cancel,
+	};
+}
+
+async function runMacSay(
+	text: string,
+	config: ResolvedSpeakConfig,
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
 	const args: string[] = [];
 	if (config.macosSay.voice) args.push("-v", config.macosSay.voice);
 	if (config.macosSay.rate) args.push("-r", String(Math.round(config.macosSay.rate)));
-	const speechId = beginAssistantSpeech(text);
-	try {
-		const child = await startManagedSpeechProcess("/usr/bin/say", args, text);
-		child.once("close", () => finishAssistantSpeech(speechId));
-	} catch (err) {
-		finishAssistantSpeech(speechId);
-		throw err;
-	}
-	return "Speaking via macOS say.";
+	const managed = await startManagedSpeechProcess("/usr/bin/say", args, text, signal);
+	return withSpeechGuard(text, managed, "Speaking via macOS say.");
 }
 
-async function runCommandBackend(text: string, config: ResolvedSpeakConfig): Promise<string> {
+async function runCommandBackend(
+	text: string,
+	config: ResolvedSpeakConfig,
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
 	if (!config.command) {
 		throw new Error("speak command backend requires settings.speak.command or MOM_SPEAK_COMMAND.");
 	}
 	const shell = process.env.SHELL || "/bin/sh";
-	const speechId = beginAssistantSpeech(text);
-	try {
-		const child = await startManagedSpeechProcess(shell, ["-lc", config.command], text);
-		child.once("close", () => finishAssistantSpeech(speechId));
-	} catch (err) {
-		finishAssistantSpeech(speechId);
-		throw err;
-	}
-	return "Speaking via command backend.";
+	const managed = await startManagedSpeechProcess(shell, ["-lc", config.command], text, signal);
+	return withSpeechGuard(text, managed, "Speaking via command backend.");
 }
 
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-async function runSagBackend(text: string, config: ResolvedSpeakConfig): Promise<string> {
+async function runSagBackend(
+	text: string,
+	config: ResolvedSpeakConfig,
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
 	const { command, modelId, shell } = config.sag;
 	const invocation = `exec ${shellQuote(command)} --model-id ${shellQuote(modelId)}`;
-	const speechId = beginAssistantSpeech(text);
-	try {
-		// SAG reads the response from stdin. A login+interactive Zsh loads the
-		// operator-approved ElevenLabs environment without copying secrets into
-		// Troublemaker settings or command-line arguments.
-		const child = await startManagedSpeechProcess(shell, ["-lic", invocation], text);
-		child.once("close", () => finishAssistantSpeech(speechId));
-	} catch (err) {
-		finishAssistantSpeech(speechId);
-		throw err;
-	}
-	return "Speaking via SAG.";
+	// SAG reads the response from stdin. A login+interactive Zsh loads the
+	// operator-approved ElevenLabs environment without copying secrets into
+	// Troublemaker settings or command-line arguments.
+	const managed = await startManagedSpeechProcess(shell, ["-lic", invocation], text, signal);
+	return withSpeechGuard(text, managed, "Speaking via SAG.");
 }
 
-async function runHttpBackend(text: string, interrupt: boolean, config: ResolvedSpeakConfig, signal?: AbortSignal): Promise<string> {
+async function runHttpBackend(
+	text: string,
+	speechId: string,
+	interrupt: boolean,
+	config: ResolvedSpeakConfig,
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
 	if (!config.http) {
 		throw new Error("speak http backend requires settings.speak.url or MOM_SPEAK_URL.");
 	}
-	holdAssistantSpeech(text, estimateSpeechActiveMs(text));
-	const response = await fetch(config.http.url, {
-		method: "POST",
-		headers: config.http.headers,
-		body: JSON.stringify({ text, interrupt }),
-		signal,
-	});
+	const activeMs = estimateSpeechActiveMs(text);
+	const guardId = holdAssistantSpeech(text, activeMs);
+	let response: Response;
+	try {
+		response = await fetch(config.http.url, {
+			method: "POST",
+			headers: config.http.headers,
+			body: JSON.stringify({ text, interrupt, speechId }),
+			signal,
+		});
+	} catch (error) {
+		finishAssistantSpeech(guardId);
+		throw error;
+	}
 	if (!response.ok) {
 		const body = await response.text().catch(() => "");
+		finishAssistantSpeech(guardId);
 		throw new Error(`speak HTTP backend failed: ${response.status} ${response.statusText}${body ? `: ${body.slice(0, 300)}` : ""}`);
 	}
-	return `Speaking via HTTP backend (${response.status}).`;
+
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let finish!: () => void;
+	const activeWindow = new Promise<void>((resolveCompletion) => {
+		finish = resolveCompletion;
+		timer = setTimeout(resolveCompletion, activeMs);
+		timer.unref();
+	});
+	const completed = activeWindow.finally(() => finishAssistantSpeech(guardId));
+	const cancel = async (reason: string) => {
+		if (!config.http?.stopUrl) {
+			// An accepted HTTP request has no local playback handle. Without a
+			// remote stop acknowledgement, retain the lane for its full active window.
+			await completed;
+			return;
+		}
+		const stopController = new AbortController();
+		const stopTimer = setTimeout(() => stopController.abort(new Error("HTTP speech stop acknowledgement timed out.")), 5000);
+		stopTimer.unref();
+		try {
+			const stopResponse = await fetch(config.http.stopUrl, {
+				method: "POST",
+				headers: config.http.headers,
+				body: JSON.stringify({ speechId, reason }),
+				signal: stopController.signal,
+			});
+			if (!stopResponse.ok) {
+				throw new Error(`speak HTTP stop failed: ${stopResponse.status} ${stopResponse.statusText}`);
+			}
+			const acknowledgement: unknown = await stopResponse.json();
+			if (!isRecord(acknowledgement)
+				|| acknowledgement.stopped !== true
+				|| acknowledgement.speechId !== speechId) {
+				throw new Error("speak HTTP stop did not acknowledge the exact speech id.");
+			}
+		} finally {
+			clearTimeout(stopTimer);
+		}
+		if (timer) clearTimeout(timer);
+		timer = undefined;
+		finish();
+		await completed;
+	};
+	return {
+		value: `Speaking via HTTP backend (${response.status}).`,
+		completed,
+		cancel,
+	};
 }
 
 function elevenLabsExtension(outputFormat: string): string {
@@ -351,7 +554,11 @@ function elevenLabsExtension(outputFormat: string): string {
 	return "audio";
 }
 
-async function runElevenLabsBackend(text: string, config: ResolvedSpeakConfig): Promise<string> {
+async function runElevenLabsBackend(
+	text: string,
+	config: ResolvedSpeakConfig,
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
 	const elevenlabs = config.elevenlabs;
 	if (!elevenlabs?.apiKey) {
 		throw new Error("speak elevenlabs backend requires MOM_ELEVENLABS_API_KEY, MOM_SPEAK_ELEVENLABS_API_KEY, or settings.speak.elevenlabs.apiKey.");
@@ -359,13 +566,16 @@ async function runElevenLabsBackend(text: string, config: ResolvedSpeakConfig): 
 	if (!elevenlabs.outputFormat.startsWith("mp3_")) {
 		throw new Error("speak elevenlabs local playback requires an mp3_* outputFormat.");
 	}
+	if (signal.aborted) throw signal.reason;
 
 	const result = await textToSpeech(text, {
 		apiKey: elevenlabs.apiKey,
 		voiceId: elevenlabs.voiceId,
 		modelId: elevenlabs.modelId,
 		outputFormat: elevenlabs.outputFormat,
+		signal,
 	});
+	if (signal.aborted) throw signal.reason;
 	const audio = Buffer.concat(result.audioChunks.map((chunk) => Buffer.from(chunk, "base64")));
 	if (audio.length === 0) {
 		throw new Error("ElevenLabs returned no audio.");
@@ -374,49 +584,86 @@ async function runElevenLabsBackend(text: string, config: ResolvedSpeakConfig): 
 	const dir = await mkdtemp(join(tmpdir(), "troublemaker-speak-"));
 	const audioPath = join(dir, `speech.${elevenLabsExtension(elevenlabs.outputFormat)}`);
 	await writeFile(audioPath, audio);
-	const speechId = beginAssistantSpeech(text);
-	let child: ChildProcess;
 	try {
-		child = await startManagedSpeechProcess(elevenlabs.playerCommand, [audioPath]);
-	} catch (err) {
-		finishAssistantSpeech(speechId);
+		if (signal.aborted) throw signal.reason;
+		const managed = await startManagedSpeechProcess(elevenlabs.playerCommand, [audioPath], undefined, signal);
+		const guarded = withSpeechGuard(text, managed, "Speaking via ElevenLabs.");
+		return {
+			...guarded,
+			completed: guarded.completed.finally(() => rm(dir, { recursive: true, force: true }).catch(() => {})),
+		};
+	} catch (error) {
 		await rm(dir, { recursive: true, force: true }).catch(() => {});
-		throw err;
+		throw error;
 	}
-	child.once("close", () => {
-		finishAssistantSpeech(speechId);
-		rm(dir, { recursive: true, force: true }).catch(() => {});
-	});
-	return "Speaking via ElevenLabs.";
 }
 
 async function dispatchSpeech(
 	text: string,
+	speechId: string,
 	config: ResolvedSpeakConfig,
 	interrupt: boolean,
-	signal?: AbortSignal,
-): Promise<string> {
-	if (activeSpeech) {
-		if (!interrupt) {
-			throw new Error("Speech is already in progress. Call speak with interrupt=true to replace it.");
-		}
-		stopActiveSpeech();
-	}
+	signal: AbortSignal,
+): Promise<SpeechOutputExecution<string>> {
+	if (config.backend === "macos-say") return runMacSay(text, config, signal);
+	if (config.backend === "command") return runCommandBackend(text, config, signal);
+	if (config.backend === "http") return runHttpBackend(text, speechId, interrupt, config, signal);
+	if (config.backend === "elevenlabs") return runElevenLabsBackend(text, config, signal);
+	if (config.backend === "sag") return runSagBackend(text, config, signal);
+	return {
+		value: `Speech is disabled (${config.backend}).`,
+		completed: Promise.resolve(),
+		cancel: async () => {},
+	};
+}
 
-	if (config.backend === "macos-say") return runMacSay(text, config);
-	if (config.backend === "command") return runCommandBackend(text, config);
-	if (config.backend === "http") return runHttpBackend(text, interrupt, config, signal);
-	if (config.backend === "elevenlabs") return runElevenLabsBackend(text, config);
-	if (config.backend === "sag") return runSagBackend(text, config);
-	return `Speech is disabled (${config.backend}).`;
+function speechRequestDigest(text: string, config: ResolvedSpeakConfig): string {
+	const backendIdentity = config.backend === "macos-say"
+		? { backend: config.backend, ...config.macosSay }
+		: config.backend === "command"
+			? { backend: config.backend, command: config.command }
+			: config.backend === "http"
+				? { backend: config.backend, url: config.http?.url, stopUrl: config.http?.stopUrl }
+				: config.backend === "elevenlabs"
+					? {
+						backend: config.backend,
+						voiceId: config.elevenlabs?.voiceId,
+						modelId: config.elevenlabs?.modelId,
+						outputFormat: config.elevenlabs?.outputFormat,
+						playerCommand: config.elevenlabs?.playerCommand,
+					}
+					: config.backend === "sag"
+						? { backend: config.backend, ...config.sag }
+						: { backend: config.backend };
+	return createHash("sha256")
+		.update(JSON.stringify({ text: text.normalize("NFC"), backend: backendIdentity }))
+		.digest("hex");
+}
+
+export interface SpeakConfiguredResult {
+	backend: MomSpeakBackend;
+	enabled: boolean;
+	message: string;
+	speechId?: string;
+	laneId?: string;
+	status?: SpeechOutputReceipt["status"];
+	receiptSequence?: number;
+	duplicate?: boolean;
+}
+
+function logSpeechReceipt(receipt: SpeechOutputReceipt): void {
+	const detail = receipt.error ?? receipt.reason ?? "";
+	const message = `[speech-output] lane=${receipt.laneId} speech=${receipt.speechId} sequence=${receipt.sequence} status=${receipt.status}`;
+	if (receipt.status === "failed") log.logWarning(message, detail);
+	else log.logInfo(detail ? `${message} detail=${detail}` : message);
 }
 
 export async function speakConfiguredText(
 	workspaceDir: string,
 	text: string,
-	request: { interrupt?: boolean; signal?: AbortSignal } = {},
+	request: { interrupt?: boolean; signal?: AbortSignal; speechId?: string } = {},
 	options: SpeakToolOptions = {},
-): Promise<{ backend: MomSpeakBackend; enabled: boolean; message: string }> {
+): Promise<SpeakConfiguredResult> {
 	const cleanText = text.trim();
 	if (!cleanText) throw new Error("speak requires non-empty text.");
 
@@ -428,9 +675,49 @@ export async function speakConfiguredText(
 		throw new Error(`speak text is ${cleanText.length} characters; limit is ${config.maxChars}. Speak a shorter phrase.`);
 	}
 
-	const message = await dispatchSpeech(cleanText, config, request.interrupt === true, request.signal);
-	log.logInfo(`[speak] ${config.backend}: ${cleanText.slice(0, 120)}`);
-	return { backend: config.backend, enabled: true, message };
+	const speechId = request.speechId?.trim() || randomUUID();
+	const requestDigest = speechRequestDigest(cleanText, config);
+	const coordinator = getSpeechOutputCoordinator(workspaceDir, options);
+	let startPromise: Promise<SpeechOutputExecution<string>> | undefined;
+	const ticket = coordinator.enqueue({
+		speechId,
+		requestDigest,
+		interrupt: request.interrupt === true,
+		signal: request.signal,
+		start: (signal) => {
+			startPromise = dispatchSpeech(cleanText, speechId, config, request.interrupt === true, signal);
+			return startPromise;
+		},
+		cancelStart: async (reason) => {
+			if (!startPromise) return;
+			let execution: SpeechOutputExecution<string>;
+			try {
+				execution = await startPromise;
+			} catch {
+				// Rejected startup is acknowledgement that it cannot produce output.
+				return;
+			}
+			await execution.cancel(reason);
+		},
+	});
+	const started = await ticket.started;
+	if (!ticket.duplicate) {
+		logSpeechReceipt(started.receipt);
+		void ticket.settled.then(logSpeechReceipt);
+		log.logInfo(`[speak] ${config.backend}: ${cleanText.slice(0, 120)}`);
+	}
+	return {
+		backend: config.backend,
+		enabled: true,
+		message: ticket.duplicate
+			? `Duplicate speech request suppressed (${speechId}).`
+			: started.value,
+		speechId,
+		laneId: ticket.laneId,
+		status: started.receipt.status,
+		receiptSequence: started.receipt.sequence,
+		duplicate: ticket.duplicate,
+	};
 }
 
 export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions = {}): AgentTool<typeof speakToolSchema> {
@@ -438,20 +725,32 @@ export function createSpeakTool(workspaceDir: string, options: SpeakToolOptions 
 		name: "speak",
 		label: "speak",
 		description:
-			"Speak a short phrase aloud through Noodle's configured local TTS backend. " +
+			"Speak a short phrase aloud through Noodle's configured local TTS backend. Calls queue in order; interrupt=true explicitly cancels only the active utterance before this one starts. " +
 			"Use this when the user asks you to say something out loud or when a local Mac demo needs audible narration. " +
 			"Do not use this for ordinary voice/phone/web-voice replies; those sessions provide their own TTS. " +
 			"Config comes from settings.json `speak` or env vars. Backends: macos-say, command, http, elevenlabs, sag, noop/disabled.",
 		parameters: speakToolSchema,
 		execute: async (
-			_toolCallId: string,
+			toolCallId: string,
 			{ text, interrupt }: { label: string; text: string; interrupt?: boolean },
 			signal?: AbortSignal,
 		) => {
-			const result = await speakConfiguredText(workspaceDir, text, { interrupt, signal }, options);
+			const result = await speakConfiguredText(workspaceDir, text, {
+				interrupt,
+				signal,
+				speechId: toolCallId,
+			}, options);
 			return {
 				content: [{ type: "text" as const, text: result.message }],
-				details: { backend: result.backend, enabled: result.enabled },
+				details: {
+					backend: result.backend,
+					enabled: result.enabled,
+					speechId: result.speechId,
+					laneId: result.laneId,
+					status: result.status,
+					receiptSequence: result.receiptSequence,
+					duplicate: result.duplicate,
+				},
 			};
 		},
 	};

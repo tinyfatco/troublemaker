@@ -14,6 +14,8 @@ export interface TtsConfig {
 	modelId?: string;
 	/** Output audio format (default: ulaw_8000 for telephony) */
 	outputFormat?: string;
+	/** Optional cancellation for non-streaming generation. */
+	signal?: AbortSignal;
 }
 
 export interface TtsResult {
@@ -29,26 +31,51 @@ export async function textToSpeech(text: string, config: TtsConfig): Promise<Tts
 	const modelId = config.modelId || "eleven_turbo_v2_5";
 	const voiceId = config.voiceId;
 	const outputFormat = config.outputFormat || "ulaw_8000";
+	if (config.signal?.aborted) throw config.signal.reason ?? new Error("TTS generation canceled.");
 
 	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=${outputFormat}`;
 
 	return new Promise<TtsResult>((resolve, reject) => {
 		const audioChunks: string[] = [];
-		let resolved = false;
+		let settled = false;
 
 		const ws = new WebSocket(url, {
 			headers: { "xi-api-key": config.apiKey },
 		});
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const cleanup = () => {
+			if (timeout) clearTimeout(timeout);
+			config.signal?.removeEventListener("abort", onAbort);
+		};
+		const settleResolve = (result: TtsResult) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve(result);
+		};
+		const settleReject = (error: unknown) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(error);
+		};
+		const onAbort = () => {
+			try { ws.close(); } catch { /* best effort */ }
+			settleReject(config.signal?.reason ?? new Error("TTS generation canceled."));
+		};
+		config.signal?.addEventListener("abort", onAbort, { once: true });
+		if (config.signal?.aborted) {
+			onAbort();
+			return;
+		}
 
-		const timeout = setTimeout(() => {
-			if (!resolved) {
-				resolved = true;
-				ws.close();
-				reject(new Error("TTS WebSocket timeout (15s)"));
-			}
+		timeout = setTimeout(() => {
+			try { ws.close(); } catch { /* best effort */ }
+			settleReject(new Error("TTS WebSocket timeout (15s)"));
 		}, 15000);
 
 		ws.on("open", () => {
+			if (settled) return;
 			// Initialize the connection with voice settings
 			ws.send(JSON.stringify({
 				text: " ",
@@ -70,16 +97,13 @@ export async function textToSpeech(text: string, config: TtsConfig): Promise<Tts
 		});
 
 		ws.on("message", (data) => {
+			if (settled) return;
 			try {
 				const msg = JSON.parse(data.toString());
-				if (msg.audio) {
-					audioChunks.push(msg.audio);
-				}
+				if (msg.audio) audioChunks.push(msg.audio);
 				if (msg.isFinal) {
-					clearTimeout(timeout);
-					resolved = true;
 					ws.close();
-					resolve({ audioChunks });
+					settleResolve({ audioChunks });
 				}
 			} catch (err) {
 				log.logWarning(`[voice-tts] Failed to parse message: ${err}`);
@@ -87,24 +111,14 @@ export async function textToSpeech(text: string, config: TtsConfig): Promise<Tts
 		});
 
 		ws.on("error", (err) => {
-			if (!resolved) {
-				clearTimeout(timeout);
-				resolved = true;
-				reject(new Error(`TTS WebSocket error: ${err.message}`));
-			}
+			settleReject(new Error(`TTS WebSocket error: ${err.message}`));
 		});
 
 		ws.on("close", () => {
-			if (!resolved) {
-				clearTimeout(timeout);
-				resolved = true;
-				// If we got chunks, resolve with what we have
-				if (audioChunks.length > 0) {
-					resolve({ audioChunks });
-				} else {
-					reject(new Error("TTS WebSocket closed without audio"));
-				}
-			}
+			if (settled) return;
+			// If we got chunks, resolve with what we have
+			if (audioChunks.length > 0) settleResolve({ audioChunks });
+			else settleReject(new Error("TTS WebSocket closed without audio"));
 		});
 	});
 }
