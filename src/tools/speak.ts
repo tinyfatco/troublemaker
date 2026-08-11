@@ -274,14 +274,23 @@ function startManagedSpeechProcess(
 	signal: AbortSignal,
 ): Promise<ManagedSpeechProcess> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, { stdio: ["pipe", "ignore", "pipe"] });
+		const useProcessGroup = process.platform !== "win32";
+		const child = spawn(command, args, {
+			stdio: ["pipe", "ignore", "pipe"],
+			// A dedicated Unix process group lets cancellation own descendants too.
+			detached: useProcessGroup,
+		});
 		let stderr = "";
 		let startSettled = false;
 		let completionSettled = false;
 		let cancelRequested = false;
 		let spawned = false;
+		let parentClosed = false;
+		let parentExitCode: number | null = null;
+		let parentError: unknown;
 		let terminationSent = false;
 		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		let treeCheckTimer: ReturnType<typeof setTimeout> | undefined;
 		let complete!: () => void;
 		let fail!: (error: unknown) => void;
 		const completed = new Promise<void>((resolveCompletion, rejectCompletion) => {
@@ -299,23 +308,67 @@ function startManagedSpeechProcess(
 			if (completionSettled) return;
 			completionSettled = true;
 			if (killTimer) clearTimeout(killTimer);
+			if (treeCheckTimer) clearTimeout(treeCheckTimer);
 			signal.removeEventListener("abort", onAbort);
 			fn();
+		};
+		const processTreeActive = (): boolean => {
+			if (!spawned) return false;
+			if (useProcessGroup && child.pid) {
+				try {
+					process.kill(-child.pid, 0);
+					return true;
+				} catch (error) {
+					return (error as NodeJS.ErrnoException).code !== "ESRCH";
+				}
+			}
+			return child.exitCode === null && child.signalCode === null;
+		};
+		const signalProcessTree = (treeSignal: NodeJS.Signals) => {
+			if (!spawned) return;
+			if (useProcessGroup && child.pid) {
+				try {
+					process.kill(-child.pid, treeSignal);
+					return;
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+				}
+			}
+			try { child.kill(treeSignal); } catch { /* best effort */ }
+		};
+		const scheduleTreeCheck = () => {
+			if (completionSettled || treeCheckTimer) return;
+			treeCheckTimer = setTimeout(() => {
+				treeCheckTimer = undefined;
+				maybeSettleCompletion();
+			}, 25);
+		};
+		const maybeSettleCompletion = () => {
+			if (completionSettled || !parentClosed) return;
+			if (processTreeActive()) {
+				scheduleTreeCheck();
+				return;
+			}
+			if (parentError !== undefined) {
+				settleCompletion(() => fail(parentError));
+				return;
+			}
+			if (parentExitCode && parentExitCode !== 0 && !cancelRequested) {
+				const detail = stderr.trim().slice(0, 500);
+				log.logWarning(`[speak] process exited with code ${parentExitCode}`, detail);
+				settleCompletion(() => fail(new Error(`Speech process exited with code ${parentExitCode}${detail ? `: ${detail}` : ""}`)));
+				return;
+			}
+			settleCompletion(complete);
 		};
 		const terminate = () => {
 			if (completionSettled || terminationSent || !spawned) return;
 			terminationSent = true;
-			try {
-				child.kill("SIGTERM");
-				killTimer = setTimeout(() => {
-					if (child.exitCode === null && child.signalCode === null) {
-						try { child.kill("SIGKILL"); } catch { /* best effort */ }
-					}
-				}, 750);
-				killTimer.unref();
-			} catch {
-				// The close/error event remains the inactivity proof.
-			}
+			signalProcessTree("SIGTERM");
+			killTimer = setTimeout(() => {
+				if (processTreeActive()) signalProcessTree("SIGKILL");
+				maybeSettleCompletion();
+			}, 750);
 		};
 		const cancel = async (_reason: string) => {
 			cancelRequested = true;
@@ -338,7 +391,9 @@ function startManagedSpeechProcess(
 
 		child.once("error", (error) => {
 			settleStart(() => reject(error));
-			settleCompletion(() => fail(error));
+			parentError = error;
+			parentClosed = true;
+			maybeSettleCompletion();
 		});
 
 		child.stderr?.on("data", (chunk: Buffer) => {
@@ -347,13 +402,9 @@ function startManagedSpeechProcess(
 		});
 
 		child.once("close", (code) => {
-			if (code && code !== 0 && !cancelRequested) {
-				const detail = stderr.trim().slice(0, 500);
-				log.logWarning(`[speak] process exited with code ${code}`, detail);
-				settleCompletion(() => fail(new Error(`Speech process exited with code ${code}${detail ? `: ${detail}` : ""}`)));
-				return;
-			}
-			settleCompletion(complete);
+			parentExitCode = code;
+			parentClosed = true;
+			maybeSettleCompletion();
 		});
 
 		if (signal.aborted) void cancel("aborted");

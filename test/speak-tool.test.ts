@@ -170,6 +170,53 @@ printf 'end:%s\\n' "$text" >> ${shellEscape(queueTracePath)}
 	);
 	await resetSpeechOutputCoordinatorsForTests();
 
+	const processTreeTracePath = join(tempDir, "process-tree-trace.txt");
+	const processTreeScriptPath = join(tempDir, "process-tree-speech.sh");
+	await writeFile(processTreeScriptPath, `#!/bin/sh
+text=$(cat)
+if [ "$text" = "old-tree" ]; then
+  trap '' TERM
+  (
+    trap '' TERM
+    printf 'ready:%s\\n' "$text" >> ${shellEscape(processTreeTracePath)}
+    sleep 1.2
+    printf 'escaped:%s\\n' "$text" >> ${shellEscape(processTreeTracePath)}
+  ) </dev/null >/dev/null 2>&1 &
+  printf 'parent:%s\\n' "$text" >> ${shellEscape(processTreeTracePath)}
+  wait
+else
+  printf 'parent:%s\\n' "$text" >> ${shellEscape(processTreeTracePath)}
+  sleep 0.05
+fi
+`);
+	await chmod(processTreeScriptPath, 0o700);
+	await writeFile(join(tempDir, "settings.json"), `${JSON.stringify({
+		speak: {
+			backend: "command",
+			command: `exec ${shellEscape(processTreeScriptPath)}`,
+			maxChars: 80,
+		},
+	}, null, 2)}\n`);
+	const processTreeTool = createSpeakTool(tempDir, { env: {}, platform: "linux", laneId: "process-tree-cancel-test" });
+	await processTreeTool.execute("tree-old-id", { label: "TERM-resistant process tree", text: "old-tree" });
+	await waitForTraceEntry(processTreeTracePath, "ready:old-tree");
+	const processTreeCancelAt = Date.now();
+	await processTreeTool.execute("tree-new-id", {
+		label: "replace full process tree",
+		text: "new-tree",
+		interrupt: true,
+	});
+	assert.ok(Date.now() - processTreeCancelAt >= 700, "replacement waits for the TERM-resistant process group to become inactive");
+	await waitForTraceEntry(processTreeTracePath, "parent:new-tree");
+	await new Promise((resolveDelay) => setTimeout(resolveDelay, 700));
+	const processTreeTrace = (await readFile(processTreeTracePath, "utf-8")).trim().split("\n").filter(Boolean);
+	assert.equal(processTreeTrace.includes("parent:old-tree"), true);
+	assert.equal(processTreeTrace.includes("ready:old-tree"), true);
+	assert.equal(processTreeTrace.includes("parent:new-tree"), true);
+	assert.equal(processTreeTrace.includes("escaped:old-tree"), false, "a canceled background child cannot escape into the replacement lane");
+	assert.ok(processTreeTrace.indexOf("parent:new-tree") > processTreeTrace.indexOf("parent:old-tree"));
+	await resetSpeechOutputCoordinatorsForTests();
+
 	const sagPath = join(tempDir, "fake-sag.sh");
 	const sagShellPath = join(tempDir, "fake-login-shell.sh");
 	const sagSpokenPath = join(tempDir, "sag-spoken.txt");
