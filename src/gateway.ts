@@ -5,6 +5,14 @@ import { join, extname, resolve, normalize } from "path";
 import { WorkspaceDeliveryLedger } from "./adapters/workspace-channel-runtime.js";
 import { ConsoleError, ConsoleService } from "./console/service.js";
 import { projectConversationBacklog, projectConversationLiveEvent } from "./console/conversation-projection.js";
+import {
+	CONSOLE_TRANSCRIPTION_CHANNELS,
+	CONSOLE_TRANSCRIPTION_MAX_BYTES,
+	CONSOLE_TRANSCRIPTION_SAMPLE_RATE,
+	ConsoleTranscriptionError,
+	isSafeTranscriptionId,
+	type ConsoleTranscriptionService,
+} from "./console/transcription.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
@@ -85,6 +93,8 @@ export interface GatewayOptions {
 	uiDir?: string;
 	/** Directory to scope file API reads to */
 	workspaceDir?: string;
+	/** Optional host-owned speech transcription capability. */
+	transcription?: ConsoleTranscriptionService;
 }
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
@@ -100,6 +110,7 @@ export class Gateway {
 	private consoleService: ConsoleService | null = null;
 	private awarenessStore: FilesystemAwarenessStore | null = null;
 	private deliveryLedger: WorkspaceDeliveryLedger | null = null;
+	private transcription: ConsoleTranscriptionService | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
 	private liveClientCount = 0;
@@ -109,13 +120,18 @@ export class Gateway {
 	private awarenessFileIdentity = "";
 
 	constructor(options: GatewayOptions = {}) {
+		this.transcription = options.transcription ?? null;
 		if (options.uiDir && existsSync(options.uiDir)) {
 			this.uiDir = resolve(options.uiDir);
 			log.logInfo(`[gateway] serving UI from ${this.uiDir}`);
 		}
 		if (options.workspaceDir) {
 			this.workspaceDir = resolve(options.workspaceDir);
-			this.consoleService = new ConsoleService(new FilesystemWorkspaceStore(this.workspaceDir));
+			this.consoleService = new ConsoleService(
+				new FilesystemWorkspaceStore(this.workspaceDir),
+				process.env,
+				this.transcription !== null,
+			);
 			this.awarenessStore = new FilesystemAwarenessStore(this.workspaceDir);
 			this.deliveryLedger = new WorkspaceDeliveryLedger(
 				join(this.workspaceDir, ".web-deliveries.jsonl"),
@@ -308,6 +324,90 @@ export class Gateway {
 		} catch (err) {
 			this.sendConsoleError(res, err, 503);
 		}
+	}
+
+	private async handleConsoleTranscription(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.transcription) {
+			this.sendTranscriptionResponse(res, 503, {
+				error: "transcription_unavailable",
+				message: "Transcription is unavailable",
+			});
+			return;
+		}
+		const idHeader = Array.isArray(req.headers["x-transcription-id"])
+			? req.headers["x-transcription-id"][0]
+			: req.headers["x-transcription-id"];
+		const transcriptionId = idHeader?.trim() || "";
+		if (!isSafeTranscriptionId(transcriptionId)) {
+			this.sendTranscriptionResponse(res, 400, {
+				error: "invalid_transcription_id",
+				message: "A valid transcription identity is required",
+			});
+			return;
+		}
+		const contentType = String(req.headers["content-type"] || "").toLowerCase().replace(/\s+/g, "");
+		if (contentType !== "audio/l16;rate=16000;channels=1") {
+			this.sendTranscriptionResponse(res, 415, {
+				error: "unsupported_audio_format",
+				message: "Expected 16 kHz mono linear16 audio",
+			});
+			return;
+		}
+		const declaredLength = Number.parseInt(String(req.headers["content-length"] || "0"), 10);
+		if (Number.isFinite(declaredLength) && declaredLength > CONSOLE_TRANSCRIPTION_MAX_BYTES) {
+			this.sendTranscriptionResponse(res, 413, {
+				error: "transcription_audio_too_large",
+				message: "Transcription audio is too large",
+			});
+			return;
+		}
+
+		try {
+			const audio = await readBoundedRequestBody(req, CONSOLE_TRANSCRIPTION_MAX_BYTES);
+			if (audio.length === 0 || audio.length % 2 !== 0) {
+				this.sendTranscriptionResponse(res, 400, {
+					error: "invalid_transcription_audio",
+					message: "Transcription audio is invalid",
+				});
+				return;
+			}
+			const result = await this.transcription.transcribe({
+				id: transcriptionId,
+				audio,
+				encoding: "linear16",
+				sampleRate: CONSOLE_TRANSCRIPTION_SAMPLE_RATE,
+				channels: CONSOLE_TRANSCRIPTION_CHANNELS,
+			});
+			this.sendTranscriptionResponse(res, 200, {
+				transcription_id: transcriptionId,
+				text: result.text,
+			});
+		} catch (error) {
+			if (error instanceof RequestBodyTooLargeError) {
+				this.sendTranscriptionResponse(res, 413, {
+					error: "transcription_audio_too_large",
+					message: "Transcription audio is too large",
+				});
+				return;
+			}
+			if (error instanceof ConsoleTranscriptionError) {
+				this.sendTranscriptionResponse(res, error.status, { error: error.code, message: error.message });
+				return;
+			}
+			this.sendTranscriptionResponse(res, 502, {
+				error: "transcription_failed",
+				message: "Transcription failed",
+			});
+		}
+	}
+
+	private sendTranscriptionResponse(res: ServerResponse, status: number, payload: Record<string, unknown>): void {
+		if (res.writableEnded) return;
+		res.writeHead(status, {
+			"Content-Type": "application/json; charset=utf-8",
+			"Cache-Control": "no-store",
+		});
+		res.end(JSON.stringify(payload));
 	}
 
 	private isConsoleAgentPath(urlPath: string, suffix: string): boolean {
@@ -840,6 +940,11 @@ export class Gateway {
 				return;
 			}
 
+			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/transcriptions")) {
+				void this.handleConsoleTranscription(req, res);
+				return;
+			}
+
 			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/messages/stop")) {
 				const handler = this.routes.get("/web/stop");
 				if (!handler) {
@@ -1008,4 +1113,35 @@ function parseLiveSequence(value: string | null | undefined): number {
 	if (!value) return 0;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+class RequestBodyTooLargeError extends Error {}
+
+function readBoundedRequestBody(req: IncomingMessage, maximumBytes: number): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let settled = false;
+		const fail = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
+		req.on("data", (chunk: Buffer) => {
+			if (settled) return;
+			size += chunk.length;
+			if (size > maximumBytes) {
+				fail(new RequestBodyTooLargeError());
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			if (settled) return;
+			settled = true;
+			resolve(Buffer.concat(chunks));
+		});
+		req.on("aborted", () => fail(new Error("Request aborted")));
+		req.on("error", (error) => fail(error));
+	});
 }

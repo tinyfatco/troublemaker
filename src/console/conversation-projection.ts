@@ -140,10 +140,11 @@ function projectConversationRuntimeEvent(
 	if (event.type === "assistant_snapshot") {
 		const text = event.entry.content.flatMap((block): string[] => block.type === "text" ? [block.text] : []).join("");
 		const isError = event.entry.stopReason === "error";
+		const completionId = stringValue(event.entry.id) || runId;
 		return {
 			kind: "assistant",
 			runId,
-			completionId: runId,
+			completionId,
 			text,
 			isFinal: event.entry.isStreaming === false,
 			isError,

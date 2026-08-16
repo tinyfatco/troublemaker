@@ -26,6 +26,7 @@ GET  /api/v2/agents/:id/events/stream
 GET  /api/v2/agents/:id/live
 POST /api/v2/agents/:id/messages
 POST /api/v2/agents/:id/messages/stop
+POST /api/v2/agents/:id/transcriptions
 GET  /api/v2/agents/:id/files?path=:path
 GET  /api/v2/agents/:id/file?path=:path
 PUT  /api/v2/agents/:id/file
@@ -83,6 +84,16 @@ macOS Computer client automatically speaks assistant output; it does not
 authorize runtime speech and does not change manual speech, Realtime voice,
 CallMe, iPhone, Watch, or another channel. The status response exposes this
 boolean only, never the raw settings block.
+
+When `capabilities.transcription` is true, an authenticated client may send a
+bounded push-to-talk recording to `POST /api/v2/agents/:id/transcriptions`.
+The request body is raw mono 16 kHz signed little-endian PCM with
+`Content-Type: audio/L16; rate=16000; channels=1` and a stable, non-secret
+`X-Transcription-ID`. The response contains only that identity and exact
+transcribed text. Transcription does not create an agent turn; the client must
+submit the returned text through the normal stable-`deliveryId` message route.
+Provider credentials remain host-owned, raw audio is not written to the
+workspace, and provider response bodies are never projected through this API.
 
 `POST /api/v2/agents/:id/messages` returns an SSE stream for the active turn.
 Clients should treat that stream as the low-latency rendering path for the

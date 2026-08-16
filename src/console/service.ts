@@ -30,6 +30,7 @@ export class ConsoleService {
 	constructor(
 		private readonly workspace: WorkspaceStore,
 		private readonly env: Record<string, string | undefined> = process.env,
+		private readonly transcriptionAvailable = false,
 	) {}
 
 	getSession(): ConsoleSession {
@@ -49,6 +50,7 @@ export class ConsoleService {
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
 				voice: true,
+				transcription: this.transcriptionAvailable,
 				fleet: profile.profileActive,
 			},
 		};
@@ -111,6 +113,7 @@ export class ConsoleService {
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
 				voice: true,
+				transcription: this.transcriptionAvailable,
 			},
 		};
 	}

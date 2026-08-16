@@ -117,6 +117,7 @@ const projectedLive = projectConversationLiveEvent({
 });
 assert.equal(projectedLive.kind, "assistant");
 assert.match(JSON.stringify(projectedLive), /Exact live assistant text/);
+assert.match(JSON.stringify(projectedLive), /"completionId":"live-assistant"/);
 assert.doesNotMatch(JSON.stringify(projectedLive), /PRIVATE_LIVE/);
 
 const projectedToolTurn = projectConversationTurnEvent({

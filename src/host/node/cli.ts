@@ -85,6 +85,7 @@ import {
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 import { FirstClassVoiceContract } from "../../voice-contract.js";
 import { readProtectedTokenFile } from "../../protected-token-file.js";
+import { createDeepgramConsoleTranscriptionService } from "./deepgram-transcription.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -1531,6 +1532,7 @@ for (const adapter of adapters) {
 const gateway = new Gateway({
 	uiDir: parsedArgs.uiDir,
 	workspaceDir: workingDir,
+	transcription: createDeepgramConsoleTranscriptionService(process.env),
 });
 
 // Status endpoint — reports whether the agent is currently running.
