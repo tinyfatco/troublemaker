@@ -1,27 +1,37 @@
 import SwiftUI
 
-/// Tabbed shell for one agent: Chat / Files / Preview.
-public struct AgentDetailView: View {
-    let viewModel: AppViewModel
-    let agent: Agent
+struct AgentDetailView: View {
+    let controller: ConversationController
+    let onChooseAgent: () -> Void
 
-    public init(viewModel: AppViewModel, agent: Agent) {
-        self.viewModel = viewModel
-        self.agent = agent
-    }
-
-    public var body: some View {
-        TabView {
-            ChatView(viewModel: viewModel, agent: agent)
-                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
-            FilesView(viewModel: viewModel, agent: agent)
-                .tabItem { Label("Files", systemImage: "folder") }
-            PreviewView(viewModel: viewModel, agent: agent)
-                .tabItem { Label("Preview", systemImage: "rectangle.dashed.badge.record") }
+    var body: some View {
+        NavigationStack {
+            ChatView(controller: controller)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: onChooseAgent) {
+                            Image(systemName: "person.2")
+                        }
+                        .accessibilityLabel("Choose agent")
+                    }
+                    ToolbarItem(placement: .principal) {
+                        VStack(spacing: 0) {
+                            Text(controller.binding.displayName.uppercased())
+                                .font(.caption.weight(.black))
+                            Text(controller.presenceState.rawValue.uppercased())
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        if controller.presenceState != .idle {
+                            Button(action: controller.stopAgent) {
+                                Image(systemName: "stop.fill")
+                            }
+                            .accessibilityLabel("Stop agent and speech")
+                        }
+                    }
+                }
         }
-        .navigationTitle(agent.name)
-        #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
     }
 }

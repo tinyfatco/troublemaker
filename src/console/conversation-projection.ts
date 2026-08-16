@@ -10,6 +10,7 @@ export interface ConversationMessage {
 	channel?: string;
 	userName?: string;
 	completionId?: string;
+	deliveryId?: string;
 	isError: boolean;
 	speechEligible: boolean;
 }
@@ -39,6 +40,8 @@ type ConversationLivePayload =
 export type ConversationLiveEvent = ConversationLiveBase & ConversationLivePayload;
 
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
+const LEADING_MODEL_CONTEXTS_RE = /^(?:\s*<session_context>[\s\S]*?<\/session_context>\s*|\s*<delivery_context>[\s\S]*?<\/delivery_context>\s*)+/;
+const DELIVERY_ID_RE = /<delivery_context>[\s\S]*?^Delivery ID:\s*([A-Za-z0-9._:-]{8,128})\s*$[\s\S]*?<\/delivery_context>/m;
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 
 /**
@@ -66,7 +69,10 @@ export function projectConversationLine(line: string): ConversationMessage | nul
 	let text = sourceParts.join("");
 	let channel: string | undefined;
 	let userName: string | undefined;
+	let deliveryId: string | undefined;
 	if (role === "user") {
+		const leadingContexts = text.match(LEADING_MODEL_CONTEXTS_RE)?.[0] || "";
+		deliveryId = leadingContexts.match(DELIVERY_ID_RE)?.[1];
 		text = text.replace(MODEL_CONTEXT_BLOCK_RE, "").trim();
 		const match = text.match(USER_PREFIX_RE);
 		if (match) {
@@ -87,6 +93,7 @@ export function projectConversationLine(line: string): ConversationMessage | nul
 		text,
 		...(channel ? { channel } : {}),
 		...(userName ? { userName } : {}),
+		...(deliveryId ? { deliveryId } : {}),
 		...(role === "assistant" ? { completionId: id } : {}),
 		isError,
 		speechEligible: role === "assistant" && !isError,

@@ -20,6 +20,7 @@ All routes are same-origin from the console UI.
 GET  /api/v2/session
 GET  /api/v2/agents
 GET  /api/v2/agents/:id/status
+GET  /api/v2/agents/:id/deliveries?ids=:delivery-id,...
 GET  /api/v2/agents/:id/events?limit=50&before=:offset
 GET  /api/v2/agents/:id/events/stream
 GET  /api/v2/agents/:id/live
@@ -85,13 +86,22 @@ boolean only, never the raw settings block.
 
 `POST /api/v2/agents/:id/messages` returns an SSE stream for the active turn.
 Clients should treat that stream as the low-latency rendering path for the
-message they just sent, then dedupe against durable awareness entries when the
-same turn appears in `/events` or `/events/stream`.
+message they just sent. Every mutating client supplies a stable `deliveryId`.
+If that response stream is lost, clients reconcile the exact ID through the
+bounded `/deliveries` lookup and the `deliveryId` on the sanitized durable user
+message; they must never infer delivery from body equality or automatically
+resend an unknown attempt. Receipts disclose only accepted/completed authority
+and timestamps, never message content.
 
 `GET /api/v2/agents/:id/events/stream` emits only new durable awareness lines.
 Each SSE message should include an `id` when the backing awareness line has an
 `id` or timestamp, allowing browsers to provide `Last-Event-ID` on reconnect.
 Clients still need duplicate filtering by parsed awareness entry id.
+
+`GET /api/v2/agents/:id/live?surface=conversation` emits an immediate
+non-advancing `cursor` event and repeats cursor heartbeats every 15 seconds, so
+quiet connections have an explicit readiness signal without inventing a user
+or assistant event.
 
 The durable event stream remains the source of truth. Optimistic chat entries
 are UI affordances, not persistent state.

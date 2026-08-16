@@ -49,8 +49,20 @@ export class WorkspaceChannelQueue {
  * an accepted agent turn from being launched twice across a resident restart;
  * completion remains separately auditable after the event router returns.
  */
+export interface WorkspaceDeliveryReceipt {
+	deliveryId: string;
+	state: "accepted" | "completed";
+	claimedAt?: string;
+	completedAt?: string;
+}
+
+interface StoredWorkspaceDelivery {
+	claimedAt?: string;
+	completedAt?: string;
+}
+
 export class WorkspaceDeliveryLedger {
-	private deliveries?: Map<string, "claimed" | "completed">;
+	private deliveries?: Map<string, StoredWorkspaceDelivery>;
 
 	constructor(
 		private readonly path: string,
@@ -62,6 +74,26 @@ export class WorkspaceDeliveryLedger {
 	}
 
 	/**
+	 * Read current durable authority for a bounded caller-supplied set. This
+	 * deliberately refreshes from disk because the gateway and adapter own
+	 * separate ledger readers in the same resident process.
+	 */
+	receipts(deliveryIds: readonly string[]): WorkspaceDeliveryReceipt[] {
+		this.deliveries = undefined;
+		const deliveries = this.load();
+		return deliveryIds.flatMap((deliveryId) => {
+			const stored = deliveries.get(deliveryId);
+			if (!stored) return [];
+			return [{
+				deliveryId,
+				state: stored.completedAt ? "completed" : "accepted",
+				...(stored.claimedAt ? { claimedAt: stored.claimedAt } : {}),
+				...(stored.completedAt ? { completedAt: stored.completedAt } : {}),
+			} satisfies WorkspaceDeliveryReceipt];
+		});
+	}
+
+	/**
 	 * Durably claim a delivery before the transport acknowledges it. Agent turns
 	 * can survive a resident restart independently, so replaying an accepted turn
 	 * is more dangerous than retaining an incomplete claim for reconciliation.
@@ -69,22 +101,25 @@ export class WorkspaceDeliveryLedger {
 	claim(deliveryId: string): boolean {
 		const deliveries = this.load();
 		if (deliveries.has(deliveryId)) return false;
+		const claimedAt = new Date().toISOString();
 		this.append({
 			deliveryId,
-			claimedAt: new Date().toISOString(),
+			claimedAt,
 		});
-		deliveries.set(deliveryId, "claimed");
+		deliveries.set(deliveryId, { claimedAt });
 		return true;
 	}
 
 	complete(deliveryId: string): void {
 		const deliveries = this.load();
-		if (deliveries.get(deliveryId) === "completed") return;
+		const existing = deliveries.get(deliveryId);
+		if (existing?.completedAt) return;
+		const completedAt = new Date().toISOString();
 		this.append({
 			deliveryId,
-			completedAt: new Date().toISOString(),
+			completedAt,
 		});
-		deliveries.set(deliveryId, "completed");
+		deliveries.set(deliveryId, { ...existing, completedAt });
 	}
 
 	private append(record: { deliveryId: string; claimedAt?: string; completedAt?: string }): void {
@@ -97,9 +132,9 @@ export class WorkspaceDeliveryLedger {
 		}
 	}
 
-	private load(): Map<string, "claimed" | "completed"> {
+	private load(): Map<string, StoredWorkspaceDelivery> {
 		if (this.deliveries) return this.deliveries;
-		const deliveries = new Map<string, "claimed" | "completed">();
+		const deliveries = new Map<string, StoredWorkspaceDelivery>();
 		try {
 			for (const line of readFileSync(this.path, "utf8").split("\n")) {
 				if (!line.trim()) continue;
@@ -109,10 +144,11 @@ export class WorkspaceDeliveryLedger {
 					completedAt?: unknown;
 				};
 				if (typeof record.deliveryId === "string" && record.deliveryId) {
-					deliveries.set(
-						record.deliveryId,
-						typeof record.completedAt === "string" ? "completed" : "claimed",
-					);
+					const existing = deliveries.get(record.deliveryId);
+					deliveries.set(record.deliveryId, {
+						claimedAt: typeof record.claimedAt === "string" ? record.claimedAt : existing?.claimedAt,
+						completedAt: typeof record.completedAt === "string" ? record.completedAt : existing?.completedAt,
+					});
 				}
 			}
 		} catch (error) {

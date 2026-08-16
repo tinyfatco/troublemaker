@@ -17,6 +17,13 @@ export interface LiveEventSubscription {
 	unsubscribe(): void;
 }
 
+export interface RuntimeLiveCursor {
+	sequence: number;
+	streamId: string;
+	id: string;
+	timestamp: string;
+}
+
 /**
  * Small in-process fanout with bounded reconnect replay. It deliberately owns
  * no platform behavior: producers publish sanitized events and transports
@@ -47,6 +54,16 @@ export class RuntimeLiveEventHub {
 
 	publishReset(reason: "context_rotated" | "replay_gap"): RuntimeLiveEvent {
 		return this.publish({ kind: "reset", reason });
+	}
+
+	/** A non-advancing cursor used for ready and heartbeat frames. */
+	cursor(): RuntimeLiveCursor {
+		return {
+			sequence: this.sequence,
+			streamId: this.streamId,
+			id: randomUUID(),
+			timestamp: new Date().toISOString(),
+		};
 	}
 
 	subscribe(listener: (event: RuntimeLiveEvent) => void, afterSequence = 0): LiveEventSubscription {

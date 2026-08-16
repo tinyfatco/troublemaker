@@ -1,66 +1,87 @@
+@preconcurrency import AVFoundation
 import Foundation
 
-/// Parsed SSE event from `POST /api/v2/agents/:id/messages` response stream.
-/// Mirrors processEvent() in troublemaker/ui/src/hooks/useWebChat.ts.
-enum MessageDelta: Equatable {
-    case status(String)              // "waking" | "connecting" | "container" | "worker" | "fallback" | "steering" | "streaming"
-    case textDelta(String)           // streaming token of assistant text
-    case thinkingDelta(String)       // streaming token of thinking
-    case textFinal(String)           // complete text block at message_end — replaces accumulated text
-    case thinkingFinal(String)
-    case toolCall(id: String, name: String, args: String)
-    case toolResult(id: String, output: String, isError: Bool)
-    case error(String)
-    case heartbeat
-    case runComplete
-    case unknown(type: String)
+@MainActor
+final class SerializedSpeechCoordinator: NSObject, AVSpeechSynthesizerDelegate {
+    var onSpeakingChanged: ((Bool) -> Void)?
 
-    static func parse(_ raw: String) -> MessageDelta? {
-        guard let data = raw.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let type = obj["type"] as? String
-        else { return nil }
+    private let synthesizer = AVSpeechSynthesizer()
+    private let ledger: SpeechIdentityLedger
+    private var claimQueue: [SpeechCandidate] = []
+    private var isClaiming = false
+    private var queue: [SpeechCandidate] = []
+    private var active: SpeechCandidate?
+    private var generation = 0
+    private let defaultsKey = "computer.mobile.spoken-completions.v1"
 
-        switch type {
-        case "status":
-            return .status((obj["status"] as? String) ?? "")
-        case "text_delta":
-            return .textDelta((obj["delta"] as? String) ?? "")
-        case "thinking_delta":
-            return .thinkingDelta((obj["delta"] as? String) ?? "")
-        case "text":
-            return .textFinal((obj["text"] as? String) ?? "")
-        case "thinking":
-            return .thinkingFinal((obj["thinking"] as? String) ?? "")
-        case "toolCall":
-            let id = (obj["id"] as? String) ?? ""
-            let name = (obj["name"] as? String) ?? "tool"
-            let argsValue = obj["arguments"] ?? [:]
-            let argsString: String
-            if let d = try? JSONSerialization.data(withJSONObject: argsValue, options: [.sortedKeys]),
-               let s = String(data: d, encoding: .utf8) {
-                argsString = s
+    override init() {
+        let saved = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+        self.ledger = SpeechIdentityLedger(spoken: saved)
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func enqueue(_ candidate: SpeechCandidate) {
+        claimQueue.append(candidate)
+        claimNextIfNeeded()
+    }
+
+    func stop() {
+        generation += 1
+        claimQueue.removeAll()
+        isClaiming = false
+        queue.removeAll()
+        active = nil
+        if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+        onSpeakingChanged?(false)
+    }
+
+    private func claimNextIfNeeded() {
+        guard !isClaiming, let candidate = claimQueue.first else { return }
+        isClaiming = true
+        let claimGeneration = generation
+        Task { [weak self] in
+            guard let self else { return }
+            let claimed = await ledger.claim(candidate.completionID)
+            let snapshot = await ledger.snapshot()
+            UserDefaults.standard.set(snapshot, forKey: defaultsKey)
+            guard claimGeneration == generation else { return }
+            if claimQueue.first?.completionID == candidate.completionID {
+                claimQueue.removeFirst()
             } else {
-                argsString = "\(argsValue)"
+                claimQueue.removeAll { $0.completionID == candidate.completionID }
             }
-            return .toolCall(id: id, name: name, args: argsString)
-        case "toolResult":
-            let id = (obj["toolCallId"] as? String) ?? ""
-            let output: String
-            let result = obj["result"] ?? ""
-            if let s = result as? String { output = s }
-            else if let d = try? JSONSerialization.data(withJSONObject: result), let s = String(data: d, encoding: .utf8) { output = s }
-            else { output = "\(result)" }
-            let isError = (obj["isError"] as? Bool) ?? false
-            return .toolResult(id: id, output: output, isError: isError)
-        case "error":
-            return .error((obj["message"] as? String) ?? "Stream error")
-        case "heartbeat":
-            return .heartbeat
-        case "run_complete":
-            return .runComplete
-        default:
-            return .unknown(type: type)
+            isClaiming = false
+            if claimed {
+                queue.append(candidate)
+                speakNextIfNeeded()
+            }
+            claimNextIfNeeded()
         }
+    }
+
+    private func speakNextIfNeeded() {
+        guard active == nil, !queue.isEmpty else { return }
+        let candidate = queue.removeFirst()
+        active = candidate
+        let utterance = AVSpeechUtterance(string: candidate.text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-GB")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        onSpeakingChanged?(true)
+        synthesizer.speak(utterance)
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        Task { @MainActor in finishCurrent() }
+    }
+
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        Task { @MainActor in finishCurrent() }
+    }
+
+    private func finishCurrent() {
+        active = nil
+        if queue.isEmpty { onSpeakingChanged?(false) }
+        speakNextIfNeeded()
     }
 }

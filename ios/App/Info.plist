@@ -5,11 +5,15 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>en</string>
     <key>CFBundleDisplayName</key>
-    <string>Troublemaker</string>
+    <string>Computer</string>
+    <key>CFBundleIconFiles</key>
+    <array>
+        <string>ComputerIcon-1024</string>
+    </array>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
-    <string>com.tinyfatco.troublemaker.ios</string>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -37,16 +41,12 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <key>CFBundleURLTypes</key>
-    <array>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>com.tinyfatco.troublemaker.oauth</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>tfat</string>
-            </array>
-        </dict>
-    </array>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Computer uses the microphone only while you hold the talking orb.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

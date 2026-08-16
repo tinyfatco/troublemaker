@@ -30,6 +30,8 @@ export interface MomEvent {
 	/** Client-scoped conversational session id, when the transport has one. */
 	sessionId?: string;
 	sourceEventType?: string;
+	/** Stable transport delivery identity used only for exact reconciliation. */
+	deliveryId?: string;
 	directlyAddressed?: boolean;
 	threadTs?: string;
 	replyTarget?: string;
@@ -155,6 +157,7 @@ export interface MomContext {
 			sessionId?: string;
 			eventType?: MomEvent["type"];
 			sourceEventType?: string;
+			deliveryId?: string;
 			directlyAddressed?: boolean;
 			threadTs?: string;
 			replyTarget?: string;

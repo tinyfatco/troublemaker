@@ -1,139 +1,129 @@
 import Foundation
 
-/// REST client for crawdad-cf `/api/v2/*`. Streaming endpoints live in
-/// `Sources/TroublemakerCore/Streams/`.
-///
-/// Server contract reference: crawdad-cf/src/v2/router.ts.
-public actor ApiClient {
-    public let baseURL: URL
-    private let tokenStore: TokenStore
-    private let oauth: OAuthClient
-    /// Persisted across token refreshes so we don't re-register on every launch.
-    /// Stored alongside tokens in the keychain in a future revision; for now,
-    /// the host wires it in.
-    private let clientID: String
+actor MobileAgentClient {
+    let binding: AgentBinding
+    private let token: String
     private let session: URLSession
+    private let sse: SSEClient
 
-    public init(
-        baseURL: URL = URL(string: "https://api.example.com")!,
-        clientID: String,
-        oauth: OAuthClient,
-        tokenStore: TokenStore,
-        session: URLSession = .shared
-    ) {
-        self.baseURL = baseURL
-        self.clientID = clientID
-        self.oauth = oauth
-        self.tokenStore = tokenStore
+    init(binding: AgentBinding, token: String, session: URLSession = .shared) {
+        self.binding = binding
+        self.token = token
         self.session = session
+        self.sse = SSEClient(session: session)
     }
 
-    // MARK: - Token plumbing
+    func status() async throws -> AgentStatus {
+        let status = try await probeStatus()
+        try binding.verify(status)
+        return status
+    }
 
-    public func currentBearerToken() async throws -> String {
-        guard let tokens = tokenStore.load() else { throw ApiError.notAuthenticated }
-        if tokens.expiresAt > Date().addingTimeInterval(30) {
-            return tokens.accessToken
+    func probeStatus() async throws -> AgentStatus {
+        let request = try request("status")
+        let (data, response) = try await session.data(for: request)
+        try Self.assertOK(response, body: data)
+        return try JSONDecoder.troublemakerMobile().decode(AgentStatus.self, from: data)
+    }
+
+    func backlog(limit: Int = 80) async throws -> ConversationBacklog {
+        let request = try request("events", query: [
+            .init(name: "limit", value: String(max(1, min(limit, 200)))),
+            .init(name: "surface", value: "conversation"),
+        ])
+        let (data, response) = try await session.data(for: request)
+        try Self.assertOK(response, body: data)
+        return try JSONDecoder.troublemakerMobile().decode(ConversationBacklog.self, from: data)
+    }
+
+    func deliveryReceipts(for deliveryIDs: [String]) async throws -> [DeliveryReceipt] {
+        let ids = Array(Set(deliveryIDs)).sorted()
+        guard !ids.isEmpty else { return [] }
+        precondition(ids.count <= 50, "Delivery receipt requests are bounded to 50 ids")
+        let request = try request("deliveries", query: [
+            .init(name: "ids", value: ids.joined(separator: ",")),
+        ])
+        let (data, response) = try await session.data(for: request)
+        try Self.assertOK(response, body: data)
+        return try JSONDecoder.troublemakerMobile().decode(DeliveryReceiptBatch.self, from: data).receipts
+    }
+
+    func live(after sequence: Int) throws -> AsyncThrowingStream<ConversationLiveEvent, Error> {
+        var query = [URLQueryItem(name: "surface", value: "conversation")]
+        if sequence > 0 { query.append(.init(name: "after", value: String(sequence))) }
+        var request = try request("live", query: query)
+        if sequence > 0 { request.setValue(String(sequence), forHTTPHeaderField: "Last-Event-ID") }
+        let events = sse.events(for: request)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await event in events {
+                        guard event.data != "[DONE]", let data = event.data.data(using: .utf8) else { continue }
+                        continuation.yield(try JSONDecoder.troublemakerMobile().decode(ConversationLiveEvent.self, from: data))
+                    }
+                    throw MobileAPIError.disconnected
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
         }
-        guard let refresh = tokens.refreshToken else { throw ApiError.notAuthenticated }
-        let refreshed = try await oauth.refresh(refresh, clientID: clientID)
-        try tokenStore.save(refreshed)
-        return refreshed.accessToken
     }
 
-    public func authorizedRequest(
-        _ path: String,
+    func send(_ attempt: DeliveryAttempt) throws -> AsyncThrowingStream<TurnEvent, Error> {
+        var request = try request("messages", method: "POST")
+        request.httpBody = try JSONEncoder().encode(OutgoingTurn(
+            message: attempt.exactText,
+            deliveryId: attempt.id
+        ))
+        let events = sse.events(for: request)
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    for try await event in events {
+                        if event.data == "[DONE]" { break }
+                        guard let data = event.data.data(using: .utf8) else { continue }
+                        continuation.yield(try JSONDecoder.troublemakerMobile().decode(TurnEvent.self, from: data))
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    func stop() async throws {
+        var request = try request("messages/stop", method: "POST")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["channelId": "ios"])
+        let (data, response) = try await session.data(for: request)
+        try Self.assertOK(response, body: data)
+    }
+
+    private func request(
+        _ suffix: String,
         method: String = "GET",
-        query: [URLQueryItem] = [],
-        body: Data? = nil,
-        contentType: String? = nil
-    ) async throws -> URLRequest {
-        // Build with URLComponents so query items stay in the URL.query slot
-        // (not percent-encoded into the path, which made the server fall
-        // through to the catch-all 405 branch).
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
-        let leading = path.hasPrefix("/") ? path : "/" + path
-        components.path = (components.path == "/" ? "" : components.path) + leading
-        if !query.isEmpty { components.queryItems = query }
-        var req = URLRequest(url: components.url!)
-        req.httpMethod = method
-        req.setValue("Bearer \(try await currentBearerToken())", forHTTPHeaderField: "Authorization")
-        if let body { req.httpBody = body }
-        if let contentType { req.setValue(contentType, forHTTPHeaderField: "Content-Type") }
-        return req
+        query: [URLQueryItem] = []
+    ) throws -> URLRequest {
+        var request = URLRequest(url: try binding.consoleURL(suffix, query: query))
+        request.httpMethod = method
+        request.timeoutInterval = method == "GET" ? 30 : 600
+        request.setValue("conversation", forHTTPHeaderField: "X-Troublemaker-Surface")
+        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if method != "GET" { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        return request
     }
 
-    func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(type, from: data)
-    }
-
-    // MARK: - Endpoints
-
-    public func listAgents() async throws -> [Agent] {
-        let req = try await authorizedRequest("api/v2/agents", method: "GET")
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-        return try decode(AgentListResponse.self, from: data).agents
-    }
-
-    public func status(agentID: String) async throws -> WorkspaceStatus {
-        let req = try await authorizedRequest("api/v2/agents/\(agentID)/status")
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-        return try decode(WorkspaceStatus.self, from: data)
-    }
-
-    public func listFiles(agentID: String, path: String) async throws -> [FileNode] {
-        let req = try await authorizedRequest(
-            "api/v2/agents/\(agentID)/files",
-            query: [.init(name: "path", value: path)]
-        )
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-        return try decode(FileListResponse.self, from: data).files ?? []
-    }
-
-    public func readFile(agentID: String, path: String) async throws -> String {
-        let req = try await authorizedRequest(
-            "api/v2/agents/\(agentID)/file",
-            query: [.init(name: "path", value: path)]
-        )
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    /// `GET /api/v2/agents/:id/events?limit=N[&before=offset]` — backlog of
-    /// the awareness/chat history. The server returns raw JSONL `lines` we
-    /// parse via `AwarenessDecoder`.
-    public func eventsBacklog(agentID: String, limit: Int = 50, before: Int? = nil) async throws -> AwarenessBacklog {
-        var query: [URLQueryItem] = [.init(name: "limit", value: String(limit))]
-        if let before { query.append(.init(name: "before", value: String(before))) }
-        let req = try await authorizedRequest("api/v2/agents/\(agentID)/events", query: query)
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-        return try decode(AwarenessBacklog.self, from: data)
-    }
-
-    public func stopActiveMessage(agentID: String, channelID: String = "web") async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["channelId": channelID])
-        let req = try await authorizedRequest("api/v2/agents/\(agentID)/messages/stop", method: "POST", body: body, contentType: "application/json")
-        let (data, resp) = try await session.data(for: req)
-        try ApiClient.assertOK(resp, data)
-    }
-
-    static func assertOK(_ resp: URLResponse, _ data: Data) throws {
-        guard let http = resp as? HTTPURLResponse else { throw ApiError.notHTTP }
+    private static func assertOK(_ response: URLResponse, body: Data) throws {
+        guard let http = response as? HTTPURLResponse else { throw MobileAPIError.invalidResponse }
         guard (200..<300).contains(http.statusCode) else {
-            throw ApiError.http(status: http.statusCode, body: String(data: data, encoding: .utf8) ?? "")
+            let exact = String(data: body.prefix(4_096), encoding: .utf8) ?? ""
+            throw MobileAPIError.http(status: http.statusCode, body: exact)
         }
     }
-}
-
-public enum ApiError: Swift.Error, Equatable {
-    case notAuthenticated
-    case notHTTP
-    case http(status: Int, body: String)
 }

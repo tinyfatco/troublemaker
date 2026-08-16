@@ -205,6 +205,7 @@ export function createTwoMessageContext(
 			ts: event.ts,
 			eventType: event.type,
 			sourceEventType: event.sourceEventType,
+			deliveryId: event.deliveryId,
 			directlyAddressed: event.directlyAddressed,
 			threadTs: event.threadTs,
 			replyTarget: event.replyTarget,

@@ -32,6 +32,7 @@ export function formatBusyMessageSteer(
 	const userName = user?.userName || user?.displayName || event.user || "unknown";
 	const deliveryContext = formatDeliveryContext({
 		sourceEventType: event.sourceEventType,
+		deliveryId: event.deliveryId,
 		eventType: event.type,
 		directlyAddressed: event.directlyAddressed,
 		threadTs: event.threadTs,

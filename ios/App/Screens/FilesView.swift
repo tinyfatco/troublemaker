@@ -1,80 +1,47 @@
 import SwiftUI
 
-public struct FilesView: View {
-    let viewModel: AppViewModel
-    let agent: Agent
-    @State private var path: [String] = []   // breadcrumb
-    @State private var entries: [FileNode] = []
-    @State private var error: String?
-    @State private var loading = false
+struct ComputerOrb: View {
+    let state: ComputerPresenceState
+    var diameter: CGFloat = 72
 
-    public init(viewModel: AppViewModel, agent: Agent) {
-        self.viewModel = viewModel
-        self.agent = agent
+    private var scale: CGFloat {
+        switch state {
+        case .listening: 1.08
+        case .thinking: 0.94
+        case .speaking: 1.04
+        case .error: 0.9
+        case .idle: 1
+        }
     }
 
-    private var currentPath: String { path.joined(separator: "/") }
+    private var opacity: Double { state == .error ? 0.65 : 1 }
 
-    public var body: some View {
-        NavigationStack {
-            List {
-                if !path.isEmpty {
-                    Button {
-                        path.removeLast()
-                        Task { await reload() }
-                    } label: {
-                        Label("..", systemImage: "arrow.uturn.up")
-                    }
-                }
-                ForEach(entries, id: \.path) { node in
-                    Button {
-                        select(node)
-                    } label: {
-                        HStack {
-                            Image(systemName: node.type == "directory" ? "folder.fill" : "doc.text")
-                            Text(node.name)
-                            Spacer()
-                            if let size = node.size, node.type != "directory" {
-                                Text(formatBytes(size)).foregroundStyle(.secondary).font(.caption)
-                            }
-                        }
-                    }
-                }
+    var body: some View {
+        Circle()
+            .fill(AngularGradient(
+                colors: [.cyan, .blue, .purple, .pink, .orange, .yellow, .green, .cyan],
+                center: .center
+            ))
+            .overlay {
+                Circle()
+                    .fill(RadialGradient(colors: [.white.opacity(0.74), .clear], center: .topLeading, startRadius: 0, endRadius: diameter * 0.72))
             }
-            .overlay { if loading && entries.isEmpty { ProgressView() } }
-            .navigationTitle(path.isEmpty ? "/" : "/" + currentPath)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .task { await reload() }
-            .refreshable { await reload() }
-            .alert("Error", isPresented: .init(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("OK", role: .cancel) {}
-            } message: { Text(error ?? "") }
-        }
+            .overlay { Circle().stroke(.white, lineWidth: state == .listening ? 3 : 1) }
+            .frame(width: diameter, height: diameter)
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .shadow(color: .white.opacity(state == .speaking ? 0.55 : 0.16), radius: state == .speaking ? 12 : 4)
+            .animation(.spring(response: 0.28, dampingFraction: 0.72), value: state)
+            .accessibilityLabel("Computer is (state.rawValue)")
     }
+}
 
-    private func select(_ node: FileNode) {
-        if node.type == "directory" {
-            path.append(node.name)
-            Task { await reload() }
-        } else {
-            // Future: push a FileReaderView. Out of MVP scope for first commit.
-        }
-    }
-
-    private func reload() async {
-        guard let api = viewModel.api else { return }
-        loading = true
-        defer { loading = false }
-        do {
-            entries = try await api.listFiles(agentID: agent.id, path: currentPath)
-        } catch {
-            self.error = String(describing: error)
-        }
-    }
-
-    private func formatBytes(_ bytes: Int) -> String {
-        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+extension View {
+    func computerBlock(background: Color, foreground: Color) -> some View {
+        self
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(background)
+            .foregroundStyle(foreground)
     }
 }

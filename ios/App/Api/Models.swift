@@ -1,53 +1,31 @@
 import Foundation
 
-/// Mirrors troublemaker/ui/src/console-api.ts so we decode the exact JSON the
-/// web UI consumes. Snake_case is converted via `.convertFromSnakeCase`.
-
-public struct Agent: Sendable, Codable, Identifiable, Equatable, Hashable {
-    public let id: String
-    public let name: String
-    public let status: String?
+struct AgentEnrollment: Sendable {
+    let displayName: String
+    let baseURL: URL
+    let routeAgentID: String
+    let accessToken: String
+    let deepgramAPIKey: String
 }
 
-public struct AgentListResponse: Sendable, Codable {
-    public let agents: [Agent]
+enum MobileAPIError: Error, LocalizedError, Equatable {
+    case invalidResponse
+    case http(status: Int, body: String)
+    case disconnected
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            return "The agent returned an invalid response."
+        case .http(let status, _):
+            return AgentVerificationFailureText.httpStatus(status)
+        case .disconnected:
+            return "The agent connection closed."
+        }
+    }
 }
 
-public struct WorkspaceStatus: Sendable, Codable, Equatable {
-    public let agentId: String
-    public let mode: String                // "standalone" | "hosted"
-    public let runtime: String?
-    public let workspaceReady: Bool?
-    public let displayMode: String         // "terminal" | "desktop"
-    public let agentName: String
-    public let capabilities: [String: Bool]?
-}
-
-public struct FileNode: Sendable, Codable, Equatable {
-    public let name: String
-    public let path: String
-    public let type: String                // "file" | "directory"
-    public let size: Int?
-    public let modified: String?
-}
-
-public struct FileListResponse: Sendable, Codable {
-    public let files: [FileNode]?
-}
-
-public struct AwarenessBacklog: Sendable, Codable, Equatable {
-    public let lines: [String]
-    public let total: Int
-    public let offset: Int
-}
-
-public struct UploadResponse: Sendable, Codable {
-    public let uploaded: [String]?
-}
-
-/// A single Server-Sent Event chunk after parsing.
-public struct SSEEvent: Sendable, Equatable {
-    public let event: String?
-    public let data: String
-    public let id: String?
+struct SSEEvent: Sendable, Equatable {
+    let data: String
+    let id: String?
 }

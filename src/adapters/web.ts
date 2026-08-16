@@ -52,8 +52,6 @@ interface WebChatPayload {
 	speaker?: string;
 	isBot?: boolean;
 	assistant?: boolean;
-	deliveryId?: string;
-	delivery_id?: string;
 }
 
 interface NormalizedWebChatPayload {
@@ -581,6 +579,7 @@ Keep responses concise and helpful.`;
 			freshContext: payload.freshContext,
 			sessionId: payload.sessionId,
 			sourceEventType: payload.sourceEventType,
+			deliveryId: payload.deliveryId,
 			directlyAddressed: true,
 		};
 
@@ -809,6 +808,7 @@ Keep responses concise and helpful.`;
 				sessionId: event.sessionId,
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
+				deliveryId: event.deliveryId,
 				directlyAddressed: event.directlyAddressed,
 				threadTs: event.threadTs,
 				replyTarget: event.replyTarget,

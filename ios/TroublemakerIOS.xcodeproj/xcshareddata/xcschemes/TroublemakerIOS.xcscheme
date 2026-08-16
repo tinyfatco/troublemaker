@@ -16,7 +16,7 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "A00000000000000000000100"
-               BuildableName = "Troublemaker.app"
+               BuildableName = "Computer.app"
                BlueprintName = "TroublemakerIOS"
                ReferencedContainer = "container:TroublemakerIOS.xcodeproj">
             </BuildableReference>
@@ -46,7 +46,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A00000000000000000000100"
-            BuildableName = "Troublemaker.app"
+            BuildableName = "Computer.app"
             BlueprintName = "TroublemakerIOS"
             ReferencedContainer = "container:TroublemakerIOS.xcodeproj">
          </BuildableReference>
@@ -63,7 +63,7 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "A00000000000000000000100"
-            BuildableName = "Troublemaker.app"
+            BuildableName = "Computer.app"
             BlueprintName = "TroublemakerIOS"
             ReferencedContainer = "container:TroublemakerIOS.xcodeproj">
          </BuildableReference>

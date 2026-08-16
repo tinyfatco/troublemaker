@@ -1,53 +1,7 @@
-# TroublemakerIOS — App target
+# iPhone app
 
-This directory contains the source files for the iOS App target. The `.xcodeproj` is **not** checked in yet because it benefits from being generated cleanly the first time inside Xcode.
+The iPhone app opens to the authorized-agent chooser, remembers the exact selected resident, and then presents only that resident's sanitized durable/live conversation. Capabilities and the optional Deepgram key stay in Keychain with this-device-only accessibility; WatchConnectivity receives only `WatchConversationSnapshot` values and exact-agent commands.
 
-## First-time setup (one-time, ~5 min)
+Push-to-talk uses the accepted Yappatron mobile audio contract: 16 kHz mono linear PCM, Deepgram `nova-3`, interim results, punctuation, smart formatting, endpointing, and explicit finalization on release. A provider failure is visible state and is never submitted as human text. Assistant speech is serialized and claimed by authoritative completion ID so reconnect or durable replay cannot speak one completion twice.
 
-1. `open -a Xcode` (Xcode 26.4.1+ is installed).
-2. File → New → Project → iOS → App.
-3. Configure:
-   - Product Name: `TroublemakerIOS`
-   - Team: (your Apple ID)
-   - Organization Identifier: `com.tinyfatco`
-   - Bundle Identifier (auto): `com.tinyfatco.troublemaker.ios`
-   - Interface: SwiftUI
-   - Language: Swift
-4. Save the project at `troublemaker/ios/TroublemakerIOS/` so `TroublemakerIOSApp.swift` lands beside the existing `Info.plist`.
-5. Delete the auto-generated `ContentView.swift` and `TroublemakerIOSApp.swift` Xcode created — keep the one already in this directory.
-6. Add the SwiftPM packages as local package dependencies:
-   - File → Add Package Dependencies → Add Local → select `troublemaker/ios/` (the package root).
-   - Add `TroublemakerCore` and `TroublemakerUI` products to the App target.
-7. In Signing & Capabilities, set your development team.
-8. In Info, confirm the `tfat` URL scheme entry survived (from the Info.plist already in this directory).
-9. Run on a simulator or device.
-
-## Why no .xcodeproj checked in yet
-
-Xcode rewrites pbxproj on every build setting tweak. Until the team grows, hand-merging that file is more trouble than re-running the wizard once. When the project stabilises we'll either commit the pbxproj or add `xcodegen` with a `project.yml`.
-
-## Future: xcodegen
-
-Drop a `project.yml` here:
-
-```yaml
-name: TroublemakerIOS
-options:
-  bundleIdPrefix: com.tinyfatco.troublemaker
-targets:
-  TroublemakerIOS:
-    type: application
-    platform: iOS
-    deploymentTarget: "17.0"
-    sources: [.]
-    dependencies:
-      - package: troublemaker-ios
-        product: TroublemakerCore
-      - package: troublemaker-ios
-        product: TroublemakerUI
-packages:
-  troublemaker-ios:
-    path: ..
-```
-
-Then `brew install xcodegen && xcodegen` rebuilds the `.xcodeproj`.
+The Xcode project owns the source membership. `OAuthClient.swift` is retained as historical source but is deliberately not compiled: current authorization is an exact resident capability, not the previous fleet OAuth/file-browser prototype.

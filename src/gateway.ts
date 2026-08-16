@@ -2,6 +2,7 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
+import { WorkspaceDeliveryLedger } from "./adapters/workspace-channel-runtime.js";
 import { ConsoleError, ConsoleService } from "./console/service.js";
 import { projectConversationBacklog, projectConversationLiveEvent } from "./console/conversation-projection.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
@@ -98,6 +99,7 @@ export class Gateway {
 	private workspaceDir: string | null = null;
 	private consoleService: ConsoleService | null = null;
 	private awarenessStore: FilesystemAwarenessStore | null = null;
+	private deliveryLedger: WorkspaceDeliveryLedger | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
 	private liveClientCount = 0;
@@ -115,6 +117,10 @@ export class Gateway {
 			this.workspaceDir = resolve(options.workspaceDir);
 			this.consoleService = new ConsoleService(new FilesystemWorkspaceStore(this.workspaceDir));
 			this.awarenessStore = new FilesystemAwarenessStore(this.workspaceDir);
+			this.deliveryLedger = new WorkspaceDeliveryLedger(
+				join(this.workspaceDir, ".web-deliveries.jsonl"),
+				"Web delivery ledger is unreadable",
+			);
 		}
 	}
 
@@ -274,6 +280,31 @@ export class Gateway {
 		try {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify(service.getStatus()));
+		} catch (err) {
+			this.sendConsoleError(res, err, 503);
+		}
+	}
+
+	private handleDeliveryReceipts(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.deliveryLedger) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return;
+		}
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const requested = [
+			...url.searchParams.getAll("id"),
+			...(url.searchParams.get("ids") || "").split(","),
+		].map((value) => value.trim()).filter(Boolean);
+		const deliveryIds = [...new Set(requested)];
+		if (deliveryIds.length === 0 || deliveryIds.length > 50 || deliveryIds.some((id) => !/^[A-Za-z0-9._:-]{8,128}$/.test(id))) {
+			res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ error: "Provide between 1 and 50 valid delivery ids" }));
+			return;
+		}
+		try {
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ receipts: this.deliveryLedger.receipts(deliveryIds) }));
 		} catch (err) {
 			this.sendConsoleError(res, err, 503);
 		}
@@ -562,6 +593,17 @@ export class Gateway {
 				// The close handler owns cleanup.
 			}
 		}, afterSequence);
+		const writeCursor = () => {
+			if (!conversationSurface) {
+				res.write(": ready\n\n");
+				return;
+			}
+			const cursor = this.liveEvents.cursor();
+			res.write(`id: ${cursor.sequence}\ndata: ${JSON.stringify({ ...cursor, kind: "cursor" })}\n\n`);
+		};
+		// Subscription replay is synchronous. Emit the non-advancing readiness
+		// cursor afterwards so it cannot cause replayed events to be discarded.
+		writeCursor();
 
 		if (!this.awarenessWatcher) {
 			this.awarenessFileSize = currentSize;
@@ -569,7 +611,10 @@ export class Gateway {
 		}
 
 		const heartbeat = setInterval(() => {
-			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+			try {
+				if (conversationSurface) writeCursor();
+				else res.write(": heartbeat\n\n");
+			} catch { /* client gone */ }
 		}, 15_000);
 
 		res.on("close", () => {
@@ -676,6 +721,11 @@ export class Gateway {
 
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/status")) {
 				this.handleConsoleStatus(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/deliveries")) {
+				this.handleDeliveryReceipts(req, res);
 				return;
 			}
 

@@ -1,17 +1,8 @@
 import Foundation
 
-/// `GET /api/v2/agents/:id/events/stream` — the awareness feed shown in the
-/// right-hand pane on tinyfat.com/app.
-public struct AwarenessStream {
-    let api: ApiClient
-    let sse: SSEClient
-    public init(api: ApiClient, sse: SSEClient = SSEClient()) {
-        self.api = api
-        self.sse = sse
-    }
-
-    public func subscribe(agentID: String) async throws -> AsyncThrowingStream<SSEEvent, Swift.Error> {
-        let req = try await api.authorizedRequest("api/v2/agents/\(agentID)/events/stream")
-        return sse.events(for: req)
+enum ReconnectDelay {
+    static func nanoseconds(for attempt: Int) -> UInt64 {
+        let seconds = min(8, 1 << min(max(0, attempt), 3))
+        return UInt64(seconds) * 1_000_000_000
     }
 }

@@ -1,95 +1,140 @@
 import SwiftUI
-#if canImport(AuthenticationServices)
-import AuthenticationServices
-#endif
 
-public struct LoginView: View {
+struct LoginView: View {
     let viewModel: AppViewModel
-    @State private var error: String?
-    @State private var inFlight = false
+    @Binding var isPresented: Bool
+    @State private var displayName = ""
+    @State private var endpoint = "https://"
+    @State private var routeAgentID = "current"
+    @State private var capability = ""
+    @State private var deepgramKey = ""
+    @State private var hasAttemptedSubmit = false
+    @FocusState private var focusedField: AgentEnrollmentField?
 
-    public init(viewModel: AppViewModel) {
-        self.viewModel = viewModel
+    private var validation: AgentEnrollmentValidation {
+        AgentEnrollmentValidation(
+            displayName: displayName,
+            endpoint: endpoint,
+            routeAgentID: routeAgentID,
+            capability: capability
+        )
     }
 
-    public var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            Text("Troublemaker")
-                .font(.largeTitle.weight(.bold))
-            Text("Mom, liberated.")
-                .foregroundStyle(.secondary)
-            Spacer()
-            Button(action: signIn) {
-                Text(inFlight ? "Signing in…" : "Sign in to tinyfat.com")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Agent") {
+                    TextField("Display name", text: $displayName)
+                        .textContentType(.name)
+                        .focused($focusedField, equals: .displayName)
+                        .accessibilityIdentifier("enrollment.display-name")
+                    inlineError(for: .displayName)
+                    TextField("Private HTTPS endpoint", text: $endpoint)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: .endpoint)
+                        .accessibilityIdentifier("enrollment.endpoint")
+                    inlineError(for: .endpoint)
+                    TextField("Route agent ID", text: $routeAgentID)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .focused($focusedField, equals: .routeAgentID)
+                        .accessibilityIdentifier("enrollment.route-agent-id")
+                    inlineError(for: .routeAgentID)
+                }
+                Section {
+                    SecureField("Agent capability", text: $capability)
+                        .textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .privacySensitive()
+                        .focused($focusedField, equals: .capability)
+                        .accessibilityIdentifier("enrollment.capability")
+                        .accessibilityHint("Paste the existing capability token. Computer does not generate a password.")
+                    inlineError(for: .capability)
+                    SecureField("Deepgram key (optional)", text: $deepgramKey)
+                        .textContentType(.oneTimeCode)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .privacySensitive()
+                        .accessibilityIdentifier("enrollment.deepgram-key")
+                } header: {
+                    Text("Private credentials")
+                } footer: {
+                    Text("Paste the existing capability; Computer does not create a password. Deepgram is optional. Both values remain in Keychain and are never relayed to Apple Watch.")
+                }
+
+                if viewModel.isEnrolling {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Verifying endpoint and exact agent identity…")
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("enrollment.verifying")
+                    }
+                } else if let failure = viewModel.enrollmentErrorMessage {
+                    Section("Verification failed") {
+                        Text(failure)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("enrollment.verification-error")
+                    }
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(inFlight)
-            if let error { Text(error).foregroundStyle(.red).font(.footnote) }
-            Spacer()
+            .scrollContentBackground(.hidden)
+            .background(.black)
+            .navigationTitle("Add Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isPresented = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(viewModel.isEnrolling ? "Checking…" : "Add") { enroll() }
+                        .disabled(viewModel.isEnrolling)
+                        .accessibilityIdentifier("enrollment.add")
+                }
+            }
+            .onAppear { viewModel.clearEnrollmentFeedback() }
+            .onChange(of: displayName) { _, _ in viewModel.clearEnrollmentFeedback() }
+            .onChange(of: endpoint) { _, _ in viewModel.clearEnrollmentFeedback() }
+            .onChange(of: routeAgentID) { _, _ in viewModel.clearEnrollmentFeedback() }
+            .onChange(of: capability) { _, _ in viewModel.clearEnrollmentFeedback() }
+            .onChange(of: viewModel.phase) { _, phase in
+                if phase == .conversation { isPresented = false }
+            }
         }
-        .padding(24)
     }
 
-    private func signIn() {
-        #if canImport(AuthenticationServices) && os(iOS)
-        inFlight = true
-        error = nil
+    @ViewBuilder
+    private func inlineError(for field: AgentEnrollmentField) -> some View {
+        if hasAttemptedSubmit, let error = validation.error(for: field) {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("enrollment.\(field.rawValue).error")
+        }
+    }
+
+    private func enroll() {
+        hasAttemptedSubmit = true
+        let validation = validation
+        guard validation.isValid, let url = validation.baseURL else {
+            focusedField = validation.firstInvalidField
+            return
+        }
+        focusedField = nil
         Task {
-            do {
-                let pkce = OAuthClient.PKCE()
-                let state = UUID().uuidString
-                let clientID = try await viewModel.oauth.registerClient()
-                let authURL = viewModel.oauth.authorizeURL(clientID: clientID, pkce: pkce, state: state)
-                let scheme = URL(string: viewModel.oauth.redirectURI)!.scheme!
-                let callback = try await ASWebAuthenticationSession.start(url: authURL, callbackURLScheme: scheme)
-                let code = try viewModel.oauth.authorizationCode(from: callback, expectedState: state)
-                let tokens = try await viewModel.oauth.exchangeCode(code, pkce: pkce, clientID: clientID)
-                await MainActor.run {
-                    viewModel.didCompleteSignIn(clientID: clientID, tokens: tokens)
-                    inFlight = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.error = String(describing: error)
-                    self.inFlight = false
-                }
-            }
-        }
-        #else
-        error = "Sign-in only available on iOS."
-        #endif
-    }
-}
-
-#if canImport(AuthenticationServices) && os(iOS)
-extension ASWebAuthenticationSession {
-    /// Async wrapper that hides the delegate boilerplate.
-    static func start(url: URL, callbackURLScheme: String) async throws -> URL {
-        try await withCheckedThrowingContinuation { cont in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackURLScheme) { callback, error in
-                if let error { cont.resume(throwing: error); return }
-                guard let callback else { cont.resume(throwing: URLError(.badServerResponse)); return }
-                cont.resume(returning: callback)
-            }
-            session.presentationContextProvider = PresentationProvider.shared
-            session.prefersEphemeralWebBrowserSession = false
-            session.start()
+            await viewModel.enroll(.init(
+                displayName: validation.displayName,
+                baseURL: url,
+                routeAgentID: validation.routeAgentID,
+                accessToken: validation.capability,
+                deepgramAPIKey: deepgramKey
+            ))
         }
     }
 }
-
-private final class PresentationProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
-    static let shared = PresentationProvider()
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        // First foreground key window of the active scene.
-        let scene = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first { $0.activationState == .foregroundActive }
-        return scene?.keyWindow ?? ASPresentationAnchor()
-    }
-}
-#endif
