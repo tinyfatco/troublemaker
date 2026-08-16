@@ -4,8 +4,10 @@ import { AsyncLocalStorage } from "async_hooks";
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
+import { projectConversationTurnEvent } from "../console/conversation-projection.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { WorkspaceDeliveryLedger } from "./workspace-channel-runtime.js";
 import {
 	slashCommandHandled,
 	slashCommandPending,
@@ -43,6 +45,8 @@ interface WebChatPayload {
 	source_event_type?: string;
 	event_type?: string;
 	source?: string;
+	deliveryId?: string;
+	delivery_id?: string;
 	origin?: string;
 	role?: string;
 	speaker?: string;
@@ -60,6 +64,7 @@ interface NormalizedWebChatPayload {
 	freshContext: boolean;
 	sessionId?: string;
 	sourceEventType?: string;
+	deliveryId?: string;
 }
 
 interface WebhookDeliveryRecord {
@@ -112,17 +117,18 @@ class SSEWriter {
 	private closed = false;
 	errorSent = false;
 
-	constructor(res: ServerResponse) {
+	constructor(res: ServerResponse, private readonly conversationSurface = false) {
 		this.res = res;
 	}
 
 	send(event: Record<string, unknown>): void {
 		if (this.closed) return;
-		if (event.type === "error") {
+		const outgoing = this.conversationSurface ? projectConversationTurnEvent(event) : event;
+		if (outgoing.type === "error") {
 			this.errorSent = true;
 		}
 		try {
-			this.res.write(`data: ${JSON.stringify(event)}\n\n`);
+			this.res.write(`data: ${JSON.stringify(outgoing)}\n\n`);
 		} catch {
 			this.closed = true;
 		}
@@ -154,6 +160,7 @@ Keep responses concise and helpful.`;
 	private allowUnauthenticatedWebhook: boolean;
 	private readonly webhookClaimOwner = randomUUID();
 	private handler!: MomHandler;
+	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
 	private writerScope = new AsyncLocalStorage<WriterScope>();
@@ -163,6 +170,10 @@ Keep responses concise and helpful.`;
 		this.inputToken = config.inputToken?.trim() || undefined;
 		this.webhookToken = config.webhookToken?.trim() || undefined;
 		this.allowUnauthenticatedWebhook = config.allowUnauthenticatedWebhook === true;
+		this.deliveryLedger = new WorkspaceDeliveryLedger(
+			join(this.workingDir, ".web-deliveries.jsonl"),
+			"Web delivery ledger is unreadable",
+		);
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -215,7 +226,24 @@ Keep responses concise and helpful.`;
 			});
 			res.flushHeaders?.();
 
-			const writer = new SSEWriter(res);
+			const conversationSurface = req.headers["x-troublemaker-surface"] === "conversation";
+			const writer = new SSEWriter(res, conversationSurface);
+			if (normalized.deliveryId) {
+				let claimed: boolean;
+				try {
+					claimed = this.deliveryLedger.claim(normalized.deliveryId);
+				} catch (error) {
+					writer.send({ type: "error", message: error instanceof Error ? error.message : "Delivery ledger failed" });
+					writer.done();
+					return;
+				}
+				if (!claimed) {
+					writer.send({ type: "delivery", disposition: "duplicate", deliveryId: normalized.deliveryId });
+					writer.done();
+					return;
+				}
+				writer.send({ type: "delivery", disposition: "accepted", deliveryId: normalized.deliveryId });
+			}
 			writer.send({ type: "status", status: "accepted", message: "Message accepted" });
 
 			this.writerScope.run({ channelId: normalized.channelId, writer }, () => {
@@ -483,6 +511,8 @@ Keep responses concise and helpful.`;
 		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
 		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
 		const sourceEventType = this.firstString(payload.sourceEventType, payload.source_event_type).trim();
+		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+		if (deliveryId && !/^[A-Za-z0-9._:-]{8,128}$/.test(deliveryId)) return null;
 		const legacyEventType = this.firstString(payload.event_type).trim().toLowerCase();
 		const normalizedSource = source.toLowerCase();
 		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(normalizedSource)
@@ -501,6 +531,7 @@ Keep responses concise and helpful.`;
 				: isVoiceSource
 					? { sourceEventType: "web_voice" }
 					: {}),
+			...(deliveryId ? { deliveryId } : {}),
 		};
 	}
 
@@ -629,6 +660,10 @@ Keep responses concise and helpful.`;
 			if (keepalive) clearInterval(keepalive);
 			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
 				this.pendingWriters.delete(channelId);
+			}
+			if (payload.deliveryId) {
+				this.deliveryLedger.complete(payload.deliveryId);
+				writer?.send({ type: "delivery", disposition: "completed", deliveryId: payload.deliveryId });
 			}
 			writer?.done();
 		}

@@ -73,6 +73,7 @@
 		"test:channel-pulse-dedupe": "npx tsx test/channel-pulse-dedupe.test.ts",
 		"test:ambient-context": "npx tsx test/ambient-context.test.ts",
 		"test:awareness-stream": "npx tsx test/awareness-stream.test.ts",
+		"test:mobile-conversation": "npx tsx test/mobile-conversation-contract.test.ts",
 		"test:events-initial-scan-delay": "npx tsx test/events-initial-scan-delay.test.ts",
 		"test:events-jittered-periodic": "npx tsx test/events-jittered-periodic.test.ts",
 		"test:events-source-revalidation": "npx tsx test/events-source-revalidation.test.ts",

@@ -77,6 +77,11 @@ export class ConsoleService {
 		};
 	}
 
+	matchesAgentId(agentId: string): boolean {
+		const profile = this.readProfile();
+		return agentId === "current" || agentId === profile.localAgentId;
+	}
+
 	getStatus(): ConsoleStatus {
 		const config = this.readWorkspaceConfig();
 		if (!config) {

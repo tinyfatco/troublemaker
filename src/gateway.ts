@@ -3,6 +3,7 @@ import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
 import { ConsoleError, ConsoleService } from "./console/service.js";
+import { projectConversationBacklog, projectConversationLiveEvent } from "./console/conversation-projection.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
@@ -279,7 +280,14 @@ export class Gateway {
 	}
 
 	private isConsoleAgentPath(urlPath: string, suffix: string): boolean {
-		return new RegExp(`^/api/v2/agents/[^/]+${suffix}$`).test(urlPath);
+		const match = urlPath.match(new RegExp(`^/api/v2/agents/([^/]+)${suffix}$`));
+		if (!match) return false;
+		if (!this.consoleService) return true;
+		try {
+			return this.consoleService.matchesAgentId(decodeURIComponent(match[1]));
+		} catch {
+			return false;
+		}
 	}
 
 	/** Handle GET /api/files — directory listing */
@@ -446,10 +454,18 @@ export class Gateway {
 		try {
 			const backlog = this.awarenessStore.readBacklog(limit, before);
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify(backlog));
+			res.end(JSON.stringify(
+				url.searchParams.get("surface") === "conversation"
+					? projectConversationBacklog(backlog)
+					: backlog,
+			));
 		} catch {
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+			res.end(JSON.stringify(
+				url.searchParams.get("surface") === "conversation"
+					? { messages: [], total: 0, offset: 0 }
+					: { lines: [], total: 0, offset: 0 },
+			));
 		}
 	}
 
@@ -536,10 +552,12 @@ export class Gateway {
 			? req.headers["last-event-id"][0]
 			: req.headers["last-event-id"];
 		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
+		const conversationSurface = url.searchParams.get("surface") === "conversation";
 		this.liveClientCount++;
 		const subscription = this.liveEvents.subscribe((event) => {
 			try {
-				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+				const payload = conversationSurface ? projectConversationLiveEvent(event) : event;
+				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(payload)}\n\n`);
 			} catch {
 				// The close handler owns cleanup.
 			}
