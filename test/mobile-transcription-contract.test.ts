@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,8 @@ import type { ConsoleTranscriptionRequest, ConsoleTranscriptionService } from ".
 import { ConsoleTranscriptionError } from "../src/console/transcription.js";
 import { Gateway } from "../src/gateway.js";
 import { DeepgramConsoleTranscriptionService } from "../src/host/node/deepgram-transcription.js";
+import { createDeepgramConsoleTranscriptionService } from "../src/host/node/deepgram-transcription.js";
+import { readProtectedPlistString } from "../src/host/node/protected-plist-string.js";
 
 const workspace = mkdtempSync(join(tmpdir(), "troublemaker-transcription-contract-"));
 try {
@@ -143,6 +145,46 @@ try {
 			assert.doesNotMatch(error.message, /PRIVATE|fixture-provider-secret/);
 			return true;
 		},
+	);
+
+	const protectedPreferences = join(workspace, "protected-preferences.plist");
+	writeFileSync(protectedPreferences, "fixture plist bytes", { mode: 0o600 });
+	let requestedPlistPath = "";
+	let requestedPlistKey = "";
+	const configuredFromExistingStorage = createDeepgramConsoleTranscriptionService(
+		{
+			MOM_DEEPGRAM_API_KEY_PLIST_FILE: protectedPreferences,
+			MOM_DEEPGRAM_API_KEY_PLIST_KEY: "apiKey_Deepgram",
+		},
+		fetch,
+		(filePath, key) => {
+			requestedPlistPath = filePath || "";
+			requestedPlistKey = key || "";
+			return "fixture-provider-secret";
+		},
+	);
+	assert.ok(configuredFromExistingStorage);
+	assert.equal(requestedPlistPath, protectedPreferences);
+	assert.equal(requestedPlistKey, "apiKey_Deepgram");
+	assert.equal(
+		readProtectedPlistString(protectedPreferences, "apiKey_Deepgram", () => "  in-place-secret  \n"),
+		"in-place-secret",
+	);
+	assert.throws(
+		() => readProtectedPlistString("relative.plist", "apiKey_Deepgram", () => "secret"),
+		/must be absolute/,
+	);
+	chmodSync(protectedPreferences, 0o640);
+	assert.throws(
+		() => readProtectedPlistString(protectedPreferences, "apiKey_Deepgram", () => "secret"),
+		/group or others/,
+	);
+	chmodSync(protectedPreferences, 0o600);
+	const linkedPreferences = join(workspace, "linked-preferences.plist");
+	symlinkSync(protectedPreferences, linkedPreferences);
+	assert.throws(
+		() => readProtectedPlistString(linkedPreferences, "apiKey_Deepgram", () => "secret"),
+		/symbolic link/,
 	);
 
 	console.log("mobile transcription contract tests passed");

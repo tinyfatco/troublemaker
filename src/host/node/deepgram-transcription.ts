@@ -1,4 +1,5 @@
 import { readProtectedTokenFile } from "../../protected-token-file.js";
+import { readProtectedPlistString } from "./protected-plist-string.js";
 import {
 	ConsoleTranscriptionError,
 	type ConsoleTranscriptionRequest,
@@ -89,8 +90,13 @@ export class DeepgramConsoleTranscriptionService implements ConsoleTranscription
 export function createDeepgramConsoleTranscriptionService(
 	env: Record<string, string | undefined>,
 	fetchImplementation: FetchImplementation = fetch,
+	plistReader = readProtectedPlistString,
 ): ConsoleTranscriptionService | undefined {
 	const apiKey = env.MOM_DEEPGRAM_API_KEY?.trim()
-		|| readProtectedTokenFile(env.MOM_DEEPGRAM_API_KEY_FILE);
+		|| readProtectedTokenFile(env.MOM_DEEPGRAM_API_KEY_FILE)
+		|| plistReader(
+			env.MOM_DEEPGRAM_API_KEY_PLIST_FILE,
+			env.MOM_DEEPGRAM_API_KEY_PLIST_KEY,
+		);
 	return apiKey ? new DeepgramConsoleTranscriptionService(apiKey, fetchImplementation) : undefined;
 }
