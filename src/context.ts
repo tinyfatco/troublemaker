@@ -152,12 +152,32 @@ export interface MomVoiceSettings {
 	webhookInputMode?: VoiceWebhookInputMode;
 }
 
+export interface MomComputerSettings {
+	/** Let the macOS Computer client automatically speak assistant responses. */
+	macosAutoSpeech?: boolean;
+}
+
+export const DEFAULT_MACOS_COMPUTER_AUTO_SPEECH = true;
+
+export function resolveMacOSComputerAutoSpeech(settings: unknown): boolean {
+	if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+		return DEFAULT_MACOS_COMPUTER_AUTO_SPEECH;
+	}
+	const computer = (settings as Record<string, unknown>).computer;
+	if (!computer || typeof computer !== "object" || Array.isArray(computer)) {
+		return DEFAULT_MACOS_COMPUTER_AUTO_SPEECH;
+	}
+	const value = (computer as Record<string, unknown>).macosAutoSpeech;
+	return typeof value === "boolean" ? value : DEFAULT_MACOS_COMPUTER_AUTO_SPEECH;
+}
+
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
 	realtimeVoice?: string;
 	voice?: MomVoiceSettings;
+	computer?: MomComputerSettings;
 	verbose?: VerbosityLevel | MomVerboseSettings;
 	/** Route sanitized working/tool labels independently from user-visible delivery. */
 	workingOutput?: MomWorkingOutputSettings;

@@ -66,6 +66,23 @@ Fat Platform `/api/v1` is retired. New product integrations should use Crawdad
 
 ## Chat And Event Semantics
 
+`GET /api/v2/agents/:id/status` may include bounded client preferences for the
+selected agent. The current shape is:
+
+```json
+{
+  "client_preferences": {
+    "macos_computer_auto_speech": true
+  }
+}
+```
+
+The field defaults to `true` for compatibility. It controls only whether the
+macOS Computer client automatically speaks assistant output; it does not
+authorize runtime speech and does not change manual speech, Realtime voice,
+CallMe, iPhone, Watch, or another channel. The status response exposes this
+boolean only, never the raw settings block.
+
 `POST /api/v2/agents/:id/messages` returns an SSE stream for the active turn.
 Clients should treat that stream as the low-latency rendering path for the
 message they just sent, then dedupe against durable awareness entries when the
