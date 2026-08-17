@@ -174,6 +174,8 @@ export function resolveMacOSComputerAutoSpeech(settings: unknown): boolean {
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
+	/** Exclusive desktop tool provider: native Cua, legacy Codex MCP rollback, or disabled. */
+	computerMode?: "cua" | "codex-mcp" | "off";
 	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
 	realtimeVoice?: string;
 	voice?: MomVoiceSettings;

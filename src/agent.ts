@@ -10,6 +10,7 @@ import {
 	loadSkillsFromDir,
 	ModelRegistry,
 	SessionManager,
+	type ExtensionAPI,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
@@ -361,11 +362,12 @@ export function getOrCreateRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	deferredTools: AgentTool<any>[] = [],
 ): AgentRunner {
 	const existing = runners.get(awarenessDir);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, awarenessDir, formatInstructions, extraSkillsDirs, extraTools);
+	const runner = createRunner(sandboxConfig, awarenessDir, formatInstructions, extraSkillsDirs, extraTools, deferredTools);
 	runners.set(awarenessDir, runner);
 	return runner;
 }
@@ -379,6 +381,7 @@ function createRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	deferredTools: AgentTool<any>[] = [],
 ): AgentRunner {
 	const t0 = performance.now();
 	const workspaceDir = join(awarenessDir, "..");
@@ -466,12 +469,16 @@ function createRunner(
 		() => activeSystemPrompt,
 		() => activeRuntimeContext,
 	);
+	const deferredToolsExtension = (pi: ExtensionAPI): void => {
+		for (const tool of deferredTools) pi.registerTool(tool);
+	};
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [
 			dynamicRuntimeContextExtension,
+			deferredToolsExtension,
 			hostGmailExtension,
 			hostSitesExtension,
 			tinyfatDomainsExtension,

@@ -55,6 +55,8 @@ import * as log from "../../log.js";
 import { createExecutor, parseSandboxArg, withExecutorCwd, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
+import { CuaDriverBridge } from "../../cua-driver/bridge.js";
+import { resolveComputerToolMode } from "../../cua-driver/mode.js";
 import { getAssistantSpeechGuardState } from "../../audio-feedback-guard.js";
 import { createHostBashRoute, createHostToolDefinitionsRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
 import { createMomTools } from "../../tools/index.js";
@@ -819,7 +821,20 @@ const goalWorkspace = new FilesystemWorkspaceStore(workingDir);
 // MCP Client Bridge — connect to remote MCP servers (Emdash, etc.)
 // ============================================================================
 
-const mcpBridge = new McpBridge(workingDir);
+const computerToolMode = resolveComputerToolMode(workingDir);
+const cuaDriverBridge = computerToolMode === "cua" ? new CuaDriverBridge() : undefined;
+const mcpBridge = new McpBridge(workingDir, {
+	excludeComputerUse: computerToolMode !== "codex-mcp",
+});
+log.logInfo(`[computer-tools] mode=${computerToolMode}`);
+
+// Native Cua is a required local capability when explicitly enabled. Complete
+// its version and tool-contract handshake before opening the health listener so
+// a guarded resident updater can fail closed and retain the last-good release.
+if (cuaDriverBridge) {
+	await cuaDriverBridge.connect();
+	log.logInfo(`[computer-tools] native Cua Driver ready (${cuaDriverBridge.tools().length} deferred tools)`);
+}
 // Fire-and-forget — never block startup on remote MCP connections.
 // Tools attach when connect() resolves. If Emdash or any other server
 // is unreachable, the agent still boots and handles webhooks normally.
@@ -1008,6 +1023,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			formatInstructions,
 			parsedArgs.skillsDirs,
 			extraTools,
+			cuaDriverBridge?.tools() ?? [],
 		);
 
 		awareness = {
@@ -2298,6 +2314,7 @@ async function shutdown(): Promise<void> {
 	log.logInfo("Shutting down...");
 	eventsWatcher.stop();
 	const cleanup = Promise.allSettled([
+		cuaDriverBridge?.disconnect() ?? Promise.resolve(),
 		mcpBridge.disconnect(),
 		gateway.stop(),
 		...adapters.map((adapter) => adapter.stop()),
