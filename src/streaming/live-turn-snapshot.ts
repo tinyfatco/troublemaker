@@ -53,6 +53,7 @@ export class LiveAssistantSnapshot {
 			name,
 			...(cleanLabel(label) ? { label: cleanLabel(label) } : {}),
 			arguments: args,
+			startedAt: new Date().toISOString(),
 		};
 		if (existingIndex === -1) {
 			content.push(patch);

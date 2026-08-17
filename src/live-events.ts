@@ -99,11 +99,15 @@ export class RuntimeLiveEventHub {
 		if (event.kind === "runtime") {
 			if (event.event.type === "run_complete") {
 				this.activeRuns.delete(event.runId);
-				this.activeAssistantText.delete(event.runId);
+				for (const [key, active] of this.activeAssistantText) {
+					if (active.kind === "runtime" && active.runId === event.runId) {
+						this.activeAssistantText.delete(key);
+					}
+				}
 			}
-			else this.activeRuns.set(event.runId, event);
+			else if (event.event.type !== "assistant_text") this.activeRuns.set(event.runId, event);
 			if (event.event.type === "assistant_text") {
-				this.activeAssistantText.set(event.runId, event);
+				this.activeAssistantText.set(assistantTextProjectionKey(event), event);
 			}
 			if (event.event.type === "steering_input") {
 				this.latestSteering.set(event.event.id, event);
@@ -118,7 +122,9 @@ export class RuntimeLiveEventHub {
 			const previousSnapshot = this.history.findIndex((candidate) =>
 				candidate.kind === "runtime" &&
 				candidate.runId === event.runId &&
-				candidate.event.type === event.event.type
+				candidate.event.type === event.event.type &&
+				(event.event.type !== "assistant_text"
+					|| assistantTextProjectionKey(candidate) === assistantTextProjectionKey(event))
 			);
 			if (previousSnapshot >= 0) this.history.splice(previousSnapshot, 1);
 		}
@@ -187,6 +193,20 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 			...(event.outcome ? { outcome: event.outcome } : {}),
 			...(event.durableMessageIds ? { durableMessageIds: [...event.durableMessageIds] } : {}),
 			speechEligible: event.speechEligible,
+			...(event.presentationMode ? { presentationMode: event.presentationMode } : {}),
+			...(event.presentationSegment ? {
+				presentationSegment: {
+					id: event.presentationSegment.id,
+					index: event.presentationSegment.index,
+					revision: event.presentationSegment.revision,
+					text: event.presentationSegment.text,
+					isFinal: event.presentationSegment.isFinal,
+					startedAt: event.presentationSegment.startedAt,
+					...(event.presentationSegment.durableMessageIds
+						? { durableMessageIds: [...event.presentationSegment.durableMessageIds] }
+						: {}),
+				},
+			} : {}),
 			...(event.mode ? { mode: event.mode } : {}),
 		};
 	}
@@ -209,6 +229,15 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 	if (event.type === "thinking_delta") return { ...event, delta: "", thinking: "" };
 	if (event.type === "thinking_patch") return { ...event, thinking: "" };
 	return event;
+}
+
+function assistantTextProjectionKey(event: RuntimeLiveEvent): string {
+	if (event.kind !== "runtime" || event.event.type !== "assistant_text") return "";
+	const segment = event.event.presentationSegment?.id;
+	if (event.event.presentationMode === "ordered_segments") {
+		return `${event.runId}:ordered:${segment ?? "terminal"}`;
+	}
+	return `${event.runId}:legacy`;
 }
 
 function projectSnapshotContent(block: RuntimeAssistantSnapshotContent): RuntimeAssistantSnapshotContent[] {

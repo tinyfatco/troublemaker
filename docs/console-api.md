@@ -84,3 +84,14 @@ replays server-accepted steering input while that input is pending and emits a
 consumed or dismissed lifecycle update before removing the projection. These
 events do not create another canonical user turn; clients reconcile them with
 the durable user message by steering ID and visible input content.
+
+An `assistant_text` event keeps `completionId`, `revision`, `text`, `isFinal`,
+and `speechEligible` as the run-wide completion contract. Runtimes that also
+send `presentationMode: "ordered_segments"` provide a `presentationSegment`
+with an immutable `id` and `index`, its own cumulative `revision` and exact
+Markdown `text`, `isFinal`, `startedAt`, and eventual `durableMessageIds`.
+Clients should upsert visible prose by segment identity and use the parent
+completion only for delivery and speech. A new segment begins after any visible
+human input, tool activity, or runtime-status barrier, so later prose cannot be
+patched backward across the intervening event. The projection never includes
+thinking, tool arguments/results, or other hidden runtime payloads.
