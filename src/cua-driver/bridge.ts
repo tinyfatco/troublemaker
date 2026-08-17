@@ -6,6 +6,9 @@ import {
 	type ToolResult,
 } from "@trycua/cua-driver";
 import type { TSchema } from "typebox";
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { stripToolPresentationArgs } from "../tools/tool-label.js";
 
 export const CUA_DRIVER_VERSION = "0.20.0";
@@ -41,6 +44,75 @@ interface CuaToolInventory {
 
 export interface CuaDriverBridgeOptions {
 	connect?: () => CuaDriverLike;
+	prepareDaemon?: () => Promise<void>;
+}
+
+export interface CuaDriverCommandResult {
+	code: number;
+	stdout: string;
+	stderr: string;
+}
+
+export interface CuaDriverDaemonPreflightOptions {
+	driverCommand?: string;
+	platform?: NodeJS.Platform;
+	timeoutMs?: number;
+	pollIntervalMs?: number;
+	runCommand?: (command: string, args: string[]) => Promise<CuaDriverCommandResult>;
+}
+
+function runCommand(command: string, args: string[]): Promise<CuaDriverCommandResult> {
+	return new Promise((resolve, reject) => {
+		execFile(command, args, { encoding: "utf8", timeout: 10_000 }, (error, stdout, stderr) => {
+			if (error && typeof (error as NodeJS.ErrnoException & { code?: unknown }).code !== "number") {
+				reject(error);
+				return;
+			}
+			resolve({
+				code: error ? Number((error as NodeJS.ErrnoException & { code: number }).code) : 0,
+				stdout: stdout ?? "",
+				stderr: stderr ?? "",
+			});
+		});
+	});
+}
+
+function daemonStatus(result: CuaDriverCommandResult): "running" | "stopped" {
+	const output = `${result.stdout}\n${result.stderr}`;
+	if (result.code === 0 && output.includes("Cua Driver daemon is running")) return "running";
+	if (result.code === 1 && output.includes("Cua Driver daemon is not running")) return "stopped";
+	throw new Error(`Cua Driver status probe failed closed (exit ${result.code})`);
+}
+
+/** Validate the pinned install and start only a definitely absent signed macOS daemon. */
+export async function prepareInstalledCuaDriver(
+	options: CuaDriverDaemonPreflightOptions = {},
+): Promise<void> {
+	const command = options.driverCommand
+		?? (process.env.TROUBLEMAKER_CUA_DRIVER_COMMAND?.trim() || undefined)
+		?? join(homedir(), ".local", "bin", "cua-driver");
+	const execute = options.runCommand ?? runCommand;
+	const version = await execute(command, ["--version"]);
+	if (version.code !== 0 || version.stdout.trim() !== `cua-driver ${CUA_DRIVER_VERSION}`) {
+		throw new Error(`Cua Driver ${CUA_DRIVER_VERSION} is required at ${command}`);
+	}
+
+	if (daemonStatus(await execute(command, ["status"])) === "running") return;
+	if ((options.platform ?? process.platform) !== "darwin") {
+		throw new Error("Cua Driver daemon is not running; automatic launch is supported only for the signed macOS app");
+	}
+
+	const launch = await execute("/usr/bin/open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"]);
+	if (launch.code !== 0) throw new Error(`Failed to launch the signed CuaDriver app (exit ${launch.code})`);
+
+	const timeoutMs = options.timeoutMs ?? 15_000;
+	const pollIntervalMs = options.pollIntervalMs ?? 100;
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() <= deadline) {
+		if (daemonStatus(await execute(command, ["status"])) === "running") return;
+		await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+	}
+	throw new Error(`Cua Driver daemon did not become ready within ${timeoutMs}ms`);
 }
 
 function parseJsonObject(value: string | undefined): unknown {
@@ -128,15 +200,18 @@ function toAgentResult(result: ToolResult) {
 
 export class CuaDriverBridge {
 	private readonly connectClient: () => CuaDriverLike;
+	private readonly prepareDaemon: () => Promise<void>;
 	private client?: CuaDriverLike;
 	private toolDefinitions: AgentTool<any>[] = [];
 
 	constructor(options: CuaDriverBridgeOptions = {}) {
 		this.connectClient = options.connect ?? (() => CuaDriver.connect(undefined));
+		this.prepareDaemon = options.prepareDaemon ?? (() => prepareInstalledCuaDriver());
 	}
 
 	async connect(): Promise<void> {
 		if (this.client) return;
+		await this.prepareDaemon();
 		const client = this.connectClient();
 		try {
 			validateMetadata(await client.metadata());

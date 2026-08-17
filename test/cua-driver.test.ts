@@ -7,6 +7,7 @@ import type { CuaDriverLike, DriverMetadata, ToolResult } from "@trycua/cua-driv
 import {
 	CUA_DRIVER_020_TOOL_NAMES,
 	CuaDriverBridge,
+	prepareInstalledCuaDriver,
 } from "../src/cua-driver/bridge.js";
 import { resolveComputerToolMode } from "../src/cua-driver/mode.js";
 import { isComputerUseMcpServer } from "../src/mcp-client/bridge.js";
@@ -78,6 +79,64 @@ test("computer MCP detection covers aliases and capability scope", () => {
 	assert.equal(isComputerUseMcpServer({ alias: "github", transport: "stdio", command: "x", args: [], scopes: ["repo:read"] }), false);
 });
 
+test("daemon preflight never launches when the pinned daemon is already running", async () => {
+	const calls: Array<[string, string[]]> = [];
+	await prepareInstalledCuaDriver({
+		driverCommand: "/synthetic/cua-driver",
+		runCommand: async (command, args) => {
+			calls.push([command, args]);
+			return args[0] === "--version"
+				? { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" }
+				: { code: 0, stdout: "Cua Driver daemon is running\n", stderr: "" };
+		},
+	});
+	assert.deepEqual(calls, [
+		["/synthetic/cua-driver", ["--version"]],
+		["/synthetic/cua-driver", ["status"]],
+	]);
+});
+
+test("daemon preflight launches only a definitely stopped signed macOS app", async () => {
+	const calls: Array<[string, string[]]> = [];
+	let statusChecks = 0;
+	await prepareInstalledCuaDriver({
+		driverCommand: "/synthetic/cua-driver",
+		platform: "darwin",
+		pollIntervalMs: 0,
+		runCommand: async (command, args) => {
+			calls.push([command, args]);
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" };
+			if (command === "/usr/bin/open") return { code: 0, stdout: "", stderr: "" };
+			statusChecks += 1;
+			return statusChecks < 2
+				? { code: 1, stdout: "", stderr: "Cua Driver daemon is not running\n" }
+				: { code: 0, stdout: "Cua Driver daemon is running\n", stderr: "" };
+		},
+	});
+	assert.deepEqual(calls[2], ["/usr/bin/open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"]]);
+});
+
+test("daemon preflight fails closed without launching on version or status ambiguity", async () => {
+	let launched = false;
+	await assert.rejects(prepareInstalledCuaDriver({
+		runCommand: async (_command, args) => {
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.19.0\n", stderr: "" };
+			launched = true;
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	}), /0\.20\.0 is required/);
+	assert.equal(launched, false);
+
+	await assert.rejects(prepareInstalledCuaDriver({
+		runCommand: async (command, args) => {
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" };
+			if (command === "/usr/bin/open") launched = true;
+			return { code: 2, stdout: "unexpected", stderr: "" };
+		},
+	}), /status probe failed closed/);
+	assert.equal(launched, false);
+});
+
 test("native inventory becomes namespaced deferred Pi tools and forwards exact arguments", async () => {
 	let call: { name: string; args: string; signal?: AbortSignal } | undefined;
 	const result: ToolResult = {
@@ -89,6 +148,7 @@ test("native inventory becomes namespaced deferred Pi tools and forwards exact a
 		rawJson: "{}",
 	};
 	const bridge = new CuaDriverBridge({
+		prepareDaemon: async () => undefined,
 		connect: () => fakeClient({
 			result,
 			onCall: (name, args, signal) => { call = { name, args, signal }; },
@@ -112,7 +172,7 @@ test("native inventory becomes namespaced deferred Pi tools and forwards exact a
 });
 
 test("Cua refusal stays prominent while retaining image evidence", async () => {
-	const bridge = new CuaDriverBridge({ connect: () => fakeClient({ result: {
+	const bridge = new CuaDriverBridge({ prepareDaemon: async () => undefined, connect: () => fakeClient({ result: {
 		text: "approval required",
 		images: [{ mimeType: "image/jpeg", dataBase64: "eA==" }],
 		isError: true,
@@ -136,7 +196,7 @@ test("version, schema, duplicates, and exact surface mismatches fail closed", as
 		let shutdown = false;
 		const originalShutdown = client.shutdown.bind(client);
 		client.shutdown = async () => { shutdown = true; await originalShutdown(); };
-		const bridge = new CuaDriverBridge({ connect: () => client });
+		const bridge = new CuaDriverBridge({ prepareDaemon: async () => undefined, connect: () => client });
 		await assert.rejects(bridge.connect());
 		assert.equal(shutdown, true);
 		assert.deepEqual(bridge.tools(), []);
