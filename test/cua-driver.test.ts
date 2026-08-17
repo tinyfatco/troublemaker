@@ -22,14 +22,14 @@ const metadata: DriverMetadata = {
 	embedded: false,
 };
 
-function inventory(overrides: { names?: readonly string[]; schema?: string } = {}): string {
+function inventory(overrides: { names?: readonly string[]; schema?: string; camelCaseSchema?: boolean } = {}): string {
 	return JSON.stringify({
 		schema_version: overrides.schema ?? "1",
 		capability_version: "1",
 		tools: (overrides.names ?? CUA_DRIVER_020_TOOL_NAMES).map((name) => ({
 			name,
 			description: `Native ${name}`,
-			inputSchema: { type: "object", properties: {}, additionalProperties: false },
+			[overrides.camelCaseSchema ? "inputSchema" : "input_schema"]: { type: "object", properties: {}, additionalProperties: false },
 		})),
 	});
 }
@@ -156,8 +156,9 @@ test("native inventory becomes namespaced deferred Pi tools and forwards exact a
 	});
 	await bridge.connect();
 	const tools = bridge.tools();
-	assert.equal(tools.length, 55);
-	assert.equal(new Set(tools.map((tool) => tool.name)).size, 55);
+	assert.equal(tools.length, 56);
+	assert.equal(new Set(tools.map((tool) => tool.name)).size, 56);
+	assert.ok(tools.some((tool) => tool.name === "cua_check_for_update"));
 	const click = tools.find((tool) => tool.name === "cua_click");
 	assert.ok(click);
 	const controller = new AbortController();
@@ -169,6 +170,15 @@ test("native inventory becomes namespaced deferred Pi tools and forwards exact a
 	]);
 	assert.deepEqual((output.details as { structured: unknown }).structured, { window: 1 });
 	await bridge.disconnect();
+});
+
+test("adapter also accepts the same-process SDK camelCase inventory shape", async () => {
+	const bridge = new CuaDriverBridge({
+		prepareDaemon: async () => undefined,
+		connect: () => fakeClient({ inventory: inventory({ camelCaseSchema: true }) }),
+	});
+	await bridge.connect();
+	assert.equal(bridge.tools().length, 56);
 });
 
 test("Cua refusal stays prominent while retaining image evidence", async () => {
@@ -188,6 +198,7 @@ test("Cua refusal stays prominent while retaining image evidence", async () => {
 
 test("version, schema, duplicates, and exact surface mismatches fail closed", async () => {
 	for (const client of [
+		fakeClient({ metadata: { ...metadata, embedded: true } }),
 		fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }),
 		fakeClient({ inventory: inventory({ schema: "2" }) }),
 		fakeClient({ inventory: inventory({ names: [...CUA_DRIVER_020_TOOL_NAMES, "click"] }) }),

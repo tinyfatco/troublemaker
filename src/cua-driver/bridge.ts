@@ -27,7 +27,7 @@ export const CUA_DRIVER_020_TOOL_NAMES = [
 	"page", "get_browser_state", "browser_prepare", "browser_navigate", "browser_click", "browser_type",
 	"browser_dialog", "browser_set_input_files", "browser_download", "browser_pointer", "start_recording",
 	"stop_recording", "get_recording_state", "replay_trajectory", "install_ffmpeg", "start_session",
-	"escalate_session", "get_session", "list_sessions", "get_session_state", "end_session",
+	"escalate_session", "get_session", "list_sessions", "get_session_state", "end_session", "check_for_update",
 ] as const;
 
 interface CuaToolDefinition {
@@ -36,10 +36,23 @@ interface CuaToolDefinition {
 	inputSchema: Record<string, unknown>;
 }
 
+interface RawCuaToolDefinition {
+	name: string;
+	description: string;
+	inputSchema?: Record<string, unknown>;
+	input_schema?: Record<string, unknown>;
+}
+
 interface CuaToolInventory {
 	schema_version: string;
 	capability_version: string;
 	tools: CuaToolDefinition[];
+}
+
+interface RawCuaToolInventory {
+	schema_version?: unknown;
+	capability_version?: unknown;
+	tools?: RawCuaToolDefinition[];
 }
 
 export interface CuaDriverBridgeOptions {
@@ -125,6 +138,7 @@ function parseJsonObject(value: string | undefined): unknown {
 }
 
 function validateMetadata(metadata: DriverMetadata): void {
+	if (metadata.embedded) throw new Error("Cua Driver adapter requires the signed standalone daemon");
 	const expected: Array<[keyof DriverMetadata, string]> = [
 		["driverVersion", CUA_DRIVER_VERSION],
 		["contractVersion", CUA_CONTRACT_VERSION],
@@ -148,31 +162,41 @@ function parseInventory(json: string): CuaToolInventory {
 	if (!inventory || typeof inventory !== "object" || Array.isArray(inventory)) {
 		throw new Error("Cua Driver tool inventory must be an object");
 	}
-	const candidate = inventory as Partial<CuaToolInventory>;
+	const candidate = inventory as RawCuaToolInventory;
 	if (candidate.schema_version !== CUA_TOOLS_SCHEMA_VERSION || candidate.capability_version !== CUA_CAPABILITY_VERSION) {
 		throw new Error("Cua Driver tool inventory contract does not match the pinned adapter");
 	}
 	if (!Array.isArray(candidate.tools)) throw new Error("Cua Driver tool inventory has no tools array");
 
 	const names = new Set<string>();
+	const tools: CuaToolDefinition[] = [];
 	for (const tool of candidate.tools) {
 		if (!tool || typeof tool !== "object" || typeof tool.name !== "string" || !/^[a-z][a-z0-9_]*$/.test(tool.name)) {
 			throw new Error("Cua Driver tool inventory contains an invalid tool name");
 		}
 		if (names.has(tool.name)) throw new Error(`Cua Driver tool inventory contains duplicate ${tool.name}`);
 		names.add(tool.name);
-		if (typeof tool.description !== "string" || !tool.inputSchema || typeof tool.inputSchema !== "object" || Array.isArray(tool.inputSchema)) {
+		if (tool.inputSchema && tool.input_schema && JSON.stringify(tool.inputSchema) !== JSON.stringify(tool.input_schema)) {
+			throw new Error(`Cua Driver tool ${tool.name} returned conflicting schema fields`);
+		}
+		const inputSchema = tool.inputSchema ?? tool.input_schema;
+		if (typeof tool.description !== "string" || !inputSchema || typeof inputSchema !== "object" || Array.isArray(inputSchema)) {
 			throw new Error(`Cua Driver tool ${tool.name} has an invalid definition`);
 		}
+		tools.push({ name: tool.name, description: tool.description, inputSchema });
 	}
 
 	const expected = new Set<string>(CUA_DRIVER_020_TOOL_NAMES);
 	const missing = [...expected].filter((name) => !names.has(name));
 	const unexpected = [...names].filter((name) => !expected.has(name));
 	if (missing.length || unexpected.length || names.size !== expected.size) {
-		throw new Error(`Cua Driver 0.20.0 tool surface mismatch (missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"})`);
+		throw new Error(`Cua Driver 0.20.0 daemon tool surface mismatch (missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"})`);
 	}
-	return candidate as CuaToolInventory;
+	return {
+		schema_version: candidate.schema_version,
+		capability_version: candidate.capability_version,
+		tools,
+	} as CuaToolInventory;
 }
 
 function toAgentResult(result: ToolResult) {
