@@ -54,6 +54,37 @@ const privateToolFailureLine = JSON.stringify({
 		content: [{ type: "text", text: "PRIVATE_REPEATED_FAILURE" }],
 	},
 });
+const unlabeledNamespacedToolLine = JSON.stringify({
+	type: "message",
+	id: "assistant-unlabeled-tool",
+	timestamp: "2026-01-01T00:02:00Z",
+	message: {
+		role: "assistant",
+		content: [{
+			type: "toolCall",
+			id: "tool-unlabeled",
+			name: "private-runtime__get_app_state",
+			arguments: { secret: "PRIVATE_NAME_FALLBACK_ARGUMENT" },
+		}],
+	},
+});
+const argumentLabeledToolLine = JSON.stringify({
+	type: "message",
+	id: "assistant-argument-label",
+	timestamp: "2026-01-01T00:02:30Z",
+	message: {
+		role: "assistant",
+		content: [{
+			type: "toolCall",
+			id: "tool-argument-label",
+			name: "private-runtime__opaque_operation",
+			arguments: {
+				label: "Looking at the screen",
+				secret: "PRIVATE_ARGUMENT_LABEL_PAYLOAD",
+			},
+		}],
+	},
+});
 const heartbeatLine = JSON.stringify({
 	type: "message",
 	id: "heartbeat-one",
@@ -149,6 +180,14 @@ assert.deepEqual(durableTool, [{
 	sourceMessageId: "assistant-one",
 }]);
 assert.doesNotMatch(JSON.stringify(durableTool), /PRIVATE_(THINKING|ARGUMENT|RESULT)/);
+
+const namespacedTool = projectConversationAwarenessLine(unlabeledNamespacedToolLine);
+assert.equal(namespacedTool[0]?.label, "Get app state", "the Mac fallback humanizes only the tool-name leaf");
+assert.doesNotMatch(JSON.stringify(namespacedTool), /private-runtime|PRIVATE_NAME_FALLBACK_ARGUMENT|get_app_state/);
+
+const argumentLabeledTool = projectConversationAwarenessLine(argumentLabeledToolLine);
+assert.equal(argumentLabeledTool[0]?.label, "Looking at the screen", "the bounded display label wins over tool identity");
+assert.doesNotMatch(JSON.stringify(argumentLabeledTool), /private-runtime|opaque_operation|PRIVATE_ARGUMENT_LABEL_PAYLOAD/);
 
 const projectedHeartbeat = projectConversationLine(heartbeatLine);
 assert.equal(projectedHeartbeat?.awarenessKind, "heartbeat");
@@ -262,9 +301,27 @@ assert.deepEqual(directToolStart.awareness?.[0], {
 });
 assert.doesNotMatch(JSON.stringify(directToolStart), /private_mcp_name|PRIVATE_DIRECT_ARGUMENT/);
 
-const directToolFailure = projectConversationLiveEvent({
+const directUnlabeledToolStart = projectConversationLiveEvent({
 	kind: "runtime",
 	sequence: 9,
+	streamId: "stream-one",
+	id: "event-unlabeled-tool",
+	timestamp: "2026-01-01T00:03:02Z",
+	runId: "run-one",
+	channelId: "ios",
+	event: {
+		type: "toolcall_start",
+		id: "tool-four",
+		name: "private-provider__read_file",
+		arguments: { path: "PRIVATE_DIRECT_PATH" },
+	},
+});
+assert.equal(directUnlabeledToolStart.awareness?.[0]?.label, "Read file");
+assert.doesNotMatch(JSON.stringify(directUnlabeledToolStart), /private-provider|read_file|PRIVATE_DIRECT_PATH/);
+
+const directToolFailure = projectConversationLiveEvent({
+	kind: "runtime",
+	sequence: 10,
 	streamId: "stream-one",
 	id: "event-three",
 	timestamp: "2026-01-01T00:03:02Z",

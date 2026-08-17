@@ -20,9 +20,9 @@ export interface ConversationMessage {
 
 /**
  * A deliberately narrow activity projection for native conversation clients.
- * Tool identity, an explicitly human-readable label, and lifecycle are the
- * entire boundary. Arguments, output, results, and runtime topology never
- * enter this shape.
+ * Stable tool identity, a bounded human-readable action, and lifecycle are
+ * the entire boundary. Arguments, output, results, raw tool names, and
+ * runtime topology never enter this shape.
  */
 export interface ConversationAwareness {
 	id: string;
@@ -170,7 +170,9 @@ export function projectConversationAwarenessLine(line: string): ConversationAwar
 		return [toolAwareness(
 			toolCallId,
 			timestamp,
-			"Tool activity",
+			toolDisplayLabel({
+				name: firstString(raw.message.toolName, raw.message.tool_name),
+			}),
 			raw.message.isError === true ? "failed" : "completed",
 			sourceMessageId,
 		)];
@@ -216,7 +218,7 @@ function projectConversationRuntimeAwareness(
 		return [toolAwareness(
 			event.toolCallId,
 			timestamp,
-			"Tool activity",
+			toolDisplayLabel({}),
 			event.isError ? "failed" : "completed",
 		)];
 	}
@@ -231,10 +233,10 @@ function projectConversationRuntimeAwareness(
 			...(event.toolCall ? [event.toolCall] : []),
 		];
 		if (calls.length === 0 && event.id) {
-			return [toolAwareness(event.id, timestamp, "Tool activity", "started")];
+			return [toolAwareness(event.id, timestamp, toolDisplayLabel(event), "started")];
 		}
 		return calls.flatMap((call) => call.id
-			? [toolAwareness(call.id, timestamp, call.label, "started")]
+			? [toolAwareness(call.id, timestamp, toolDisplayLabel(call), "started")]
 			: []);
 	}
 	return [];
@@ -333,7 +335,7 @@ function projectToolContent(
 			projected.set(id, toolAwareness(
 				id,
 				timestamp,
-				stringValue(block.label),
+				toolDisplayLabel(block),
 				"started",
 				sourceMessageId,
 			));
@@ -346,7 +348,9 @@ function projectToolContent(
 			projected.set(id, toolAwareness(
 				id,
 				timestamp,
-				existing?.label,
+				existing?.label ?? toolDisplayLabel({
+					name: firstString(block.toolName, block.tool_name),
+				}),
 				block.isError === true ? "failed" : "completed",
 				sourceMessageId,
 			));
@@ -373,10 +377,48 @@ function toolAwareness(
 }
 
 function safeToolLabel(value: unknown): string {
-	if (typeof value !== "string") return "Tool activity";
+	if (typeof value !== "string") return "Tool";
 	const normalized = value.replace(/\s+/g, " ").trim();
-	if (!normalized) return "Tool activity";
+	if (!normalized) return "Tool";
 	return [...normalized].slice(0, SAFE_TOOL_LABEL_LIMIT).join("");
+}
+
+/**
+ * Match the native Mac projection without exporting the raw tool contract.
+ * Only an explicitly display-safe label is considered from arguments; every
+ * other argument is ignored. Namespaces are removed before the fallback tool
+ * name is humanized and bounded.
+ */
+function toolDisplayLabel(tool: {
+	label?: unknown;
+	arguments?: unknown;
+	name?: unknown;
+}): string {
+	const argumentsValue = isRecord(tool.arguments) ? tool.arguments : undefined;
+	const explicit = optionalSafeToolLabel(tool.label)
+		?? optionalSafeToolLabel(argumentsValue?.label);
+	if (explicit) return explicit;
+
+	const rawName = typeof tool.name === "string" ? tool.name.trim() : "";
+	const leaf = rawName.split("__").at(-1) ?? "";
+	const words = leaf
+		.replace(/[_-]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!words) return "Tool";
+	const humanized = `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+	return safeToolLabel(humanized);
+}
+
+function optionalSafeToolLabel(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const normalized = value.replace(/\s+/g, " ").trim();
+	if (!normalized) return undefined;
+	return [...normalized].slice(0, SAFE_TOOL_LABEL_LIMIT).join("");
+}
+
+function isGenericToolLabel(value: string): boolean {
+	return value === "Tool" || value === "Tool activity";
 }
 
 function reconcileConversationAwareness(
@@ -395,7 +437,7 @@ function reconcileConversationAwareness(
 		reconciled.set(item.id, {
 			...item,
 			timestamp: existing.timestamp || item.timestamp,
-			label: existing.label !== "Tool activity" ? existing.label : item.label,
+			label: !isGenericToolLabel(existing.label) ? existing.label : item.label,
 			state,
 		});
 	}
