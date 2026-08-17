@@ -77,6 +77,7 @@ export function deviceRequestScope(method: string, pathname: string): DeviceGran
 	if (!/^\/api\/v2\/agents\/[^/]+\/.+$/.test(pathname)) return null;
 	if (normalizedMethod === "GET" && /\/status$/.test(pathname)) return "status";
 	if (normalizedMethod === "GET" && /\/events$/.test(pathname)) return "events";
+	if (normalizedMethod === "GET" && /\/live$/.test(pathname)) return "events";
 	if (normalizedMethod === "GET" && /\/deliveries$/.test(pathname)) return "deliveries";
 	if (normalizedMethod === "POST" && /\/transcriptions$/.test(pathname)) return "transcriptions";
 	if (normalizedMethod === "POST" && /\/messages\/stop$/.test(pathname)) return "stop";

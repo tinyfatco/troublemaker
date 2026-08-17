@@ -94,6 +94,12 @@ try {
 	const replay = await fetch(`${base}${statusPath}`, { headers: statusHeaders });
 	assert.equal(replay.status, 409, "the same signed nonce cannot be replayed");
 
+	const livePath = "/api/v2/agents/current/live?surface=conversation";
+	const live = await fetch(`${base}${livePath}`, {
+		headers: signedHeaders(grant, "GET", livePath, Buffer.alloc(0), "", "request-nonce-live-0001"),
+	});
+	assert.equal(live.status, 200, "the events scope preserves the existing live observation route");
+
 	const audio = Buffer.from([0, 0, 1, 0]);
 	const transcriptionPath = "/api/v2/agents/current/transcriptions";
 	const transcriptionHeaders = signedHeaders(
