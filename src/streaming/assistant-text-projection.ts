@@ -12,11 +12,13 @@ import type {
  * representation in this projection.
  */
 export class AssistantTextProjection {
+	private static readonly MINIMUM_PATCH_GROWTH = 24;
 	private completionId = "";
 	private revision = 0;
 	private segments: string[] = [];
 	private activeSegment = -1;
 	private lastEmittedText = "";
+	private forceNextPatch = false;
 
 	reset(completionId: string): void {
 		this.completionId = completionId;
@@ -24,20 +26,26 @@ export class AssistantTextProjection {
 		this.segments = [];
 		this.activeSegment = -1;
 		this.lastEmittedText = "";
+		this.forceNextPatch = false;
 	}
 
 	begin(message: AgentMessage): RuntimeAssistantTextEvent | null {
 		if (!isAssistantMessage(message)) return null;
 		this.segments.push(publicAssistantText(message));
 		this.activeSegment = this.segments.length - 1;
-		return this.patchIfChanged();
+		this.forceNextPatch = true;
+		const patch = this.patchIfChanged(true);
+		if (patch) this.forceNextPatch = false;
+		return patch;
 	}
 
 	update(message: AgentMessage, updateType?: string): RuntimeAssistantTextEvent | null {
 		if (!isAssistantMessage(message) || !isPublicTextUpdate(updateType)) return null;
 		this.ensureActiveSegment();
 		this.segments[this.activeSegment] = publicAssistantText(message);
-		return this.patchIfChanged();
+		const patch = this.patchIfChanged(this.forceNextPatch);
+		this.forceNextPatch = false;
+		return patch;
 	}
 
 	end(message: AgentMessage): RuntimeAssistantTextEvent | null {
@@ -45,7 +53,8 @@ export class AssistantTextProjection {
 		this.ensureActiveSegment();
 		this.segments[this.activeSegment] = publicAssistantText(message);
 		this.activeSegment = -1;
-		return this.patchIfChanged();
+		this.forceNextPatch = false;
+		return this.patchIfChanged(true);
 	}
 
 	finalize(options: {
@@ -72,11 +81,20 @@ export class AssistantTextProjection {
 		if (this.activeSegment >= 0) return;
 		this.segments.push("");
 		this.activeSegment = this.segments.length - 1;
+		this.forceNextPatch = true;
 	}
 
-	private patchIfChanged(): RuntimeAssistantTextEvent | null {
+	private patchIfChanged(force = false): RuntimeAssistantTextEvent | null {
 		const text = this.text;
 		if (!text || text === this.lastEmittedText) return null;
+		const isAppendOnly = text.startsWith(this.lastEmittedText);
+		const growth = isAppendOnly ? text.length - this.lastEmittedText.length : 0;
+		if (
+			!force
+			&& isAppendOnly
+			&& this.lastEmittedText.length > 0
+			&& growth < AssistantTextProjection.MINIMUM_PATCH_GROWTH
+		) return null;
 		this.lastEmittedText = text;
 		return {
 			type: "assistant_text",

@@ -72,6 +72,28 @@ assert.equal(failed.isFinal, true);
 assert.equal(failed.outcome, "failed");
 assert.equal(failed.speechEligible, false, "late runtime failures never turn partial text into speech");
 
+projection.reset("completion-example-backpressure");
+projection.begin(assistantMessage([]));
+assert.equal(
+	projection.update(assistantMessage([{ type: "text", text: "First" }]), "text_delta")?.text,
+	"First",
+	"the first visible text paints immediately",
+);
+assert.equal(
+	projection.update(assistantMessage([{ type: "text", text: "First tiny" }]), "text_delta"),
+	null,
+	"small append-only token bursts coalesce instead of doubling the legacy hot path",
+);
+assert.equal(
+	projection.update(assistantMessage([{ type: "text", text: "First tiny cumulative patch after enough growth" }]), "text_delta")?.text,
+	"First tiny cumulative patch after enough growth",
+);
+assert.equal(
+	projection.update(assistantMessage([{ type: "text", text: "Revised answer" }]), "text_delta")?.text,
+	"Revised answer",
+	"a non-append rewrite is emitted immediately regardless of size",
+);
+
 const projected = projectRuntimeEventForTerminal({
 	...completed,
 	privatePayload: "PRIVATE_UNKNOWN_FIELD",
