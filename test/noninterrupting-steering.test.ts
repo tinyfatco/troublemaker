@@ -15,6 +15,7 @@ const event: MomEvent = {
 	text: "fold this into what you are doing",
 	rawText: "<@U3333333333> fold this into what you are doing",
 	sourceEventType: "slack_app_mention",
+	deliveryId: "delivery-example-steer",
 	directlyAddressed: true,
 	threadTs: "1780000000.000100",
 	replyTarget: "slack:C1111111111:1780000000.000100",
@@ -34,6 +35,7 @@ assert.match(prompt, /Suggested reply target: slack:C1111111111:1780000000\.0001
 assert.match(prompt, /Use send_message with this exact target/);
 assert.match(prompt, new RegExp(`\\[${formatLocalTimestamp(receivedAt).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] \\[slack:#agents\\] \\[sample-user\\]`));
 assert.match(prompt, /fold this into what you are doing/);
+assert.doesNotMatch(prompt, /delivery-example-steer/, "transport correlation never enters the model-visible steering prompt");
 assert.match(prompt, /<attachments>\nuploads\/example\.txt\n<\/attachments>/);
 
 const actions: string[] = [];

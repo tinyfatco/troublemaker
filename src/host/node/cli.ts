@@ -1213,6 +1213,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				channelId: turnEvent.channel,
 				channelLabel,
 				source: platform.name,
+				...(turnEvent.deliveryId ? { deliveryId: turnEvent.deliveryId } : {}),
 			};
 			gateway.publishRuntimeEvent(liveMetadata, {
 				type: "status",
@@ -1365,7 +1366,10 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Pro
 		prompt,
 		canSteer: awareness?.running === true,
 		steer: (steeringPrompt) => {
-			steering = awareness?.runner.steer(steeringPrompt, { projectionId }) ?? null;
+			steering = awareness?.runner.steer(steeringPrompt, {
+				projectionId,
+				...(event.deliveryId ? { deliveryId: event.deliveryId } : {}),
+			}) ?? null;
 			return steering !== null;
 		},
 		enqueue: () => {
@@ -1431,7 +1435,13 @@ const handler: MomHandler = {
 		if (
 			sameTerminalRun
 			&& awareness
-			&& tryTerminalTuiSoftSteer(event, awareness.runner, new Date(), steeringProjectionId(event, adapter))
+			&& tryTerminalTuiSoftSteer(
+				event,
+				awareness.runner,
+				new Date(),
+				steeringProjectionId(event, adapter),
+				event.deliveryId,
+			)
 		) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
 			return Promise.resolve();

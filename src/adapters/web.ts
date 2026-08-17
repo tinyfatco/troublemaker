@@ -41,6 +41,8 @@ interface WebChatPayload {
 	session_id?: string;
 	sourceEventType?: string;
 	source_event_type?: string;
+	deliveryId?: string;
+	delivery_id?: string;
 	event_type?: string;
 	source?: string;
 	origin?: string;
@@ -58,6 +60,7 @@ interface NormalizedWebChatPayload {
 	freshContext: boolean;
 	sessionId?: string;
 	sourceEventType?: string;
+	deliveryId?: string;
 }
 
 interface WebStopPayload {
@@ -299,6 +302,8 @@ Keep responses concise and helpful.`;
 		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
 		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
 		const sourceEventType = this.firstString(payload.sourceEventType, payload.source_event_type).trim();
+		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+		if (deliveryId && !/^[A-Za-z0-9._:-]{8,128}$/.test(deliveryId)) return null;
 		const legacyEventType = this.firstString(payload.event_type).trim().toLowerCase();
 		const normalizedSource = source.toLowerCase();
 		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(normalizedSource)
@@ -317,6 +322,7 @@ Keep responses concise and helpful.`;
 				: isVoiceSource
 					? { sourceEventType: "web_voice" }
 					: {}),
+			...(deliveryId ? { deliveryId } : {}),
 		};
 	}
 
@@ -359,6 +365,7 @@ Keep responses concise and helpful.`;
 			freshContext: payload.freshContext,
 			sessionId: payload.sessionId,
 			sourceEventType: payload.sourceEventType,
+			deliveryId: payload.deliveryId,
 			directlyAddressed: true,
 		};
 
@@ -568,6 +575,7 @@ Keep responses concise and helpful.`;
 				sessionId: event.sessionId,
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
+				deliveryId: event.deliveryId,
 				directlyAddressed: event.directlyAddressed,
 				threadTs: event.threadTs,
 				replyTarget: event.replyTarget,

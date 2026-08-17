@@ -7,6 +7,7 @@ import { parseVisibleUserInputs } from "../user-input-display.js";
 
 export interface SteeringProjectionRequest {
 	id: string;
+	deliveryId?: string;
 	prompt: string;
 	enqueue: () => Promise<void>;
 	waitForIdle: () => Promise<void>;
@@ -14,6 +15,7 @@ export interface SteeringProjectionRequest {
 
 interface TrackedSteeringProjection {
 	id: string;
+	deliveryId?: string;
 	prompt: string;
 	entries: RuntimeUserInputEntry[];
 	acceptedAt: string;
@@ -37,6 +39,7 @@ export class SteeringProjectionTracker {
 
 		const projection: TrackedSteeringProjection = {
 			id: request.id,
+			deliveryId: request.deliveryId,
 			prompt: request.prompt,
 			entries: parseVisibleUserInputs(request.prompt),
 			acceptedAt: "",
@@ -126,6 +129,7 @@ export class SteeringProjectionTracker {
 		void this.emit({
 			type: "steering_input",
 			id: projection.id,
+			...(projection.deliveryId ? { deliveryId: projection.deliveryId } : {}),
 			state,
 			deliveryMode: "steered",
 			acceptedAt: projection.acceptedAt,

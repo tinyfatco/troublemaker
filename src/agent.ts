@@ -129,7 +129,7 @@ export interface AgentRunner {
 	 * and the active session is idle, allowing durable ingress receipts to stay
 	 * live across the in-memory steering interval.
 	 */
-	steer(text: string, options?: { projectionId?: string }): Promise<void> | null;
+	steer(text: string, options?: { projectionId?: string; deliveryId?: string }): Promise<void> | null;
 	/** Describe an in-progress context compaction for status surfaces. */
 	getCompactionStatus(): CompactionStatus | null;
 	/** Get current context diagnostics */
@@ -1469,12 +1469,13 @@ function createRunner(
 			return requestCompactionAbort();
 		},
 
-		steer(text: string, options?: { projectionId?: string }): Promise<void> | null {
+		steer(text: string, options?: { projectionId?: string; deliveryId?: string }): Promise<void> | null {
 			if (!session || !acceptsSteering) return null;
 			const activeSession = session;
 			if (options?.projectionId) {
 				const settlement = steeringProjections.track({
 					id: options.projectionId,
+					deliveryId: options.deliveryId,
 					prompt: text,
 					enqueue: () => activeSession.steer(text),
 					waitForIdle: () => activeSession.waitForIdle(),

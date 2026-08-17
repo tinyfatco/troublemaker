@@ -182,6 +182,8 @@ export interface RuntimeUserInputEvent {
 export interface RuntimeSteeringInputEvent {
 	type: "steering_input";
 	id: string;
+	/** Stable transport identity when the steering source supplied one. */
+	deliveryId?: string;
 	state: "accepted" | "consumed" | "dismissed";
 	deliveryMode: "steered";
 	acceptedAt: string;
@@ -286,6 +288,8 @@ export interface RuntimeLiveRunMetadata {
 	channelId: string;
 	channelLabel?: string;
 	source?: string;
+	/** Stable transport identity for the input that created this run. */
+	deliveryId?: string;
 }
 
 interface RuntimeLiveEventBase {

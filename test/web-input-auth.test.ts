@@ -85,10 +85,14 @@ async function run(): Promise<void> {
 		assert(openEvents === 1, "unset token still reaches the event handler");
 
 		let protectedEvents = 0;
+		let lastProtectedEvent: MomEvent | undefined;
 		let protectedStops = 0;
 		const token = "test-token-1234567890";
 		const protectedAdapter = new WebAdapter({ workingDir, inputToken: token });
-		protectedAdapter.setHandler(handler(() => protectedEvents++, () => protectedStops++));
+		protectedAdapter.setHandler(handler((event) => {
+			protectedEvents++;
+			lastProtectedEvent = event;
+		}, () => protectedStops++));
 
 		const missing = await request(protectedAdapter, "dispatch", { message: "missing" });
 		assert(missing.statusCode === 401, "missing bearer token is rejected");
@@ -102,10 +106,21 @@ async function run(): Promise<void> {
 		const malformed = await request(protectedAdapter, "dispatch", { message: "malformed" }, token);
 		assert(malformed.statusCode === 401, "non-Bearer authorization is rejected");
 
-		const accepted = await request(protectedAdapter, "dispatch", { message: "accepted" }, `Bearer ${token}`);
+		const accepted = await request(protectedAdapter, "dispatch", {
+			message: "accepted",
+			deliveryId: "delivery-example-auth",
+		}, `Bearer ${token}`);
 		assert(accepted.statusCode === 200, "correct bearer token reaches synchronous web input");
 		assert(accepted.body.includes("[DONE]"), "authenticated synchronous input completes its SSE turn");
 		assert(protectedEvents === 1, "correct bearer token reaches the event handler exactly once");
+		assert(lastProtectedEvent?.deliveryId === "delivery-example-auth", "validated delivery identity reaches the generic event contract exactly");
+
+		const invalidDelivery = await request(protectedAdapter, "dispatch", {
+			message: "invalid delivery",
+			deliveryId: "bad id",
+		}, `Bearer ${token}`);
+		assert(invalidDelivery.statusCode === 400, "malformed delivery identity fails closed");
+		assert(protectedEvents === 1, "malformed delivery identity never reaches the handler");
 
 		const webhookMissing = await request(protectedAdapter, "dispatchWebhook", { message: "missing webhook" });
 		assert(webhookMissing.statusCode === 401, "asynchronous webhook also rejects a missing token");
