@@ -13,6 +13,7 @@ import {
 	isSafeTranscriptionId,
 	type ConsoleTranscriptionService,
 } from "./console/transcription.js";
+import { ConsoleTranscriptionLedger } from "./console/transcription-ledger.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
@@ -111,6 +112,7 @@ export class Gateway {
 	private awarenessStore: FilesystemAwarenessStore | null = null;
 	private deliveryLedger: WorkspaceDeliveryLedger | null = null;
 	private transcription: ConsoleTranscriptionService | null = null;
+	private transcriptionLedger: ConsoleTranscriptionLedger | null = null;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
 	private liveClientCount = 0;
@@ -137,6 +139,11 @@ export class Gateway {
 				join(this.workspaceDir, ".web-deliveries.jsonl"),
 				"Web delivery ledger is unreadable",
 			);
+			if (this.transcription) {
+				this.transcriptionLedger = new ConsoleTranscriptionLedger(
+					join(this.workspaceDir, ".console-transcriptions.jsonl"),
+				);
+			}
 		}
 	}
 
@@ -371,13 +378,16 @@ export class Gateway {
 				});
 				return;
 			}
-			const result = await this.transcription.transcribe({
+			const transcribe = () => this.transcription!.transcribe({
 				id: transcriptionId,
 				audio,
 				encoding: "linear16",
 				sampleRate: CONSOLE_TRANSCRIPTION_SAMPLE_RATE,
 				channels: CONSOLE_TRANSCRIPTION_CHANNELS,
 			});
+			const result = this.transcriptionLedger
+				? await this.transcriptionLedger.resolve(transcriptionId, audio, transcribe)
+				: await transcribe();
 			this.sendTranscriptionResponse(res, 200, {
 				transcription_id: transcriptionId,
 				text: result.text,

@@ -27,6 +27,8 @@ GET  /api/v2/agents/:id/live
 POST /api/v2/agents/:id/messages
 POST /api/v2/agents/:id/messages/stop
 POST /api/v2/agents/:id/transcriptions
+POST /api/v2/agents/:id/device-grants
+DELETE /api/v2/agents/:id/device-grants/:grant-id
 GET  /api/v2/agents/:id/files?path=:path
 GET  /api/v2/agents/:id/file?path=:path
 PUT  /api/v2/agents/:id/file
@@ -54,6 +56,18 @@ Crawdad CF accepts:
 
 Troublemaker standalone currently assumes same-origin access and should be run
 behind a local tunnel, reverse proxy auth, or a future standalone console token.
+
+A host-owned standalone console facade may additionally issue a revocable,
+device-bound grant to a native client. Grant enrollment requires the existing
+owner Bearer credential and a P-256 proof generated on the target device. The
+returned descriptor contains no owner credential or provider key. Subsequent
+requests use `Authorization: DeviceGrant <grant-id>` plus a signature over the
+exact method, path and query, timestamp, nonce, content type, body digest, and
+agent subject. Grants are scoped, expire, bind to one exact route and subject,
+and reject stale timestamps or replayed nonces. The facade must remain a narrow
+allowlist in front of a loopback runtime and strip device and owner authority
+before forwarding. Device-grant routes are optional host integration; they do
+not weaken or replace existing console authentication.
 
 ## Current State
 
@@ -94,6 +108,10 @@ transcribed text. Transcription does not create an agent turn; the client must
 submit the returned text through the normal stable-`deliveryId` message route.
 Provider credentials remain host-owned, raw audio is not written to the
 workspace, and provider response bodies are never projected through this API.
+Successful results are durably reconciled by transcription ID and audio digest:
+an exact replay returns the same transcript without another provider call,
+while reuse of an ID for different audio fails with `409`. This lets clients
+recover from a lost response without guessing or duplicating paid work.
 
 `POST /api/v2/agents/:id/messages` returns an SSE stream for the active turn.
 Clients should treat that stream as the low-latency rendering path for the

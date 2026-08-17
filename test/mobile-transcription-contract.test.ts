@@ -19,8 +19,10 @@ try {
 	}));
 
 	let captured: ConsoleTranscriptionRequest | undefined;
+	let transcriptionCalls = 0;
 	const service: ConsoleTranscriptionService = {
 		async transcribe(request) {
+			transcriptionCalls += 1;
 			captured = request;
 			return { text: "Exact fixture transcript." };
 		},
@@ -53,6 +55,32 @@ try {
 		assert.equal(captured?.channels, 1);
 		assert.deepEqual(Buffer.from(captured?.audio ?? []), audio);
 
+		const replay = await fetch(`http://127.0.0.1:${port}/api/v2/agents/agent-example/transcriptions`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "audio/L16; rate=16000; channels=1",
+				"X-Transcription-ID": "transcription-fixture-one",
+			},
+			body: audio,
+		});
+		assert.equal(replay.status, 200);
+		assert.deepEqual(await replay.json(), {
+			transcription_id: "transcription-fixture-one",
+			text: "Exact fixture transcript.",
+		});
+		assert.equal(transcriptionCalls, 1, "same identity and audio replay the exact durable result");
+
+		const conflict = await fetch(`http://127.0.0.1:${port}/api/v2/agents/agent-example/transcriptions`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "audio/L16; rate=16000; channels=1",
+				"X-Transcription-ID": "transcription-fixture-one",
+			},
+			body: Buffer.from([9, 0, 9, 0]),
+		});
+		assert.equal(conflict.status, 409, "one identity cannot be reused for different audio");
+		assert.equal(transcriptionCalls, 1);
+
 		const wrongAgent = await fetch(`http://127.0.0.1:${port}/api/v2/agents/other-agent/transcriptions`, {
 			method: "POST",
 			body: audio,
@@ -84,6 +112,25 @@ try {
 		assert.equal(oversized.status, 413);
 	} finally {
 		await gateway.stop();
+	}
+
+	const restarted = new Gateway({ workspaceDir: workspace, transcription: service });
+	const restartedPort = await availablePort();
+	await restarted.start(restartedPort, "127.0.0.1");
+	try {
+		const audio = Buffer.from([0, 0, 1, 0, 2, 0, 3, 0]);
+		const response = await fetch(`http://127.0.0.1:${restartedPort}/api/v2/agents/agent-example/transcriptions`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "audio/L16; rate=16000; channels=1",
+				"X-Transcription-ID": "transcription-fixture-one",
+			},
+			body: audio,
+		});
+		assert.equal(response.status, 200);
+		assert.equal(transcriptionCalls, 1, "durable transcription replay survives a gateway restart");
+	} finally {
+		await restarted.stop();
 	}
 
 	const unavailable = new Gateway({ workspaceDir: workspace });
