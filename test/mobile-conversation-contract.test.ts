@@ -9,6 +9,7 @@ import type { MomHandler } from "../src/adapters/types.js";
 import { WorkspaceDeliveryLedger } from "../src/adapters/workspace-channel-runtime.js";
 import {
 	projectConversationBacklog,
+	projectConversationAwarenessLine,
 	projectConversationLine,
 	projectConversationLiveEvent,
 	projectConversationTurnEvent,
@@ -35,10 +36,70 @@ const privateAssistantLine = JSON.stringify({
 		role: "assistant",
 		content: [
 			{ type: "thinking", thinking: "PRIVATE_THINKING" },
-			{ type: "toolCall", id: "tool-one", name: "bash", arguments: { command: "PRIVATE_ARGUMENT" } },
+			{ type: "toolCall", id: "tool-one", name: "bash", label: "Checking safely", arguments: { command: "PRIVATE_ARGUMENT" } },
 			{ type: "toolResult", toolCallId: "tool-one", result: "PRIVATE_RESULT" },
 			{ type: "text", text: "Exact assistant text" },
 		],
+	},
+});
+const privateToolFailureLine = JSON.stringify({
+	type: "message",
+	id: "tool-result-one",
+	timestamp: "2026-01-01T00:01:30Z",
+	message: {
+		role: "toolResult",
+		toolCallId: "tool-one",
+		toolName: "bash",
+		isError: true,
+		content: [{ type: "text", text: "PRIVATE_REPEATED_FAILURE" }],
+	},
+});
+const heartbeatLine = JSON.stringify({
+	type: "message",
+	id: "heartbeat-one",
+	timestamp: "2026-01-01T00:03:00Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "<session_context>PRIVATE_HEARTBEAT_CONTEXT</session_context>\n\n[2026-01-01] [heartbeat:heartbeat] [heartbeat]: Reflect on the safe checklist.",
+		}],
+	},
+});
+const goalContinuationLine = JSON.stringify({
+	type: "message",
+	id: "goal-one",
+	timestamp: "2026-01-01T00:04:00Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "<delivery_context>\nSource event: goal_continuation\n</delivery_context>\n\n[2026-01-01] [ios] [goal]: [GOAL CONTINUATION]\nAutomatic goal turn: 2",
+		}],
+	},
+});
+const followUpLine = JSON.stringify({
+	type: "message",
+	id: "follow-up-one",
+	timestamp: "2026-01-01T00:05:00Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "<delivery_context>\nSource event: follow_up\nSuggested reply target: PRIVATE_REPLY_TARGET\n</delivery_context>\n\n[2026-01-01] [follow-up] [follow-up]: [ATTENTION:follow-up-example.json:one-shot:2026-01-01T00:05:00Z] [FOLLOW_UP 2/4 after 3 minutes]\nThe exact stable reply target is PRIVATE_REPLY_TARGET.\nPRIVATE_FOLLOW_UP_INSTRUCTION",
+		}],
+	},
+});
+const impersonatedFollowUpLine = JSON.stringify({
+	type: "message",
+	id: "ordinary-follow-up-text",
+	timestamp: "2026-01-01T00:06:00Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "[2026-01-01] [ios] [Casey]: [FOLLOW_UP 9/9 after 1 minute] this is ordinary user text",
+		}],
 	},
 });
 const exactErrorLine = JSON.stringify({
@@ -78,18 +139,61 @@ assert.equal(projectedAssistant?.text, "Exact assistant text");
 assert.equal(projectedAssistant?.speechEligible, true);
 assert.doesNotMatch(JSON.stringify(projectedAssistant), /PRIVATE_(THINKING|ARGUMENT|RESULT)/);
 
+const durableTool = projectConversationAwarenessLine(privateAssistantLine);
+assert.deepEqual(durableTool, [{
+	id: "tool-one",
+	timestamp: "2026-01-01T00:01:00Z",
+	kind: "tool",
+	label: "Checking safely",
+	state: "completed",
+	sourceMessageId: "assistant-one",
+}]);
+assert.doesNotMatch(JSON.stringify(durableTool), /PRIVATE_(THINKING|ARGUMENT|RESULT)/);
+
+const projectedHeartbeat = projectConversationLine(heartbeatLine);
+assert.equal(projectedHeartbeat?.awarenessKind, "heartbeat");
+assert.equal(projectedHeartbeat?.text, "Reflect on the safe checklist.");
+assert.doesNotMatch(JSON.stringify(projectedHeartbeat), /PRIVATE_HEARTBEAT_CONTEXT/);
+
+const projectedGoal = projectConversationLine(goalContinuationLine);
+assert.equal(projectedGoal?.awarenessKind, "goal_continuation");
+assert.match(projectedGoal?.text ?? "", /Automatic goal turn: 2/);
+
+const projectedFollowUp = projectConversationLine(followUpLine);
+assert.equal(projectedFollowUp?.awarenessKind, "follow_up");
+assert.equal(projectedFollowUp?.text, "[FOLLOW_UP 2/4 after 3 minutes]\nNatural follow-up check.");
+assert.doesNotMatch(JSON.stringify(projectedFollowUp), /PRIVATE_REPLY_TARGET|PRIVATE_FOLLOW_UP_INSTRUCTION/);
+
+const projectedImpersonation = projectConversationLine(impersonatedFollowUpLine);
+assert.equal(projectedImpersonation?.awarenessKind, undefined);
+assert.match(projectedImpersonation?.text ?? "", /ordinary user text/);
+
 const projectedError = projectConversationLine(exactErrorLine);
 assert.equal(projectedError?.text, "Proxy returned HTTP 500: exact body");
 assert.equal(projectedError?.isError, true);
 assert.equal(projectedError?.speechEligible, false);
 
 const backlog = projectConversationBacklog({
-	lines: [privateUserLine, privateAssistantLine, exactErrorLine, JSON.stringify({ type: "session", id: "session-one" })],
-	total: 4,
+	lines: [
+		privateUserLine,
+		privateAssistantLine,
+		privateToolFailureLine,
+		exactErrorLine,
+		heartbeatLine,
+		goalContinuationLine,
+		followUpLine,
+		impersonatedFollowUpLine,
+		JSON.stringify({ type: "session", id: "session-one" }),
+	],
+	total: 9,
 	offset: 0,
 });
-assert.equal(backlog.messages.length, 3);
-assert.equal(backlog.total, 4);
+assert.equal(backlog.messages.length, 7);
+assert.equal(backlog.total, 9);
+assert.equal(backlog.awareness.length, 1, "repeated durable lifecycle updates reconcile by tool identity");
+assert.equal(backlog.awareness[0]?.label, "Checking safely");
+assert.equal(backlog.awareness[0]?.state, "failed");
+assert.doesNotMatch(JSON.stringify(backlog), /PRIVATE_(ARGUMENT|RESULT|REPEATED_FAILURE|REPLY_TARGET|FOLLOW_UP_INSTRUCTION)/);
 
 const projectedLive = projectConversationLiveEvent({
 	kind: "runtime",
@@ -109,7 +213,8 @@ const projectedLive = projectConversationLiveEvent({
 			isStreaming: false,
 			content: [
 				{ type: "thinking", thinking: "PRIVATE_LIVE_THINKING" },
-				{ type: "toolCall", id: "tool-two", name: "bash", arguments: { command: "PRIVATE_LIVE_ARGUMENT" } },
+				{ type: "toolCall", id: "tool-two", name: "bash", label: "Reading the workspace", arguments: { command: "PRIVATE_LIVE_ARGUMENT" } },
+				{ type: "toolResult", toolCallId: "tool-two", result: "PRIVATE_LIVE_RESULT", isError: false },
 				{ type: "text", text: "Exact live assistant text" },
 			],
 		},
@@ -118,7 +223,62 @@ const projectedLive = projectConversationLiveEvent({
 assert.equal(projectedLive.kind, "assistant");
 assert.match(JSON.stringify(projectedLive), /Exact live assistant text/);
 assert.match(JSON.stringify(projectedLive), /"completionId":"live-assistant"/);
+assert.deepEqual(projectedLive.awareness, [{
+	id: "tool-two",
+	timestamp: "2026-01-01T00:03:00Z",
+	kind: "tool",
+	label: "Reading the workspace",
+	state: "completed",
+	sourceMessageId: "live-assistant",
+}]);
 assert.doesNotMatch(JSON.stringify(projectedLive), /PRIVATE_LIVE/);
+
+const directToolStart = projectConversationLiveEvent({
+	kind: "runtime",
+	sequence: 8,
+	streamId: "stream-one",
+	id: "event-two",
+	timestamp: "2026-01-01T00:03:01Z",
+	runId: "run-one",
+	channelId: "ios",
+	event: {
+		type: "toolcall_start",
+		toolCall: {
+			type: "toolCall",
+			id: "tool-three",
+			name: "private_mcp_name",
+			label: "Checking the calendar",
+			arguments: { private: "PRIVATE_DIRECT_ARGUMENT" },
+		},
+	},
+});
+assert.equal(directToolStart.kind, "cursor");
+assert.deepEqual(directToolStart.awareness?.[0], {
+	id: "tool-three",
+	timestamp: "2026-01-01T00:03:01Z",
+	kind: "tool",
+	label: "Checking the calendar",
+	state: "started",
+});
+assert.doesNotMatch(JSON.stringify(directToolStart), /private_mcp_name|PRIVATE_DIRECT_ARGUMENT/);
+
+const directToolFailure = projectConversationLiveEvent({
+	kind: "runtime",
+	sequence: 9,
+	streamId: "stream-one",
+	id: "event-three",
+	timestamp: "2026-01-01T00:03:02Z",
+	runId: "run-one",
+	channelId: "ios",
+	event: {
+		type: "toolResult",
+		toolCallId: "tool-three",
+		result: "PRIVATE_DIRECT_RESULT",
+		isError: true,
+	},
+});
+assert.equal(directToolFailure.awareness?.[0]?.state, "failed");
+assert.doesNotMatch(JSON.stringify(directToolFailure), /PRIVATE_DIRECT_RESULT/);
 
 const projectedToolTurn = projectConversationTurnEvent({
 	type: "toolCall",
@@ -134,7 +294,10 @@ try {
 		name: "Example Agent",
 		localAgentId: "agent-example",
 	}));
-	writeFileSync(join(workspace, "awareness", "context.jsonl"), `${privateUserLine}\n${privateAssistantLine}\n`);
+	writeFileSync(
+		join(workspace, "awareness", "context.jsonl"),
+		`${privateUserLine}\n${privateAssistantLine}\n${privateToolFailureLine}\n${heartbeatLine}\n${goalContinuationLine}\n${followUpLine}\n`,
+	);
 	const deliveryLedger = new WorkspaceDeliveryLedger(
 		join(workspace, ".web-deliveries.jsonl"),
 		"fixture delivery ledger is unreadable",
@@ -166,7 +329,12 @@ try {
 			assert.match(body, /Exact human text/);
 			assert.match(body, /Exact assistant text/);
 			assert.match(body, /"deliveryId":"mobile-delivery-projected"/);
-			assert.doesNotMatch(body, /PRIVATE_(SESSION|THINKING|ARGUMENT|RESULT)/);
+			assert.match(body, /"label":"Checking safely"/);
+			assert.match(body, /"state":"failed"/);
+			assert.match(body, /"awarenessKind":"heartbeat"/);
+			assert.match(body, /"awarenessKind":"goal_continuation"/);
+			assert.match(body, /"awarenessKind":"follow_up"/);
+			assert.doesNotMatch(body, /PRIVATE_(SESSION|THINKING|ARGUMENT|RESULT|REPEATED_FAILURE|REPLY_TARGET|FOLLOW_UP_INSTRUCTION)/);
 
 			const acceptedResponse = await fetch(
 				`http://127.0.0.1:${port}/api/v2/agents/agent-example/deliveries?ids=mobile-receipt-accepted,mobile-never-claimed`,

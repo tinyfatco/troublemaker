@@ -114,6 +114,35 @@ non-advancing `cursor` event and repeats cursor heartbeats every 15 seconds, so
 quiet connections have an explicit readiness signal without inventing a user
 or assistant event.
 
+The conversation backlog includes an additive `awareness` array, and each live
+envelope may include the same array alongside its existing `kind`. Native
+clients that do not understand awareness remain compatible because their
+message and cursor shapes do not change. The current awareness item is a
+strictly bounded tool lifecycle:
+
+```json
+{
+  "id": "tool-example",
+  "timestamp": "2026-01-01T00:00:00Z",
+  "kind": "tool",
+  "label": "Checking the workspace",
+  "state": "started"
+}
+```
+
+`state` is `started`, `completed`, or `failed`. The stable tool-call ID is the
+only reconciliation authority across live replay and durable history. Labels
+are bounded human-readable progress labels; tool names, arguments, output,
+results, thinking, terminal data, and runtime routing never enter the mobile
+contract. Awareness is operational presentation, never assistant text or
+speech-eligible content.
+
+Durable user messages may also include `awarenessKind` with `heartbeat`,
+`goal_continuation`, or `follow_up`. Classification comes only from the
+runtime-owned channel or delivery provenance. Follow-up projection removes its
+private reply target and internal harness instructions before serialization;
+arbitrary user text that resembles a marker is not reclassified.
+
 The durable event stream remains the source of truth. Optimistic chat entries
 are UI affordances, not persistent state.
 
