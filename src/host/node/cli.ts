@@ -1227,6 +1227,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					undefined,
 					platform.formatInstructions,
 					(runtimeEvent) => { gateway.publishRuntimeEvent(liveMetadata, runtimeEvent); },
+					liveMetadata.runId,
 				);
 			} finally {
 				try {

@@ -129,6 +129,25 @@ export interface RuntimeAssistantSnapshotEvent {
 	mode?: RuntimeMode;
 }
 
+export type RuntimeAssistantTextOutcome = "completed" | "cancelled" | "failed";
+
+/**
+ * Exact public assistant prose for one canonical run. Streaming records are
+ * cumulative patches; the terminal record reconciles them to durable message
+ * identity. It never carries thinking or tool payloads.
+ */
+export interface RuntimeAssistantTextEvent {
+	type: "assistant_text";
+	completionId: string;
+	revision: number;
+	text: string;
+	isFinal: boolean;
+	outcome?: RuntimeAssistantTextOutcome;
+	durableMessageIds?: string[];
+	speechEligible: boolean;
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeUserInputEntry {
 	channel: string;
 	userName: string;
@@ -230,6 +249,7 @@ export type RuntimeStreamEvent =
 	| RuntimeStatusEvent
 	| RuntimeErrorEvent
 	| RuntimeAssistantSnapshotEvent
+	| RuntimeAssistantTextEvent
 	| RuntimeUserInputEvent
 	| RuntimeSteeringInputEvent
 	| RuntimeTextDeltaEvent

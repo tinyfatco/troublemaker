@@ -27,6 +27,7 @@ export class RuntimeLiveEventHub {
 	private readonly streamId = randomUUID();
 	private readonly history: RuntimeLiveEvent[] = [];
 	private readonly activeRuns = new Map<string, RuntimeLiveEvent>();
+	private readonly activeAssistantText = new Map<string, RuntimeLiveEvent>();
 	private readonly activeSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly latestSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly subscribers = new Set<(event: RuntimeLiveEvent) => void>();
@@ -55,7 +56,11 @@ export class RuntimeLiveEventHub {
 			// Replay only each active run's latest cumulative state, never stale
 			// completed history from earlier in the resident process.
 			const active = new Map<string, RuntimeLiveEvent>();
-			for (const event of [...this.activeRuns.values(), ...this.activeSteering.values()]) {
+			for (const event of [
+				...this.activeAssistantText.values(),
+				...this.activeRuns.values(),
+				...this.activeSteering.values(),
+			]) {
 				active.set(event.id, event);
 			}
 			for (const event of [...active.values()].sort((a, b) => a.sequence - b.sequence)) {
@@ -92,19 +97,28 @@ export class RuntimeLiveEventHub {
 			timestamp: new Date().toISOString(),
 		} as RuntimeLiveEvent;
 		if (event.kind === "runtime") {
-			if (event.event.type === "run_complete") this.activeRuns.delete(event.runId);
+			if (event.event.type === "run_complete") {
+				this.activeRuns.delete(event.runId);
+				this.activeAssistantText.delete(event.runId);
+			}
 			else this.activeRuns.set(event.runId, event);
+			if (event.event.type === "assistant_text") {
+				this.activeAssistantText.set(event.runId, event);
+			}
 			if (event.event.type === "steering_input") {
 				this.latestSteering.set(event.event.id, event);
 				if (event.event.state === "accepted") this.activeSteering.set(event.event.id, event);
 				else this.activeSteering.delete(event.event.id);
 			}
 		}
-		if (event.kind === "runtime" && event.event.type === "assistant_snapshot") {
+		if (
+			event.kind === "runtime"
+			&& (event.event.type === "assistant_snapshot" || event.event.type === "assistant_text")
+		) {
 			const previousSnapshot = this.history.findIndex((candidate) =>
 				candidate.kind === "runtime" &&
 				candidate.runId === event.runId &&
-				candidate.event.type === "assistant_snapshot"
+				candidate.event.type === event.event.type
 			);
 			if (previousSnapshot >= 0) this.history.splice(previousSnapshot, 1);
 		}
@@ -161,6 +175,19 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 				...event.entry,
 				content: event.entry.content.flatMap(projectSnapshotContent),
 			},
+		};
+	}
+	if (event.type === "assistant_text") {
+		return {
+			type: "assistant_text",
+			completionId: event.completionId,
+			revision: event.revision,
+			text: event.text,
+			isFinal: event.isFinal,
+			...(event.outcome ? { outcome: event.outcome } : {}),
+			...(event.durableMessageIds ? { durableMessageIds: [...event.durableMessageIds] } : {}),
+			speechEligible: event.speechEligible,
+			...(event.mode ? { mode: event.mode } : {}),
 		};
 	}
 	if (

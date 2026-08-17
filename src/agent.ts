@@ -40,6 +40,7 @@ import {
 import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
+import { AssistantTextProjection } from "./streaming/assistant-text-projection.js";
 import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
@@ -117,6 +118,7 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 		formatInstructions?: string,
 		liveEventSink?: RuntimeEventSink,
+		completionID?: string,
 	): Promise<RunResult>;
 	abort(): void;
 	/** Abort only an in-progress manual or automatic context compaction. */
@@ -625,7 +627,10 @@ function createRunner(
 		modelCredentialUnavailable: false,
 		initialPromptSent: false,
 		liveSnapshot: new LiveAssistantSnapshot(),
+		assistantText: new AssistantTextProjection(),
 		liveEventSink: null as RuntimeEventSink | null,
+		completionID: "",
+		runStartLeafID: null as string | null,
 	};
 
 	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
@@ -800,12 +805,25 @@ function createRunner(
 		} else if (event.type === "message_update") {
 			const agentEvent = event as AgentEvent & { type: "message_update" };
 			runState.liveSnapshot.updateAssistantMessage(agentEvent.message);
+			const assistantText = runState.assistantText.update(
+				agentEvent.message,
+				agentEvent.assistantMessageEvent?.type,
+			);
+			if (assistantText) {
+				emitLiveEvent(assistantText);
+				ctx.emitContentBlock?.({ ...assistantText });
+			}
 			emitSnapshot(true);
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
 				log.logResponseStart(logCtx);
 				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
+				const assistantText = runState.assistantText.begin(agentEvent.message);
+				if (assistantText) {
+					emitLiveEvent(assistantText);
+					ctx.emitContentBlock?.({ ...assistantText });
+				}
 				emitSnapshot(true);
 			} else if (agentEvent.message.role === "user") {
 				const messageContent = agentEvent.message.content;
@@ -829,6 +847,11 @@ function createRunner(
 			const agentEvent = event as AgentEvent & { type: "message_end" };
 			if (agentEvent.message.role === "assistant") {
 				runState.liveSnapshot.endAssistantMessage(agentEvent.message);
+				const assistantText = runState.assistantText.end(agentEvent.message);
+				if (assistantText) {
+					emitLiveEvent(assistantText);
+					ctx.emitContentBlock?.({ ...assistantText });
+				}
 				emitSnapshot(false);
 				const assistantMsg = agentEvent.message as any;
 
@@ -968,8 +991,11 @@ function createRunner(
 			_pendingMessages?: PendingMessage[],
 			runFormatInstructions = formatInstructions,
 			liveEventSink?: RuntimeEventSink,
+			completionID?: string,
 		): Promise<RunResult> {
 			const tRun = performance.now();
+			runState.completionID = completionID?.trim() || randomUUID();
+			runState.assistantText.reset(runState.completionID);
 
 			// Ensure awareness directory exists
 			await mkdir(awarenessDir, { recursive: true });
@@ -985,6 +1011,7 @@ function createRunner(
 				});
 			}
 			const sm = getSessionManager();
+			runState.runStartLeafID = sm.getLeafId();
 
 			// No sync step — the runner is the sole writer to context.jsonl
 			const tCtx = performance.now();
@@ -1329,6 +1356,26 @@ function createRunner(
 				}
 			}
 
+			const branch = sm.getBranch();
+			const startIndex = runState.runStartLeafID
+				? branch.findIndex((entry) => entry.id === runState.runStartLeafID) + 1
+				: 0;
+			const runEntries = startIndex > 0 || runState.runStartLeafID === null
+				? branch.slice(startIndex)
+				: [];
+			const durableMessageIds = runEntries.flatMap((entry): string[] =>
+				entry.type === "message" && entry.message.role === "assistant" ? [entry.id] : []);
+			const assistantFinal = runState.assistantText.finalize({
+				outcome: runState.stopReason === "error"
+					? "failed"
+					: runState.stopReason === "aborted"
+						? "cancelled"
+						: "completed",
+				durableMessageIds,
+			});
+			emitLiveEvent(assistantFinal);
+			ctx.emitContentBlock?.({ ...assistantFinal });
+
 			// Log usage summary
 			if (runState.totalUsage.cost.total > 0 && runState.logCtx && runState.queue) {
 				const messages = currentSession.messages;
@@ -1357,6 +1404,8 @@ function createRunner(
 			runState.queue = null;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = null;
+			runState.completionID = "";
+			runState.runStartLeafID = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return {
