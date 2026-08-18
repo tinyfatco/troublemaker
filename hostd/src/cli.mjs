@@ -22,6 +22,7 @@ import { createHostServer } from "./server.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
 import { WebChatGateway } from "./web-chat.mjs";
+import { createWebAppServer } from "./web-app-server.mjs";
 import { HostWorkersAi } from "./workers-ai.mjs";
 
 function usage() {
@@ -168,6 +169,7 @@ async function components(configPath) {
 async function serve(configPath) {
 	const state = await components(configPath);
 	const server = createHostServer(state);
+	const webAppServer = state.config.webApp ? createWebAppServer(state) : undefined;
 	await new Promise((resolvePromise, reject) => {
 		server.once("error", reject);
 		server.listen(state.config.server.port, state.config.server.host, resolvePromise);
@@ -175,6 +177,25 @@ async function serve(configPath) {
 	console.log(
 		`troublemaker-hostd: listening on ${state.config.server.host}:${state.config.server.port}`,
 	);
+	if (webAppServer) {
+		try {
+			await new Promise((resolvePromise, reject) => {
+				webAppServer.once("error", reject);
+				webAppServer.listen(
+					state.config.webApp.port,
+					state.config.webApp.host,
+					resolvePromise,
+				);
+			});
+			console.log(
+				`troublemaker-hostd: web app gateway listening on ${state.config.webApp.host}:${state.config.webApp.port}`,
+			);
+		} catch (error) {
+			await new Promise((resolvePromise) => server.close(resolvePromise));
+			state.store.close();
+			throw error;
+		}
+	}
 	await state.scheduler.start();
 	await state.mattermostGateway?.start();
 	await state.rocketChatGateway?.start();
@@ -206,6 +227,9 @@ async function serve(configPath) {
 		await state.zulipGateway?.stop();
 		await state.phoneGateway?.stop();
 		await state.controlNotifier?.stop();
+		if (webAppServer) {
+			await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
+		}
 		await new Promise((resolvePromise) => server.close(resolvePromise));
 		state.store.close();
 	};
