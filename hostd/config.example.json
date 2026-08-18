@@ -23,6 +23,22 @@
     "defaultProject": "website",
     "agentName": "Operator"
   },
+  "mcp": {
+    "edge": {
+      "host": "127.0.0.1",
+      "port": 3121,
+      "assertionSecretEnv": "TROUBLEMAKER_HOSTD_MCP_EDGE_SECRET",
+      "audience": "troublemaker-hostd-mcp",
+      "issuers": [
+        "crawdad-cf",
+        "fat-platform"
+      ]
+    },
+    "publicBaseUrl": "https://mcp.example.com/mcp",
+    "handoffBaseUrl": "https://app.example.com/connect",
+    "handoffTtlSeconds": 3600,
+    "maximumRequestBytes": 2097152
+  },
   "state": {
     "database": "/var/lib/troublemaker-hostd/state.sqlite",
     "routingKeyFile": "/etc/troublemaker-hostd/routing.key"

@@ -81,6 +81,7 @@
 		"test:email-host-managed": "npx tsx test/email-host-managed.test.ts",
 		"test:gmail-tools": "npx tsx test/gmail-tools.test.ts",
 		"test:site-deploy-tools": "npx tsx test/site-deploy-tools.test.ts",
+		"test:mcp-connections": "npx tsx test/mcp-connections.test.ts",
 		"test:email-tools-only": "npx tsx test/email-tools-only.test.ts",
 		"test:tui": "npx tsx test/tui.test.ts && npm run test:terminal-steering",
 		"test:tui-pty": "npx tsx test/tui-pty.test.ts",

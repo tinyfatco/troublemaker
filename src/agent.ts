@@ -52,6 +52,7 @@ import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
+import hostMcpConnectionsExtension from "./extensions/host-mcp-connections.js";
 import hostSitesExtension from "./extensions/host-sites.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
 import {
@@ -477,7 +478,12 @@ async function createRunner(
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
-		extensionFactories: [hostGmailExtension, hostSitesExtension, tinyfatDomainsExtension],
+		extensionFactories: [
+			hostGmailExtension,
+			hostMcpConnectionsExtension,
+			hostSitesExtension,
+			tinyfatDomainsExtension,
+		],
 		extensionsOverride: (base) => {
 			for (const extension of base.extensions) {
 				for (const registered of extension.tools.values()) {

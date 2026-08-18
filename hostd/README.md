@@ -225,11 +225,56 @@ troublemaker-hostd import-legacy-checkpoint \
   --config /etc/troublemaker-hostd/config.json \
   --checkpoint /var/lib/legacy-inbox/checkpoint.json \
   --key-file /etc/legacy-inbox/state.key
+troublemaker-hostd mcp-handoff --config /etc/troublemaker-hostd/config.json \
+  --context <context-id> --direction either --name "MCP connection"
+troublemaker-hostd mcp-list --config /etc/troublemaker-hostd/config.json \
+  --context <context-id>
+troublemaker-hostd mcp-revoke --config /etc/troublemaker-hostd/config.json \
+  --context <context-id> --direction inbound --id <grant-id>
 troublemaker-hostd status --config /etc/troublemaker-hostd/config.json
 ```
 
 `serve` binds its API to loopback by default. OCI ports must also be published
 on loopback only. Do not expose the host API or child gateway ports publicly.
+
+## One-time MCP handoffs
+
+An optional `mcp` listener supports two narrowly scoped connection directions.
+An inbound grant produces one revocable MCP URL and a show-once bearer key so a
+remote client such as Vellum can use the tools of one exact Hostd context. An
+outbound connection lets the same context use one remote HTTPS MCP server while
+Hostd encrypts the upstream credential and adds it only at the host proxy.
+
+```json
+{
+  "mcp": {
+    "edge": {
+      "host": "127.0.0.1",
+      "port": 3121,
+      "assertionSecretEnv": "TROUBLEMAKER_HOSTD_MCP_EDGE_SECRET",
+      "audience": "troublemaker-hostd-mcp",
+      "issuers": ["crawdad-cf", "fat-platform"]
+    },
+    "publicBaseUrl": "https://crawdad.example.com/mcp",
+    "handoffBaseUrl": "https://app.example.com/connect",
+    "handoffTtlSeconds": 3600,
+    "maximumRequestBytes": 2097152
+  }
+}
+```
+
+One-time and inbound bearer values are stored only as SHA-256 digests. Outbound
+credentials use the existing routing-key envelope and never enter the runtime,
+its workspace, or model context. A runtime receives only exact context-scoped
+Hostd capabilities and a loopback proxy URL. Remote destinations must be HTTPS;
+Hostd resolves and pins a public address, rejects mixed or private DNS answers,
+and does not follow redirects.
+
+Keep the MCP listener on loopback and expose it only through the two signed
+edge services. Their short-lived HMAC assertions bind issuer, audience, method,
+exact path, request body, bearer digest, timestamp, and nonce. `crawdad-cf` may
+reach only the MCP resource proxy, while `fat-platform` may reach only handoff
+session and completion routes. The browser receives no Hostd assertion secret.
 
 ## Authenticated web app gateway
 

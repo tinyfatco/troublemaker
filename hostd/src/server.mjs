@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
+import { HostMcpError } from "./mcp.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
@@ -72,6 +73,8 @@ export function createHostServer({
 	phoneGateway,
 	sitesGateway,
 	workersAiGateway,
+	mcp,
+	mcpOutbound,
 	routingKey,
 }) {
 	const gmailTools = routingKey && gmail && config.gmail
@@ -109,6 +112,57 @@ export function createHostServer({
 				store.setMeta("scheduler:draining", String(draining));
 				if (!draining) scheduler?.pump();
 				json(response, 200, { ok: true, draining });
+				return;
+			}
+			if (request.method === "POST" && url.pathname === "/v1/mcp/control") {
+				if (!mcp || !config.mcp) {
+					json(response, 503, { error: "mcp_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const body = await readJson(request, 32 * 1024);
+				const contextId = typeof body.context_id === "string" ? body.context_id : "";
+				const target = authenticateContext(request, config, contextId, "mcp-control");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				if (body.action === "request") {
+					json(response, 200, mcp.createHandoff(target, contextId, body));
+					return;
+				}
+				if (body.action === "list") {
+					json(response, 200, mcp.list(contextId));
+					return;
+				}
+				if (body.action === "revoke") {
+					json(response, 200, await mcp.revoke(contextId, body));
+					return;
+				}
+				json(response, 400, { error: "action_invalid" });
+				return;
+			}
+			const mcpOutboundMatch = url.pathname.match(/^\/v1\/mcp\/outbound\/([^/]+)\/([^/]+)$/);
+			if (mcpOutboundMatch) {
+				if (!mcpOutbound || !config.mcp) {
+					json(response, 503, { error: "mcp_unavailable" });
+					return;
+				}
+				const contextId = decodeURIComponent(mcpOutboundMatch[1]);
+				const target = authenticateContext(request, config, contextId, "mcp-outbound");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				await mcpOutbound.proxy(
+					request,
+					response,
+					contextId,
+					decodeURIComponent(mcpOutboundMatch[2]),
+				);
 				return;
 			}
 			const workersAiMatch = url.pathname.match(
@@ -526,6 +580,10 @@ export function createHostServer({
 				return;
 			}
 			if (error instanceof HostSitesError) {
+				json(response, error.status, { error: error.code });
+				return;
+			}
+			if (error instanceof HostMcpError) {
 				json(response, error.status, { error: error.code });
 				return;
 			}

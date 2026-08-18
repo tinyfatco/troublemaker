@@ -91,6 +91,72 @@ export class HostStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS contexts_port_unique
 				ON contexts(port) WHERE port IS NOT NULL;
 
+			CREATE TABLE IF NOT EXISTS mcp_handoffs (
+				id TEXT PRIMARY KEY,
+				token_hash TEXT NOT NULL UNIQUE,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound', 'either')),
+				display_name TEXT NOT NULL,
+				upstream_url TEXT,
+				allowed_auth_json TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending'
+					CHECK(status IN ('pending', 'completed', 'expired', 'revoked')),
+				result_id TEXT,
+				opened_at TEXT,
+				completed_at TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_handoffs_context
+				ON mcp_handoffs(context_id, status, created_at);
+
+			CREATE TABLE IF NOT EXISTS mcp_inbound_grants (
+				id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				token_hash TEXT NOT NULL UNIQUE,
+				status TEXT NOT NULL DEFAULT 'active'
+					CHECK(status IN ('active', 'revoked')),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				last_used_at TEXT,
+				revoked_at TEXT,
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_inbound_grants_context
+				ON mcp_inbound_grants(context_id, status, created_at);
+
+			CREATE TABLE IF NOT EXISTS mcp_outbound_connections (
+				id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				alias TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				upstream_url TEXT NOT NULL,
+				auth_type TEXT NOT NULL CHECK(auth_type IN ('none', 'bearer', 'header')),
+				header_name TEXT,
+				credential_ciphertext TEXT,
+				status TEXT NOT NULL DEFAULT 'active'
+					CHECK(status IN ('active', 'revoked')),
+				revision INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				last_used_at TEXT,
+				last_error TEXT,
+				revoked_at TEXT,
+				UNIQUE(context_id, alias),
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_outbound_connections_context
+				ON mcp_outbound_connections(context_id, status, created_at);
+
 			CREATE TABLE IF NOT EXISTS site_relationship_factories (
 				context_id TEXT PRIMARY KEY,
 				principal_hash TEXT NOT NULL,
@@ -1529,6 +1595,221 @@ export class HostStore {
 				runtime_version AS runtimeVersion
 			FROM contexts WHERE id = ?
 		`).get(id);
+	}
+
+	createMcpHandoff({
+		id = randomUUID(),
+		tokenHash,
+		targetId,
+		contextId,
+		direction,
+		displayName,
+		upstreamUrl,
+		allowedAuth,
+		expiresAt,
+	}) {
+		const context = this.getContext(contextId);
+		if (!context || context.targetId !== targetId) throw new Error("mcp_context_not_found");
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO mcp_handoffs(
+				id, token_hash, target_id, context_id, direction, display_name,
+				upstream_url, allowed_auth_json, expires_at, status, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+		`).run(
+			id,
+			tokenHash,
+			targetId,
+			contextId,
+			direction,
+			displayName,
+			upstreamUrl ?? null,
+			JSON.stringify(allowedAuth),
+			expiresAt,
+			timestamp,
+			timestamp,
+		);
+		return this.getMcpHandoff(id);
+	}
+
+	getMcpHandoff(id) {
+		const row = this.database.prepare(`
+			SELECT id, token_hash AS tokenHash, target_id AS targetId,
+				context_id AS contextId, direction, display_name AS displayName,
+				upstream_url AS upstreamUrl, allowed_auth_json AS allowedAuthJson,
+				expires_at AS expiresAt, status, result_id AS resultId,
+				opened_at AS openedAt, completed_at AS completedAt,
+				created_at AS createdAt, updated_at AS updatedAt
+			FROM mcp_handoffs WHERE id = ?
+		`).get(id);
+		return row ? { ...row, allowedAuth: JSON.parse(row.allowedAuthJson) } : null;
+	}
+
+	getMcpHandoffByTokenHash(tokenHash, { touch = false } = {}) {
+		const row = this.database.prepare(`
+			SELECT id FROM mcp_handoffs WHERE token_hash = ?
+		`).get(tokenHash);
+		if (!row) return null;
+		let handoff = this.getMcpHandoff(row.id);
+		if (handoff.status === "pending" && Date.parse(handoff.expiresAt) <= Date.now()) {
+			this.database.prepare(`
+				UPDATE mcp_handoffs SET status = 'expired', updated_at = ?
+				WHERE id = ? AND status = 'pending'
+			`).run(now(), handoff.id);
+			handoff = this.getMcpHandoff(handoff.id);
+		}
+		if (touch && handoff.status === "pending") {
+			this.database.prepare(`
+				UPDATE mcp_handoffs SET opened_at = COALESCE(opened_at, ?), updated_at = ?
+				WHERE id = ? AND status = 'pending'
+			`).run(now(), now(), handoff.id);
+			handoff = this.getMcpHandoff(handoff.id);
+		}
+		return handoff;
+	}
+
+	completeMcpHandoff(tokenHash, { inboundGrant, outboundConnection }) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const handoff = this.getMcpHandoffByTokenHash(tokenHash);
+			if (!handoff || handoff.status !== "pending") throw new Error("mcp_handoff_unavailable");
+			if (Date.parse(handoff.expiresAt) <= Date.now()) throw new Error("mcp_handoff_unavailable");
+			const result = inboundGrant ?? outboundConnection;
+			if (!result || Boolean(inboundGrant) === Boolean(outboundConnection)) {
+				throw new Error("mcp_handoff_result_invalid");
+			}
+			if (inboundGrant) {
+				this.database.prepare(`
+					INSERT INTO mcp_inbound_grants(
+						id, target_id, context_id, display_name, token_hash,
+						status, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+				`).run(
+					inboundGrant.id,
+					handoff.targetId,
+					handoff.contextId,
+					inboundGrant.displayName,
+					inboundGrant.tokenHash,
+					now(),
+					now(),
+				);
+			} else {
+				this.database.prepare(`
+					INSERT INTO mcp_outbound_connections(
+						id, target_id, context_id, alias, display_name, upstream_url,
+						auth_type, header_name, credential_ciphertext, status,
+						created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+				`).run(
+					outboundConnection.id,
+					handoff.targetId,
+					handoff.contextId,
+					outboundConnection.alias,
+					outboundConnection.displayName,
+					outboundConnection.upstreamUrl,
+					outboundConnection.authType,
+					outboundConnection.headerName ?? null,
+					outboundConnection.credentialCiphertext ?? null,
+					now(),
+					now(),
+				);
+			}
+			this.database.prepare(`
+				UPDATE mcp_handoffs SET status = 'completed', result_id = ?,
+					completed_at = ?, updated_at = ?
+				WHERE id = ? AND status = 'pending'
+			`).run(result.id, now(), now(), handoff.id);
+			this.database.exec("COMMIT");
+			return { handoff: this.getMcpHandoff(handoff.id), resultId: result.id };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	listMcpHandoffs(contextId) {
+		return this.database.prepare(`
+			SELECT id FROM mcp_handoffs WHERE context_id = ? ORDER BY created_at DESC
+		`).all(contextId).map((row) => this.getMcpHandoff(row.id));
+	}
+
+	getMcpInboundGrant(id) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId,
+				display_name AS displayName, token_hash AS tokenHash, status,
+				created_at AS createdAt, updated_at AS updatedAt,
+				last_used_at AS lastUsedAt, revoked_at AS revokedAt
+			FROM mcp_inbound_grants WHERE id = ?
+		`).get(id) ?? null;
+	}
+
+	listMcpInboundGrants(contextId, { activeOnly = false } = {}) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId,
+				display_name AS displayName, status, created_at AS createdAt,
+				updated_at AS updatedAt, last_used_at AS lastUsedAt,
+				revoked_at AS revokedAt
+			FROM mcp_inbound_grants
+			WHERE context_id = ? ${activeOnly ? "AND status = 'active'" : ""}
+			ORDER BY created_at, id
+		`).all(contextId);
+	}
+
+	touchMcpInboundGrant(id) {
+		this.database.prepare(`
+			UPDATE mcp_inbound_grants SET last_used_at = ? WHERE id = ? AND status = 'active'
+		`).run(now(), id);
+	}
+
+	revokeMcpInboundGrant(contextId, id) {
+		const result = this.database.prepare(`
+			UPDATE mcp_inbound_grants SET status = 'revoked', revoked_at = ?, updated_at = ?
+			WHERE context_id = ? AND id = ? AND status = 'active'
+		`).run(now(), now(), contextId, id);
+		return result.changes === 1;
+	}
+
+	getMcpOutboundConnection(contextId, id) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId, alias,
+				display_name AS displayName, upstream_url AS upstreamUrl,
+				auth_type AS authType, header_name AS headerName,
+				credential_ciphertext AS credentialCiphertext, status, revision,
+				created_at AS createdAt, updated_at AS updatedAt,
+				last_used_at AS lastUsedAt, last_error AS lastError,
+				revoked_at AS revokedAt
+			FROM mcp_outbound_connections WHERE context_id = ? AND id = ?
+		`).get(contextId, id) ?? null;
+	}
+
+	listMcpOutboundConnections(contextId, { activeOnly = false } = {}) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId, alias,
+				display_name AS displayName, upstream_url AS upstreamUrl,
+				auth_type AS authType, header_name AS headerName, status, revision,
+				created_at AS createdAt, updated_at AS updatedAt,
+				last_used_at AS lastUsedAt, last_error AS lastError,
+				revoked_at AS revokedAt
+			FROM mcp_outbound_connections
+			WHERE context_id = ? ${activeOnly ? "AND status = 'active'" : ""}
+			ORDER BY created_at, id
+		`).all(contextId);
+	}
+
+	touchMcpOutboundConnection(contextId, id, error) {
+		this.database.prepare(`
+			UPDATE mcp_outbound_connections SET last_used_at = ?, last_error = ?
+			WHERE context_id = ? AND id = ? AND status = 'active'
+		`).run(now(), error ? String(error).slice(0, 1000) : null, contextId, id);
+	}
+
+	revokeMcpOutboundConnection(contextId, id) {
+		const result = this.database.prepare(`
+			UPDATE mcp_outbound_connections
+			SET status = 'revoked', revision = revision + 1, revoked_at = ?, updated_at = ?
+			WHERE context_id = ? AND id = ? AND status = 'active'
+		`).run(now(), now(), contextId, id);
+		return result.changes === 1;
 	}
 
 	listContexts() {
@@ -3028,6 +3309,16 @@ export class HostStore {
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,
 			contexts: this.database.prepare("SELECT COUNT(*) AS count FROM contexts").get().count,
+			pendingMcpHandoffs: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM mcp_handoffs
+				WHERE status = 'pending' AND expires_at > ?
+			`).get(now()).count,
+			activeMcpInboundGrants: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM mcp_inbound_grants WHERE status = 'active'
+			`).get().count,
+			activeMcpOutboundConnections: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM mcp_outbound_connections WHERE status = 'active'
+			`).get().count,
 			dynamicSiteBindings: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM site_deployment_bindings WHERE status = 'active'
 			`).get().count,

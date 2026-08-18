@@ -668,6 +668,79 @@ function webAppConfig(raw, environment, defaultAgentName) {
 	};
 }
 
+function mcpConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const mcp = object(raw, "mcp");
+	const edge = object(mcp.edge, "mcp.edge");
+	const assertionSecret = envSecret(
+		edge.assertionSecretEnv,
+		"mcp.edge.assertionSecretEnv",
+		environment,
+	);
+	if (Buffer.byteLength(assertionSecret, "utf8") < 32) {
+		throw new Error("mcp.edge.assertionSecretEnv must contain at least 32 bytes");
+	}
+	const audience = text(edge.audience ?? "troublemaker-hostd-mcp", "mcp.edge.audience");
+	if (audience.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(audience)) {
+		throw new Error("mcp.edge.audience contains unsupported characters");
+	}
+	const rawIssuers = edge.issuers ?? ["crawdad-cf", "fat-platform"];
+	if (!Array.isArray(rawIssuers)) throw new Error("mcp.edge.issuers must be an array");
+	const issuers = rawIssuers.map((value, index) => {
+		const issuer = text(value, `mcp.edge.issuers[${index}]`);
+		if (issuer.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(issuer)) {
+			throw new Error(`mcp.edge.issuers[${index}] contains unsupported characters`);
+		}
+		return issuer;
+	});
+	if (new Set(issuers).size !== issuers.length) {
+		throw new Error("mcp.edge.issuers cannot repeat an issuer");
+	}
+	for (const required of ["crawdad-cf", "fat-platform"]) {
+		if (!issuers.includes(required)) throw new Error(`mcp.edge.issuers must include ${required}`);
+	}
+	const secureUrl = (value, label) => {
+		const normalized = httpUrl(value, label);
+		const parsed = new URL(normalized);
+		if (parsed.protocol !== "https:" || parsed.search || parsed.hash) {
+			throw new Error(`${label} must be an https URL without query or fragment`);
+		}
+		return normalized;
+	};
+	return {
+		edge: {
+			host: loopbackHost(edge.host, "127.0.0.1", "mcp.edge.host"),
+			port: integer(edge.port, 3121, "mcp.edge.port", 1024, 65535),
+			assertionSecret,
+			audience,
+			issuers,
+			assertionTtlSeconds: integer(
+				edge.assertionTtlSeconds,
+				60,
+				"mcp.edge.assertionTtlSeconds",
+				15,
+				120,
+			),
+		},
+		publicBaseUrl: secureUrl(mcp.publicBaseUrl, "mcp.publicBaseUrl"),
+		handoffBaseUrl: secureUrl(mcp.handoffBaseUrl, "mcp.handoffBaseUrl"),
+		handoffTtlSeconds: integer(
+			mcp.handoffTtlSeconds,
+			3600,
+			"mcp.handoffTtlSeconds",
+			300,
+			86_400,
+		),
+		maximumRequestBytes: integer(
+			mcp.maximumRequestBytes,
+			2 * 1024 * 1024,
+			"mcp.maximumRequestBytes",
+			1024,
+			8 * 1024 * 1024,
+		),
+	};
+}
+
 async function sitesConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const sites = object(raw, "sites");
@@ -1014,6 +1087,7 @@ export async function loadConfig(path, environment = process.env) {
 	const phone = phoneConfig(raw.phone, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
 	const webApp = webAppConfig(raw.webApp, environment, company.actor);
+	const mcp = mcpConfig(raw.mcp, environment);
 	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
 		throw new Error("phone.ingress.path must be an absolute URL path");
@@ -1096,6 +1170,15 @@ export async function loadConfig(path, environment = process.env) {
 	}
 	if (webApp?.port === phone?.ingress?.port) {
 		throw new Error("webApp.port must differ from phone.ingress.port");
+	}
+	if (mcp && mcp.edge.port === serverPort) {
+		throw new Error("mcp.edge.port must differ from server.port");
+	}
+	if (mcp && webApp && mcp.edge.port === webApp.port) {
+		throw new Error("mcp.edge.port must differ from webApp.port");
+	}
+	if (mcp && phone?.ingress && mcp.edge.port === phone.ingress.port) {
+		throw new Error("mcp.edge.port must differ from phone.ingress.port");
 	}
 
 	const configuredPrincipals = knownPrincipals.map((candidate, index) => {
@@ -1262,6 +1345,7 @@ export async function loadConfig(path, environment = process.env) {
 		zulip,
 		phone,
 		webApp,
+		mcp,
 		workersAi,
 		webChat,
 		sites,

@@ -8,6 +8,9 @@ import { GogGmail } from "./gmail.mjs";
 import { importLegacyCheckpoint } from "./legacy.mjs";
 import { MattermostProvisioner } from "./mattermost.mjs";
 import { MattermostGateway } from "./mattermost-gateway.mjs";
+import { HostMcp } from "./mcp.mjs";
+import { createMcpEdgeServer } from "./mcp-edge-server.mjs";
+import { HostMcpOutboundProxy } from "./mcp-outbound.mjs";
 import { PhoneGateway } from "./phone.mjs";
 import { RocketChatGateway } from "./rocket-chat-gateway.mjs";
 import { RocketChatProvisioner } from "./rocket-chat.mjs";
@@ -34,6 +37,9 @@ function usage() {
   troublemaker-hostd provision-rocketchat --config <path>
   troublemaker-hostd provision-zulip --config <path>
   troublemaker-hostd import-legacy-checkpoint --config <path> --checkpoint <path> --key-file <path>
+  troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound|either> --name <name> [--server-url <https-url>]
+  troublemaker-hostd mcp-list --config <path> --context <id>
+  troublemaker-hostd mcp-revoke --config <path> --context <id> --direction <inbound|outbound> --id <id>
   troublemaker-hostd status --config <path>`);
 	process.exit(2);
 }
@@ -96,6 +102,19 @@ async function components(configPath) {
 		routingKey,
 		sites,
 	});
+	const mcp = config.mcp
+		? new HostMcp({
+			config,
+			store,
+			routingKey,
+			runtime,
+			onContextChanged: (contextId) => runtime.refreshMcpContext(contextId),
+		})
+		: undefined;
+	const mcpOutbound = mcp
+		? new HostMcpOutboundProxy({ config, store, mcp })
+		: undefined;
+	if (mcp) runtime.setExternalActivityProbe((contextId) => mcp.isContextActive(contextId));
 	const scheduler = new EventScheduler({ config, store, runtime });
 	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail
@@ -149,6 +168,8 @@ async function components(configPath) {
 		routingKey,
 		router,
 		runtime,
+		mcp,
+		mcpOutbound,
 		mattermost,
 		rocketChat,
 		zulip,
@@ -170,6 +191,7 @@ async function serve(configPath) {
 	const state = await components(configPath);
 	const server = createHostServer(state);
 	const webAppServer = state.config.webApp ? createWebAppServer(state) : undefined;
+	const mcpEdgeServer = state.config.mcp ? createMcpEdgeServer(state) : undefined;
 	await new Promise((resolvePromise, reject) => {
 		server.once("error", reject);
 		server.listen(state.config.server.port, state.config.server.host, resolvePromise);
@@ -191,6 +213,28 @@ async function serve(configPath) {
 				`troublemaker-hostd: web app gateway listening on ${state.config.webApp.host}:${state.config.webApp.port}`,
 			);
 		} catch (error) {
+			await new Promise((resolvePromise) => server.close(resolvePromise));
+			state.store.close();
+			throw error;
+		}
+	}
+	if (mcpEdgeServer) {
+		try {
+			await new Promise((resolvePromise, reject) => {
+				mcpEdgeServer.once("error", reject);
+				mcpEdgeServer.listen(
+					state.config.mcp.edge.port,
+					state.config.mcp.edge.host,
+					resolvePromise,
+				);
+			});
+			console.log(
+				`troublemaker-hostd: MCP edge listening on ${state.config.mcp.edge.host}:${state.config.mcp.edge.port}`,
+			);
+		} catch (error) {
+			if (webAppServer) {
+				await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
+			}
 			await new Promise((resolvePromise) => server.close(resolvePromise));
 			state.store.close();
 			throw error;
@@ -231,6 +275,9 @@ async function serve(configPath) {
 		await state.controlNotifier?.stop();
 		if (webAppServer) {
 			await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
+		}
+		if (mcpEdgeServer) {
+			await new Promise((resolvePromise) => mcpEdgeServer.close(resolvePromise));
 		}
 		await new Promise((resolvePromise) => server.close(resolvePromise));
 		state.store.close();
@@ -357,6 +404,38 @@ async function main() {
 				scheduledWakeMode: state.config.scheduledWakes.mode,
 				scheduledWakeContextCount: state.config.scheduledWakes.contextIds.length,
 			}, null, 2));
+			return;
+		}
+		if (command === "mcp-handoff") {
+			if (!state.mcp) throw new Error("MCP is not configured");
+			const contextId = option("--context");
+			const direction = option("--direction") || "either";
+			const name = option("--name") || "MCP connection";
+			if (!contextId) usage();
+			const context = state.store.getContext(contextId);
+			const target = context ? state.config.targetsById.get(context.targetId) : undefined;
+			if (!target) throw new Error("unknown MCP context");
+			console.log(JSON.stringify(state.mcp.createHandoff(target, contextId, {
+				direction,
+				name,
+				server_url: option("--server-url"),
+			}), null, 2));
+			return;
+		}
+		if (command === "mcp-list") {
+			if (!state.mcp) throw new Error("MCP is not configured");
+			const contextId = option("--context");
+			if (!contextId) usage();
+			console.log(JSON.stringify(state.mcp.list(contextId), null, 2));
+			return;
+		}
+		if (command === "mcp-revoke") {
+			if (!state.mcp) throw new Error("MCP is not configured");
+			const contextId = option("--context");
+			const direction = option("--direction");
+			const id = option("--id");
+			if (!contextId || !direction || !id) usage();
+			console.log(JSON.stringify(await state.mcp.revoke(contextId, { direction, id }), null, 2));
 			return;
 		}
 		usage();

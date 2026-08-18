@@ -137,6 +137,63 @@ export async function initializeMattermostWorkingOutput(workspace, channelId) {
 	return initializeChannelWorkingOutput(workspace, "mattermost", channelId);
 }
 
+export async function initializeHostMcpSettings(
+	workspace,
+	connections,
+	{ hostGateway, serverPort, tokenEnv = "MOM_MCP_OUTBOUND_TOKEN" },
+) {
+	const settingsPath = join(workspace, "settings.json");
+	let settings = {};
+	try {
+		const parsed = JSON.parse(await readFile(settingsPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("settings.json must contain an object");
+		}
+		settings = parsed;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	const existing = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
+	const unmanaged = existing.filter((entry) => entry?.managedBy !== "hostd");
+	const unmanagedAliases = new Set(unmanaged.map((entry) => entry?.alias).filter(Boolean));
+	const managed = connections.map((connection) => {
+		if (unmanagedAliases.has(connection.alias)) {
+			throw new Error(`Hostd MCP alias conflicts with workspace settings: ${connection.alias}`);
+		}
+		return {
+			managedBy: "hostd",
+			connectionId: connection.id,
+			alias: connection.alias,
+			transport: "http",
+			url: `http://${hostGateway}:${serverPort}/v1/mcp/outbound/${encodeURIComponent(connection.contextId)}/${encodeURIComponent(connection.id)}`,
+			tokenEnv,
+			scopes: [],
+		};
+	});
+	const nextServers = [...unmanaged, ...managed];
+	if (JSON.stringify(existing) === JSON.stringify(nextServers)) return false;
+	settings.mcpServers = nextServers;
+	await writePrivateFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+	return true;
+}
+
+export function mcpRuntimeVersionSuffix(config, store, contextId) {
+	if (!config.mcp) return "";
+	const state = {
+		inbound: store.listMcpInboundGrants(contextId, { activeOnly: true }).map((grant) => ({
+			id: grant.id,
+			updatedAt: grant.updatedAt,
+		})),
+		outbound: store.listMcpOutboundConnections(contextId, { activeOnly: true }).map((connection) => ({
+			id: connection.id,
+			revision: connection.revision,
+			updatedAt: connection.updatedAt,
+		})),
+	};
+	const revision = createHash("sha256").update(JSON.stringify(state)).digest("hex").slice(0, 12);
+	return `:mcp-${revision}`;
+}
+
 export function runtimeEngineRunFlags(engine) {
 	const executable = basename(engine).toLowerCase();
 	if (executable === "docker" || executable.startsWith("docker-")) {
@@ -238,6 +295,12 @@ export class RuntimeManager {
 		this.zulip = zulip;
 		this.routingKey = routingKey;
 		this.sites = sites;
+		this.externalActivityProbe = () => false;
+		this.contextStartupLocks = new Map();
+	}
+
+	setExternalActivityProbe(probe) {
+		this.externalActivityProbe = typeof probe === "function" ? probe : () => false;
 	}
 
 	async acceptEvent(event) {
@@ -545,6 +608,20 @@ export class RuntimeManager {
 	}
 
 	async ensureOciContext(target, contextId) {
+		const existing = this.contextStartupLocks.get(contextId);
+		if (existing) return await existing;
+		const startup = this.ensureOciContextUnlocked(target, contextId);
+		this.contextStartupLocks.set(contextId, startup);
+		try {
+			return await startup;
+		} finally {
+			if (this.contextStartupLocks.get(contextId) === startup) {
+				this.contextStartupLocks.delete(contextId);
+			}
+		}
+	}
+
+	async ensureOciContextUnlocked(target, contextId) {
 		let {
 			context,
 			mattermost,
@@ -577,7 +654,19 @@ export class RuntimeManager {
 			target,
 			contextId,
 		);
-		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
+		const activeMcpInboundGrants = this.config.mcp
+			? this.store.listMcpInboundGrants(contextId, { activeOnly: true })
+			: [];
+		const activeMcpOutboundConnections = this.config.mcp
+			? this.store.listMcpOutboundConnections(contextId, { activeOnly: true })
+			: [];
+		if (this.config.mcp) {
+			await initializeHostMcpSettings(workspace, activeMcpOutboundConnections, {
+				hostGateway: target.hostGateway,
+				serverPort: this.config.server.port,
+			});
+		}
+		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${mcpRuntimeVersionSuffix(this.config, this.store, contextId)}${runtimeModelVersionSuffix(runtimeModel)}`;
 
 		let inspect = await run(
 			target.engine,
@@ -628,6 +717,13 @@ export class RuntimeManager {
 				} : {}),
 				TROUBLEMAKER_HOSTD_URL: `http://${target.hostGateway}:${this.config.server.port}`,
 				TROUBLEMAKER_CONTEXT_ID: contextId,
+				...(this.config.mcp ? {
+					MOM_MCP_CONTROL_TOKEN: contextCapability(target.outboundToken, "mcp-control", contextId),
+					MOM_MCP_OUTBOUND_TOKEN: contextCapability(target.outboundToken, "mcp-outbound", contextId),
+				} : {}),
+				...(activeMcpInboundGrants.length > 0 ? {
+					MOM_MCP_AUTH_TOKEN: contextCapability(target.inboundToken, "mcp-ingress", contextId),
+				} : {}),
 				...(siteDeployments.length > 0 || siteFactory ? {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
@@ -717,6 +813,7 @@ export class RuntimeManager {
 				...(rocketChat ? ["rocket-chat:webhook"] : []),
 				...(zulip ? ["zulip:webhook"] : []),
 				...(this.config.phone ? ["phone-messaging:webhook"] : []),
+				...(activeMcpInboundGrants.length > 0 ? ["mcp"] : []),
 			];
 			if (adapters.length === 0) throw new Error(`context ${contextId} has no configured adapters`);
 			args.push(
@@ -763,7 +860,11 @@ export class RuntimeManager {
 			.filter((context) => context.targetId === target.id && context.status === "online");
 		if (online.length < this.config.scheduler.maxConcurrent) return;
 		const candidate = online
-			.filter((context) => context.id !== requestedContextId && !this.store.hasActiveEvent(context.id))
+			.filter((context) => (
+				context.id !== requestedContextId
+				&& !this.store.hasActiveEvent(context.id)
+				&& !this.externalActivityProbe(context.id)
+			))
 			.sort((left, right) => Date.parse(left.lastSeenAt) - Date.parse(right.lastSeenAt))[0];
 		if (!candidate) throw new Error("all runtime slots are active");
 		console.log(`troublemaker-hostd: evicting idle runtime ${candidate.id} for ${requestedContextId}`);
@@ -808,7 +909,7 @@ export class RuntimeManager {
 				target,
 				context.id,
 			);
-			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
+			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${mcpRuntimeVersionSuffix(this.config, this.store, context.id)}${runtimeModelVersionSuffix(runtimeModel)}`;
 			const wasHostOwned = context.runtimeVersion?.includes(":scheduled-host-v1") === true;
 			if (context.runtimeVersion === expected || (!hostOwned && !wasHostOwned)) continue;
 			await this.stopOciContext(target, { ...context, contextId: context.id });
@@ -819,6 +920,20 @@ export class RuntimeManager {
 				await this.ensureOciContext(target, context.id);
 			}
 		}
+	}
+
+	async refreshMcpContext(contextId) {
+		const context = this.store.getContext(contextId);
+		if (
+			!context
+			|| context.status !== "online"
+			|| this.store.hasActiveEvent(contextId)
+			|| this.externalActivityProbe(contextId)
+		) return false;
+		const target = this.config.targetsById.get(context.targetId);
+		if (!target) return false;
+		await this.stopOciContext(target, { ...context, contextId });
+		return true;
 	}
 
 	async reconcile() {
@@ -838,7 +953,11 @@ export class RuntimeManager {
 	async reapIdle() {
 		const cutoff = Date.now() - this.config.scheduler.idleSeconds * 1000;
 		for (const context of this.store.listContexts()) {
-			if (context.status !== "online" || this.store.hasActiveEvent(context.id)) continue;
+			if (
+				context.status !== "online"
+				|| this.store.hasActiveEvent(context.id)
+				|| this.externalActivityProbe(context.id)
+			) continue;
 			if (Date.parse(context.lastSeenAt) > cutoff) continue;
 			const target = this.config.targetsById.get(context.targetId);
 			if (!target) continue;
