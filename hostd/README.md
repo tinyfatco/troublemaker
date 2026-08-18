@@ -203,8 +203,9 @@ An optional `webApp` listener connects an authenticated product surface to the
 existing Hostd principal/project model. The product server signs the verified
 account subject, normalized email, method, exact path, body digest, timestamp,
 and one-time nonce with HMAC-SHA256. Hostd accepts only short-lived assertions,
-requires the email to match an exact `routing.knownPrincipals` entry, and maps
-the requested project only within that principal's configured projects.
+requires the email to match either an exact `routing.knownPrincipals` entry or
+an explicit principal alias, and maps the requested project only within that
+principal's configured projects.
 
 ```json
 {
@@ -215,11 +216,24 @@ the requested project only within that principal's configured projects.
     "issuer": "fat-platform",
     "audience": "troublemaker-hostd-web",
     "assertionTtlSeconds": 60,
+    "principalAliases": [
+      {
+        "email": "product-login@example.com",
+        "principalEmail": "customer@example.com"
+      }
+    ],
     "defaultProject": "website",
     "agentName": "Operator"
   }
 }
 ```
+
+`principalAliases` is an optional exact, host-owned bridge from a verified
+product login email to an existing canonical Hostd principal. Every target must
+already exist in `routing.knownPrincipals`; aliases cannot replace canonical
+entries or create a second principal/context. Hostd still signs and displays
+the authenticated product identity while routing only as the configured
+canonical relationship.
 
 The listener must remain on loopback. If a remote product server needs it,
 publish only this listener through an authenticated outbound tunnel; never

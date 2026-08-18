@@ -37,7 +37,7 @@ function close(server) {
 	return new Promise((resolve) => server.close(resolve));
 }
 
-function state(runtimePort) {
+function state(runtimePort, principalAliases = []) {
 	const project = {
 		slug: "website",
 		name: "Example website",
@@ -54,6 +54,7 @@ function state(runtimePort) {
 				assertionTtlSeconds: 60,
 				maximumRequestBytes: 128 * 1024,
 				defaultProject: "website",
+				principalAliases,
 				agentName: "Operator",
 			},
 			sites: { previewApex: "example.com" },
@@ -188,6 +189,25 @@ test("fails closed for an unconfigured email and a tampered request", async () =
 		headers["x-tinyfat-app-email"] = "unknown@example.com";
 		const tampered = await fetch(`http://127.0.0.1:${appPort}${path}`, { headers });
 		assert.equal(tampered.status, 401);
+	} finally {
+		await close(appServer);
+	}
+});
+
+test("maps an exact authenticated alias to its existing canonical relationship", async () => {
+	const alias = "signed-in@example.com";
+	const appServer = createWebAppServer(state(65534, [{
+		email: alias,
+		principalEmail: EMAIL,
+	}]));
+	const appPort = await listen(appServer);
+	try {
+		const path = "/v1/app/session?project=website";
+		const response = await fetch(`http://127.0.0.1:${appPort}${path}`, {
+			headers: signedHeaders("GET", path, Buffer.alloc(0), alias),
+		});
+		assert.equal(response.status, 200);
+		assert.equal((await response.json()).user.email, alias);
 	} finally {
 		await close(appServer);
 	}

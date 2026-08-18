@@ -44,8 +44,14 @@ function requestedProject(url) {
 	return project;
 }
 
-function selectPrincipalProject(config, email, projectSlug) {
-	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === email);
+function canonicalPrincipalEmail(config, authenticatedEmail) {
+	return config.webApp.principalAliases.find((alias) => alias.email === authenticatedEmail)?.principalEmail
+		?? authenticatedEmail;
+}
+
+function selectPrincipalProject(config, authenticatedEmail, projectSlug) {
+	const principalEmail = canonicalPrincipalEmail(config, authenticatedEmail);
+	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === principalEmail);
 	if (!principal) throw new WebAppRequestError(403, "principal_not_configured");
 	if (projectSlug) {
 		if (projectSlug === "intake" && principal.projects.length === 0) {
@@ -97,7 +103,7 @@ function resolveScope(state, claims, projectSlug) {
 	const route = state.router.resolve({
 		source: "web-app",
 		threadId,
-		sender: claims.email,
+		sender: principal.email,
 		project: project.slug === "intake" ? undefined : project,
 		label: principal.name,
 	});
