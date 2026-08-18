@@ -212,3 +212,58 @@ test("maps an exact authenticated alias to its existing canonical relationship",
 		await close(appServer);
 	}
 });
+
+test("rejects oversized or non-JSON mutations before they reach a runtime", async () => {
+	const appServer = createWebAppServer(state(65534));
+	const appPort = await listen(appServer);
+	try {
+		const path = "/v1/app/messages?project=website";
+		const textBody = Buffer.from("not json");
+		const unsupported = await fetch(`http://127.0.0.1:${appPort}${path}`, {
+			method: "POST",
+			headers: {
+				...signedHeaders("POST", path, textBody),
+				"content-type": "text/plain",
+			},
+			body: textBody,
+		});
+		assert.equal(unsupported.status, 415);
+		assert.deepEqual(await unsupported.json(), { error: "json_required" });
+
+		const oversizedBody = Buffer.alloc((128 * 1024) + 1, 0x61);
+		const oversized = await fetch(`http://127.0.0.1:${appPort}${path}`, {
+			method: "POST",
+			headers: {
+				...signedHeaders("POST", path, oversizedBody),
+				"content-type": "application/json",
+			},
+			body: oversizedBody,
+		});
+		assert.equal(oversized.status, 413);
+		assert.deepEqual(await oversized.json(), { error: "request_too_large" });
+	} finally {
+		await close(appServer);
+	}
+});
+
+test("does not relay active content from a runtime onto the product origin", async () => {
+	const runtimeServer = createServer((_request, response) => {
+		response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+		response.end("<script>globalThis.compromised = true</script>");
+	});
+	const runtimePort = await listen(runtimeServer);
+	const appServer = createWebAppServer(state(runtimePort));
+	const appPort = await listen(appServer);
+	try {
+		const path = "/v1/app/status?project=website";
+		const response = await fetch(`http://127.0.0.1:${appPort}${path}`, {
+			headers: signedHeaders("GET", path),
+		});
+		assert.equal(response.status, 502);
+		assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+		assert.deepEqual(await response.json(), { error: "invalid_upstream_response" });
+	} finally {
+		await close(appServer);
+		await close(runtimeServer);
+	}
+});

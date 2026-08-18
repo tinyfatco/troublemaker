@@ -123,6 +123,7 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_SLACK_APP_TOKEN` | slack:socket | Slack app-level token (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
+| `MOM_SLACK_INBOUND_TOKEN` | slack:webhook | Scoped bearer capability when a trusted host proxy verifies Slack instead |
 | `MOM_MATTERMOST_URL` | mattermost:* | Mattermost base URL, for example `https://mattermost.example.com` |
 | `MOM_MATTERMOST_BOT_TOKEN` | mattermost:* | Mattermost bot personal access token |
 | `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |
@@ -143,10 +144,12 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_TELEGRAM_BOT_TOKEN` | telegram:* | Telegram bot token from @BotFather |
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |
+| `MOM_TELEGRAM_INBOUND_TOKEN` | telegram:webhook | Scoped bearer capability when a trusted host proxy verifies Telegram instead |
 | `MOM_SKIP_WEBHOOK_REGISTRATION` | telegram:webhook | Skip Telegram webhook registration (for external management) |
 | `MOM_DISCORD_BOT_TOKEN` | discord:* | Discord bot token; never put it in source or logs |
 | `MOM_DISCORD_APPLICATION_ID` | discord:* | Discord application snowflake |
 | `MOM_DISCORD_PUBLIC_KEY` | discord:webhook | Ed25519 public key for signed Interactions |
+| `MOM_DISCORD_INBOUND_TOKEN` | discord:webhook relay | Scoped bearer capability for `/discord/messages`; relay ingress is disabled when omitted |
 | `MOM_DISCORD_GATEWAY` | auto-detection | Set to `true` to explicitly auto-select `discord:gateway` |
 | `MOM_DISCORD_GATEWAY_INTENTS` | discord:gateway | Optional decimal intent bitfield (default `37377`) |
 | `MOM_DISCORD_GATEWAY_AMBIENT_MESSAGES` | discord:gateway | Set to `true` to observe non-mention guild messages (default `false`) |
@@ -158,6 +161,10 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_DISCORD_ALLOWED_DM_USERS` | discord:* | Optional comma-separated user snowflakes for DMs |
 | `MOM_EMAIL_TOOLS_TOKEN` | email:webhook | Token for email send API |
 | `MOM_EMAIL_SEND_URL` | email:webhook | Email send endpoint (default: `https://tinyfat.com/api/email/send`) |
+| `MOM_EMAIL_INBOUND_TOKEN` | email:webhook | Required scoped bearer capability for inbound email delivery (minimum 32 bytes) |
+| `MOM_PHONE_INBOUND_TOKEN` | phone:webhook | Required scoped bearer capability for inbound phone delivery (minimum 32 bytes) |
+| `MOM_FORM_INBOUND_TOKEN` | form:webhook | Required scoped bearer capability for inbound form delivery (minimum 32 bytes) |
+| `MOM_OPERATOR_INBOUND_TOKEN` | operator routes | Enables `/operator/*` with a scoped bearer capability (minimum 32 bytes); routes are disabled when omitted |
 | `MOM_HTTP_PORT` | — | Gateway port override (same as `--port`) |
 
 ### Discord Gateway

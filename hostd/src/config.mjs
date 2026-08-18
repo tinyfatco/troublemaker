@@ -164,6 +164,14 @@ function host(value, fallback, label) {
 	return candidate;
 }
 
+function loopbackHost(value, fallback, label) {
+	const candidate = host(value, fallback, label);
+	if (!["127.0.0.1", "localhost"].includes(candidate.toLowerCase())) {
+		throw new Error(`${label} must remain loopback-only`);
+	}
+	return candidate;
+}
+
 function httpUrl(value, label) {
 	const candidate = text(value, label);
 	let parsed;
@@ -539,7 +547,7 @@ function phoneConfig(raw, environment) {
 			"phone.apiBaseUrl",
 		),
 		ingress: ingress ? {
-			host: host(ingress.host, "127.0.0.1", "phone.ingress.host"),
+			host: loopbackHost(ingress.host, "127.0.0.1", "phone.ingress.host"),
 			port: integer(ingress.port, 3100, "phone.ingress.port", 1024, 65535),
 			path: ingress.path === undefined
 				? "/webhooks/sendly"
@@ -595,10 +603,7 @@ function webChatConfig(raw, environment) {
 function webAppConfig(raw, environment, defaultAgentName) {
 	if (raw === undefined) return undefined;
 	const webApp = object(raw, "webApp");
-	const listenerHost = host(webApp.host, "127.0.0.1", "webApp.host");
-	if (!["127.0.0.1", "localhost"].includes(listenerHost.toLowerCase())) {
-		throw new Error("webApp.host must remain loopback-only");
-	}
+	const listenerHost = loopbackHost(webApp.host, "127.0.0.1", "webApp.host");
 	const assertionSecret = envSecret(
 		webApp.assertionSecretEnv,
 		"webApp.assertionSecretEnv",
@@ -919,10 +924,29 @@ function targetConfig(raw, index, environment) {
 	const runtimeEnv = target.runtimeEnv === undefined
 		? {}
 		: Object.fromEntries(
-			Object.entries(object(target.runtimeEnv, `targets[${index}].runtimeEnv`)).map(([key, value]) => [
-				text(key, `targets[${index}].runtimeEnv key`),
-				text(value, `targets[${index}].runtimeEnv.${key}`),
-			]),
+			Object.entries(object(target.runtimeEnv, `targets[${index}].runtimeEnv`)).map(([rawKey, rawValue]) => {
+				const label = `targets[${index}].runtimeEnv.${rawKey}`;
+				const key = text(rawKey, `targets[${index}].runtimeEnv key`);
+				if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(key)) {
+					throw new Error(`${label} has an invalid environment variable name`);
+				}
+				if (
+					key === "HOME"
+					|| key.startsWith("TROUBLEMAKER_HOSTD_")
+					|| key === "TROUBLEMAKER_CONTEXT_ID"
+					|| /^(?:MOM_(?:EMAIL|FORM|MATTERMOST|MCP|OPERATOR|PHONE|ROCKETCHAT|SCHEDULED|SITE|SLACK|TELEGRAM|WEB|ZULIP)_|FAT_TOOLS_TOKEN)/.test(key)
+				) {
+					throw new Error(`${label} is owned by Hostd and cannot be overridden`);
+				}
+				if (/(?:API_KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/.test(key)) {
+					throw new Error(`${label} appears to contain host authority; use a Hostd-scoped capability instead`);
+				}
+				const value = text(rawValue, label);
+				if (/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/.test(value)) {
+					throw new Error(`${label} contains unsupported control characters`);
+				}
+				return [key, value];
+			}),
 		);
 	const rawSkills = target.skills === undefined
 		? []
@@ -1187,6 +1211,14 @@ export async function loadConfig(path, environment = process.env) {
 			throw new Error(`each sites deployment ${key} must bind to exactly one principal/project`);
 		}
 	}
+	const operatorToken = envSecret(
+		server.operatorTokenEnv,
+		"server.operatorTokenEnv",
+		environment,
+	);
+	if (Buffer.byteLength(operatorToken, "utf8") < 32) {
+		throw new Error("server.operatorTokenEnv must contain at least 32 bytes");
+	}
 
 	return {
 		path: resolve(path),
@@ -1195,11 +1227,9 @@ export async function loadConfig(path, environment = process.env) {
 			actor: text(company.actor, "company.actor"),
 		},
 		server: {
-			host: server.host === undefined ? "127.0.0.1" : text(server.host, "server.host"),
+			host: loopbackHost(server.host, "127.0.0.1", "server.host"),
 			port: serverPort,
-			operatorToken: server.operatorTokenEnv
-				? envSecret(server.operatorTokenEnv, "server.operatorTokenEnv", environment)
-				: undefined,
+			operatorToken,
 		},
 		state: {
 			database: resolve(text(state.database, "state.database")),

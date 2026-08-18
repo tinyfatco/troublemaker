@@ -10,7 +10,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "ws": "8.19.0"
+    "ws": "8.21.3"
   },
   "engines": {
     "node": ">=22.5.0"

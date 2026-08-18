@@ -65,11 +65,25 @@ async function exists(path) {
 async function writePrivateFile(path, content) {
 	const file = await open(path, "w", 0o600);
 	try {
+		await file.chmod(0o600);
 		await file.writeFile(content, "utf8");
 		await file.sync();
 	} finally {
 		await file.close();
 	}
+}
+
+export function serializeRuntimeEnvironment(environment) {
+	return `${Object.entries(environment).map(([key, rawValue]) => {
+		if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(key)) {
+			throw new Error(`runtime environment contains invalid key ${JSON.stringify(key)}`);
+		}
+		const value = String(rawValue);
+		if (/[\u0000-\u0008\u000a-\u001f\u007f-\u009f]/.test(value)) {
+			throw new Error(`runtime environment ${key} contains unsupported control characters`);
+		}
+		return `${key}=${value}`;
+	}).join("\n")}\n`;
 }
 
 export async function initializeChannelWorkingOutput(
@@ -383,11 +397,10 @@ export class RuntimeManager {
 		);
 		const response = await fetch(context.phoneEndpoint, {
 			method: "POST",
-			headers: {
-				authorization: `Bearer ${inboundToken}`,
-				"content-type": "application/json",
-				"x-tinyfat-hostd-verified": "true",
-			},
+				headers: {
+					authorization: `Bearer ${inboundToken}`,
+					"content-type": "application/json",
+				},
 			body: JSON.stringify({
 				provider: "hostd",
 				hostManaged: true,
@@ -666,10 +679,11 @@ export class RuntimeManager {
 				} : {}),
 				...target.runtimeEnv,
 				...runtimeModelEnvironment(this.config, target, contextId, runtimeModel),
+				TROUBLEMAKER_HOSTD_CONTAINER: "1",
 			};
 			await writePrivateFile(
 				envPath,
-				`${Object.entries(env).map(([key, value]) => `${key}=${String(value).replaceAll("\n", "")}`).join("\n")}\n`,
+				serializeRuntimeEnvironment(env),
 			);
 			const args = [
 				"run",

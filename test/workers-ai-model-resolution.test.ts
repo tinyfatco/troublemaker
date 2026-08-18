@@ -1,5 +1,4 @@
 import { strict as assert } from "node:assert";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { resolveModelWithAuth } from "../src/model-config.js";
 
 const original = {
@@ -15,8 +14,7 @@ process.env.MOM_MODEL_PROVIDER = "cloudflare-workers-ai";
 process.env.MOM_MODEL_ID = "@cf/zai-org/glm-5.2";
 
 try {
-	const registry = ModelRegistry.create(AuthStorage.create());
-	const model = resolveModelWithAuth(undefined, registry);
+	const model = resolveModelWithAuth();
 	assert.equal(model.provider, "cloudflare-workers-ai");
 	assert.equal(model.id, "@cf/zai-org/glm-5.2");
 	assert.equal(model.api, "openai-completions");

@@ -18,6 +18,8 @@ import {
 	type UserInfo,
 } from "./types.js";
 
+const MAXIMUM_WEB_INPUT_BYTES = 128 * 1024;
+
 // ============================================================================
 // WebAdapter — HTTP POST with SSE response (for web chat)
 // ============================================================================
@@ -185,7 +187,7 @@ Keep responses concise and helpful.`;
 	private authorize(req: IncomingMessage, res: ServerResponse, token: string | undefined): boolean {
 		if (!token) return true;
 		const header = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
-		const match = header.match(/^Bearer\s+(.+)$/i);
+		const match = /^Bearer ([^\s]+)$/i.exec(header);
 		const supplied = Buffer.from(match?.[1] || "", "utf8");
 		const expected = Buffer.from(token, "utf8");
 		const authorized = supplied.length === expected.length && timingSafeEqual(supplied, expected);
@@ -197,6 +199,7 @@ Keep responses concise and helpful.`;
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.authorize(req, res, this.inputToken)) return;
+		if (!this.requireJson(req, res)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {
@@ -229,9 +232,23 @@ Keep responses concise and helpful.`;
 
 	dispatchStop(req: IncomingMessage, res: ServerResponse): void {
 		if (!this.authorize(req, res, this.inputToken)) return;
+		if (!this.requireJson(req, res)) return;
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > 16 * 1024) {
+				rejected = true;
+				res.writeHead(413, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "Request too large" }));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", () => {
+			if (rejected) return;
 			let payload: WebStopPayload = {};
 			const body = Buffer.concat(chunks).toString("utf-8").trim();
 			if (body) {
@@ -267,6 +284,7 @@ Keep responses concise and helpful.`;
 			return;
 		}
 		if (!this.authorize(req, res, this.webhookToken)) return;
+		if (!this.requireJson(req, res)) return;
 		this.readPayload(req, res, (payload) => {
 			const normalized = this.normalizePayload(payload);
 			if (!normalized) {
@@ -437,8 +455,21 @@ Keep responses concise and helpful.`;
 		onPayload: (payload: WebChatPayload) => void,
 	): void {
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEB_INPUT_BYTES) {
+				rejected = true;
+				res.writeHead(413, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "Request too large" }));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", () => {
+			if (rejected) return;
 			const body = Buffer.concat(chunks).toString("utf-8");
 
 			let payload: WebChatPayload;
@@ -452,6 +483,14 @@ Keep responses concise and helpful.`;
 
 			onPayload(payload);
 		});
+	}
+
+	private requireJson(req: IncomingMessage, res: ServerResponse): boolean {
+		const mediaType = String(req.headers?.["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+		if (mediaType === "application/json" || mediaType.endsWith("+json")) return true;
+		res.writeHead(415, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+		res.end(JSON.stringify({ ok: false, error: "JSON required" }));
+		return false;
 	}
 
 	private normalizePayload(payload: WebChatPayload): NormalizedWebChatPayload | null {

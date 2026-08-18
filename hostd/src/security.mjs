@@ -5,9 +5,16 @@ import {
 	randomBytes,
 	timingSafeEqual,
 } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 
 export async function readRoutingKey(path) {
+	const metadata = await lstat(path);
+	if (!metadata.isFile() || metadata.isSymbolicLink()) {
+		throw new Error("routing key must be a regular file, not a link");
+	}
+	if ((metadata.mode & 0o077) !== 0) {
+		throw new Error("routing key file must not be accessible by group or other users");
+	}
 	const encoded = (await readFile(path, "utf8")).trim();
 	const key = Buffer.from(encoded, "base64");
 	if (key.length !== 32) throw new Error("routing key must be 32 bytes encoded as base64");
@@ -70,7 +77,8 @@ export function contextCapability(baseSecret, purpose, contextId) {
 }
 
 export function bearerMatches(header, expected) {
-	const actual = Buffer.from(typeof header === "string" ? header.replace(/^Bearer\s+/i, "") : "");
+	const match = typeof header === "string" ? /^Bearer ([^\s]+)$/i.exec(header) : null;
+	const actual = Buffer.from(match?.[1] || "");
 	const wanted = Buffer.from(expected || "");
 	return actual.length === wanted.length && actual.length > 0 && timingSafeEqual(actual, wanted);
 }

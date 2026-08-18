@@ -87,7 +87,7 @@ export function createHostServer({
 				return;
 			}
 			if (request.method === "GET" && url.pathname === "/v1/status") {
-				if (config.server.operatorToken && !bearerMatches(request.headers.authorization, config.server.operatorToken)) {
+				if (!bearerMatches(request.headers.authorization, config.server.operatorToken)) {
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}

@@ -225,6 +225,17 @@ async function waitFor(predicate, label) {
 
 const workingDir = mkdtempSync(join(tmpdir(), "zulip-resident-bridge-test-"));
 const statePath = join(workingDir, "state.json");
+assert.throws(() => new ZulipResidentBridge({
+	zulipUrl: `http://127.0.0.1:${nativeAddress.port}`,
+	zulipEmail: NATIVE_EMAIL,
+	zulipApiKey: NATIVE_KEY,
+	proxyToken: PROXY_TOKEN,
+	inboundUrl: `http://127.0.0.1:${inboundAddress.port}/zulip/inbound`,
+	inboundToken: INBOUND_TOKEN,
+	receiptToken: RECEIPT_TOKEN,
+	statePath,
+	listenHost: "0.0.0.0",
+}), /loopback-only/);
 const bridge = new ZulipResidentBridge({
 	zulipUrl: `http://127.0.0.1:${nativeAddress.port}`,
 	zulipEmail: NATIVE_EMAIL,

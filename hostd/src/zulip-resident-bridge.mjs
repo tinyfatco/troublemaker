@@ -35,7 +35,8 @@ function safeEqual(actual, expected) {
 }
 
 function bearerMatches(header, expected) {
-	return safeEqual(header?.replace(/^Bearer\s+/i, "") || "", expected);
+	const match = typeof header === "string" ? /^Bearer ([^\s]+)$/i.exec(header) : null;
+	return safeEqual(match?.[1] || "", expected);
 }
 
 function basicAuthorization(email, apiKey) {
@@ -164,6 +165,9 @@ export class ZulipResidentBridge {
 		this.receiptToken = requiredText(config.receiptToken, "receiptToken");
 		this.statePath = requiredText(config.statePath, "statePath");
 		this.listenHost = config.listenHost || "127.0.0.1";
+		if (!["127.0.0.1", "localhost", "::1"].includes(this.listenHost.toLowerCase())) {
+			throw new Error("Zulip resident bridge must remain loopback-only");
+		}
 		this.listenPort = Number.isInteger(Number(config.listenPort)) ? Number(config.listenPort) : 0;
 		if (this.listenPort < 0 || this.listenPort > 65_535) throw new Error("listenPort is invalid");
 		this.server = null;

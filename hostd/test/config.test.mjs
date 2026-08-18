@@ -8,7 +8,7 @@ import test from "node:test";
 import { loadConfig } from "../src/config.mjs";
 
 const ENVIRONMENT = {
-	TROUBLEMAKER_HOSTD_OPERATOR_TOKEN: "fake-operator-token",
+	TROUBLEMAKER_HOSTD_OPERATOR_TOKEN: "fake-operator-token-at-least-32-bytes",
 	ZULIP_HOSTD_ADMIN_API_KEY: "fake-admin-key",
 	ZULIP_HOSTD_AGENT_API_KEY: "fake-agent-key",
 	ZULIP_HOSTD_PROJECTOR_API_KEY: "fake-projector-key",
@@ -140,6 +140,67 @@ test("requires the web app gateway to remain loopback-only and use a distinct po
 			loadConfig(path, { ...ENVIRONMENT, TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "short" }),
 			/at least 32 bytes/,
 		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("requires every Hostd listener to remain loopback-only and the operator token to be strong", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-listener-security-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.server.host = "0.0.0.0";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /server.host must remain loopback-only/);
+
+		raw.server.host = "127.0.0.1";
+		raw.phone.ingress.host = "0.0.0.0";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /phone.ingress.host must remain loopback-only/);
+
+		raw.phone.ingress.host = "localhost";
+		delete raw.server.operatorTokenEnv;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /server.operatorTokenEnv/);
+
+		raw.server.operatorTokenEnv = "TROUBLEMAKER_HOSTD_OPERATOR_TOKEN";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, { ...ENVIRONMENT, TROUBLEMAKER_HOSTD_OPERATOR_TOKEN: "short" }),
+			/server.operatorTokenEnv must contain at least 32 bytes/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("prevents target runtime defaults from overriding scoped Hostd authority", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-runtime-env-security-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.targets[0].runtimeEnv = {
+			MOM_MODEL_PROVIDER: "openai-codex",
+			MOM_MODEL_ID: "gpt-5.6-sol",
+			MOM_THINKING: "high",
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const valid = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(valid.targets[0].runtimeEnv, raw.targets[0].runtimeEnv);
+
+		for (const [key, value, pattern] of [
+			["MOM_EMAIL_TOOLS_TOKEN", "shared-token", /owned by Hostd/],
+			["OPENAI_API_KEY", "host-provider-secret", /host authority/],
+			["BAD\nMOM_WEB_INPUT_TOKEN", "injected", /invalid environment variable name/],
+			["MOM_MODEL_ID", "valid\rINJECTED=value", /control characters/],
+		]) {
+			raw.targets[0].runtimeEnv = { [key]: value };
+			await writeFile(path, JSON.stringify(raw));
+			await assert.rejects(loadConfig(path, ENVIRONMENT), pattern);
+		}
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

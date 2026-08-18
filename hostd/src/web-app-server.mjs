@@ -17,11 +17,25 @@ function json(response, status, body) {
 	response.writeHead(status, {
 		"content-type": "application/json; charset=utf-8",
 		"cache-control": "no-store",
+		"content-security-policy": "default-src 'none'; frame-ancestors 'none'",
+		"x-content-type-options": "nosniff",
 	});
 	response.end(JSON.stringify(body));
 }
 
+function isJsonContentType(value) {
+	if (typeof value !== "string") return false;
+	const mediaType = value.split(";", 1)[0].trim().toLowerCase();
+	return mediaType === "application/json" || mediaType.endsWith("+json");
+}
+
 async function readBody(request, maximumBytes) {
+	const declaredLength = request.headers["content-length"];
+	if (declaredLength !== undefined) {
+		if (!/^\d+$/.test(declaredLength) || Number(declaredLength) > maximumBytes) {
+			throw new WebAppRequestError(413, "request_too_large");
+		}
+	}
 	const chunks = [];
 	let length = 0;
 	for await (const chunk of request) {
@@ -201,9 +215,16 @@ function normalizedMessageBody(body, scope, route) {
 
 async function writeUpstream(response, upstream) {
 	const contentType = upstream.headers.get("content-type") || "application/octet-stream";
+	const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
+	const isJson = mediaType === "application/json" || mediaType.endsWith("+json");
+	if (!isJson && mediaType !== "text/event-stream") {
+		await upstream.body?.cancel();
+		throw new WebAppRequestError(502, "invalid_upstream_response");
+	}
 	response.writeHead(upstream.status, {
 		"content-type": contentType,
 		"cache-control": "no-store",
+		"x-content-type-options": "nosniff",
 		...(contentType.startsWith("text/event-stream") ? {
 			connection: "keep-alive",
 			"x-accel-buffering": "no",
@@ -248,6 +269,12 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 
 		try {
 			validateQuery(url, route);
+			if (
+				method === "POST"
+				&& !isJsonContentType(request.headers["content-type"])
+			) {
+				throw new WebAppRequestError(415, "json_required");
+			}
 			const body = await readBody(request, state.config.webApp.maximumRequestBytes);
 			const claims = assertionVerifier.verify({
 				headers: request.headers,

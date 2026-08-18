@@ -8,6 +8,65 @@ import { createHostServer } from "../src/server.mjs";
 import { contextCapability, sealPrivateValue } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
 
+test("operator status is private even if a caller constructs an incomplete config", async () => {
+	const token = "example-operator-token-at-least-32-bytes";
+	const store = {
+		getMeta() { return "false"; },
+		status() { return { contexts: 0 }; },
+		listContexts() { return []; },
+	};
+	const server = createHostServer({
+		config: {
+			server: { operatorToken: token },
+			scheduler: { maxConcurrent: 1 },
+			targetsById: new Map(),
+		},
+		store,
+		daemon: { polling: false },
+	});
+	await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
+	const address = server.address();
+	assert(address && typeof address === "object");
+	const base = `http://127.0.0.1:${address.port}`;
+	try {
+		assert.equal((await fetch(`${base}/health`)).status, 200);
+		assert.equal((await fetch(`${base}/v1/status`)).status, 401);
+		assert.equal((await fetch(`${base}/v1/status`, {
+			headers: { authorization: "Bearer wrong" },
+		})).status, 401);
+		assert.equal((await fetch(`${base}/v1/status`, {
+			headers: { authorization: token },
+		})).status, 401);
+		assert.equal((await fetch(`${base}/v1/status`, {
+			headers: { authorization: `Bearer ${token}` },
+		})).status, 200);
+	} finally {
+		await new Promise((resolvePromise, reject) => server.close((error) => (
+			error ? reject(error) : resolvePromise()
+		)));
+	}
+
+	const missingTokenServer = createHostServer({
+		config: {
+			server: {},
+			scheduler: { maxConcurrent: 1 },
+			targetsById: new Map(),
+		},
+		store,
+		daemon: { polling: false },
+	});
+	await new Promise((resolvePromise) => missingTokenServer.listen(0, "127.0.0.1", resolvePromise));
+	const missingAddress = missingTokenServer.address();
+	assert(missingAddress && typeof missingAddress === "object");
+	try {
+		assert.equal((await fetch(`http://127.0.0.1:${missingAddress.port}/v1/status`)).status, 401);
+	} finally {
+		await new Promise((resolvePromise, reject) => missingTokenServer.close((error) => (
+			error ? reject(error) : resolvePromise()
+		)));
+	}
+});
+
 test("outbound Gmail is confined to the owning context", async () => {
 	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-server-"));
 	const store = new HostStore(join(directory, "state.sqlite"));

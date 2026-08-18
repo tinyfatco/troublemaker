@@ -10,10 +10,26 @@ import {
 	RuntimeManager,
 	runtimeEngineRunFlags,
 	scheduledWakeRuntimeVersion,
+	serializeRuntimeEnvironment,
 } from "../src/runtime.mjs";
 import { contextCapability } from "../src/security.mjs";
 
 const CHANNEL_ID = "cccccccccccccccccccccccccc";
+
+test("runtime env-file serialization rejects line injection", () => {
+	assert.equal(
+		serializeRuntimeEnvironment({ MOM_MODEL_ID: "gpt-5.6-sol", MOM_THINKING: "high" }),
+		"MOM_MODEL_ID=gpt-5.6-sol\nMOM_THINKING=high\n",
+	);
+	assert.throws(
+		() => serializeRuntimeEnvironment({ "BAD\nINJECTED": "value" }),
+		/invalid key/,
+	);
+	assert.throws(
+		() => serializeRuntimeEnvironment({ MOM_MODEL_ID: "safe\rINJECTED=value" }),
+		/control characters/,
+	);
+});
 
 test("private Operator initializes fixed Mattermost working output without overriding self configuration", async () => {
 	const workspace = await mkdtemp(join(tmpdir(), "hostd-runtime-settings-"));

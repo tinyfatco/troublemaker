@@ -716,19 +716,12 @@ function cleanRuntimeStatus(text: string): string {
 }
 
 function realtimeControlTokenFromRequest(req: IncomingMessage): string | undefined {
-	const headerToken = headerString(req.headers["x-tinyfat-local-control"]);
-	if (headerToken) return headerToken;
-	try {
-		const url = new URL(req.url ?? "/", "http://127.0.0.1");
-		return stringValue(url.searchParams.get("local_control_token"));
-	} catch {
-		return undefined;
-	}
+	return headerString(req.headers["x-tinyfat-local-control"]);
 }
 
 export function isRealtimeControlTokenAccepted(expected: string | undefined, provided: string | undefined): boolean {
 	const cleanExpected = stringValue(expected);
-	if (!cleanExpected) return true;
+	if (!cleanExpected || Buffer.byteLength(cleanExpected, "utf-8") < 32) return false;
 	const cleanProvided = stringValue(provided);
 	if (!cleanProvided) return false;
 	const expectedBytes = Buffer.from(cleanExpected, "utf-8");

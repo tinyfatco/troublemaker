@@ -17,7 +17,8 @@ import {
 	ProcessTerminal,
 	Spacer,
 	Text,
-	TUI,
+	type TUI,
+	TuiMainScreen,
 	matchesKey,
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
@@ -136,7 +137,7 @@ class TroublemakerTuiApp {
 	) {
 		initTheme(undefined, false);
 		this.status = status;
-		this.ui = new TUI(this.terminal);
+		this.ui = new TuiMainScreen(this.terminal);
 		this.editor = new Editor(this.ui, {
 			borderColor: (text) => chalk.cyan(text),
 			selectList: getSelectListTheme(),

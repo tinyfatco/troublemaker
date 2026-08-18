@@ -8,7 +8,11 @@
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import {
+	getModels as getBuiltinModels,
+	getProviders as getBuiltinProviders,
+} from "@earendil-works/pi-ai/compat";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import {
@@ -157,20 +161,10 @@ const MODEL_PROVIDER_RANK: Record<string, number> = {
 	openai: 4,
 };
 
-function createWorkspaceModelRegistry(workingDir?: string): ModelRegistry {
-	const authStorage = AuthStorage.create();
-	const modelsJsonPath = workingDir ? join(workingDir, "models.json") : undefined;
-	return ModelRegistry.create(authStorage, modelsJsonPath);
-}
-
-function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
-	let models: Model<Api>[];
-	if (modelRegistry) {
-		modelRegistry.refresh();
-		models = modelRegistry.getAll();
-	} else {
-		models = createWorkspaceModelRegistry(workingDir).getAll();
-	}
+function getRegistryModels(_workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
+	const models = modelRegistry
+		? modelRegistry.getAll()
+		: getBuiltinProviders().flatMap((provider) => getBuiltinModels(provider)) as Model<Api>[];
 	return mergeBuiltinModels(models);
 }
 
@@ -378,7 +372,6 @@ export function listModels(
 	workingDir?: string,
 	modelRegistry?: ModelRegistry,
 ): Array<{ provider: string; id: string; name: string; api: string }> {
-	const registry = modelRegistry || createWorkspaceModelRegistry(workingDir);
 	const current = getCurrentModelSelection(workingDir);
 	const byKey = new Map<string, { provider: string; id: string; name: string; api: string }>();
 	const addOption = (option: { provider: string; id: string; name: string; api: string }): void => {
@@ -392,13 +385,15 @@ export function listModels(
 		api: model.api,
 	});
 
-	try {
-		for (const model of registry.getAvailable()) addModel(model);
-	} catch (err) {
-		log.logWarning(
-			"Model registry available-list failed",
-			err instanceof Error ? err.message : String(err),
-		);
+	if (modelRegistry) {
+		try {
+			for (const model of modelRegistry.getAvailable()) addModel(model);
+		} catch (err) {
+			log.logWarning(
+				"Model registry available-list failed",
+				err instanceof Error ? err.message : String(err),
+			);
+		}
 	}
 	for (const option of CURATED_MODEL_OPTIONS) addOption(option);
 	if (isClaudeCliAuthenticated()) {
@@ -497,12 +492,13 @@ export function isModelCredentialUnavailableError(error: unknown): error is Mode
 }
 
 /**
- * Resolve API key for any provider via AuthStorage.
- * AuthStorage checks: runtime override → auth.json → OAuth token → env var → fallback.
+ * Resolve API key for any provider through the canonical model runtime.
+ * ModelRegistry checks runtime overrides, auth.json, OAuth, environment, and
+ * provider-specific ambient credentials without exposing stored secrets.
  */
-export async function resolveApiKey(authStorage: AuthStorage, provider: string): Promise<string> {
-	authStorage.reload();
-	const key = await authStorage.getApiKey(provider);
+export async function resolveApiKey(modelRegistry: ModelRegistry, provider: string): Promise<string> {
+	await modelRegistry.refresh();
+	const key = await modelRegistry.getApiKeyForProvider(provider);
 	if (!key) throw new ModelCredentialUnavailableError(provider);
 	return key;
 }
