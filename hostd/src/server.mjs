@@ -16,10 +16,11 @@ async function readJson(request, maximumBytes = 2 * 1024 * 1024) {
 	return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function json(response, status, body) {
+function json(response, status, body, additionalHeaders = {}) {
 	response.writeHead(status, {
 		"content-type": "application/json",
 		"cache-control": "no-store",
+		...additionalHeaders,
 	});
 	response.end(JSON.stringify(body));
 }
@@ -94,7 +95,7 @@ export function createHostServer({
 					ok: true,
 					polling: daemon.polling,
 					draining: store.getMeta("scheduler:draining") === "true",
-					...store.status(config.scheduler?.maxConcurrent ?? 6),
+					...store.status(config.scheduler?.maxConcurrent ?? 6, config.workersAi),
 					contextDetails: store.listContexts(),
 				});
 				return;
@@ -514,7 +515,14 @@ export function createHostServer({
 				return;
 			}
 			if (error instanceof WorkersAiError) {
-				json(response, error.status, { error: error.code });
+				json(
+					response,
+					error.status,
+					{ error: error.code },
+					error.retryAfterSeconds
+						? { "retry-after": String(error.retryAfterSeconds) }
+						: {},
+				);
 				return;
 			}
 			if (error instanceof HostSitesError) {

@@ -290,6 +290,44 @@ export class HostStore {
 				FOREIGN KEY (session_id) REFERENCES web_chat_conversations(session_id)
 			);
 
+			CREATE TABLE IF NOT EXISTS workers_ai_requests (
+				id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				model TEXT NOT NULL,
+				window_started_at TEXT NOT NULL,
+				status TEXT NOT NULL,
+				rejection_count INTEGER NOT NULL DEFAULT 0,
+				upstream_status INTEGER,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				total_tokens INTEGER NOT NULL DEFAULT 0,
+				started_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				completed_at TEXT,
+				last_error TEXT
+			);
+
+			CREATE INDEX IF NOT EXISTS workers_ai_requests_window
+				ON workers_ai_requests(window_started_at, context_id, status);
+
+			CREATE INDEX IF NOT EXISTS workers_ai_requests_active
+				ON workers_ai_requests(status, expires_at);
+
+			CREATE TABLE IF NOT EXISTS workers_ai_provider_usage (
+				window_started_at TEXT NOT NULL,
+				model TEXT NOT NULL,
+				request_source TEXT NOT NULL,
+				error_code INTEGER NOT NULL,
+				request_count INTEGER NOT NULL,
+				input_tokens REAL NOT NULL,
+				output_tokens REAL NOT NULL,
+				neurons REAL NOT NULL,
+				observed_at TEXT NOT NULL,
+				PRIMARY KEY (window_started_at, model, request_source, error_code)
+			);
+
 			CREATE TABLE IF NOT EXISTS gmail_drafts (
 				provider_draft_id TEXT PRIMARY KEY,
 				target_id TEXT NOT NULL,
@@ -394,6 +432,7 @@ export class HostStore {
 		add("outbox", "body_sha256 TEXT");
 		add("gmail_drafts", "to_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
+		add("workers_ai_requests", "rejection_count INTEGER NOT NULL DEFAULT 0");
 		const legacyDraftRecipients = this.database.prepare(`
 			SELECT provider_draft_id AS providerDraftId, contact_address AS contactAddress
 			FROM gmail_drafts WHERE to_addresses_json = '[]'
@@ -490,6 +529,224 @@ export class HostStore {
 			INSERT INTO meta(key, value) VALUES (?, ?)
 			ON CONFLICT(key) DO UPDATE SET value = excluded.value
 		`).run(key, String(value));
+	}
+
+	reserveWorkersAiRequest({
+		id,
+		targetId,
+		contextId,
+		model,
+		windowStartedAt,
+		observedAt,
+		expiresAt,
+		limits,
+	}) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE workers_ai_requests SET status = 'aborted', completed_at = ?,
+					last_error = 'request_lease_expired'
+				WHERE status = 'in_progress' AND expires_at <= ?
+			`).run(observedAt, observedAt);
+			const contextUsage = this.database.prepare(`
+				SELECT COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+				FROM workers_ai_requests
+				WHERE window_started_at = ? AND context_id = ? AND status != 'rejected'
+			`).get(windowStartedAt, contextId);
+			const globalUsage = this.database.prepare(`
+				SELECT COUNT(*) AS requests, COALESCE(SUM(total_tokens), 0) AS tokens
+				FROM workers_ai_requests
+				WHERE window_started_at = ? AND status != 'rejected'
+			`).get(windowStartedAt);
+			const active = this.database.prepare(`
+				SELECT COUNT(*) AS globalCount,
+					COALESCE(SUM(CASE WHEN context_id = ? THEN 1 ELSE 0 END), 0) AS contextCount
+				FROM workers_ai_requests
+				WHERE status = 'in_progress' AND expires_at > ?
+			`).get(contextId, observedAt);
+			const resetMilliseconds = Math.max(
+				1000,
+				Date.parse(windowStartedAt) + limits.windowSeconds * 1000 - Date.parse(observedAt),
+			);
+			const windowRetryAfter = Math.max(1, Math.ceil(resetMilliseconds / 1000));
+			let rejection;
+			if (active.contextCount >= limits.maximumConcurrentPerContext) {
+				rejection = { code: "workers_ai_context_concurrency_limited", retryAfterSeconds: 1 };
+			} else if (active.globalCount >= limits.maximumConcurrentGlobal) {
+				rejection = { code: "workers_ai_global_concurrency_limited", retryAfterSeconds: 1 };
+			} else if (contextUsage.requests >= limits.maximumRequestsPerContext) {
+				rejection = { code: "workers_ai_context_request_limited", retryAfterSeconds: windowRetryAfter };
+			} else if (globalUsage.requests >= limits.maximumRequestsGlobal) {
+				rejection = { code: "workers_ai_global_request_limited", retryAfterSeconds: windowRetryAfter };
+			} else if (contextUsage.tokens >= limits.maximumTokensPerContext) {
+				rejection = { code: "workers_ai_context_token_limited", retryAfterSeconds: windowRetryAfter };
+			} else if (globalUsage.tokens >= limits.maximumTokensGlobal) {
+				rejection = { code: "workers_ai_global_token_limited", retryAfterSeconds: windowRetryAfter };
+			}
+			if (rejection) {
+				const existing = this.database.prepare(`
+					SELECT id FROM workers_ai_requests
+					WHERE window_started_at = ? AND context_id = ? AND model = ?
+						AND status = 'rejected' AND last_error = ?
+					LIMIT 1
+				`).get(windowStartedAt, contextId, model, rejection.code);
+				if (existing) {
+					this.database.prepare(`
+						UPDATE workers_ai_requests SET rejection_count = rejection_count + 1,
+							completed_at = ? WHERE id = ?
+					`).run(observedAt, existing.id);
+				} else {
+					this.database.prepare(`
+						INSERT INTO workers_ai_requests(
+							id, target_id, context_id, model, window_started_at, status,
+							rejection_count, started_at, expires_at, completed_at, last_error
+						) VALUES (?, ?, ?, ?, ?, 'rejected', 1, ?, ?, ?, ?)
+					`).run(
+						id,
+						targetId,
+						contextId,
+						model,
+						windowStartedAt,
+						observedAt,
+						expiresAt,
+						observedAt,
+						rejection.code,
+					);
+				}
+			} else {
+				this.database.prepare(`
+					INSERT INTO workers_ai_requests(
+						id, target_id, context_id, model, window_started_at, status,
+						started_at, expires_at
+					) VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?)
+				`).run(id, targetId, contextId, model, windowStartedAt, observedAt, expiresAt);
+			}
+			this.database.exec("COMMIT");
+			return rejection
+				? { allowed: false, ...rejection, windowStartedAt }
+				: { allowed: true, windowStartedAt };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	finishWorkersAiRequest(id, {
+		status,
+		upstreamStatus,
+		inputTokens = 0,
+		cachedInputTokens = 0,
+		outputTokens = 0,
+		totalTokens = 0,
+		completedAt = now(),
+		error,
+	}) {
+		this.database.prepare(`
+			UPDATE workers_ai_requests SET status = ?, upstream_status = ?,
+				input_tokens = ?, cached_input_tokens = ?, output_tokens = ?, total_tokens = ?,
+				completed_at = ?, last_error = ?
+			WHERE id = ? AND status = 'in_progress'
+		`).run(
+			status,
+			upstreamStatus ?? null,
+			inputTokens,
+			cachedInputTokens,
+			outputTokens,
+			totalTokens,
+			completedAt,
+			error ? String(error).slice(0, 200) : null,
+			id,
+		);
+	}
+
+	upsertWorkersAiProviderUsage(rows, observedAt = now()) {
+		const upsert = this.database.prepare(`
+			INSERT INTO workers_ai_provider_usage(
+				window_started_at, model, request_source, error_code,
+				request_count, input_tokens, output_tokens, neurons, observed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(window_started_at, model, request_source, error_code) DO UPDATE SET
+				request_count = excluded.request_count,
+				input_tokens = excluded.input_tokens,
+				output_tokens = excluded.output_tokens,
+				neurons = excluded.neurons,
+				observed_at = excluded.observed_at
+		`);
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			for (const row of rows) {
+				upsert.run(
+					row.windowStartedAt,
+					row.model,
+					row.requestSource,
+					row.errorCode,
+					row.requestCount,
+					row.inputTokens,
+					row.outputTokens,
+					row.neurons,
+					observedAt,
+				);
+			}
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	workersAiStatus(config) {
+		const endpointWindows = this.database.prepare(`
+			SELECT window_started_at AS windowStartedAt,
+				SUM(CASE WHEN status != 'rejected' THEN 1 ELSE 0 END) AS requests,
+				SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+				SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed,
+				SUM(CASE WHEN status = 'aborted' THEN 1 ELSE 0 END) AS aborted,
+				SUM(CASE WHEN status = 'rejected' THEN rejection_count ELSE 0 END) AS rejected,
+				SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS inProgress,
+				COALESCE(SUM(input_tokens), 0) AS inputTokens,
+				COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+				COALESCE(SUM(output_tokens), 0) AS outputTokens,
+				COALESCE(SUM(total_tokens), 0) AS totalTokens
+			FROM workers_ai_requests
+			GROUP BY window_started_at
+			ORDER BY window_started_at DESC
+			LIMIT 8
+		`).all();
+		const currentWindow = endpointWindows[0]?.windowStartedAt;
+		const currentContexts = currentWindow
+			? this.database.prepare(`
+				SELECT context_id AS contextId,
+					SUM(CASE WHEN status != 'rejected' THEN 1 ELSE 0 END) AS requests,
+					SUM(CASE WHEN status = 'rejected' THEN rejection_count ELSE 0 END) AS rejected,
+					COALESCE(SUM(total_tokens), 0) AS totalTokens
+				FROM workers_ai_requests
+				WHERE window_started_at = ?
+				GROUP BY context_id
+				ORDER BY totalTokens DESC, requests DESC
+				LIMIT 20
+			`).all(currentWindow)
+			: [];
+		const providerWindows = this.database.prepare(`
+			SELECT window_started_at AS windowStartedAt,
+				SUM(request_count) AS requests,
+				SUM(input_tokens) AS inputTokens,
+				SUM(output_tokens) AS outputTokens,
+				SUM(neurons) AS neurons,
+				MAX(observed_at) AS observedAt
+			FROM workers_ai_provider_usage
+			GROUP BY window_started_at
+			ORDER BY window_started_at DESC
+			LIMIT 8
+		`).all();
+		return {
+			windowSeconds: config.limits.windowSeconds,
+			limits: config.limits,
+			endpointWindows,
+			currentContexts,
+			providerWindows,
+			lastProviderPollAt: this.getMeta("workers-ai:last_provider_poll_at") ?? null,
+			lastProviderPollError: this.getMeta("workers-ai:last_provider_poll_error") || null,
+		};
 	}
 
 	hasSeen(source, messageId) {
@@ -2722,7 +2979,7 @@ export class HostStore {
 		return this.getGmailDraft(providerDraftId);
 	}
 
-	status(maxConcurrent = 6) {
+	status(maxConcurrent = 6, workersAiConfig) {
 		const activeEvents = this.countActiveEvents();
 		const activeContexts = this.countActiveContexts();
 		const queue = this.database.prepare(`
@@ -2733,6 +2990,7 @@ export class HostStore {
 			lastSuccessfulPollAt: this.getMeta("gmail:last_successful_poll_at") ?? null,
 			lastPollError: this.getMeta("gmail:last_poll_error") || null,
 			lastWebChatPollError: this.getMeta("web-chat:last_poll_error") || null,
+			workersAi: workersAiConfig ? this.workersAiStatus(workersAiConfig) : undefined,
 			principals: this.database.prepare("SELECT COUNT(*) AS count FROM principals").get().count,
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,

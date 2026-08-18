@@ -60,9 +60,21 @@
   "workersAi": {
     "accountId": "0123456789abcdef0123456789abcdef",
     "apiTokenEnv": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
+    "analyticsTokenEnv": "CLOUDFLARE_ACCOUNT_ANALYTICS_TOKEN",
+    "analyticsPollSeconds": 900,
+    "analyticsLookbackSeconds": 21600,
     "allowedModels": [
       "@cf/zai-org/glm-5.2"
-    ]
+    ],
+    "limits": {
+      "windowSeconds": 900,
+      "maximumRequestsPerContext": 12,
+      "maximumTokensPerContext": 1000000,
+      "maximumRequestsGlobal": 60,
+      "maximumTokensGlobal": 5000000,
+      "maximumConcurrentPerContext": 1,
+      "maximumConcurrentGlobal": 4
+    }
   },
   "zulip": {
     "url": "http://127.0.0.1:3110",

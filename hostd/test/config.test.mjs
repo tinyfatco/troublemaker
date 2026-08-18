@@ -18,6 +18,7 @@ const ENVIRONMENT = {
 	PHONE_WEBHOOK_SECRET: "test-phone-webhook-secret-at-least-24-bytes",
 	PHONE_API_KEY: "test-phone-api-key",
 	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
+	CLOUDFLARE_ACCOUNT_ANALYTICS_TOKEN: "test-cloudflare-account-analytics-token",
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
@@ -61,8 +62,20 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		apiBaseUrl: "https://api.cloudflare.com/client/v4",
 		allowedModels: ["@cf/zai-org/glm-5.2"],
 		gatewayId: undefined,
+		analyticsToken: "test-cloudflare-account-analytics-token",
+		analyticsPollSeconds: 900,
+		analyticsLookbackSeconds: 21_600,
 		requestTimeoutMs: 600_000,
 		maximumRequestBytes: 4 * 1024 * 1024,
+		limits: {
+			windowSeconds: 900,
+			maximumRequestsPerContext: 12,
+			maximumTokensPerContext: 1_000_000,
+			maximumRequestsGlobal: 60,
+			maximumTokensGlobal: 5_000_000,
+			maximumConcurrentPerContext: 1,
+			maximumConcurrentGlobal: 4,
+		},
 	});
 	assert.deepEqual(config.webApp, {
 		host: "127.0.0.1",
@@ -188,6 +201,22 @@ test("rejects phone model overrides outside the host Workers AI allowlist", asyn
 		await assert.rejects(
 			loadConfig(path, ENVIRONMENT),
 			/must be a fully qualified @cf model ID/,
+		);
+
+		raw.workersAi.allowedModels = ["@cf/zai-org/glm-5.2"];
+		raw.workersAi.limits.maximumRequestsGlobal = 1;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/maximumRequestsGlobal must cover one context limit/,
+		);
+
+		raw.workersAi.limits.maximumRequestsGlobal = 60;
+		raw.workersAi.limits.windowSeconds = 60;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/workersAi\.limits\.windowSeconds must be an integer from 900 to 3600/,
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

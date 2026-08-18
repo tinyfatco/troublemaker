@@ -46,8 +46,21 @@ function fixture() {
 			apiToken: "host-only-cloudflare-token",
 			apiBaseUrl: "https://api.cloudflare.test/client/v4",
 			allowedModels: [MODEL.id],
+			gatewayId: undefined,
+			analyticsToken: undefined,
+			analyticsPollSeconds: 900,
+			analyticsLookbackSeconds: 21_600,
 			requestTimeoutMs: 10_000,
 			maximumRequestBytes: 64 * 1024,
+			limits: {
+				windowSeconds: 900,
+				maximumRequestsPerContext: 12,
+				maximumTokensPerContext: 1_000_000,
+				maximumRequestsGlobal: 60,
+				maximumTokensGlobal: 5_000_000,
+				maximumConcurrentPerContext: 1,
+				maximumConcurrentGlobal: 4,
+			},
 		},
 		targetsById: new Map([[target.id, target]]),
 	};
@@ -126,6 +139,7 @@ test("Workers AI model selection and credentials are exact-principal scoped", ()
 
 test("Hostd proxies only the selected context and strips caller-selected model authority", async () => {
 	const state = fixture();
+	state.config.workersAi.limits.maximumRequestsPerContext = 1;
 	const upstreamRequests = [];
 	const workersAiGateway = new HostWorkersAi({
 		config: state.config,
@@ -138,7 +152,9 @@ test("Hostd proxies only the selected context and strips caller-selected model a
 				body: JSON.parse(String(init.body)),
 			});
 			return new Response(
-				'data: {"choices":[{"delta":{"content":"hello"}}]}\n\ndata: [DONE]\n\n',
+				'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+				+ 'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":8,"total_tokens":50,"prompt_tokens_details":{"cached_tokens":20}}}\n\n'
+				+ 'data: [DONE]\n\n',
 				{ status: 200, headers: { "content-type": "text/event-stream" } },
 			);
 		},
@@ -200,12 +216,146 @@ test("Hostd proxies only the selected context and strips caller-selected model a
 			"Bearer host-only-cloudflare-token",
 		);
 		assert.equal(upstreamRequests[0].headers.get("cf-aig-collect-log-payload"), "false");
+		assert.deepEqual(
+			Object.keys(JSON.parse(upstreamRequests[0].headers.get("cf-aig-metadata"))).sort(),
+			["request_id", "service"],
+		);
 		assert.equal("model" in upstreamRequests[0].body, false);
 		assert.deepEqual(upstreamRequests[0].body.messages, [{ role: "user", content: "hello" }]);
+
+		const limited = await request(state.owner.contextId, ownerToken);
+		assert.equal(limited.status, 429);
+		assert.deepEqual(await limited.json(), { error: "workers_ai_context_request_limited" });
+		assert.match(limited.headers.get("retry-after"), /^\d+$/);
+		const repeatedLimited = await request(state.owner.contextId, ownerToken);
+		assert.equal(repeatedLimited.status, 429);
+		await repeatedLimited.arrayBuffer();
+		assert.equal(upstreamRequests.length, 1);
+
+		const usage = state.store.workersAiStatus(state.config.workersAi);
+		assert.equal(usage.endpointWindows[0].requests, 1);
+		assert.equal(usage.endpointWindows[0].rejected, 2);
+		assert.equal(usage.endpointWindows[0].inputTokens, 42);
+		assert.equal(usage.endpointWindows[0].cachedInputTokens, 20);
+		assert.equal(usage.endpointWindows[0].outputTokens, 8);
+		assert.equal(usage.endpointWindows[0].totalTokens, 50);
+		assert.equal(usage.currentContexts[0].contextId, state.owner.contextId);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => (
 			error ? reject(error) : resolvePromise()
 		)));
+		state.store.close();
+		rmSync(state.directory, { recursive: true, force: true });
+	}
+});
+
+test("Workers AI token and concurrency limits fail closed before another provider call", async () => {
+	const state = fixture();
+	let upstreamCalls = 0;
+	state.config.workersAi.limits.maximumTokensPerContext = 100;
+	const gateway = new HostWorkersAi({
+		config: state.config,
+		store: state.store,
+		routingKey: state.routingKey,
+		fetchImpl: async () => {
+			upstreamCalls++;
+			return new Response(
+				'data: {"choices":[],"usage":{"prompt_tokens":90,"completion_tokens":20,"total_tokens":110}}\n\n'
+				+ 'data: [DONE]\n\n',
+				{ status: 200, headers: { "content-type": "text/event-stream" } },
+			);
+		},
+	});
+	const body = { model: MODEL.id, messages: [{ role: "user", content: "hello" }], stream: true };
+	try {
+		const first = await gateway.complete(state.target, state.owner.contextId, body);
+		await first.text();
+		await assert.rejects(
+			gateway.complete(state.target, state.owner.contextId, body),
+			(error) => error?.status === 429 && error?.code === "workers_ai_context_token_limited",
+		);
+		assert.equal(upstreamCalls, 1);
+
+		state.config.workersAi.limits.maximumTokensPerContext = 1_000_000;
+		const concurrentGateway = new HostWorkersAi({
+			config: state.config,
+			store: state.store,
+			routingKey: state.routingKey,
+			fetchImpl: async () => new Response(new ReadableStream({
+				start() {},
+			})),
+		});
+		const inFlight = await concurrentGateway.complete(state.target, state.owner.contextId, body);
+		await assert.rejects(
+			concurrentGateway.complete(state.target, state.owner.contextId, body),
+			(error) => error?.status === 429 && error?.code === "workers_ai_context_concurrency_limited",
+		);
+		await inFlight.body.cancel();
+		const usage = state.store.workersAiStatus(state.config.workersAi);
+		assert(usage.endpointWindows[0].aborted >= 1);
+	} finally {
+		state.store.close();
+		rmSync(state.directory, { recursive: true, force: true });
+	}
+});
+
+test("Workers AI polls authoritative Cloudflare neuron usage into fifteen-minute buckets", async () => {
+	const state = fixture();
+	state.config.workersAi.analyticsToken = "host-only-analytics-token";
+	const observedRequests = [];
+	const now = Date.parse("2026-08-18T08:31:00.000Z");
+	const gateway = new HostWorkersAi({
+		config: state.config,
+		store: state.store,
+		routingKey: state.routingKey,
+		nowImpl: () => now,
+		analyticsUrl: "https://analytics.example/graphql",
+		fetchImpl: async (input, init) => {
+			observedRequests.push({ input: String(input), init });
+			return new Response(JSON.stringify({
+				data: {
+					viewer: {
+						accounts: [{
+							aiInferenceAdaptiveGroups: [{
+								count: 2,
+								dimensions: {
+									datetimeFifteenMinutes: "2026-08-18T08:15:00Z",
+									modelId: MODEL.id,
+									requestSource: "rest api",
+									errorCode: 0,
+								},
+								sum: {
+									totalInputTokens: 254_403,
+									totalOutputTokens: 61,
+									totalNeurons: 19_230.366553097963,
+								},
+							}],
+						}],
+					},
+				},
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		},
+	});
+	try {
+		const rows = await gateway.pollProviderUsage();
+		assert.equal(rows.length, 1);
+		assert.equal(observedRequests[0].input, "https://analytics.example/graphql");
+		assert.equal(
+			new Headers(observedRequests[0].init.headers).get("authorization"),
+			"Bearer host-only-analytics-token",
+		);
+		const query = JSON.parse(observedRequests[0].init.body);
+		assert.equal(query.variables.accountTag, state.config.workersAi.accountId);
+		assert.deepEqual(query.variables.models, [MODEL.id]);
+		assert.equal(query.variables.start, "2026-08-18T02:30:00.000Z");
+
+		const status = state.store.workersAiStatus(state.config.workersAi);
+		assert.equal(status.providerWindows[0].requests, 2);
+		assert.equal(status.providerWindows[0].inputTokens, 254_403);
+		assert.equal(status.providerWindows[0].outputTokens, 61);
+		assert.equal(status.providerWindows[0].neurons, 19_230.366553097963);
+		assert(!JSON.stringify(status).includes("host-only-analytics-token"));
+	} finally {
 		state.store.close();
 		rmSync(state.directory, { recursive: true, force: true });
 	}

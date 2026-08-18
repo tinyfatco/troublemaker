@@ -205,6 +205,76 @@ function workersAiConfig(raw, environment) {
 	if (gatewayId && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(gatewayId)) {
 		throw new Error("workersAi.gatewayId contains unsupported characters");
 	}
+	const rawLimits = workersAi.limits === undefined
+		? {}
+		: object(workersAi.limits, "workersAi.limits");
+	const limits = {
+		windowSeconds: integer(
+			rawLimits.windowSeconds,
+			900,
+			"workersAi.limits.windowSeconds",
+			900,
+			3600,
+		),
+		maximumRequestsPerContext: integer(
+			rawLimits.maximumRequestsPerContext,
+			12,
+			"workersAi.limits.maximumRequestsPerContext",
+			1,
+			10_000,
+		),
+		maximumTokensPerContext: integer(
+			rawLimits.maximumTokensPerContext,
+			1_000_000,
+			"workersAi.limits.maximumTokensPerContext",
+			1,
+			1_000_000_000,
+		),
+		maximumRequestsGlobal: integer(
+			rawLimits.maximumRequestsGlobal,
+			60,
+			"workersAi.limits.maximumRequestsGlobal",
+			1,
+			100_000,
+		),
+		maximumTokensGlobal: integer(
+			rawLimits.maximumTokensGlobal,
+			5_000_000,
+			"workersAi.limits.maximumTokensGlobal",
+			1,
+			10_000_000_000,
+		),
+		maximumConcurrentPerContext: integer(
+			rawLimits.maximumConcurrentPerContext,
+			1,
+			"workersAi.limits.maximumConcurrentPerContext",
+			1,
+			100,
+		),
+		maximumConcurrentGlobal: integer(
+			rawLimits.maximumConcurrentGlobal,
+			4,
+			"workersAi.limits.maximumConcurrentGlobal",
+			1,
+			1000,
+		),
+	};
+	if (limits.maximumRequestsGlobal < limits.maximumRequestsPerContext) {
+		throw new Error("workersAi.limits.maximumRequestsGlobal must cover one context limit");
+	}
+	if (limits.maximumTokensGlobal < limits.maximumTokensPerContext) {
+		throw new Error("workersAi.limits.maximumTokensGlobal must cover one context limit");
+	}
+	if (limits.maximumConcurrentGlobal < limits.maximumConcurrentPerContext) {
+		throw new Error("workersAi.limits.maximumConcurrentGlobal must cover one context limit");
+	}
+	const analyticsToken = workersAi.analyticsTokenEnv === undefined
+		? undefined
+		: envSecret(
+			workersAi.analyticsTokenEnv,
+			"workersAi.analyticsTokenEnv",
+			environment,
+		);
 	return {
 		accountId,
 		apiToken: envSecret(workersAi.apiTokenEnv, "workersAi.apiTokenEnv", environment),
@@ -214,6 +284,21 @@ function workersAiConfig(raw, environment) {
 		),
 		allowedModels,
 		gatewayId,
+		analyticsToken,
+		analyticsPollSeconds: integer(
+			workersAi.analyticsPollSeconds,
+			900,
+			"workersAi.analyticsPollSeconds",
+			900,
+			3600,
+		),
+		analyticsLookbackSeconds: integer(
+			workersAi.analyticsLookbackSeconds,
+			21_600,
+			"workersAi.analyticsLookbackSeconds",
+			900,
+			604_800,
+		),
 		requestTimeoutMs: integer(
 			workersAi.requestTimeoutMs,
 			600_000,
@@ -228,6 +313,7 @@ function workersAiConfig(raw, environment) {
 			1024,
 			16 * 1024 * 1024,
 		),
+		limits,
 	};
 }
 

@@ -46,7 +46,18 @@ principal.
   "workersAi": {
     "accountId": "0123456789abcdef0123456789abcdef",
     "apiTokenEnv": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
-    "allowedModels": ["@cf/zai-org/glm-5.2"]
+    "analyticsTokenEnv": "CLOUDFLARE_ACCOUNT_ANALYTICS_TOKEN",
+    "analyticsPollSeconds": 900,
+    "allowedModels": ["@cf/zai-org/glm-5.2"],
+    "limits": {
+      "windowSeconds": 900,
+      "maximumRequestsPerContext": 12,
+      "maximumTokensPerContext": 1000000,
+      "maximumRequestsGlobal": 60,
+      "maximumTokensGlobal": 5000000,
+      "maximumConcurrentPerContext": 1,
+      "maximumConcurrentGlobal": 4
+    }
   },
   "routing": {
     "actorTarget": "front-desk",
@@ -72,6 +83,29 @@ target defaults remain authoritative for all contexts without an exact
 override. Changing the override also changes the effective runtime version and
 recreates that context's immutable container on its next wake without replacing
 its durable workspace.
+
+Hostd persists metadata-only Workers AI accounting in fixed windows. The
+default window is 15 minutes. It records allowed, rejected, completed, failed,
+aborted, and in-progress requests plus provider-reported prompt, cached-input,
+completion, and total tokens. It never stores prompts or completions in the
+usage tables. Before making an upstream call, Hostd atomically enforces
+per-context and global request, prior-token, and concurrent-request limits.
+Rejected calls return HTTP 429 with `Retry-After`; a context capability cannot
+evade the limits by selecting another model or context.
+
+An optional, separate Cloudflare token with only Account Analytics Read lets
+Hostd reconcile the allowlisted models against Cloudflare's authoritative
+15-minute request, input-token, output-token, and neuron aggregates. The poll
+defaults to every 15 minutes with a six-hour lookback so delayed provider rows
+are updated. Those provider buckets are account/model totals and can include a
+direct canary or another REST caller; the local endpoint buckets remain the
+source of truth for traffic that crossed Hostd. The analytics credential stays
+in the host process and is never included in an OCI runtime.
+
+Authenticated `GET /v1/status` and the `status` CLI expose the eight most
+recent local and provider windows, the current per-context totals, configured
+limits, and the last provider-poll result. This supports a 15-minute abuse
+monitor without persisting private message content.
 
 ## Scoped Pages-style site previews
 

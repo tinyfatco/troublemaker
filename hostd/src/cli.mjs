@@ -203,6 +203,7 @@ async function serve(configPath) {
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
 	await state.webChatGateway?.start();
+	await state.workersAiGateway?.start();
 	void state.runtime.reconcileSiteRelationships().catch((error) => {
 		console.error(
 			"troublemaker-hostd: relationship Sites startup reconciliation failed:",
@@ -226,6 +227,7 @@ async function serve(configPath) {
 		await state.webChatGateway?.stop();
 		await state.zulipGateway?.stop();
 		await state.phoneGateway?.stop();
+		await state.workersAiGateway?.stop();
 		await state.controlNotifier?.stop();
 		if (webAppServer) {
 			await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
@@ -351,7 +353,7 @@ async function main() {
 		}
 		if (command === "status") {
 			console.log(JSON.stringify({
-				...state.store.status(state.config.scheduler.maxConcurrent),
+				...state.store.status(state.config.scheduler.maxConcurrent, state.config.workersAi),
 				scheduledWakeMode: state.config.scheduledWakes.mode,
 				scheduledWakeContextCount: state.config.scheduledWakes.contextIds.length,
 			}, null, 2));
