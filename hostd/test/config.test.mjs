@@ -73,6 +73,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		assertionTtlSeconds: 60,
 		maximumRequestBytes: 128 * 1024,
 		defaultProject: undefined,
+		principalAliases: [],
 		agentName: "Operator",
 	});
 	assert.deepEqual(config.routing.knownPhonePrincipals[0].model, {
@@ -105,6 +106,22 @@ test("requires the web app gateway to remain loopback-only and use a distinct po
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /webApp.port must differ from server.port/);
 
 		raw.webApp.port = 3120;
+		raw.webApp.principalAliases = [{
+			email: "signed-in@example.com",
+			principalEmail: "customer@example.com",
+		}];
+		await writeFile(path, JSON.stringify(raw));
+		const aliased = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(aliased.webApp.principalAliases, [{
+			email: "signed-in@example.com",
+			principalEmail: "customer@example.com",
+		}]);
+
+		raw.webApp.principalAliases[0].principalEmail = "unknown@example.com";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /references unknown principal/);
+
+		raw.webApp.principalAliases = [];
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(
 			loadConfig(path, { ...ENVIRONMENT, TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "short" }),

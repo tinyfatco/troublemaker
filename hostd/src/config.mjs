@@ -534,6 +534,21 @@ function webAppConfig(raw, environment, defaultAgentName) {
 	if (defaultProject && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(defaultProject)) {
 		throw new Error("webApp.defaultProject must be a project slug");
 	}
+	const rawPrincipalAliases = webApp.principalAliases ?? [];
+	if (!Array.isArray(rawPrincipalAliases)) {
+		throw new Error("webApp.principalAliases must be an array");
+	}
+	const principalAliases = rawPrincipalAliases.map((candidate, index) => {
+		const label = `webApp.principalAliases[${index}]`;
+		const alias = object(candidate, label);
+		return {
+			email: normalizeAddress(alias.email, `${label}.email`),
+			principalEmail: normalizeAddress(alias.principalEmail, `${label}.principalEmail`),
+		};
+	});
+	if (new Set(principalAliases.map((alias) => alias.email)).size !== principalAliases.length) {
+		throw new Error("webApp.principalAliases cannot repeat an authenticated email");
+	}
 	return {
 		host: listenerHost,
 		port: integer(webApp.port, 3120, "webApp.port", 1024, 65535),
@@ -555,6 +570,7 @@ function webAppConfig(raw, environment, defaultAgentName) {
 			1024 * 1024,
 		),
 		defaultProject,
+		principalAliases,
 		agentName: webApp.agentName === undefined
 			? defaultAgentName
 			: text(webApp.agentName, "webApp.agentName"),
@@ -1002,6 +1018,17 @@ export async function loadConfig(path, environment = process.env) {
 			}),
 		};
 	});
+	if (webApp) {
+		const configuredEmails = new Set(configuredPrincipals.map((principal) => principal.email));
+		for (const alias of webApp.principalAliases) {
+			if (configuredEmails.has(alias.email)) {
+				throw new Error("webApp.principalAliases cannot replace a configured principal email");
+			}
+			if (!configuredEmails.has(alias.principalEmail)) {
+				throw new Error(`webApp principal alias references unknown principal ${alias.principalEmail}`);
+			}
+		}
+	}
 	const configuredPhonePrincipals = knownPhonePrincipals.map((candidate, index) => {
 		const principalLabel = `routing.knownPhonePrincipals[${index}]`;
 		const principal = object(candidate, principalLabel);

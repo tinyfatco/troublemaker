@@ -14,6 +14,12 @@
     "assertionSecretEnv": "TROUBLEMAKER_HOSTD_WEB_APP_SECRET",
     "issuer": "fat-platform",
     "audience": "troublemaker-hostd-web",
+    "principalAliases": [
+      {
+        "email": "product-login@example.com",
+        "principalEmail": "customer@example.com"
+      }
+    ],
     "defaultProject": "website",
     "agentName": "Operator"
   },
