@@ -566,6 +566,8 @@ export class HostSites {
 				created: false,
 				site: configured.siteSlug,
 				site_id: configured.siteId,
+				customer_id: configured.customerId,
+				user_id: configured.userId,
 				project_id: configured.projectId,
 				deployment_grant_id: configured.grantId,
 				hostname: configured.previewHostname
@@ -614,6 +616,8 @@ export class HostSites {
 				created: false,
 				site: binding.siteSlug,
 				site_id: binding.siteId,
+				customer_id: binding.customerId,
+				user_id: binding.userId,
 				project_id: binding.projectId,
 				deployment_grant_id: binding.grantId,
 				hostname: binding.previewHostname,

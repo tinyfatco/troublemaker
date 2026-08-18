@@ -847,6 +847,16 @@ test("relationship factories provision real custody once and isolate unrelated c
 		});
 		assert.equal(created.created, true);
 		assert.equal(store.getSiteDeploymentBinding(one.contextId, "first-example").status, "active");
+		const repeated = await service.create(target, one.contextId, {
+			site_slug: "first-example",
+			display_name: "First Example",
+		});
+		assert.equal(repeated.created, false);
+		assert.equal(repeated.customer_id, created.customer_id);
+		assert.equal(repeated.user_id, created.user_id);
+		assert.equal(repeated.site_id, created.site_id);
+		assert.equal(repeated.project_id, created.project_id);
+		assert.equal(repeated.deployment_grant_id, created.deployment_grant_id);
 		await assert.rejects(
 			service.create(target, two.contextId, {
 				site_slug: "first-example",
