@@ -175,11 +175,15 @@ export class WebChatGateway {
 	async acceptRelayEvent(event) {
 		const relay = this.config.webChat.relay;
 		const payload = decryptWebChatRelayPayload(event, relay.encryptionKey);
+		const relayReceivedAt = Date.parse(event.receivedAt);
+		const payloadCreatedAt = Date.parse(payload.createdAt);
 		if (
 			typeof payload.sessionId !== "string" || !UUID.test(payload.sessionId)
 			|| typeof payload.messageId !== "string" || payload.messageId !== event.id
-			|| typeof payload.createdAt !== "string" || payload.createdAt !== event.receivedAt
-			|| !Number.isFinite(Date.parse(payload.createdAt))
+			|| typeof payload.createdAt !== "string"
+			|| !Number.isFinite(relayReceivedAt)
+			|| !Number.isFinite(payloadCreatedAt)
+			|| payloadCreatedAt !== relayReceivedAt
 		) {
 			throw new Error("website chat relay payload binding is invalid");
 		}

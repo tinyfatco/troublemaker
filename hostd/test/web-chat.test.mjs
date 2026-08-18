@@ -49,7 +49,11 @@ test("website chat relay binds one isolated context, deduplicates ingress, and r
 		if (url.endsWith("/pull")) {
 			return Response.json({
 				claimId,
-				events: [{ id: messageId, receivedAt: createdAt, ...encrypted }],
+				events: [{
+					id: messageId,
+					receivedAt: "2026-08-18T12:00:00+00:00",
+					...encrypted,
+				}],
 			});
 		}
 		if (url.endsWith("/ack")) {
