@@ -155,7 +155,7 @@ test("nested artifacts reject VCS metadata and ignored private files but allow i
 	const project = join(workspace, "projects", "example");
 	try {
 		await mkdir(join(project, "site"), { recursive: true });
-		await writeFile(join(project, ".gitignore"), "site/.env\nsite/private.txt\ndist/\n");
+		await writeFile(join(project, ".gitignore"), "site/.env\nsite/ignored-note.txt\ndist/\ndist/private.txt\n");
 		await writeFile(join(project, "site", "index.html"), "<!doctype html><title>Safe</title>\n");
 		commitWorkspace(project, "main");
 		const source = await inspectWorkspaceGitSource(workspace, "main", "projects/example/site");
@@ -171,16 +171,22 @@ test("nested artifacts reject VCS metadata and ignored private files but allow i
 			(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
 		);
 		await rm(join(project, "site", ".env"));
-		await writeFile(join(project, "site", "private.txt"), "ignored private data\n");
+		await writeFile(join(project, "site", "ignored-note.txt"), "ignored private data\n");
 		await assert.rejects(
 			buildWorkspaceArtifact(workspace, "projects/example/site", LIMITS, { repository: source.repository }),
 			(error) => error instanceof HostSitesError && error.code === "artifact_ignored_path_forbidden",
 		);
-		await rm(join(project, "site", "private.txt"));
+		await rm(join(project, "site", "ignored-note.txt"));
 
 		await mkdir(join(project, "dist"), { recursive: true });
 		await writeFile(join(project, "dist", "index.html"), "<!doctype html><title>Ignored build</title>\n");
+		await writeFile(join(project, "dist", "private.txt"), "private build data\n");
 		assert.equal(git(project, "status", "--porcelain=v1"), "");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "projects/example/dist", LIMITS, { repository: source.repository }),
+			(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
+		);
+		await rm(join(project, "dist", "private.txt"));
 		const artifact = await buildWorkspaceArtifact(
 			workspace,
 			"projects/example/dist",

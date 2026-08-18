@@ -131,26 +131,33 @@ async function gitOutput(repository, args, failureCode) {
 	}
 }
 
-async function gitPathIgnored(repository, absolute) {
+async function gitIgnoreRule(repository, absolute) {
 	const path = relative(repository, absolute).split(sep).join("/") || ".";
 	try {
-		await execFileAsync("git", ["-C", repository, "check-ignore", "--quiet", "--", path], {
-			encoding: "utf8",
-			timeout: 10_000,
-			maxBuffer: 1024 * 1024,
-			env: gitEnvironment(),
-		});
-		return true;
+		const { stdout } = await execFileAsync(
+			"git",
+			["-C", repository, "check-ignore", "--verbose", "--", path],
+			{
+				encoding: "utf8",
+				timeout: 10_000,
+				maxBuffer: 1024 * 1024,
+				env: gitEnvironment(),
+			},
+		);
+		return stdout.trim().split("\t", 1)[0] || "ignored";
 	} catch (error) {
-		if (error && typeof error === "object" && error.code === 1) return false;
+		if (error && typeof error === "object" && error.code === 1) return null;
 		throw new HostSitesError(409, "source_ignore_status_unavailable");
 	}
 }
 
 function sensitiveArtifactPath(path) {
 	const parts = path.split("/");
+	const basename = parts.at(-1)?.toLowerCase() || "";
 	return parts.some((part) => [".git", ".hg", ".svn", ".gitignore", ".gitattributes", ".gitmodules"].includes(part))
-		|| parts.some((part) => part === ".env" || part.startsWith(".env."));
+		|| parts.some((part) => part === ".env" || part.startsWith(".env."))
+		|| /^(?:secret|secrets|credential|credentials|private|private-key|id_rsa|id_ed25519)(?:[._-]|$)/u.test(basename)
+		|| /\.(?:pem|key|p12|pfx)$/u.test(basename);
 }
 
 function safeIgnoredArtifactRoot(path) {
@@ -353,8 +360,8 @@ export async function buildWorkspaceArtifact(workspace, requestedDirectory, limi
 		throw new HostSitesError(409, "source_repository_outside_workspace");
 	}
 	const rootRelative = repository ? relative(repository, root).split(sep).join("/") || "." : "";
-	const rootIgnored = repository ? await gitPathIgnored(repository, root) : false;
-	if (rootIgnored && !safeIgnoredArtifactRoot(rootRelative)) {
+	const rootIgnoreRule = repository ? await gitIgnoreRule(repository, root) : null;
+	if (rootIgnoreRule && !safeIgnoredArtifactRoot(rootRelative)) {
 		throw new HostSitesError(400, "artifact_ignored_root_forbidden");
 	}
 	const validateEntry = hooks.validateEntry;
@@ -364,8 +371,14 @@ export async function buildWorkspaceArtifact(workspace, requestedDirectory, limi
 			if (sensitiveArtifactPath(path)) {
 				throw new HostSitesError(400, "artifact_private_path_forbidden");
 			}
-			if (repository && !rootIgnored && await gitPathIgnored(repository, absolute)) {
-				throw new HostSitesError(400, "artifact_ignored_path_forbidden");
+			if (repository) {
+				const entryIgnoreRule = await gitIgnoreRule(repository, absolute);
+				if (
+					(!rootIgnoreRule && entryIgnoreRule)
+					|| (rootIgnoreRule && entryIgnoreRule && entryIgnoreRule !== rootIgnoreRule)
+				) {
+					throw new HostSitesError(400, "artifact_ignored_path_forbidden");
+				}
 			}
 			await validateEntry?.({ absolute, metadata, path });
 		},
