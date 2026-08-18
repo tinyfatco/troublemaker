@@ -95,6 +95,7 @@
 		"test:model-config-list-models": "npx tsx test/model-config-list-models.test.ts",
 		"test:fireworks-model-resolution": "npx tsx test/fireworks-model-resolution.test.ts",
 		"test:workers-ai-model-resolution": "npx tsx test/workers-ai-model-resolution.test.ts",
+		"test:hostd-web-app": "node --test hostd/test/web-app-auth.test.mjs hostd/test/web-app-server.test.mjs",
 		"test:model-config-auth-reload": "npx tsx test/model-config-auth-reload.test.ts",
 		"test:model-auth-gate": "npx tsx test/model-auth-gate.test.ts",
 		"test:model-thinking": "npx tsx test/model-thinking.test.ts",

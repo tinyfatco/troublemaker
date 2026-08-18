@@ -506,6 +506,61 @@ function webChatConfig(raw, environment) {
 	};
 }
 
+function webAppConfig(raw, environment, defaultAgentName) {
+	if (raw === undefined) return undefined;
+	const webApp = object(raw, "webApp");
+	const listenerHost = host(webApp.host, "127.0.0.1", "webApp.host");
+	if (!["127.0.0.1", "localhost"].includes(listenerHost.toLowerCase())) {
+		throw new Error("webApp.host must remain loopback-only");
+	}
+	const assertionSecret = envSecret(
+		webApp.assertionSecretEnv,
+		"webApp.assertionSecretEnv",
+		environment,
+	);
+	if (Buffer.byteLength(assertionSecret, "utf8") < 32) {
+		throw new Error("webApp.assertionSecretEnv must contain at least 32 bytes");
+	}
+	const issuer = text(webApp.issuer ?? "fat-platform", "webApp.issuer");
+	const audience = text(webApp.audience ?? "troublemaker-hostd-web", "webApp.audience");
+	for (const [value, label] of [[issuer, "webApp.issuer"], [audience, "webApp.audience"]]) {
+		if (value.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(value)) {
+			throw new Error(`${label} contains unsupported characters`);
+		}
+	}
+	const defaultProject = webApp.defaultProject === undefined
+		? undefined
+		: text(webApp.defaultProject, "webApp.defaultProject").toLowerCase();
+	if (defaultProject && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(defaultProject)) {
+		throw new Error("webApp.defaultProject must be a project slug");
+	}
+	return {
+		host: listenerHost,
+		port: integer(webApp.port, 3120, "webApp.port", 1024, 65535),
+		assertionSecret,
+		issuer,
+		audience,
+		assertionTtlSeconds: integer(
+			webApp.assertionTtlSeconds,
+			60,
+			"webApp.assertionTtlSeconds",
+			15,
+			120,
+		),
+		maximumRequestBytes: integer(
+			webApp.maximumRequestBytes,
+			128 * 1024,
+			"webApp.maximumRequestBytes",
+			1024,
+			1024 * 1024,
+		),
+		defaultProject,
+		agentName: webApp.agentName === undefined
+			? defaultAgentName
+			: text(webApp.agentName, "webApp.agentName"),
+	};
+}
+
 async function sitesConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const sites = object(raw, "sites");
@@ -829,6 +884,7 @@ export async function loadConfig(path, environment = process.env) {
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
+	const webApp = webAppConfig(raw.webApp, environment, company.actor);
 	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
 		throw new Error("phone.ingress.path must be an absolute URL path");
@@ -904,6 +960,13 @@ export async function loadConfig(path, environment = process.env) {
 		65535,
 	)) {
 		throw new Error("phone.ingress.port must differ from server.port");
+	}
+	const serverPort = integer(server.port, 3099, "server.port", 1024, 65535);
+	if (webApp?.port === serverPort) {
+		throw new Error("webApp.port must differ from server.port");
+	}
+	if (webApp?.port === phone?.ingress?.port) {
+		throw new Error("webApp.port must differ from phone.ingress.port");
 	}
 
 	const configuredPrincipals = knownPrincipals.map((candidate, index) => {
@@ -1020,7 +1083,7 @@ export async function loadConfig(path, environment = process.env) {
 		},
 		server: {
 			host: server.host === undefined ? "127.0.0.1" : text(server.host, "server.host"),
-			port: integer(server.port, 3099, "server.port", 1024, 65535),
+			port: serverPort,
 			operatorToken: server.operatorTokenEnv
 				? envSecret(server.operatorTokenEnv, "server.operatorTokenEnv", environment)
 				: undefined,
@@ -1052,6 +1115,7 @@ export async function loadConfig(path, environment = process.env) {
 		rocketChat,
 		zulip,
 		phone,
+		webApp,
 		workersAi,
 		webChat,
 		sites,

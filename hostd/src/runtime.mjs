@@ -564,7 +564,7 @@ export class RuntimeManager {
 			target,
 			contextId,
 		);
-		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
+		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
 
 		let inspect = await run(
 			target.engine,
@@ -604,6 +604,9 @@ export class RuntimeManager {
 			const scheduledWakesOwned = hostOwnsScheduledWakes(this.config, contextId);
 			const env = {
 				HOME: "/data",
+				...(this.config.webApp ? {
+					MOM_WEB_INPUT_TOKEN: contextCapability(target.inboundToken, "web-app", contextId),
+				} : {}),
 				...(this.config.gmail ? {
 					MOM_EMAIL_INBOUND_TOKEN: contextCapability(target.inboundToken, "inbound", contextId),
 					MOM_EMAIL_TOOLS_TOKEN: contextCapability(target.outboundToken, "outbound", contextId),
@@ -694,6 +697,7 @@ export class RuntimeManager {
 				args.push("--volume", `${skillsPath}:/opt/troublemaker-skills/${index}:ro`);
 			}
 			const adapters = [
+				...(this.config.webApp ? ["web"] : []),
 				...(this.config.gmail ? ["email:webhook"] : []),
 				...(mattermost ? ["mattermost:webhook"] : []),
 				...(rocketChat ? ["rocket-chat:webhook"] : []),

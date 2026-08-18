@@ -8,6 +8,15 @@
     "port": 3099,
     "operatorTokenEnv": "TROUBLEMAKER_HOSTD_OPERATOR_TOKEN"
   },
+  "webApp": {
+    "host": "127.0.0.1",
+    "port": 3120,
+    "assertionSecretEnv": "TROUBLEMAKER_HOSTD_WEB_APP_SECRET",
+    "issuer": "fat-platform",
+    "audience": "troublemaker-hostd-web",
+    "defaultProject": "website",
+    "agentName": "Operator"
+  },
   "state": {
     "database": "/var/lib/troublemaker-hostd/state.sqlite",
     "routingKeyFile": "/etc/troublemaker-hostd/routing.key"

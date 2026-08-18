@@ -197,6 +197,43 @@ troublemaker-hostd status --config /etc/troublemaker-hostd/config.json
 `serve` binds its API to loopback by default. OCI ports must also be published
 on loopback only. Do not expose the host API or child gateway ports publicly.
 
+## Authenticated web app gateway
+
+An optional `webApp` listener connects an authenticated product surface to the
+existing Hostd principal/project model. The product server signs the verified
+account subject, normalized email, method, exact path, body digest, timestamp,
+and one-time nonce with HMAC-SHA256. Hostd accepts only short-lived assertions,
+requires the email to match an exact `routing.knownPrincipals` entry, and maps
+the requested project only within that principal's configured projects.
+
+```json
+{
+  "webApp": {
+    "host": "127.0.0.1",
+    "port": 3120,
+    "assertionSecretEnv": "TROUBLEMAKER_HOSTD_WEB_APP_SECRET",
+    "issuer": "fat-platform",
+    "audience": "troublemaker-hostd-web",
+    "assertionTtlSeconds": 60,
+    "defaultProject": "website",
+    "agentName": "Operator"
+  }
+}
+```
+
+The listener must remain on loopback. If a remote product server needs it,
+publish only this listener through an authenticated outbound tunnel; never
+publish the Hostd operator API or a child runtime port. The shared assertion
+secret belongs only in the product server and Hostd host environments. It must
+not enter a browser, model context, runtime environment, or workspace.
+
+The gateway returns redacted session/project/preview metadata and proxies only
+the portable status, awareness, live-stream, message, and stop routes. It does
+not accept caller-selected context IDs, runtime ports, target IDs, or Sites
+grant identifiers. Message bodies remain authored by the authenticated user or
+agent; the gateway supplies routing metadata but never writes visible fallback
+text.
+
 ## Routing
 
 Ordinary Gmail identity comes only from normalized `From`, `To`, and `Cc`

@@ -20,6 +20,7 @@ const ENVIRONMENT = {
 	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
+	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
 };
 
 test("loads a signed Gmail contact relay with a control-plane-owned project", async () => {
@@ -63,6 +64,17 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		requestTimeoutMs: 600_000,
 		maximumRequestBytes: 4 * 1024 * 1024,
 	});
+	assert.deepEqual(config.webApp, {
+		host: "127.0.0.1",
+		port: 3120,
+		assertionSecret: "test-web-app-secret-at-least-32-bytes",
+		issuer: "fat-platform",
+		audience: "troublemaker-hostd-web",
+		assertionTtlSeconds: 60,
+		maximumRequestBytes: 128 * 1024,
+		defaultProject: undefined,
+		agentName: "Operator",
+	});
 	assert.deepEqual(config.routing.knownPhonePrincipals[0].model, {
 		provider: "cloudflare-workers-ai",
 		id: "@cf/zai-org/glm-5.2",
@@ -75,6 +87,32 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 			pollIntervalSeconds: 1,
 		},
 	});
+});
+
+test("requires the web app gateway to remain loopback-only and use a distinct port", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-web-app-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.webApp.host = "0.0.0.0";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /webApp.host must remain loopback-only/);
+
+		raw.webApp.host = "127.0.0.1";
+		raw.webApp.port = raw.server.port;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /webApp.port must differ from server.port/);
+
+		raw.webApp.port = 3120;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, { ...ENVIRONMENT, TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "short" }),
+			/at least 32 bytes/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("loads encrypted edge relay polling without a public Hostd listener", async () => {
