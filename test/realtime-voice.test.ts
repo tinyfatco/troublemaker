@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
 	createCanonicalSpeechResponse,
 	createRealtimeSessionUpdate,
@@ -41,10 +42,17 @@ assert.deepEqual(speechResponse.output_modalities, ["audio"], "Canonical respons
 assert.match(String(speechResponse.instructions), /exactly/i, "Speech response tells Realtime to read exact canonical text");
 assert.match(String(firstContent.text), /Hello from Agent\./, "Canonical Agent text is supplied to speech renderer");
 
-assert.equal(isRealtimeControlTokenAccepted(undefined, undefined), true, "Control token is optional for unmanaged local runtimes");
-assert.equal(isRealtimeControlTokenAccepted("local-secret", undefined), false, "Configured control token rejects missing client token");
-assert.equal(isRealtimeControlTokenAccepted("local-secret", "wrong-secret"), false, "Configured control token rejects wrong client token");
-assert.equal(isRealtimeControlTokenAccepted("local-secret", "local-secret"), true, "Configured control token accepts exact client token");
+const localControlToken = "local-control-secret-with-at-least-32-bytes";
+assert.equal(isRealtimeControlTokenAccepted(undefined, undefined), false, "Missing control-token configuration fails closed");
+assert.equal(isRealtimeControlTokenAccepted("local-secret", "local-secret"), false, "Weak configured control tokens fail closed");
+assert.equal(isRealtimeControlTokenAccepted(localControlToken, undefined), false, "Configured control token rejects missing client token");
+assert.equal(isRealtimeControlTokenAccepted(localControlToken, "wrong-secret"), false, "Configured control token rejects wrong client token");
+assert.equal(isRealtimeControlTokenAccepted(localControlToken, localControlToken), true, "Configured control token accepts exact client token");
+assert.doesNotMatch(
+	readFileSync(new URL("../src/adapters/realtime-voice.ts", import.meta.url), "utf8"),
+	/local_control_token/,
+	"Realtime control capabilities never enter request URLs",
+);
 
 assert.deepEqual(
 	resolveRealtimeAuthPlan({

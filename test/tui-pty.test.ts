@@ -417,15 +417,20 @@ expect {
   timeout { puts stderr "Ambient update timeout"; exit 6 }
   eof { puts stderr "TUI exited before ambient update"; exit 7 }
 }
-expect {
-  {Working...} {}
-  timeout { puts stderr "External working indicator timeout"; exit 16 }
-  eof { puts stderr "TUI exited before external working indicator"; exit 17 }
-}
-expect {
-  {External check finished} {}
-  timeout { puts stderr "Idle external assistant repaint timeout"; exit 14 }
-  eof { puts stderr "TUI exited before idle external assistant update"; exit 15 }
+set saw_working 0
+set saw_external 0
+while {!$saw_working || !$saw_external} {
+  expect {
+    -re {(Working[.][.][.]|External check finished)} {
+      if {$expect_out(1,string) eq "Working..."} {
+        set saw_working 1
+      } else {
+        set saw_external 1
+      }
+    }
+    timeout { puts stderr "External working/assistant repaint timeout"; exit 14 }
+    eof { puts stderr "TUI exited before external working/assistant update"; exit 15 }
+  }
 }
 expect {
   {voice update} {}

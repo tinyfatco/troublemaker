@@ -16,6 +16,8 @@ import {
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
+const MAXIMUM_WEBHOOK_BYTES = 16 * 1024 * 1024;
+
 // ============================================================================
 // EmailWebhookAdapter — receives email via HTTP, runs agent, sends one reply
 // ============================================================================
@@ -62,7 +64,7 @@ export interface EmailWebhookAdapterConfig {
 	toolsToken: string;
 	/** URL for sending email replies (e.g., https://tinyfat.com/api/email/send) */
 	sendUrl: string;
-	/** Optional bearer token required for trusted upstream webhook delivery. */
+	/** Bearer token required for trusted upstream webhook delivery. */
 	inboundToken?: string;
 	/** Host-assigned isolated context allowed to reply through the host router. */
 	hostContextId?: string;
@@ -102,9 +104,15 @@ interface EmailThreadTurn {
 }
 
 export function matchesBearerToken(header: string | undefined, expected: string): boolean {
-	const actualBytes = Buffer.from(header?.replace(/^Bearer\s+/i, "") || "");
+	const actualBytes = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
 	const expectedBytes = Buffer.from(expected);
 	return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function isJsonContentType(value: string | string[] | undefined): boolean {
+	if (typeof value !== "string") return false;
+	const mediaType = value.split(";", 1)[0]?.trim().toLowerCase();
+	return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
 }
 
 export class EmailWebhookAdapter implements PlatformAdapter {
@@ -156,14 +164,32 @@ Keep responses concise and professional. The user will receive one email with yo
 	// ==========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		if (this.inboundToken && !matchesBearerToken(req.headers.authorization, this.inboundToken)) {
-			res.writeHead(401, { "Content-Type": "application/json" });
+		if (!this.inboundToken || !matchesBearerToken(req.headers.authorization, this.inboundToken)) {
+			res.writeHead(401, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
 			res.end(JSON.stringify({ error: "unauthorized" }));
 			return;
 		}
+		if (!isJsonContentType(req.headers["content-type"])) {
+			res.writeHead(415, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+			res.end(JSON.stringify({ error: "json_required" }));
+			return;
+		}
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+				res.end(JSON.stringify({ error: "request_too_large" }));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", async () => {
+			if (rejected) return;
 			const body = Buffer.concat(chunks).toString("utf-8");
 
 			let payload: EmailPayload;
@@ -182,14 +208,14 @@ Keep responses concise and professional. The user will receive one email with yo
 			}
 
 			const waitForCompletion = req.headers["x-troublemaker-wait-for-completion"] === "1";
-				const process = async () => await withHostReceipt(payload.hostReceipt, async () => {
-					if (payload.deliveryId && this.isCompletedDelivery(payload.deliveryId)) {
-						return { duplicate: true };
-					}
-					await this.processEmail(payload);
-					if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
-					return { duplicate: false };
-				});
+			const process = async () => await withHostReceipt(payload.hostReceipt, async () => {
+				if (payload.deliveryId && this.isCompletedDelivery(payload.deliveryId)) {
+					return { duplicate: true };
+				}
+				await this.processEmail(payload);
+				if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
+				return { duplicate: false };
+			});
 
 			if (waitForCompletion) {
 				try {
@@ -204,8 +230,8 @@ Keep responses concise and professional. The user will receive one email with yo
 				return;
 			}
 
-				res.writeHead(202, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true, accepted: true }));
+			res.writeHead(202, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true, accepted: true }));
 			process().catch((err) => {
 				log.logWarning("Email processing error", err instanceof Error ? err.message : String(err));
 			});

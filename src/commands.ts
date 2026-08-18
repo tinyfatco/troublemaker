@@ -20,7 +20,8 @@ import {
 } from "./realtime-voices.js";
 import * as log from "./log.js";
 import { formatUsageSummary, formatTokens } from "./log.js";
-import { AuthStorage, getAgentDir, type AuthCredential } from "@earendil-works/pi-coding-agent";
+import type { AuthEvent, AuthPrompt, Credential } from "@earendil-works/pi-ai";
+import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 
 /**
  * Pending input — when a command needs the user's next message (e.g. /login),
@@ -481,7 +482,7 @@ async function handleClearCommand(
 
 
 interface PlatformCredentialPersistenceOptions {
-	authStorage: AuthStorage;
+	credential?: Credential;
 	providerId: string;
 	secretKey: string;
 	toolsToken: string;
@@ -493,11 +494,11 @@ type PlatformCredentialPersistenceResult =
 	| { ok: true; status: number }
 	| { ok: false; reason: "missing_credential" | "http_error"; status?: number };
 
-function isAuthData(value: unknown): value is Record<string, AuthCredential> {
+function isAuthData(value: unknown): value is Record<string, Credential> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function readExistingAuthData(authPath: string): Record<string, AuthCredential> {
+function readExistingAuthData(authPath: string): Record<string, Credential> {
 	if (!existsSync(authPath)) return {};
 	try {
 		const parsed = JSON.parse(readFileSync(authPath, "utf-8")) as unknown;
@@ -507,21 +508,21 @@ function readExistingAuthData(authPath: string): Record<string, AuthCredential> 
 	}
 }
 
-function stripCredentialType(credential: AuthCredential): Record<string, unknown> {
+function stripCredentialType(credential: Credential): Record<string, unknown> {
 	const { type: _type, ...rawCredential } = credential;
 	return rawCredential as Record<string, unknown>;
 }
 
 /**
- * Rewrites auth.json from AuthStorage's in-memory credential after login.
- * This repairs a malformed auth file that would otherwise block persistence.
+ * Rewrites auth.json from the credential returned by ModelRuntime.login().
+ * This also repairs a malformed auth file that would otherwise block future
+ * credential hydration.
  */
 export function normalizeLoginCredentialFile(
-	authStorage: AuthStorage,
+	credential: Credential | undefined,
 	providerId: string,
 	authPath = join(getAgentDir(), "auth.json"),
-): AuthCredential | undefined {
-	const credential = authStorage.get(providerId);
+): Credential | undefined {
 	if (!credential) return undefined;
 
 	const authData = readExistingAuthData(authPath);
@@ -530,25 +531,24 @@ export function normalizeLoginCredentialFile(
 	mkdirSync(dirname(authPath), { recursive: true, mode: 0o700 });
 	writeFileSync(authPath, `${JSON.stringify(authData, null, 2)}\n`, "utf-8");
 	chmodSync(authPath, 0o600);
-	authStorage.reload();
 
 	return credential;
 }
 
 export async function persistLoginCredentialToPlatform({
-	authStorage,
+	credential,
 	providerId,
 	secretKey,
 	toolsToken,
 	authPath,
 	fetchImpl = fetch,
 }: PlatformCredentialPersistenceOptions): Promise<PlatformCredentialPersistenceResult> {
-	const credential = normalizeLoginCredentialFile(authStorage, providerId, authPath);
-	if (!credential) {
+	const normalizedCredential = normalizeLoginCredentialFile(credential, providerId, authPath);
+	if (!normalizedCredential) {
 		return { ok: false, reason: "missing_credential" };
 	}
 
-	const rawCredential = stripCredentialType(credential);
+	const rawCredential = stripCredentialType(normalizedCredential);
 	const resp = await fetchImpl("https://tinyfat.com/api/agent/secrets", {
 		method: "PATCH",
 		headers: {
@@ -571,8 +571,14 @@ async function handleLoginCommand(
 	workingDir: string,
 	platform: PlatformAdapter,
 ): Promise<SlashCommandResult> {
-	const authStorage = AuthStorage.create();
-	const providers = authStorage.getOAuthProviders();
+	const authPath = join(getAgentDir(), "auth.json");
+	const modelRuntime = await ModelRuntime.create({ authPath, allowModelNetwork: false });
+	const providers = modelRuntime.getProviders()
+		.filter((provider) => provider.auth.oauth !== undefined)
+		.map((provider) => ({
+			id: provider.id,
+			name: provider.auth.oauth?.name || provider.name,
+		}));
 
 	if (hasPendingInput(channelId)) {
 		await platform.postMessage(channelId, "_Input is already pending. Paste the callback URL, or send `/cancel`._");
@@ -583,7 +589,7 @@ async function handleLoginCommand(
 		// List available providers and their auth status
 		let response = "*Available login providers:*\n\n";
 		for (const p of providers) {
-			const hasAuth = authStorage.hasAuth(p.id);
+			const hasAuth = modelRuntime.getProviderAuthStatus(p.id).configured;
 			const status = hasAuth ? "✓ logged in" : "✗ not logged in";
 			response += `  \`${p.id}\` — ${p.name} (${status})\n`;
 		}
@@ -614,65 +620,74 @@ async function handleLoginCommand(
 	const LOGIN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 	const pending = (async () => {
 		try {
-			const loginPromise = authStorage.login(providerId, {
-				onAuth: async (info) => {
-					let msg = `*Open this URL in your browser:*\n\n${info.url}\n\n`;
-					if (info.instructions) {
-						msg += `${info.instructions}\n\n`;
+			let notificationQueue = Promise.resolve();
+			const queueNotification = (event: AuthEvent): void => {
+				notificationQueue = notificationQueue.then(async () => {
+					if (event.type === "auth_url") {
+						let msg = `*Open this URL in your browser:*\n\n${event.url}\n\n`;
+						if (event.instructions) msg += `${event.instructions}\n\n`;
+						msg += "After authorizing, copy the full callback URL from your browser and paste it here if prompted.";
+						await platform.postMessage(channelId, msg);
+						return;
 					}
-					msg += `After authorizing, your browser will redirect to a \`localhost\` URL that won't load — that's expected. Copy the *full URL* from your browser's address bar and paste it here.`;
-					await platform.postMessage(channelId, msg);
-				},
-				onDeviceCode: async (info) => {
-					let msg = `*Device code login:*\n\nOpen this URL in your browser:\n${info.verificationUri}\n\nEnter code: \`${info.userCode}\``;
-					if (info.expiresInSeconds) {
-						msg += `\n\nCode expires in ${Math.round(info.expiresInSeconds / 60)} minutes.`;
+					if (event.type === "device_code") {
+						let msg = `*Device code login:*\n\nOpen this URL in your browser:\n${event.verificationUri}\n\nEnter code: \`${event.userCode}\``;
+						if (event.expiresInSeconds) msg += `\n\nCode expires in ${Math.round(event.expiresInSeconds / 60)} minutes.`;
+						await platform.postMessage(channelId, msg);
+						return;
+					}
+					let msg = event.type === "progress" ? `_${event.message}_` : event.message;
+					if (event.type === "info" && event.links?.length) {
+						msg += `\n${event.links.map((link) => link.label ? `${link.label}: ${link.url}` : link.url).join("\n")}`;
 					}
 					await platform.postMessage(channelId, msg);
-				},
-				onPrompt: async (prompt) => {
-					await platform.postMessage(channelId, prompt.message);
-					const input = await waitForInput(channelId);
-					return input;
-				},
-				onManualCodeInput: async () => {
-					const input = await waitForInput(channelId);
-					return input;
-				},
-				onProgress: async (message) => {
-					await platform.postMessage(channelId, `_${message}_`);
-				},
-				onSelect: async (prompt) => {
+				});
+			};
+			const promptForAuth = async (prompt: AuthPrompt): Promise<string> => {
+				await notificationQueue;
+				if (prompt.signal?.aborted) throw new Error("Login prompt was cancelled");
+				if (prompt.type === "secret") {
+					throw new Error("Secret entry is disabled in chat. Configure API credentials through the protected secret flow.");
+				}
+				if (prompt.type === "select") {
 					const options = prompt.options
 						.map((option, index) => `${index + 1}. \`${option.id}\` — ${option.label}`)
 						.join("\n");
 					await platform.postMessage(channelId, `${prompt.message}\n\n${options}\n\nReply with an option id or number.`);
-
 					const input = (await waitForInput(channelId)).trim();
-					if (!input) return undefined;
-
 					const numeric = Number(input);
 					if (Number.isInteger(numeric) && numeric >= 1 && numeric <= prompt.options.length) {
 						return prompt.options[numeric - 1].id;
 					}
-
 					const selected = prompt.options.find((option) => option.id.toLowerCase() === input.toLowerCase());
 					if (selected) return selected.id;
+					throw new Error(`Unknown login selection: ${input || "(empty)"}`);
+				}
+				await platform.postMessage(channelId, prompt.message);
+				return waitForInput(channelId);
+			};
 
-					await platform.postMessage(channelId, `_Unknown selection: ${input}_`);
-					return undefined;
-				},
+			const abortController = new AbortController();
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			const timeoutPromise = new Promise<never>((_, reject) => {
+				timeout = setTimeout(() => {
+					abortController.abort();
+					reject(new Error("Login timed out (5 min). Try /login again."));
+				}, LOGIN_TIMEOUT_MS);
 			});
+			const loginPromise = modelRuntime.login(providerId, "oauth", {
+				signal: abortController.signal,
+				prompt: promptForAuth,
+				notify: queueNotification,
+			});
+			const credential = await Promise.race([loginPromise, timeoutPromise]).finally(() => {
+				if (timeout) clearTimeout(timeout);
+			});
+			await notificationQueue;
 
-			const timeoutPromise = new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error("Login timed out (5 min). Try /login again.")), LOGIN_TIMEOUT_MS),
-			);
-
-			await Promise.race([loginPromise, timeoutPromise]);
-
-			// Login succeeded — auth.json is written by AuthStorage.
+			// Login succeeded and ModelRuntime updated auth.json.
 			// Now persist to platform secrets so it survives container restart.
-			// Maps provider IDs to platform secret keys (must match crawdad-cf hydrate.ts FILE_RULES).
+			// Maps provider IDs to the platform hydrator's protected file rules.
 			const secretKeyMap: Record<string, string> = {
 				"openai-codex": "codex_credentials",
 			};
@@ -681,7 +696,7 @@ async function handleLoginCommand(
 			if (toolsToken && secretKey) {
 				try {
 					const result = await persistLoginCredentialToPlatform({
-						authStorage,
+						credential,
 						providerId,
 						secretKey,
 						toolsToken,

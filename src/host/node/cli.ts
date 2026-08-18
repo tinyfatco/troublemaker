@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "crypto";
+import type { IncomingMessage } from "http";
 import { join, resolve } from "path";
 import { detectDiscordAdapterFromEnv, normalizeDiscordAdapterName, readDiscordBoundaryEnvironment, readDiscordGatewayEnvironment } from "../../adapters/discord-config.js";
 import { DiscordGatewayAdapter } from "../../adapters/discord-gateway.js";
@@ -50,7 +51,7 @@ import {
 	noteFollowUpActivity,
 	reconcileFollowUpSchedules,
 } from "../../follow-ups.js";
-import { Gateway } from "../../gateway.js";
+import { Gateway, isTrustedStandaloneWebSocketRequest, resolveGatewayListenHost } from "../../gateway.js";
 import * as log from "../../log.js";
 import { createExecutor, parseSandboxArg, withExecutorCwd, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
@@ -84,6 +85,7 @@ import {
 } from "../../goal-continuation.js";
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 import { FirstClassVoiceContract } from "../../voice-contract.js";
+import { readProtectedTokenFile } from "../../protected-token-file.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -220,9 +222,8 @@ function parseArgs(): ParsedArgs {
 			adapters.push("slack");
 		}
 		if (process.env.MOM_SLACK_BOT_TOKEN && !adapters.includes("slack")) {
-			// Auto-detect webhook mode when only the bot token is present. In crawdad-cf
-			// mode, Slack signatures are verified upstream and the signing secret is
-			// intentionally not exposed to the container.
+			// Auto-detect webhook mode when only the bot token is present. A native
+			// signing secret or scoped host-proxy capability is still required.
 			adapters.push("slack:webhook");
 		}
 		if (process.env.MOM_MATTERMOST_URL && process.env.MOM_MATTERMOST_BOT_TOKEN) {
@@ -243,10 +244,8 @@ function parseArgs(): ParsedArgs {
 			adapters.push("zulip:webhook");
 		}
 		if (process.env.MOM_TELEGRAM_BOT_TOKEN) {
-			// External orchestrator (crawdad-cf) signals "I manage the webhook URL
-			// and verify upstream" via MOM_SKIP_WEBHOOK_REGISTRATION. In that case
-			// pick webhook mode unconditionally — the secret is intentionally absent
-			// from container env (FAT-366). Otherwise fall back to historic behavior:
+			// An external host proxy can manage registration and authenticate delivery
+			// with a scoped inbound capability. Otherwise fall back to direct Telegram:
 			// secret present → webhook (self-registered), absent → polling.
 			if (process.env.MOM_SKIP_WEBHOOK_REGISTRATION || process.env.MOM_TELEGRAM_WEBHOOK_SECRET) {
 				adapters.push("telegram:webhook");
@@ -551,10 +550,14 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_SLACK_BOT_TOKEN");
 				process.exit(1);
 			}
-			// signing secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
 			const signingSecret = process.env.MOM_SLACK_SIGNING_SECRET || "";
+			const upstreamToken = process.env.MOM_SLACK_INBOUND_TOKEN?.trim();
+			if (!signingSecret && (!upstreamToken || Buffer.byteLength(upstreamToken, "utf8") < 32)) {
+				console.error("Missing MOM_SLACK_SIGNING_SECRET or strong MOM_SLACK_INBOUND_TOKEN");
+				process.exit(1);
+			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
 		}
 		case "mattermost":
 		case "mattermost:socket": {
@@ -580,9 +583,9 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "mattermost:webhook": {
 			const url = process.env.MOM_MATTERMOST_URL;
 			const botToken = process.env.MOM_MATTERMOST_BOT_TOKEN;
-			const inboundToken = process.env.MOM_MATTERMOST_INBOUND_TOKEN;
-			if (!url || !botToken || !inboundToken) {
-				console.error("Missing env: MOM_MATTERMOST_URL, MOM_MATTERMOST_BOT_TOKEN, MOM_MATTERMOST_INBOUND_TOKEN");
+			const inboundToken = process.env.MOM_MATTERMOST_INBOUND_TOKEN?.trim();
+			if (!url || !botToken || !inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32) {
+				console.error("Missing or weak env: MOM_MATTERMOST_URL, MOM_MATTERMOST_BOT_TOKEN, MOM_MATTERMOST_INBOUND_TOKEN (minimum 32 bytes)");
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
@@ -604,10 +607,10 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "rocket-chat:webhook": {
 			const url = process.env.MOM_ROCKETCHAT_URL;
 			const botToken = process.env.MOM_ROCKETCHAT_BOT_TOKEN;
-			const inboundToken = process.env.MOM_ROCKETCHAT_INBOUND_TOKEN;
+			const inboundToken = process.env.MOM_ROCKETCHAT_INBOUND_TOKEN?.trim();
 			const agentName = process.env.MOM_ROCKETCHAT_AGENT_NAME || "Agent";
-			if (!url || !botToken || !inboundToken || allowedRocketChatRoomIds.length === 0) {
-				console.error("Missing env: MOM_ROCKETCHAT_URL, MOM_ROCKETCHAT_BOT_TOKEN, MOM_ROCKETCHAT_INBOUND_TOKEN, MOM_ROCKETCHAT_ALLOWED_ROOMS");
+			if (!url || !botToken || !inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32 || allowedRocketChatRoomIds.length === 0) {
+				console.error("Missing or weak env: MOM_ROCKETCHAT_URL, MOM_ROCKETCHAT_BOT_TOKEN, MOM_ROCKETCHAT_INBOUND_TOKEN (minimum 32 bytes), MOM_ROCKETCHAT_ALLOWED_ROOMS");
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
@@ -625,10 +628,10 @@ function createAdapter(name: string): AdapterWithHandler {
 		case "zulip:webhook": {
 			const url = process.env.MOM_ZULIP_URL;
 			const botToken = process.env.MOM_ZULIP_BOT_TOKEN;
-			const inboundToken = process.env.MOM_ZULIP_INBOUND_TOKEN;
+			const inboundToken = process.env.MOM_ZULIP_INBOUND_TOKEN?.trim();
 			const agentName = process.env.MOM_ZULIP_AGENT_NAME || "Agent";
-			if (!url || !botToken || !inboundToken) {
-				console.error("Missing env: MOM_ZULIP_URL, MOM_ZULIP_BOT_TOKEN, MOM_ZULIP_INBOUND_TOKEN");
+			if (!url || !botToken || !inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32) {
+				console.error("Missing or weak env: MOM_ZULIP_URL, MOM_ZULIP_BOT_TOKEN, MOM_ZULIP_INBOUND_TOKEN (minimum 32 bytes)");
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
@@ -663,8 +666,8 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 				process.exit(1);
 			}
-			// webhook secret is optional — when absent, the adapter trusts upstream verification (crawdad-cf)
 			const webhookSecret = process.env.MOM_TELEGRAM_WEBHOOK_SECRET || "";
+			const upstreamToken = process.env.MOM_TELEGRAM_INBOUND_TOKEN?.trim();
 			if (!skipRegistration && !webhookUrl) {
 				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_URL (required unless MOM_SKIP_WEBHOOK_REGISTRATION=true)");
 				process.exit(1);
@@ -673,7 +676,11 @@ function createAdapter(name: string): AdapterWithHandler {
 				console.error("Missing env: MOM_TELEGRAM_WEBHOOK_SECRET (required when registering webhook)");
 				process.exit(1);
 			}
-			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, skipRegistration });
+			if (!webhookSecret && (!upstreamToken || Buffer.byteLength(upstreamToken, "utf8") < 32)) {
+				console.error("Missing MOM_TELEGRAM_WEBHOOK_SECRET or strong MOM_TELEGRAM_INBOUND_TOKEN");
+				process.exit(1);
+			}
+			return new TelegramWebhookAdapter({ botToken, workingDir, webhookUrl, webhookSecret, upstreamToken, skipRegistration });
 		}
 		case "discord":
 		case "discord:gateway": {
@@ -703,8 +710,13 @@ function createAdapter(name: string): AdapterWithHandler {
 			const discordBotToken = process.env.MOM_DISCORD_BOT_TOKEN;
 			const discordAppId = process.env.MOM_DISCORD_APPLICATION_ID;
 			const discordPublicKey = process.env.MOM_DISCORD_PUBLIC_KEY;
+			const upstreamToken = process.env.MOM_DISCORD_INBOUND_TOKEN?.trim();
 			if (!discordBotToken || !discordAppId || !discordPublicKey) {
 				console.error("Missing env: MOM_DISCORD_BOT_TOKEN, MOM_DISCORD_APPLICATION_ID, MOM_DISCORD_PUBLIC_KEY");
+				process.exit(1);
+			}
+			if (upstreamToken && Buffer.byteLength(upstreamToken, "utf8") < 32) {
+				console.error("Weak env: MOM_DISCORD_INBOUND_TOKEN (minimum 32 bytes)");
 				process.exit(1);
 			}
 			let boundaryConfig: ReturnType<typeof readDiscordBoundaryEnvironment>;
@@ -718,6 +730,7 @@ function createAdapter(name: string): AdapterWithHandler {
 				botToken: discordBotToken,
 				applicationId: discordAppId,
 				publicKey: discordPublicKey,
+				upstreamToken,
 				workingDir,
 				pulse,
 				onAmbientMessage: handleAmbientMessage,
@@ -731,22 +744,61 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const sendUrl = process.env.MOM_EMAIL_SEND_URL || "https://tinyfat.com/api/email/send";
-			const inboundToken = process.env.MOM_EMAIL_INBOUND_TOKEN;
+			const inboundToken = process.env.MOM_EMAIL_INBOUND_TOKEN?.trim();
 			const hostContextId = process.env.TROUBLEMAKER_CONTEXT_ID;
 			const toolsOnly = process.env.MOM_EMAIL_TOOLS_ONLY === "true";
+			if (!inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32) {
+				console.error("Missing or weak env: MOM_EMAIL_INBOUND_TOKEN (minimum 32 bytes)");
+				process.exit(1);
+			}
 			return new EmailWebhookAdapter({ workingDir, toolsToken, sendUrl, inboundToken, hostContextId, toolsOnly });
 		}
 		case "phone-messaging:webhook":
 		case "phone:webhook": {
+			const inboundToken = process.env.MOM_PHONE_INBOUND_TOKEN?.trim();
+			if (!inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32) {
+				console.error("Missing or weak env: MOM_PHONE_INBOUND_TOKEN (minimum 32 bytes)");
+				process.exit(1);
+			}
 			return new PhoneMessagingWebhookAdapter({ workingDir });
 		}
 		case "form:webhook": {
-			return new FormWebhookAdapter({ workingDir });
+			const inboundToken = process.env.MOM_FORM_INBOUND_TOKEN?.trim();
+			if (!inboundToken || Buffer.byteLength(inboundToken, "utf8") < 32) {
+				console.error("Missing or weak env: MOM_FORM_INBOUND_TOKEN (minimum 32 bytes)");
+				process.exit(1);
+			}
+			return new FormWebhookAdapter({ workingDir, inboundToken });
 		}
 		case "web": {
-			return new WebAdapter({ workingDir, inputToken: process.env.MOM_WEB_INPUT_TOKEN });
+			const inputToken = process.env.MOM_WEB_INPUT_TOKEN?.trim();
+			const webhookToken = process.env.MOM_WEBHOOK_INPUT_TOKEN?.trim()
+				|| readProtectedTokenFile(process.env.MOM_WEBHOOK_INPUT_TOKEN_FILE);
+			const allowUnauthenticatedWebhook = process.env.MOM_WEBHOOK_INPUT_ALLOW_UNAUTHENTICATED === "true";
+			if (inputToken && Buffer.byteLength(inputToken, "utf8") < 32) {
+				throw new Error("MOM_WEB_INPUT_TOKEN must be at least 32 bytes");
+			}
+			if (webhookToken && Buffer.byteLength(webhookToken, "utf8") < 32) {
+				throw new Error("MOM_WEBHOOK_INPUT_TOKEN must be at least 32 bytes");
+			}
+			if (process.env.TROUBLEMAKER_HOSTD_CONTAINER === "1" && !inputToken) {
+				throw new Error("Hostd web ingress requires MOM_WEB_INPUT_TOKEN");
+			}
+			if (process.env.TROUBLEMAKER_HOSTD_CONTAINER === "1" && allowUnauthenticatedWebhook) {
+				throw new Error("Hostd webhooks cannot allow unauthenticated input");
+			}
+			return new WebAdapter({
+				workingDir,
+				inputToken,
+				webhookToken,
+				allowUnauthenticatedWebhook,
+			});
 		}
 		case "mcp": {
+			const token = process.env.MOM_MCP_AUTH_TOKEN?.trim();
+			if (!token || Buffer.byteLength(token, "utf8") < 32) {
+				throw new Error("MCP adapter requires MOM_MCP_AUTH_TOKEN with at least 32 bytes");
+			}
 			return new McpAdapter({ workingDir });
 		}
 		case "voice": {
@@ -783,10 +835,16 @@ adapters.unshift(followUpAdapter);
 const heartbeatAdapter = new HeartbeatAdapter({ workingDir }) as AdapterWithHandler;
 adapters.push(heartbeatAdapter);
 
-// Always create operator adapter — headless inbound surface for the Agency
-// MCP. Crawdad-cf worker proxies authenticated operator requests to
-// /operator/* routes on the container gateway. No outbound path.
-const operatorAdapter = new OperatorAdapter({ workingDir }) as AdapterWithHandler;
+// Always create the headless operator adapter, but keep HTTP ingress disabled
+// unless a strong, context-scoped capability is explicitly configured.
+const operatorInboundToken = process.env.MOM_OPERATOR_INBOUND_TOKEN?.trim();
+if (operatorInboundToken && Buffer.byteLength(operatorInboundToken, "utf8") < 32) {
+	throw new Error("MOM_OPERATOR_INBOUND_TOKEN must be at least 32 bytes");
+}
+const operatorAdapter = new OperatorAdapter({
+	workingDir,
+	inboundToken: operatorInboundToken,
+}) as AdapterWithHandler;
 adapters.push(operatorAdapter);
 
 // ============================================================================
@@ -993,7 +1051,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			...mcpBridge.tools(),
 		];
 
-		const runner = getOrCreateRunner(
+		const runner = await getOrCreateRunner(
 			sandbox,
 			awarenessDir,
 			formatInstructions,
@@ -1534,10 +1592,13 @@ const gateway = new Gateway({
 });
 
 const hostOwnsDelayedSchedules = process.env.MOM_HOSTD_SCHEDULE_OWNER === "host";
-const scheduledPromptToken = process.env.MOM_SCHEDULED_PROMPT_INBOUND_TOKEN;
+const scheduledPromptToken = process.env.MOM_SCHEDULED_PROMPT_INBOUND_TOKEN?.trim();
 const hostContextId = process.env.TROUBLEMAKER_CONTEXT_ID;
 if (hostOwnsDelayedSchedules !== Boolean(scheduledPromptToken && hostContextId)) {
 	throw new Error("Hostd schedule ownership requires one exact context and inbound token");
+}
+if (scheduledPromptToken && Buffer.byteLength(scheduledPromptToken, "utf8") < 32) {
+	throw new Error("MOM_SCHEDULED_PROMPT_INBOUND_TOKEN must be at least 32 bytes");
 }
 const scheduledPromptIngress = hostOwnsDelayedSchedules
 	? new ScheduledPromptWebhookIngress({
@@ -1670,8 +1731,7 @@ gateway.registerUpgrade("/voice/realtime", handleRealtimeVoiceUpgrade({
 	localControlToken: process.env.TROUBLEMAKER_LOCAL_CONTROL_TOKEN,
 }));
 
-// Operator intake — headless inbound routes for the Agency MCP. Crawdad-cf
-// authenticates the operator upstream; the container trusts the worker.
+// Operator intake — headless inbound routes for a scoped control-plane caller.
 // `read` / `describe` are GET (paginated awareness backlog / settings snapshot);
 // the other three are POST. Routes are marked ready immediately since the
 // adapter has no async start.
@@ -1683,7 +1743,8 @@ for (const path of ["/operator/message", "/operator/assign", "/operator/configur
 	gateway.markReady(path);
 }
 
-await gateway.start(parsedArgs.port, parsedArgs.host);
+const gatewayListenHost = resolveGatewayListenHost(parsedArgs.host);
+await gateway.start(parsedArgs.port, gatewayListenHost);
 log.logInfo(`[perf] gateway listening: ${(performance.now() - T_BOOT).toFixed(0)}ms`);
 
 // Start voice WebSocket server early (port 8765) so it's ready before adapters init.
@@ -1693,7 +1754,10 @@ if (parsedArgs.adapters.includes("voice")) {
 	const { createServer } = await import("http");
 	const { WebSocketServer } = await import("ws");
 	const earlyWsServer = createServer();
-	const earlyWss = new WebSocketServer({ server: earlyWsServer });
+	const earlyWss = new WebSocketServer({
+		server: earlyWsServer,
+		verifyClient: (info: { req: IncomingMessage }) => isTrustedStandaloneWebSocketRequest(info.req),
+	});
 
 	// Hold connections until the voice adapter is ready to handle them
 	const pendingConnections: import("ws").WebSocket[] = [];
@@ -1703,7 +1767,7 @@ if (parsedArgs.adapters.includes("voice")) {
 	});
 
 	await new Promise<void>((resolve) => {
-		earlyWsServer.listen(8765, parsedArgs.host, () => {
+		earlyWsServer.listen(8765, gatewayListenHost, () => {
 			log.logInfo("[voice-early] Port 8765 bound (pre-adapter)");
 			resolve();
 		});
@@ -1720,7 +1784,10 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 	const { createServer: createHttpServer } = await import("http");
 	const { WebSocketServer } = await import("ws");
 	const webVoiceServer = createHttpServer();
-	const wss = new WebSocketServer({ server: webVoiceServer });
+	const wss = new WebSocketServer({
+		server: webVoiceServer,
+		verifyClient: (info: { req: IncomingMessage }) => isTrustedStandaloneWebSocketRequest(info.req),
+	});
 	const webVoiceAdapter = new WebVoiceBridgeAdapter(workingDir);
 	webVoiceAdapter.setHandler(handler);
 
@@ -1734,7 +1801,7 @@ if (process.env.MOM_ELEVENLABS_API_KEY) {
 	});
 
 	await new Promise<void>((resolve) => {
-		webVoiceServer.listen(8766, parsedArgs.host, async () => {
+		webVoiceServer.listen(8766, gatewayListenHost, async () => {
 			await webVoiceAdapter.start();
 			log.logInfo("[web-voice] WebSocket server listening on port 8766");
 			resolve();

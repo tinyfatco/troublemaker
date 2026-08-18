@@ -9,6 +9,7 @@
  */
 
 import { exec as execCb } from "child_process";
+import { timingSafeEqual } from "node:crypto";
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
@@ -82,21 +83,24 @@ export class McpAdapter implements PlatformAdapter {
 	 * Creates a fresh stateless MCP server per request.
 	 */
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		// VPS mode: verify X-Tools-Token header to prevent unauthenticated access
-		// through the Cloudflare Tunnel. Without this, anyone who knows the tunnel
-		// hostname can execute arbitrary commands.
-		const requiredToken = process.env.MOM_MCP_AUTH_TOKEN;
-		if (requiredToken) {
-			const provided = req.headers["x-tools-token"];
-			if (provided !== requiredToken) {
-				res.writeHead(401, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({
-					jsonrpc: "2.0",
-					error: { code: -32001, message: "Unauthorized" },
-					id: null,
-				}));
-				return;
-			}
+		// MCP exposes shell and filesystem tools, so the container boundary must
+		// have its own strong capability even when an upstream proxy also checks.
+		const requiredToken = process.env.MOM_MCP_AUTH_TOKEN?.trim();
+		if (!requiredToken || Buffer.byteLength(requiredToken, "utf8") < 32) {
+			this.writeAuthError(res, 503, "MCP ingress is disabled");
+			return;
+		}
+		const header = req.headers["x-tools-token"];
+		const provided = Buffer.from(typeof header === "string" ? header : "", "utf8");
+		const expected = Buffer.from(requiredToken, "utf8");
+		if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+			this.writeAuthError(res, 401, "Unauthorized");
+			return;
+		}
+		const declaredLength = req.headers["content-length"];
+		if (typeof declaredLength === "string" && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > 2 * 1024 * 1024)) {
+			this.writeAuthError(res, 413, "Request too large");
+			return;
 		}
 
 		this.handleMcpRequest(req, res).catch((err) => {
@@ -110,6 +114,19 @@ export class McpAdapter implements PlatformAdapter {
 				id: null,
 			}));
 		});
+	}
+
+	private writeAuthError(res: ServerResponse, status: number, message: string): void {
+		res.writeHead(status, {
+			"Content-Type": "application/json",
+			"Cache-Control": "no-store",
+			"X-Content-Type-Options": "nosniff",
+		});
+		res.end(JSON.stringify({
+			jsonrpc: "2.0",
+			error: { code: status === 401 ? -32001 : -32000, message },
+			id: null,
+		}));
 	}
 
 	private async handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

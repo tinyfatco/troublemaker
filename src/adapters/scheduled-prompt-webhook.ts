@@ -56,7 +56,7 @@ function boundedString(value: unknown, label: string, maximum: number, fallback?
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
-	const actual = Buffer.from(header?.replace(/^Bearer\s+/iu, "") || "");
+	const actual = Buffer.from(/^Bearer ([^\s]+)$/iu.exec(header || "")?.[1] || "");
 	const wanted = Buffer.from(expected);
 	return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }
