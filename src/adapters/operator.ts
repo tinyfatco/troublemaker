@@ -13,8 +13,8 @@
  *                               whitelisted targets (spontaneity.*, verbose[.*],
  *                               model, thinking_level, heartbeat.checklist)
  *
- * Auth: none at the container level. crawdad-cf is the only ingress and it
- * authenticates everything upstream. Matches the pattern used by /mcp today.
+ * Auth: a context-scoped bearer capability is required at the container
+ * boundary even when an upstream proxy also authenticates the operator.
  *
  * Awareness semantics: operator writes a durable entry to
  * `awareness/context.jsonl` tagged with channel `operator:control`, role
@@ -34,7 +34,7 @@
  */
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "fs";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 import { join } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
@@ -61,6 +61,7 @@ import {
 export const OPERATOR_CHANNEL_ID = "operator";
 const OPERATOR_CHANNEL_LABEL = "operator:control";
 const OPERATOR_USER = "operator";
+const MAXIMUM_OPERATOR_BODY_BYTES = 1024 * 1024;
 
 /**
  * Flat simple targets — edited as single JSON keys in `settings.json`.
@@ -131,21 +132,45 @@ function nowIso(): string {
 
 async function readJsonBody<T>(req: IncomingMessage): Promise<T> {
 	const chunks: Buffer[] = [];
+	let totalBytes = 0;
 	for await (const chunk of req) {
-		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		totalBytes += bytes.byteLength;
+		if (totalBytes > MAXIMUM_OPERATOR_BODY_BYTES) throw new Error("request_too_large");
+		chunks.push(bytes);
 	}
 	const raw = Buffer.concat(chunks).toString("utf-8");
 	if (!raw) return {} as T;
 	return JSON.parse(raw) as T;
 }
 
+function matchesBearerToken(header: string | undefined, expected: string): boolean {
+	const actual = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
+	const wanted = Buffer.from(expected);
+	return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
-	res.writeHead(status, { "Content-Type": "application/json" });
+	res.writeHead(status, {
+		"Content-Type": "application/json",
+		"Cache-Control": "no-store",
+		"X-Content-Type-Options": "nosniff",
+	});
 	res.end(JSON.stringify(body));
 }
 
 function sendError(res: ServerResponse, status: number, error: string, description?: string): void {
 	sendJson(res, status, { error, error_description: description ?? error });
+}
+
+function sendBodyParseError(res: ServerResponse, error: unknown): void {
+	const tooLarge = error instanceof Error && error.message === "request_too_large";
+	sendError(
+		res,
+		tooLarge ? 413 : 400,
+		tooLarge ? "request_too_large" : "invalid_request",
+		tooLarge ? undefined : "Body must be JSON",
+	);
 }
 
 export class OperatorAdapter implements PlatformAdapter {
@@ -162,12 +187,14 @@ Treat operator messages with appropriate weight:
 Replies to the operator happen through whatever channel you were already using with your principal (Telegram, Slack, Discord, email, etc.) via \`send_message\` with an explicit target. The operator channel itself has no outbound path.`;
 
 	private workingDir: string;
+	private inboundToken?: string;
 	private handler!: MomHandler;
 	private queue: MomEvent[] = [];
 	private processing = false;
 
-	constructor(config: { workingDir: string }) {
+	constructor(config: { workingDir: string; inboundToken?: string }) {
 		this.workingDir = config.workingDir;
+		this.inboundToken = config.inboundToken;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -263,9 +290,24 @@ Replies to the operator happen through whatever channel you were already using w
 	// ========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.inboundToken) {
+			sendError(res, 503, "operator_ingress_disabled");
+			return;
+		}
+		if (!matchesBearerToken(req.headers.authorization, this.inboundToken)) {
+			sendError(res, 401, "unauthorized");
+			return;
+		}
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 		const pathname = url.pathname;
 		const method = req.method?.toUpperCase() ?? "GET";
+		if (method === "POST") {
+			const mediaType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+			if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
+				sendError(res, 415, "json_required");
+				return;
+			}
+		}
 
 		(async () => {
 			try {
@@ -290,7 +332,8 @@ Replies to the operator happen through whatever channel you were already using w
 					"[operator] dispatch error",
 					err instanceof Error ? err.message : String(err),
 				);
-				sendError(res, 500, "internal_error", err instanceof Error ? err.message : "unknown");
+				const tooLarge = err instanceof Error && err.message === "request_too_large";
+				sendError(res, tooLarge ? 413 : 500, tooLarge ? "request_too_large" : "internal_error");
 			}
 		})();
 	}
@@ -333,8 +376,8 @@ Replies to the operator happen through whatever channel you were already using w
 		let body: MessageBody;
 		try {
 			body = await readJsonBody<MessageBody>(req);
-		} catch {
-			return sendError(res, 400, "invalid_request", "Body must be JSON");
+		} catch (error) {
+			return sendBodyParseError(res, error);
 		}
 
 		if (!body.text || typeof body.text !== "string") {
@@ -361,8 +404,8 @@ Replies to the operator happen through whatever channel you were already using w
 		let body: AssignBody;
 		try {
 			body = await readJsonBody<AssignBody>(req);
-		} catch {
-			return sendError(res, 400, "invalid_request", "Body must be JSON");
+		} catch (error) {
+			return sendBodyParseError(res, error);
 		}
 
 		if (!body.title || !body.spec || !body.rubric) {
@@ -433,8 +476,8 @@ Replies to the operator happen through whatever channel you were already using w
 		let body: ConfigureBody;
 		try {
 			body = await readJsonBody<ConfigureBody>(req);
-		} catch {
-			return sendError(res, 400, "invalid_request", "Body must be JSON");
+		} catch (error) {
+			return sendBodyParseError(res, error);
 		}
 
 		if (!body.target || typeof body.target !== "string") {

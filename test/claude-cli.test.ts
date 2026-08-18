@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { ModelRegistry, ModelRuntime, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import {
 	buildClaudeCliArgs,
 	buildClaudeCliEnvironment,
@@ -131,20 +131,25 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	process.env.ANTHROPIC_API_KEY = "must-not-reach-claude";
 	resetClaudeCliAuthCache();
 
+	const runtimeAuthPath = join(tempDir, "runtime-auth.json");
+	const modelRuntime = await ModelRuntime.create({
+		authPath: runtimeAuthPath,
+		modelsPath: null,
+		refreshOnCreate: false,
+	});
 	assert.equal(
-		AuthStorage.create().getOAuthProviders().some((provider) => provider.id === "claude-cli"),
+		modelRuntime.getProviders().some((provider) => provider.id === "claude-cli"),
 		false,
 		"Claude CLI auth is never offered through Troublemaker /login",
 	);
-	const runtimeAuth = AuthStorage.inMemory();
-	registerClaudeCliRuntimeAuth(runtimeAuth);
-	const runtimeRegistry = ModelRegistry.create(runtimeAuth);
+	await registerClaudeCliRuntimeAuth(modelRuntime);
+	const runtimeRegistry = new ModelRegistry(modelRuntime);
 	assert.equal(
 		runtimeRegistry.hasConfiguredAuth(getClaudeCliModel("sonnet")!),
 		true,
 		"Pi AgentSession's generic auth preflight accepts the local CLI backend",
 	);
-	assert.equal(runtimeAuth.has("claude-cli"), false, "the CLI preflight marker is never persisted as a credential");
+	assert.equal(readStoredCredential("claude-cli", runtimeAuthPath), undefined, "the CLI preflight marker is never persisted as a credential");
 	assert.ok(getClaudeCliRuntimeAuth("claude-cli"), "the low-level agent receives the same non-secret runtime marker");
 	assert.equal(getClaudeCliRuntimeAuth("anthropic"), undefined, "normal providers never receive the CLI marker");
 	assert.equal(isClaudeCliAuthenticated(), true, "existing Claude CLI auth is detected");

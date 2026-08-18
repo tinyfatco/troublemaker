@@ -377,7 +377,7 @@ Mention users with @username.`;
 	}
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		if (this.inboundToken && !matchesBearer(req.headers.authorization, this.inboundToken)) {
+		if (!this.inboundToken || !matchesBearer(req.headers.authorization, this.inboundToken)) {
 			res.writeHead(401, { "content-type": "application/json" });
 			res.end(JSON.stringify({ error: "unauthorized" }));
 			return;
@@ -779,7 +779,7 @@ function escapeRegex(value: string): string {
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
-	const actual = Buffer.from(header?.replace(/^Bearer\s+/i, "") || "");
+	const actual = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
 	const wanted = Buffer.from(expected);
 	return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }

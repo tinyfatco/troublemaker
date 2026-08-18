@@ -1,6 +1,10 @@
+import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "http";
+import type { Update } from "node-telegram-bot-api";
 import * as log from "../log.js";
 import { TelegramBase, type TelegramBaseConfig } from "./telegram-base.js";
+
+const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
 
 // ============================================================================
 // TelegramWebhookAdapter — HTTPS webhook (serverless-friendly)
@@ -11,28 +15,34 @@ export interface TelegramWebhookAdapterConfig extends TelegramBaseConfig {
 	webhookSecret: string;
 	/** Skip setWebHook/deleteWebHook calls. Use when webhook URL is managed externally (e.g. CF Worker). */
 	skipRegistration?: boolean;
+	/** Scoped capability used when a host proxy verifies Telegram upstream. */
+	upstreamToken?: string;
 }
 
 export class TelegramWebhookAdapter extends TelegramBase {
 	private webhookUrl?: string;
 	private webhookSecret: string;
 	private skipRegistration: boolean;
+	private upstreamToken?: string;
 
 	constructor(config: TelegramWebhookAdapterConfig) {
 		super(config);
 		this.webhookUrl = config.webhookUrl;
 		this.webhookSecret = config.webhookSecret;
 		this.skipRegistration = config.skipRegistration || !!process.env.MOM_SKIP_WEBHOOK_REGISTRATION;
+		this.upstreamToken = config.upstreamToken;
 	}
 
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("TelegramWebhookAdapter: handler not set. Call setHandler() before start().");
 
-		const me = await this.bot.getMe();
+		const me = await this.bot.api.getMe();
 		log.logInfo(`Telegram bot (webhook): @${me.username} (${me.id})`);
 
-		// Wire up message handler — processUpdate() fires bot.on("message") events
-		this.bot.on("message", (msg) => this.handleIncomingMessage(msg));
+		// Wire up message handler before accepting webhook deliveries.
+		this.bot.on("message", (context) => {
+			if (context.message) this.handleIncomingMessage(context.message);
+		});
 
 		// Register webhook with Telegram API (unless managed externally)
 		if (!this.skipRegistration) {
@@ -40,7 +50,7 @@ export class TelegramWebhookAdapter extends TelegramBase {
 			const webhookOpts: { secret_token: string } = {
 				secret_token: this.webhookSecret,
 			};
-			await this.bot.setWebHook(this.webhookUrl, webhookOpts);
+			await this.bot.api.setWebhook({ url: this.webhookUrl, ...webhookOpts });
 			log.logInfo(`Telegram webhook registered: ${this.webhookUrl}`);
 		} else {
 			log.logInfo("Telegram webhook registration skipped (managed externally)");
@@ -53,7 +63,7 @@ export class TelegramWebhookAdapter extends TelegramBase {
 		// Unregister webhook with Telegram (unless managed externally)
 		if (!this.skipRegistration) {
 			try {
-				await this.bot.deleteWebHook();
+				await this.bot.api.deleteWebhook();
 				log.logInfo("Telegram webhook deleted");
 			} catch (err) {
 				log.logWarning("Failed to delete Telegram webhook", err instanceof Error ? err.message : String(err));
@@ -67,16 +77,34 @@ export class TelegramWebhookAdapter extends TelegramBase {
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413);
+				res.end("Request too large");
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", async () => {
+			if (rejected) return;
 			const body = Buffer.concat(chunks).toString("utf-8");
 
-			// Trust upstream verification when crawdad-cf has already verified the request
-			// (or when running with no webhook secret — secrets-out-of-container mode).
-			const upstreamVerified = req.headers["x-crawdad-dev-verified"] === "true";
-			if (!upstreamVerified && this.webhookSecret) {
+			const upstreamVerified = this.upstreamToken
+				? bearerMatches(req.headers.authorization, this.upstreamToken)
+				: false;
+			if (!upstreamVerified) {
+				if (!this.webhookSecret) {
+					res.writeHead(401);
+					res.end("Webhook authentication is not configured");
+					return;
+				}
 				const secretToken = req.headers["x-telegram-bot-api-secret-token"] as string | undefined;
-				if (!secretToken || secretToken !== this.webhookSecret) {
+				if (!secretToken || !constantTimeEqual(secretToken, this.webhookSecret)) {
 					log.logWarning("Telegram webhook secret token verification failed");
 					res.writeHead(401);
 					res.end("Invalid secret token");
@@ -84,9 +112,9 @@ export class TelegramWebhookAdapter extends TelegramBase {
 				}
 			}
 
-			let update: object;
+			let update: Update;
 			try {
-				update = JSON.parse(body);
+				update = JSON.parse(body) as Update;
 			} catch {
 				res.writeHead(400);
 				res.end("Invalid JSON");
@@ -97,8 +125,23 @@ export class TelegramWebhookAdapter extends TelegramBase {
 			res.end();
 
 			log.logInfo(`[telegram:webhook] dispatch: processing update at ${new Date().toISOString()}`);
-			// Process the update — fires bot.on("message") which calls handleIncomingMessage
-			this.bot.processUpdate(update as Parameters<typeof this.bot.processUpdate>[0]);
+			// Acknowledge transport delivery, then process through the shared middleware path.
+			void this.bot.handleUpdate(update).catch((error) => {
+				log.logWarning(
+					"Telegram webhook update failed",
+					error instanceof Error ? error.message : String(error),
+				);
+			});
 		});
 	}
+}
+
+function bearerMatches(header: string | undefined, expected: string): boolean {
+	return constantTimeEqual(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "", expected);
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+	const actual = Buffer.from(left);
+	const expected = Buffer.from(right);
+	return actual.length === expected.length && timingSafeEqual(actual, expected);
 }

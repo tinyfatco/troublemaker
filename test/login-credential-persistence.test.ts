@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AuthStorage, type AuthCredential } from "@earendil-works/pi-coding-agent";
+import type { Credential } from "@earendil-works/pi-ai";
+import { readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { persistLoginCredentialToPlatform } from "../src/commands";
 
 const tempDir = mkdtempSync(join(tmpdir(), "login-credential-persistence-"));
@@ -22,8 +23,7 @@ try {
 		"utf-8",
 	);
 
-	const authStorage = AuthStorage.create(authPath);
-	const freshCredential: AuthCredential = {
+	const freshCredential: Credential = {
 		type: "oauth",
 		access: "fresh-access-token",
 		refresh: "fresh-refresh-token",
@@ -31,14 +31,10 @@ try {
 		accountId: "fresh-account",
 	};
 
-	// AuthStorage keeps the fresh value in memory even though initial malformed
-	// JSON prevents its own file-backed persist path from repairing auth.json.
-	authStorage.set("openai-codex", freshCredential);
-
 	let requestUrl = "";
 	let requestInit: RequestInit | undefined;
 	const result = await persistLoginCredentialToPlatform({
-		authStorage,
+		credential: freshCredential,
 		providerId: "openai-codex",
 		secretKey: "codex_credentials",
 		toolsToken: "fat-tools-real",
@@ -67,8 +63,9 @@ try {
 	assert.equal(persisted.refresh, "fresh-refresh-token");
 	assert.equal(persisted.accountId, "fresh-account");
 
-	const reloaded = AuthStorage.create(authPath);
-	assert.equal(await reloaded.getApiKey("openai-codex"), "fresh-access-token");
+	const reloaded = readStoredCredential("openai-codex", authPath);
+	assert.equal(reloaded?.type, "oauth");
+	assert.equal(reloaded?.type === "oauth" ? reloaded.access : undefined, "fresh-access-token");
 
 	console.log("login credential persistence repairs malformed auth.json");
 } finally {

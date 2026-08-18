@@ -1,5 +1,5 @@
 import { strict as assert } from "assert";
-import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { getModels } from "@earendil-works/pi-ai/compat";
 import { findModel, resolveModel, resolveModelWithAuth } from "../src/model-config.js";
 
 function withFireworksEnv(fn: () => void) {
@@ -27,8 +27,12 @@ function withFireworksEnv(fn: () => void) {
 	}
 }
 
-function createRegistry() {
-	return ModelRegistry.create(AuthStorage.create());
+function createRegistry(configuredProviders = new Set(["fireworks", "openai-codex"])) {
+	return {
+		getAll: () => [...getModels("openai-codex"), ...getModels("fireworks")],
+		getAvailable: () => [],
+		hasConfiguredAuth: (model: { provider: string }) => configuredProviders.has(model.provider),
+	} as any;
 }
 
 withFireworksEnv(() => {
@@ -82,9 +86,7 @@ withFireworksEnv(() => {
 	process.env.MOM_MODEL_ID = "gpt-5.5";
 
 	try {
-		const registry = ModelRegistry.create(AuthStorage.inMemory({
-			fireworks: { type: "api_key", key: "test-fireworks-key" },
-		}));
+		const registry = createRegistry(new Set(["fireworks"]));
 		const selected = resolveModelWithAuth(undefined, registry);
 		assert.equal(selected.provider, "fireworks");
 		assert.equal(selected.id, "accounts/fireworks/models/glm-5p2");

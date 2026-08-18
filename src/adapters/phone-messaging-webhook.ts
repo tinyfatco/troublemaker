@@ -9,6 +9,8 @@ import { withHostReceipt } from "./host-receipt.js";
 import { createPhoneProviderRegistryFromEnv, type PhoneProviderRegistry } from "./phone-messaging/registry.js";
 import type { PhoneChannelRecord, PhoneInboundPayload, PhoneOutboundAttachment, PhoneTransport } from "./phone-messaging/types.js";
 
+const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
+
 interface ChannelRegistryFile {
 	version: 1;
 	channels: Record<string, PhoneChannelRecord>;
@@ -54,14 +56,32 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		if (!isAuthorizedVpsIngress(req)) {
-			res.writeHead(401);
-			res.end("Unauthorized");
+			res.writeHead(401, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+			res.end(JSON.stringify({ error: "unauthorized" }));
+			return;
+		}
+		if (!isJsonContentType(req.headers["content-type"])) {
+			res.writeHead(415, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+			res.end(JSON.stringify({ error: "json_required" }));
 			return;
 		}
 
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+				res.end(JSON.stringify({ error: "request_too_large" }));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", async () => {
+			if (rejected) return;
 			const body = Buffer.concat(chunks).toString("utf-8");
 			let payload: PhoneInboundPayload;
 			try {
@@ -499,15 +519,15 @@ function validatePayload(payload: PhoneInboundPayload): string | null {
 
 function isAuthorizedVpsIngress(req: IncomingMessage): boolean {
 	const expected = process.env.MOM_PHONE_INBOUND_TOKEN?.trim();
-	if (process.env.MOM_PHONE_HOST_MANAGED === "true") {
-		if (!expected || req.headers["x-tinyfat-hostd-verified"] !== "true") return false;
-		const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
-		return constantTimeEqual(supplied, expected);
-	}
-	if (!expected) return true;
-	if (req.headers["x-crawdad-vps-verified"] !== "true") return false;
-	const supplied = req.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
+	if (!expected) return false;
+	const supplied = /^Bearer ([^\s]+)$/i.exec(req.headers.authorization || "")?.[1] || "";
 	return constantTimeEqual(supplied, expected);
+}
+
+function isJsonContentType(value: string | string[] | undefined): boolean {
+	if (typeof value !== "string") return false;
+	const mediaType = value.split(";", 1)[0]?.trim().toLowerCase();
+	return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
 }
 
 function constantTimeEqual(left: string, right: string): boolean {

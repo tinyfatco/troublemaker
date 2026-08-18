@@ -12,7 +12,7 @@
  * Each caller utterance (STT end-of-utterance) = one agent run.
  */
 
-import { createServer, type Server } from "http";
+import { createServer, type IncomingMessage, type Server } from "http";
 import { appendFileSync } from "fs";
 import { join } from "path";
 import WebSocket, { WebSocketServer } from "ws";
@@ -27,6 +27,7 @@ import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo, VoiceSessionNotice } from "./types.js";
 import { createSttSession, type SttConfig, type SttSession } from "./voice-stt.js";
 import { textToSpeechStreaming, type TtsConfig } from "./voice-tts.js";
+import { isTrustedStandaloneWebSocketRequest } from "../gateway.js";
 
 // ============================================================================
 // Types
@@ -147,14 +148,17 @@ If you need to do something that takes time, say "One moment" or "Let me check o
 			// No early server — start our own
 			const port = this.config.wsPort || 8765;
 			this.wsServer = createServer();
-			this.wss = new WebSocketServer({ server: this.wsServer });
+			this.wss = new WebSocketServer({
+				server: this.wsServer,
+				verifyClient: (info: { req: IncomingMessage }) => isTrustedStandaloneWebSocketRequest(info.req),
+			});
 
 			this.wss.on("connection", (ws) => {
 				this.handleConnection(ws);
 			});
 
 			await new Promise<void>((resolve) => {
-				this.wsServer!.listen(port, () => {
+				this.wsServer!.listen(port, "127.0.0.1", () => {
 					log.logInfo(`[voice] WebSocket server listening on port ${port}`);
 					resolve();
 				});

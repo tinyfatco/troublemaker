@@ -8,9 +8,10 @@ import {
 	normalizeThinkingLevelForModel,
 	requiresEnabledThinking,
 } from "../src/model-thinking.js";
+import { getFireworksModel } from "../src/fireworks-models.js";
 
 const minimax = getModel("fireworks" as any, "accounts/fireworks/models/minimax-m2p7" as any);
-const glm = getModel("fireworks" as any, "accounts/fireworks/models/glm-5p1" as any);
+const glm = getFireworksModel("accounts/fireworks/models/glm-5p1");
 
 assert(minimax, "MiniMax M2.7 model exists");
 assert(glm, "GLM Fireworks model exists");
