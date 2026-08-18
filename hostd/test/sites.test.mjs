@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { generateKeyPairSync, verify as verifyBytes } from "node:crypto";
 import { mkdir, mkdtemp, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
@@ -187,13 +187,40 @@ test("nested artifacts reject VCS metadata and ignored private files but allow i
 			(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
 		);
 		await rm(join(project, "dist", "private.txt"));
+		for (const privatePath of [
+			".npmrc",
+			".yarnrc.yml",
+			".pnpmrc",
+			".netrc",
+			".pypirc",
+			".dockercfg",
+			".docker/config.json",
+			".aws/credentials",
+			".ssh/id_ed25519",
+			"service-account.json",
+			"credentials.json",
+		]) {
+			const absolute = join(project, "dist", privatePath);
+			await mkdir(dirname(absolute), { recursive: true });
+			await writeFile(absolute, "synthetic credential material\n");
+			await assert.rejects(
+				buildWorkspaceArtifact(workspace, "projects/example/dist", LIMITS, { repository: source.repository }),
+				(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
+				privatePath,
+			);
+			await rm(absolute);
+			const parent = dirname(absolute);
+			if (parent !== join(project, "dist")) await rm(parent, { recursive: true, force: true });
+		}
+		await mkdir(join(project, "dist", ".well-known"), { recursive: true });
+		await writeFile(join(project, "dist", ".well-known", "security.txt"), "Contact: mailto:security@example.com\n");
 		const artifact = await buildWorkspaceArtifact(
 			workspace,
 			"projects/example/dist",
 			LIMITS,
 			{ repository: source.repository },
 		);
-		assert.deepEqual(artifactPaths(artifact.body), ["index.html"]);
+		assert.deepEqual(artifactPaths(artifact.body), [".well-known/security.txt", "index.html"]);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

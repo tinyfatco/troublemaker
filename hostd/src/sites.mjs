@@ -153,10 +153,10 @@ async function gitIgnoreRule(repository, absolute) {
 
 function sensitiveArtifactPath(path) {
 	const parts = path.split("/");
-	const basename = parts.at(-1)?.toLowerCase() || "";
-	return parts.some((part) => [".git", ".hg", ".svn", ".gitignore", ".gitattributes", ".gitmodules"].includes(part))
-		|| parts.some((part) => part === ".env" || part.startsWith(".env."))
-		|| /^(?:secret|secrets|credential|credentials|private|private-key|id_rsa|id_ed25519)(?:[._-]|$)/u.test(basename)
+	const normalized = parts.map((part) => part.toLowerCase());
+	const basename = normalized.at(-1) || "";
+	return normalized.some((part) => part.startsWith(".") && part !== ".well-known")
+		|| /^(?:secret|secrets|credential|credentials|private|private-key|id_rsa|id_ed25519|service-account|service_account|serviceaccount|application_default_credentials|firebase-adminsdk)(?:[._-]|$)/u.test(basename)
 		|| /\.(?:pem|key|p12|pfx)$/u.test(basename);
 }
 
