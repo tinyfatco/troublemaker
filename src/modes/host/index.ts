@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import { timingSafeEqual } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { RuntimeToolOutputStream } from "../../core/runtime-contract.js";
 import type { Executor } from "../../sandbox.js";
@@ -11,10 +12,36 @@ import {
 	type HostToolExecuteResponse,
 } from "./protocol.js";
 
+const MAXIMUM_HOST_TOOL_BODY_BYTES = 1024 * 1024;
+
+class HostToolRequestError extends Error {
+	constructor(readonly status: number, message: string) {
+		super(message);
+	}
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
+	const mediaType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+	if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
+		throw new HostToolRequestError(415, "JSON required");
+	}
+	const declaredLength = req.headers["content-length"];
+	if (declaredLength !== undefined && (
+		Array.isArray(declaredLength)
+		|| !/^\d+$/.test(declaredLength)
+		|| Number(declaredLength) > MAXIMUM_HOST_TOOL_BODY_BYTES
+	)) {
+		throw new HostToolRequestError(413, "Request too large");
+	}
 	const chunks: Buffer[] = [];
+	let totalBytes = 0;
 	for await (const chunk of req) {
-		chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		totalBytes += bytes.byteLength;
+		if (totalBytes > MAXIMUM_HOST_TOOL_BODY_BYTES) {
+			throw new HostToolRequestError(413, "Request too large");
+		}
+		chunks.push(bytes);
 	}
 	const body = Buffer.concat(chunks).toString("utf-8").trim();
 	if (!body) return {};
@@ -68,10 +95,24 @@ function writeHostOutput(
 	writeSse(res, { type: "hostToolOutput", ...event });
 }
 
-function isAuthorized(req: IncomingMessage, authToken?: string): boolean {
-	if (!authToken) return true;
-	const provided = req.headers["x-tools-token"];
-	return provided === authToken;
+function authorizationStatus(req: IncomingMessage, authToken?: string): "authorized" | "disabled" | "unauthorized" {
+	if (!authToken || Buffer.byteLength(authToken, "utf8") < 32) return "disabled";
+	const header = req.headers["x-tools-token"];
+	const provided = Buffer.from(typeof header === "string" ? header : "", "utf8");
+	const expected = Buffer.from(authToken, "utf8");
+	return provided.length === expected.length && timingSafeEqual(provided, expected)
+		? "authorized"
+		: "unauthorized";
+}
+
+function requireAuthorization(req: IncomingMessage, res: ServerResponse, authToken?: string): boolean {
+	const status = authorizationStatus(req, authToken);
+	if (status === "authorized") return true;
+	writeJson(res, status === "disabled" ? 503 : 401, {
+		ok: false,
+		error: status === "disabled" ? "Host tool bridge is disabled" : "Unauthorized",
+	});
+	return false;
 }
 
 export interface HostBashRouteOptions {
@@ -114,10 +155,7 @@ function toolDefinition(tool: AgentTool<any>): HostToolDefinition {
 
 export function createHostBashRoute(options: HostBashRouteOptions) {
 	return (req: IncomingMessage, res: ServerResponse): void => {
-		if (!isAuthorized(req, options.authToken)) {
-			writeJson(res, 401, { ok: false, error: "Unauthorized" });
-			return;
-		}
+		if (!requireAuthorization(req, res, options.authToken)) return;
 
 		readJson(req)
 			.then(async (payload) => {
@@ -156,9 +194,10 @@ export function createHostBashRoute(options: HostBashRouteOptions) {
 					res.end();
 					return;
 				}
-				writeJson(res, 500, {
+				const status = err instanceof HostToolRequestError ? err.status : 500;
+				writeJson(res, status, {
 					ok: false,
-					error: err instanceof Error ? err.message : String(err),
+					error: status === 500 ? "Host tool request failed" : err.message,
 				});
 			});
 	};
@@ -166,10 +205,7 @@ export function createHostBashRoute(options: HostBashRouteOptions) {
 
 export function createHostToolDefinitionsRoute(options: HostToolExecuteRouteOptions) {
 	return (req: IncomingMessage, res: ServerResponse): void => {
-		if (!isAuthorized(req, options.authToken)) {
-			writeToolDefinitionsJson(res, 401, { ok: false, error: "Unauthorized" });
-			return;
-		}
+		if (!requireAuthorization(req, res, options.authToken)) return;
 
 		try {
 			writeToolDefinitionsJson(res, 200, {
@@ -187,10 +223,7 @@ export function createHostToolDefinitionsRoute(options: HostToolExecuteRouteOpti
 
 export function createHostToolExecuteRoute(options: HostToolExecuteRouteOptions) {
 	return (req: IncomingMessage, res: ServerResponse): void => {
-		if (!isAuthorized(req, options.authToken)) {
-			writeToolJson(res, 401, { ok: false, error: "Unauthorized" });
-			return;
-		}
+		if (!requireAuthorization(req, res, options.authToken)) return;
 
 		readJson(req)
 			.then(async (payload) => {
@@ -214,9 +247,10 @@ export function createHostToolExecuteRoute(options: HostToolExecuteRouteOptions)
 				writeToolJson(res, 200, { ok: true, result });
 			})
 			.catch((err) => {
-				writeToolJson(res, 500, {
+				const status = err instanceof HostToolRequestError ? err.status : 500;
+				writeToolJson(res, status, {
 					ok: false,
-					error: err instanceof Error ? err.message : String(err),
+					error: status === 500 ? "Host tool request failed" : err.message,
 				});
 			});
 	};

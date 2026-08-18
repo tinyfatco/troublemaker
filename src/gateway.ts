@@ -31,6 +31,22 @@ const MIME_TYPES: Record<string, string> = {
 	".map": "application/json",
 };
 
+const UI_CONTENT_SECURITY_POLICY = [
+	"default-src 'self'",
+	"base-uri 'none'",
+	"object-src 'none'",
+	"form-action 'none'",
+	"frame-ancestors 'self' https://tinyfat.com https://www.tinyfat.com",
+	"frame-src 'self' https://*.preview.tinyfat.dev",
+	"script-src 'self'",
+	"style-src 'self' 'unsafe-inline'",
+	"img-src 'self' data: blob:",
+	"font-src 'self' data:",
+	"media-src 'self' blob:",
+	"worker-src 'self' blob:",
+	"connect-src 'self' ws://127.0.0.1:* ws://localhost:* wss://127.0.0.1:* wss://localhost:*",
+].join("; ");
+
 interface PreviewProxyTarget {
 	port: number;
 	path: string;
@@ -86,6 +102,90 @@ export interface GatewayOptions {
 }
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
+
+export function resolveGatewayListenHost(
+	value?: string,
+	allowHostdContainerWildcard = process.env.TROUBLEMAKER_HOSTD_CONTAINER === "1",
+): string {
+	const candidate = value?.trim() || "127.0.0.1";
+	if (candidate === "0.0.0.0" && allowHostdContainerWildcard) return candidate;
+	if (!["127.0.0.1", "localhost", "::1"].includes(candidate.toLowerCase())) {
+		throw new Error("Troublemaker gateway must remain loopback-only unless Hostd explicitly owns the container boundary");
+	}
+	return candidate;
+}
+
+/**
+ * Browsers can reach loopback services from an unrelated webpage. Reject
+ * cross-site browser traffic before it reaches console, terminal, preview, or
+ * adapter routes; native host callers do not send Fetch Metadata or Origin.
+ */
+export function isTrustedGatewayBrowserRequest(req: Pick<IncomingMessage, "headers">): boolean {
+	const fetchSite = Array.isArray(req.headers["sec-fetch-site"])
+		? req.headers["sec-fetch-site"][0]
+		: req.headers["sec-fetch-site"];
+	if (typeof fetchSite === "string" && fetchSite.toLowerCase() === "cross-site") return false;
+
+	const rawOrigin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+	if (!rawOrigin) return true;
+	try {
+		const origin = new URL(rawOrigin);
+		return ["http:", "https:"].includes(origin.protocol)
+			&& ["127.0.0.1", "localhost", "::1", "[::1]"].includes(origin.hostname.toLowerCase());
+	} catch {
+		return false;
+	}
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+	const first = Array.isArray(value) ? value[0] : value;
+	return first?.split(",", 1)[0]?.trim() || undefined;
+}
+
+function authorityHostname(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	try {
+		return new URL(`http://${value}`).hostname.toLowerCase();
+	} catch {
+		return undefined;
+	}
+}
+
+function isLoopbackHostname(value: string): boolean {
+	return ["127.0.0.1", "localhost", "::1", "[::1]"].includes(value.toLowerCase());
+}
+
+/**
+ * Standalone voice sockets can receive native/internal clients without browser
+ * headers, but a browser connection must originate from the same public host
+ * (or another loopback spelling). This closes browser-to-localhost WebSocket
+ * attacks while remaining compatible with server-side media relays.
+ */
+export function isTrustedStandaloneWebSocketRequest(req: Pick<IncomingMessage, "headers">): boolean {
+	const fetchSite = firstHeaderValue(req.headers["sec-fetch-site"]);
+	if (fetchSite?.toLowerCase() === "cross-site") return false;
+
+	const rawOrigin = firstHeaderValue(req.headers.origin);
+	if (!rawOrigin) return true;
+
+	let origin: URL;
+	try {
+		origin = new URL(rawOrigin);
+	} catch {
+		return false;
+	}
+	if (!["http:", "https:"].includes(origin.protocol)) return false;
+
+	const originHostname = origin.hostname.toLowerCase();
+	const destinationHostnames = [
+		authorityHostname(firstHeaderValue(req.headers.host)),
+		authorityHostname(firstHeaderValue(req.headers["x-forwarded-host"])),
+	].filter((value): value is string => Boolean(value));
+
+	if (destinationHostnames.some((hostname) => hostname === originHostname)) return true;
+	return isLoopbackHostname(originHostname)
+		&& destinationHostnames.some((hostname) => isLoopbackHostname(hostname));
+}
 
 export class Gateway {
 	private routes = new Map<string, RouteHandler>();
@@ -152,7 +252,17 @@ export class Gateway {
 			const content = readFileSync(filePath);
 			const ext = extname(filePath);
 			const contentType = MIME_TYPES[ext] || "application/octet-stream";
-			res.writeHead(200, { "Content-Type": contentType });
+			const headers: Record<string, string> = {
+				"Content-Type": contentType,
+				"X-Content-Type-Options": "nosniff",
+				"Referrer-Policy": "no-referrer",
+			};
+			if (ext === ".html") {
+				headers["Cache-Control"] = "no-store";
+				headers["Content-Security-Policy"] = UI_CONTENT_SECURITY_POLICY;
+				headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=(), usb=()";
+			}
+			res.writeHead(200, headers);
 			res.end(content);
 		} catch {
 			res.writeHead(404);
@@ -618,9 +728,20 @@ export class Gateway {
 
 	/** Start listening on the given port */
 	async start(port: number, host?: string): Promise<void> {
+		const listenHost = resolveGatewayListenHost(host);
 		this.server = createServer((req, res) => {
 			const rawUrl = req.url || "/";
 			const urlPath = rawUrl.split("?")[0];
+
+			if (!isTrustedGatewayBrowserRequest(req)) {
+				res.writeHead(403, {
+					"Content-Type": "application/json",
+					"Cache-Control": "no-store",
+					"X-Content-Type-Options": "nosniff",
+				});
+				res.end(JSON.stringify({ error: "Cross-site browser request rejected" }));
+				return;
+			}
 
 			// Health check — no auth
 			if (req.method === "GET" && urlPath === "/health") {
@@ -822,6 +943,11 @@ export class Gateway {
 		// Handle WebSocket upgrades
 		this.server.on("upgrade", (req: IncomingMessage, socket: Socket, head: Buffer) => {
 			const urlPath = (req.url || "").split("?")[0];
+			if (!isTrustedGatewayBrowserRequest(req)) {
+				socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+				socket.destroy();
+				return;
+			}
 			if (this.handlePreviewUpgrade(req, socket, head)) {
 				return;
 			}
@@ -834,8 +960,8 @@ export class Gateway {
 		});
 
 		await new Promise<void>((resolve) => {
-			this.server!.listen(port, host, () => {
-				log.logInfo(`[gateway] listening on ${host || "all interfaces"}:${port} (${this.routes.size} POST + ${this.getRoutes.size} GET + ${this.upgradeRoutes.size} UPGRADE routes${this.uiDir ? " + UI" : ""})`);
+			this.server!.listen(port, listenHost, () => {
+				log.logInfo(`[gateway] listening on ${listenHost}:${port} (${this.routes.size} POST + ${this.getRoutes.size} GET + ${this.upgradeRoutes.size} UPGRADE routes${this.uiDir ? " + UI" : ""})`);
 				resolve();
 			});
 		});

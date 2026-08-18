@@ -33,7 +33,27 @@ export const CLAUDE_CLI_MODEL_IDS = ["haiku", "sonnet", "opus", "fable"] as cons
 const CLAUDE_CLI_RUNTIME_AUTH_SENTINEL = "troublemaker-local-claude-cli";
 
 interface RuntimeAuthStorage {
-	setRuntimeApiKey(provider: string, apiKey: string): void;
+	setRuntimeApiKey(provider: string, apiKey: string): void | Promise<void>;
+	registerProvider?(
+		provider: string,
+		config: {
+			name: string;
+			api: Api;
+			apiKey: string;
+			streamSimple: () => never;
+			models: Array<{
+				id: string;
+				name: string;
+				api: Api;
+				baseUrl: string;
+				reasoning: boolean;
+				input: ("text" | "image")[];
+				cost: Model<Api>["cost"];
+				contextWindow: number;
+				maxTokens: number;
+			}>;
+		},
+	): void;
 }
 
 type ClaudeCliModelId = (typeof CLAUDE_CLI_MODEL_IDS)[number];
@@ -122,8 +142,27 @@ export function isClaudeCliProvider(provider: string | undefined): boolean {
 	return provider?.trim().toLowerCase() === CLAUDE_CLI_PROVIDER;
 }
 
-export function registerClaudeCliRuntimeAuth(authStorage: RuntimeAuthStorage): void {
-	authStorage.setRuntimeApiKey(CLAUDE_CLI_PROVIDER, CLAUDE_CLI_RUNTIME_AUTH_SENTINEL);
+export async function registerClaudeCliRuntimeAuth(authStorage: RuntimeAuthStorage): Promise<void> {
+	authStorage.registerProvider?.(CLAUDE_CLI_PROVIDER, {
+		name: "Claude Code",
+		api: CLAUDE_CLI_API,
+		apiKey: CLAUDE_CLI_RUNTIME_AUTH_SENTINEL,
+		streamSimple: () => {
+			throw new Error("Claude CLI streaming is owned by Troublemaker's local CLI adapter");
+		},
+		models: listClaudeCliModels().map((model) => ({
+			id: model.id,
+			name: model.name,
+			api: model.api,
+			baseUrl: model.baseUrl,
+			reasoning: model.reasoning,
+			input: model.input,
+			cost: model.cost,
+			contextWindow: model.contextWindow,
+			maxTokens: model.maxTokens,
+		})),
+	});
+	await authStorage.setRuntimeApiKey(CLAUDE_CLI_PROVIDER, CLAUDE_CLI_RUNTIME_AUTH_SENTINEL);
 }
 
 export function getClaudeCliRuntimeAuth(provider: string | undefined): string | undefined {

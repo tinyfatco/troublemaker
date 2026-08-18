@@ -582,7 +582,7 @@ Use standard Markdown. Mention operators with @username only when the message ge
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
-	const actual = Buffer.from(header?.replace(/^Bearer\s+/i, "") || "");
+	const actual = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
 	const wanted = Buffer.from(expected);
 	return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }

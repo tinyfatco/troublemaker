@@ -6,20 +6,26 @@ import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-a
 import { SlackBase, type SlackBaseConfig, type SlackReactionAddedEvent } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
 
+const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
+
 // ============================================================================
 // SlackWebhookAdapter — HTTP Events API (serverless-friendly)
 // ============================================================================
 
 export interface SlackWebhookAdapterConfig extends SlackBaseConfig {
 	signingSecret: string;
+	/** Scoped capability used when a host proxy verifies Slack upstream. */
+	upstreamToken?: string;
 }
 
 export class SlackWebhookAdapter extends SlackBase {
 	private signingSecret: string;
+	private upstreamToken?: string;
 
 	constructor(config: SlackWebhookAdapterConfig) {
 		super(config);
 		this.signingSecret = config.signingSecret;
+		this.upstreamToken = config.upstreamToken;
 	}
 
 	async start(): Promise<void> {
@@ -40,15 +46,33 @@ export class SlackWebhookAdapter extends SlackBase {
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413);
+				res.end("Request too large");
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", () => {
+			if (rejected) return;
 			const rawBody = Buffer.concat(chunks);
 			const body = rawBody.toString("utf-8");
 
-			// Trust upstream verification when crawdad-cf has already verified the request
-			// (or when running with no signing secret — secrets-out-of-container mode).
-			const upstreamVerified = req.headers["x-crawdad-dev-verified"] === "true";
-			if (!upstreamVerified && this.signingSecret) {
+			const upstreamVerified = this.upstreamToken
+				? bearerMatches(req.headers.authorization, this.upstreamToken)
+				: false;
+			if (!upstreamVerified) {
+				if (!this.signingSecret) {
+					res.writeHead(401);
+					res.end("Webhook authentication is not configured");
+					return;
+				}
 				const timestamp = req.headers["x-slack-request-timestamp"] as string | undefined;
 				const signature = req.headers["x-slack-signature"] as string | undefined;
 
@@ -60,7 +84,7 @@ export class SlackWebhookAdapter extends SlackBase {
 
 				// Reject requests older than 5 minutes (replay protection)
 				const now = Math.floor(Date.now() / 1000);
-				if (Math.abs(now - parseInt(timestamp, 10)) > 300) {
+				if (!/^\d+$/.test(timestamp) || Math.abs(now - parseInt(timestamp, 10)) > 300) {
 					res.writeHead(401);
 					res.end("Request too old");
 					return;
@@ -296,6 +320,12 @@ export class SlackWebhookAdapter extends SlackBase {
 			this.onAmbientMessage?.(event.channel, momEvent, this);
 		}
 	}
+}
+
+function bearerMatches(header: string | undefined, expected: string): boolean {
+	const actual = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
+	const wanted = Buffer.from(expected);
+	return actual.length === wanted.length && timingSafeEqual(actual, wanted);
 }
 
 // ============================================================================
