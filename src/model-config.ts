@@ -464,6 +464,7 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
 		openai: process.env.OPENAI_BASE_URL,
 		"openai-codex": process.env.OPENAI_CODEX_BASE_URL,
 		fireworks: process.env.FIREWORKS_BASE_URL,
+		"cloudflare-workers-ai": process.env.CLOUDFLARE_WORKERS_AI_BASE_URL,
 	};
 
 	const override = overrides[provider];

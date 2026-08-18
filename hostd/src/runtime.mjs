@@ -4,6 +4,11 @@ import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
 import {
+	resolveContextRuntimeModel,
+	runtimeModelEnvironment,
+	runtimeModelVersionSuffix,
+} from "./workers-ai.mjs";
+import {
 	resolveSiteDeploymentBinding,
 	resolveSiteDeploymentBindings,
 	resolveSiteFactory,
@@ -503,7 +508,14 @@ export class RuntimeManager {
 			contextId,
 			this.routingKey,
 		);
-		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}`;
+		const runtimeModel = resolveContextRuntimeModel(
+			this.config,
+			this.store,
+			this.routingKey,
+			target,
+			contextId,
+		);
+		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
 
 		let inspect = await run(
 			target.engine,
@@ -601,6 +613,7 @@ export class RuntimeManager {
 					),
 				} : {}),
 				...target.runtimeEnv,
+				...runtimeModelEnvironment(this.config, target, contextId, runtimeModel),
 			};
 			await writePrivateFile(
 				envPath,
@@ -720,7 +733,14 @@ export class RuntimeManager {
 				context.id,
 				this.routingKey,
 			);
-			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}`;
+			const runtimeModel = resolveContextRuntimeModel(
+				this.config,
+				this.store,
+				this.routingKey,
+				target,
+				context.id,
+			);
+			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}${runtimeModelVersionSuffix(runtimeModel)}`;
 			const wasHostOwned = context.runtimeVersion?.includes(":scheduled-host-v1") === true;
 			if (context.runtimeVersion === expected || (!hostOwned && !wasHostOwned)) continue;
 			await this.stopOciContext(target, { ...context, contextId: context.id });

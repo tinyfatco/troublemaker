@@ -178,6 +178,74 @@ function httpUrl(value, label) {
 	return parsed.toString().replace(/\/$/, "");
 }
 
+function workersAiConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const workersAi = object(raw, "workersAi");
+	const accountId = text(workersAi.accountId, "workersAi.accountId").toLowerCase();
+	if (!/^[0-9a-f]{32}$/.test(accountId)) {
+		throw new Error("workersAi.accountId must be a 32-character Cloudflare account ID");
+	}
+	const rawAllowedModels = workersAi.allowedModels;
+	if (!Array.isArray(rawAllowedModels) || rawAllowedModels.length === 0) {
+		throw new Error("workersAi.allowedModels must contain at least one Workers AI model");
+	}
+	const allowedModels = rawAllowedModels.map((value, index) => {
+		const model = text(value, `workersAi.allowedModels[${index}]`);
+		if (!/^@cf\/[a-z0-9._-]+\/[a-z0-9._-]+$/i.test(model)) {
+			throw new Error(`workersAi.allowedModels[${index}] must be a fully qualified @cf model ID`);
+		}
+		return model;
+	});
+	if (new Set(allowedModels).size !== allowedModels.length) {
+		throw new Error("workersAi.allowedModels cannot repeat a model");
+	}
+	const gatewayId = workersAi.gatewayId === undefined
+		? undefined
+		: text(workersAi.gatewayId, "workersAi.gatewayId");
+	if (gatewayId && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(gatewayId)) {
+		throw new Error("workersAi.gatewayId contains unsupported characters");
+	}
+	return {
+		accountId,
+		apiToken: envSecret(workersAi.apiTokenEnv, "workersAi.apiTokenEnv", environment),
+		apiBaseUrl: httpUrl(
+			workersAi.apiBaseUrl ?? "https://api.cloudflare.com/client/v4",
+			"workersAi.apiBaseUrl",
+		),
+		allowedModels,
+		gatewayId,
+		requestTimeoutMs: integer(
+			workersAi.requestTimeoutMs,
+			600_000,
+			"workersAi.requestTimeoutMs",
+			1_000,
+			900_000,
+		),
+		maximumRequestBytes: integer(
+			workersAi.maximumRequestBytes,
+			4 * 1024 * 1024,
+			"workersAi.maximumRequestBytes",
+			1024,
+			16 * 1024 * 1024,
+		),
+	};
+}
+
+function principalModelConfig(raw, label, workersAi) {
+	if (raw === undefined) return undefined;
+	const model = object(raw, label);
+	const provider = text(model.provider, `${label}.provider`).toLowerCase();
+	if (provider !== "cloudflare-workers-ai") {
+		throw new Error(`${label}.provider must be cloudflare-workers-ai`);
+	}
+	const id = text(model.id, `${label}.id`);
+	if (!workersAi) throw new Error(`${label} requires top-level workersAi configuration`);
+	if (!workersAi.allowedModels.includes(id)) {
+		throw new Error(`${label}.id is not present in workersAi.allowedModels`);
+	}
+	return { provider, id };
+}
+
 function mattermostId(value, label) {
 	const candidate = text(value, label);
 	if (!/^[a-z0-9]{26}$/.test(candidate)) throw new Error(`${label} must be a Mattermost ID`);
@@ -712,6 +780,7 @@ export async function loadConfig(path, environment = process.env) {
 	const routing = object(raw.routing, "routing");
 	const scheduler = object(raw.scheduler ?? {}, "scheduler");
 	const scheduledWakes = scheduledWakesConfig(raw.scheduledWakes);
+	const workersAi = workersAiConfig(raw.workersAi, environment);
 	if (!Array.isArray(raw.targets) || raw.targets.length === 0) {
 		throw new Error("targets must contain at least one target");
 	}
@@ -840,6 +909,7 @@ export async function loadConfig(path, environment = process.env) {
 		return {
 			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
 			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			model: principalModelConfig(principal.model, `${principalLabel}.model`, workersAi),
 			siteDeployments,
 			siteFactory,
 			// Preserve the original normalized field for single-site consumers.
@@ -941,6 +1011,7 @@ export async function loadConfig(path, environment = process.env) {
 		rocketChat,
 		zulip,
 		phone,
+		workersAi,
 		sites,
 		routing: {
 			actorTarget,

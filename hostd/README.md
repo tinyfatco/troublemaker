@@ -32,6 +32,47 @@ When this setting is enabled, generic email adapter delivery fails closed; the
 runtime must save a draft and may then send that exact draft autonomously within
 the verified context.
 
+## Per-principal Cloudflare Workers AI
+
+Hostd can pin one exact, known phone principal to an allowlisted Cloudflare
+Workers AI model while every other context keeps the target's default model.
+The Cloudflare account token stays in the host process. The selected OCI
+runtime receives only a context-scoped Hostd capability and a loopback proxy
+URL; that capability cannot select another model or be reused by another
+principal.
+
+```json
+{
+  "workersAi": {
+    "accountId": "0123456789abcdef0123456789abcdef",
+    "apiTokenEnv": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
+    "allowedModels": ["@cf/zai-org/glm-5.2"]
+  },
+  "routing": {
+    "actorTarget": "front-desk",
+    "knownPhonePrincipals": [
+      {
+        "phone": "+15555550123",
+        "name": "Example Owner",
+        "model": {
+          "provider": "cloudflare-workers-ai",
+          "id": "@cf/zai-org/glm-5.2"
+        }
+      }
+    ]
+  }
+}
+```
+
+Model routing is derived from the routing-key-protected phone principal and
+requires a phone-only durable context. A mixed-source context, an unknown
+principal, a different model ID, or a capability from another context fails
+closed. The principal override is applied after `targets[].runtimeEnv`, so the
+target defaults remain authoritative for all contexts without an exact
+override. Changing the override also changes the effective runtime version and
+recreates that context's immutable container on its next wake without replacing
+its durable workspace.
+
 ## Scoped Pages-style site previews
 
 When top-level `sites` is configured, a project may bind one or more exact

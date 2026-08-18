@@ -3,6 +3,7 @@ import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
+import { WorkersAiError } from "./workers-ai.mjs";
 
 async function readJson(request, maximumBytes = 2 * 1024 * 1024) {
 	const chunks = [];
@@ -21,6 +22,32 @@ function json(response, status, body) {
 		"cache-control": "no-store",
 	});
 	response.end(JSON.stringify(body));
+}
+
+async function writeChunk(response, chunk) {
+	if (response.write(chunk)) return;
+	await new Promise((resolvePromise, reject) => {
+		const cleanup = () => {
+			response.off("drain", onDrain);
+			response.off("close", onClose);
+			response.off("error", onError);
+		};
+		const onDrain = () => {
+			cleanup();
+			resolvePromise();
+		};
+		const onClose = () => {
+			cleanup();
+			reject(new Error("Workers AI client disconnected"));
+		};
+		const onError = (error) => {
+			cleanup();
+			reject(error);
+		};
+		response.once("drain", onDrain);
+		response.once("close", onClose);
+		response.once("error", onError);
+	});
 }
 
 function authenticateContext(request, config, contextId, purpose) {
@@ -43,6 +70,7 @@ export function createHostServer({
 	zulipGateway,
 	phoneGateway,
 	sitesGateway,
+	workersAiGateway,
 	routingKey,
 }) {
 	const gmailTools = routingKey && gmail && config.gmail
@@ -80,6 +108,55 @@ export function createHostServer({
 				store.setMeta("scheduler:draining", String(draining));
 				if (!draining) scheduler?.pump();
 				json(response, 200, { ok: true, draining });
+				return;
+			}
+			const workersAiMatch = url.pathname.match(
+				/^\/v1\/workers-ai\/([^/]+)\/chat\/completions$/,
+			);
+			if (request.method === "POST" && workersAiMatch) {
+				if (!workersAiGateway || !config.workersAi) {
+					json(response, 503, { error: "workers_ai_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const contextId = decodeURIComponent(workersAiMatch[1]);
+				const target = authenticateContext(request, config, contextId, "workers-ai");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				const body = await readJson(request, config.workersAi.maximumRequestBytes);
+				const controller = new AbortController();
+				const abort = () => controller.abort();
+				const abortIfIncomplete = () => {
+					if (!response.writableEnded) controller.abort();
+				};
+				request.once("aborted", abort);
+				response.once("close", abortIfIncomplete);
+				try {
+					const upstream = await workersAiGateway.complete(
+						target,
+						contextId,
+						body,
+						controller.signal,
+					);
+					response.writeHead(upstream.status, {
+						"content-type": upstream.headers.get("content-type") || "application/json",
+						"cache-control": "no-store",
+					});
+					if (upstream.body) {
+						for await (const chunk of upstream.body) {
+							await writeChunk(response, chunk);
+						}
+					}
+					response.end();
+				} finally {
+					request.off("aborted", abort);
+					response.off("close", abortIfIncomplete);
+				}
 				return;
 			}
 			const receiptMatch = url.pathname.match(/^\/v1\/events\/([^/]+)\/receipt$/);
@@ -432,6 +509,14 @@ export function createHostServer({
 			}
 			json(response, 404, { error: "not_found" });
 		} catch (error) {
+			if (response.headersSent) {
+				response.destroy(error instanceof Error ? error : undefined);
+				return;
+			}
+			if (error instanceof WorkersAiError) {
+				json(response, error.status, { error: error.code });
+				return;
+			}
 			if (error instanceof HostSitesError) {
 				json(response, error.status, { error: error.code });
 				return;

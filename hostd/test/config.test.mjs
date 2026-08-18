@@ -17,6 +17,7 @@ const ENVIRONMENT = {
 	CONTACT_RELAY_SECRET: "test-contact-relay-secret-at-least-32-bytes",
 	PHONE_WEBHOOK_SECRET: "test-phone-webhook-secret-at-least-24-bytes",
 	PHONE_API_KEY: "test-phone-api-key",
+	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
 };
 
 test("loads a signed Gmail contact relay with a control-plane-owned project", async () => {
@@ -50,6 +51,19 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 			path: "/webhooks/sendly",
 		},
 		relay: undefined,
+	});
+	assert.deepEqual(config.workersAi, {
+		accountId: "0123456789abcdef0123456789abcdef",
+		apiToken: "test-cloudflare-workers-ai-token",
+		apiBaseUrl: "https://api.cloudflare.com/client/v4",
+		allowedModels: ["@cf/zai-org/glm-5.2"],
+		gatewayId: undefined,
+		requestTimeoutMs: 600_000,
+		maximumRequestBytes: 4 * 1024 * 1024,
+	});
+	assert.deepEqual(config.routing.knownPhonePrincipals[0].model, {
+		provider: "cloudflare-workers-ai",
+		id: "@cf/zai-org/glm-5.2",
 	});
 });
 
@@ -85,6 +99,31 @@ test("loads encrypted edge relay polling without a public Hostd listener", async
 			encryptionKey: Buffer.alloc(32, 4).toString("base64"),
 			pollIntervalSeconds: 3,
 		});
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("rejects phone model overrides outside the host Workers AI allowlist", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-workers-ai-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.routing.knownPhonePrincipals[0].model.id = "@cf/example/not-allowed";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/model\.id is not present in workersAi\.allowedModels/,
+		);
+
+		delete raw.routing.knownPhonePrincipals[0].model;
+		raw.workersAi.allowedModels = ["glm-5.2"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/must be a fully qualified @cf model ID/,
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

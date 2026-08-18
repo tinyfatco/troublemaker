@@ -21,6 +21,7 @@ import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
 import { createHostServer } from "./server.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
+import { HostWorkersAi } from "./workers-ai.mjs";
 
 function usage() {
 	console.error(`Usage:
@@ -83,6 +84,9 @@ async function components(configPath) {
 		})
 		: undefined;
 	const sites = config.sites ? new HostSites({ config, store, routingKey }) : undefined;
+	const workersAiGateway = config.workersAi
+		? new HostWorkersAi({ config, store, routingKey })
+		: undefined;
 	const runtime = new RuntimeManager(config, store, {
 		mattermost,
 		rocketChat,
@@ -135,6 +139,7 @@ async function components(configPath) {
 		scheduler,
 		scheduledWakes,
 		sitesGateway: sites,
+		workersAiGateway,
 		mattermostGateway,
 		rocketChatGateway,
 		zulipGateway,

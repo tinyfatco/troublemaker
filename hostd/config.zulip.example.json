@@ -49,6 +49,13 @@
     "mode": "off",
     "contextIds": []
   },
+  "workersAi": {
+    "accountId": "0123456789abcdef0123456789abcdef",
+    "apiTokenEnv": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
+    "allowedModels": [
+      "@cf/zai-org/glm-5.2"
+    ]
+  },
   "zulip": {
     "url": "http://127.0.0.1:3110",
     "administratorEmail": "operator@example.com",
@@ -86,6 +93,16 @@
         "name": "Example Customer",
         "projects": []
       }
+    ],
+    "knownPhonePrincipals": [
+      {
+        "phone": "+15555550123",
+        "name": "Example Owner",
+        "model": {
+          "provider": "cloudflare-workers-ai",
+          "id": "@cf/zai-org/glm-5.2"
+        }
+      }
     ]
   },
   "targets": [
@@ -112,7 +129,8 @@
       "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
       "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
       "runtimeEnv": {
-        "MOM_MODEL": "openai-codex/gpt-5.6-sol",
+        "MOM_MODEL_PROVIDER": "openai-codex",
+        "MOM_MODEL_ID": "gpt-5.6-sol",
         "MOM_THINKING": "high"
       }
     }

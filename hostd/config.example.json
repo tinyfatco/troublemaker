@@ -96,7 +96,8 @@
       "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
       "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
       "runtimeEnv": {
-        "MOM_MODEL": "openai-codex/gpt-5.6-sol",
+        "MOM_MODEL_PROVIDER": "openai-codex",
+        "MOM_MODEL_ID": "gpt-5.6-sol",
         "MOM_THINKING": "high"
       }
     }
