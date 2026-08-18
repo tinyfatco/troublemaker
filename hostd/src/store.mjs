@@ -91,6 +91,27 @@ export class HostStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS contexts_port_unique
 				ON contexts(port) WHERE port IS NOT NULL;
 
+			CREATE TABLE IF NOT EXISTS site_relationship_factories (
+				context_id TEXT PRIMARY KEY,
+				principal_hash TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				relationship_id TEXT NOT NULL UNIQUE,
+				customer_id TEXT NOT NULL UNIQUE,
+				user_id TEXT UNIQUE,
+				project_id TEXT NOT NULL UNIQUE,
+				grant_id TEXT NOT NULL UNIQUE,
+				maximum_sites INTEGER NOT NULL,
+				artifact_kinds_json TEXT NOT NULL,
+				allowed_branches_json TEXT NOT NULL,
+				hostname_mode TEXT NOT NULL,
+				generation INTEGER NOT NULL DEFAULT 0,
+				status TEXT NOT NULL,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
 			CREATE TABLE IF NOT EXISTS site_deployment_bindings (
 				context_id TEXT NOT NULL,
 				site_slug TEXT NOT NULL UNIQUE,
@@ -757,6 +778,152 @@ export class HostStore {
 		`).run(now(), source, threadId);
 	}
 
+	getSiteRelationshipFactory(contextId) {
+		const row = this.database.prepare(`
+			SELECT context_id AS contextId, principal_hash AS principalHash, target_id AS targetId,
+				relationship_id AS relationshipId, customer_id AS customerId, user_id AS userId,
+				project_id AS projectId, grant_id AS grantId, maximum_sites AS maximumSites,
+				artifact_kinds_json AS artifactKindsJson,
+				allowed_branches_json AS allowedBranchesJson,
+				hostname_mode AS hostnameMode, generation, status,
+				last_error AS lastError, created_at AS createdAt, updated_at AS updatedAt
+			FROM site_relationship_factories WHERE context_id = ?
+		`).get(contextId);
+		return row ? {
+			...row,
+			artifactKinds: JSON.parse(row.artifactKindsJson),
+			allowedBranches: JSON.parse(row.allowedBranchesJson),
+		} : null;
+	}
+
+	listSiteRelationshipFactories() {
+		return this.database.prepare(`
+			SELECT context_id AS contextId FROM site_relationship_factories ORDER BY created_at, context_id
+		`).all().map((row) => this.getSiteRelationshipFactory(row.contextId));
+	}
+
+	beginSiteRelationshipFactory({
+		contextId,
+		principalHash,
+		targetId,
+		relationshipId,
+		customerId,
+		projectId,
+		grantId,
+		maximumSites,
+		artifactKinds,
+		allowedBranches,
+		hostnameMode,
+	}) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existing = this.getSiteRelationshipFactory(contextId);
+			if (existing) {
+				const expected = {
+					principalHash,
+					targetId,
+					maximumSites,
+					hostnameMode,
+				};
+				for (const [key, value] of Object.entries(expected)) {
+					if (existing[key] !== value) throw new Error("site_relationship_factory_identity_mismatch");
+				}
+				if (
+					JSON.stringify(existing.artifactKinds) !== JSON.stringify(artifactKinds)
+					|| JSON.stringify(existing.allowedBranches) !== JSON.stringify(allowedBranches)
+				) {
+					throw new Error("site_relationship_factory_policy_mismatch");
+				}
+				if (existing.status === "failed") {
+					this.database.prepare(`
+						UPDATE site_relationship_factories
+						SET status = 'provisioning', last_error = NULL,
+							generation = generation + 1, updated_at = ?
+						WHERE context_id = ? AND status = 'failed'
+					`).run(now(), contextId);
+				}
+				this.database.exec("COMMIT");
+				return this.getSiteRelationshipFactory(contextId);
+			}
+			const timestamp = now();
+			this.database.prepare(`
+				INSERT INTO site_relationship_factories(
+					context_id, principal_hash, target_id, relationship_id,
+					customer_id, user_id, project_id, grant_id,
+					maximum_sites, artifact_kinds_json, allowed_branches_json,
+					hostname_mode, generation, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, 'provisioning', ?, ?)
+			`).run(
+				contextId,
+				principalHash,
+				targetId,
+				relationshipId,
+				customerId,
+				projectId,
+				grantId,
+				maximumSites,
+				JSON.stringify(artifactKinds),
+				JSON.stringify(allowedBranches),
+				hostnameMode,
+				timestamp,
+				timestamp,
+			);
+			this.database.exec("COMMIT");
+			return this.getSiteRelationshipFactory(contextId);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	activateSiteRelationshipFactory(contextId, {
+		relationshipId,
+		customerId,
+		userId,
+		projectId,
+		grantId,
+	}) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const current = this.getSiteRelationshipFactory(contextId);
+			if (
+				!current
+				|| current.relationshipId !== relationshipId
+				|| current.customerId !== customerId
+				|| current.projectId !== projectId
+				|| current.grantId !== grantId
+				|| !["provisioning", "failed", "active"].includes(current.status)
+			) {
+				throw new Error("site_relationship_factory_receipt_mismatch");
+			}
+			const conflict = this.database.prepare(`
+				SELECT context_id AS contextId FROM site_relationship_factories
+				WHERE context_id <> ? AND (customer_id = ? OR user_id = ?)
+				LIMIT 1
+			`).get(contextId, customerId, userId);
+			if (conflict) throw new Error("site_relationship_factory_cross_context_identity");
+			this.database.prepare(`
+				UPDATE site_relationship_factories
+				SET user_id = ?, status = 'active', last_error = NULL, updated_at = ?
+				WHERE context_id = ?
+			`).run(userId, now(), contextId);
+			this.database.exec("COMMIT");
+			return this.getSiteRelationshipFactory(contextId);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	failSiteRelationshipFactory(contextId, error) {
+		this.database.prepare(`
+			UPDATE site_relationship_factories
+			SET status = 'failed', last_error = ?, updated_at = ?
+			WHERE context_id = ? AND status = 'provisioning'
+		`).run(String(error).slice(0, 1000), now(), contextId);
+		return this.getSiteRelationshipFactory(contextId);
+	}
+
 	getSiteDeploymentBinding(contextId, siteSlug) {
 		const row = this.database.prepare(`
 			SELECT context_id AS contextId, site_slug AS siteSlug, display_name AS displayName, site_id AS siteId,
@@ -806,6 +973,24 @@ export class HostStore {
 		try {
 			const existing = this.getSiteDeploymentBinding(contextId, siteSlug);
 			if (existing) {
+				const expected = {
+					displayName,
+					siteId,
+					grantId,
+					customerId,
+					userId,
+					projectId,
+					previewHostname,
+				};
+				for (const [key, value] of Object.entries(expected)) {
+					if (existing[key] !== value) throw new Error("site_binding_identity_mismatch");
+				}
+				if (
+					JSON.stringify(existing.artifactKinds) !== JSON.stringify(artifactKinds)
+					|| JSON.stringify(existing.allowedBranches) !== JSON.stringify(allowedBranches)
+				) {
+					throw new Error("site_binding_policy_mismatch");
+				}
 				if (existing.status === "failed") {
 					this.database.prepare(`
 						UPDATE site_deployment_bindings SET status = 'creating', last_error = NULL, updated_at = ?

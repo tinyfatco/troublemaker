@@ -460,6 +460,10 @@ async function sitesConfig(raw, environment) {
 		maximumFileBytes,
 		200 * 1024 * 1024,
 	);
+	const relationshipFactory = relationshipSiteFactoryConfig(
+		sites.relationshipFactory,
+		"sites.relationshipFactory",
+	);
 	return {
 		publishUrl: httpUrl(sites.publishUrl, "sites.publishUrl"),
 		previewApex,
@@ -490,6 +494,7 @@ async function sitesConfig(raw, environment) {
 			1024,
 			100 * 1024 * 1024,
 		),
+		relationshipFactory,
 	};
 }
 
@@ -603,6 +608,32 @@ function siteFactoryConfig(raw, label) {
 	return {
 		customerId,
 		userId,
+		maximumSites,
+		artifactKinds,
+		allowedBranches: ["main"],
+		hostnameMode: "site-root-preview",
+	};
+}
+
+function relationshipSiteFactoryConfig(raw, label) {
+	if (raw === undefined) return undefined;
+	const factory = object(raw, label);
+	const maximumSites = integer(factory.maximumSites, 1, `${label}.maximumSites`, 1, 1);
+	const rawKinds = factory.artifactKinds ?? ["static"];
+	if (!Array.isArray(rawKinds) || rawKinds.length === 0) {
+		throw new Error(`${label}.artifactKinds must contain static or worker`);
+	}
+	const artifactKinds = rawKinds.map((kind, index) => {
+		const value = text(kind, `${label}.artifactKinds[${index}]`).toLowerCase();
+		if (!["static", "worker"].includes(value)) {
+			throw new Error(`${label}.artifactKinds must contain only static or worker`);
+		}
+		return value;
+	}).sort();
+	if (new Set(artifactKinds).size !== artifactKinds.length) {
+		throw new Error(`${label}.artifactKinds cannot repeat a value`);
+	}
+	return {
 		maximumSites,
 		artifactKinds,
 		allowedBranches: ["main"],

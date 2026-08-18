@@ -210,13 +210,14 @@ async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
 }
 
 export class RuntimeManager {
-	constructor(config, store, { mattermost, rocketChat, zulip, routingKey } = {}) {
+	constructor(config, store, { mattermost, rocketChat, zulip, routingKey, sites } = {}) {
 		this.config = config;
 		this.store = store;
 		this.mattermost = mattermost;
 		this.rocketChat = rocketChat;
 		this.zulip = zulip;
 		this.routingKey = routingKey;
+		this.sites = sites;
 	}
 
 	async acceptEvent(event) {
@@ -485,7 +486,24 @@ export class RuntimeManager {
 			contextDirectory,
 			workspace,
 		} = await this.provisionOciContext(target, contextId);
-		const expectedRuntimeVersion = scheduledWakeRuntimeVersion(this.config, target, contextId);
+		if (this.sites) {
+			try {
+				await this.sites.ensureRelationshipFactory(target, contextId);
+			} catch (error) {
+				console.error(
+					`troublemaker-hostd: relationship Sites custody unavailable for ${contextId}:`,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		}
+		const siteFactory = resolveSiteFactory(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
+		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}`;
 
 		let inspect = await run(
 			target.engine,
@@ -516,13 +534,6 @@ export class RuntimeManager {
 			}
 			const envPath = join(contextDirectory, "runtime.env");
 			const siteDeployments = siteDeploymentBindings(
-				this.config,
-				this.store,
-				target,
-				contextId,
-				this.routingKey,
-			);
-			const siteFactory = resolveSiteFactory(
 				this.config,
 				this.store,
 				target,
@@ -678,14 +689,39 @@ export class RuntimeManager {
 		await this.stopOciContext(target, { ...candidate, contextId: candidate.id });
 	}
 
+	async reconcileSiteRelationships() {
+		if (!this.sites || !this.config.sites?.relationshipFactory) return;
+		for (const context of this.store.listContexts()) {
+			const target = this.config.targetsById.get(context.targetId);
+			if (!target) continue;
+			try {
+				const factory = await this.sites.ensureRelationshipFactory(target, context.id);
+				if (!factory || context.status !== "online") continue;
+				await this.ensureOciContext(target, context.id);
+			} catch (error) {
+				console.error(
+					`troublemaker-hostd: relationship Sites reconciliation failed for ${context.id}:`,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+		}
+	}
+
 	async reconcileScheduledWakeOwnership() {
 		for (const context of this.store.listContexts()) {
 			if (context.status !== "online") continue;
 			const target = this.config.targetsById.get(context.targetId);
 			if (!target) continue;
 			const hostOwned = hostOwnsScheduledWakes(this.config, context.id);
-			const expected = scheduledWakeRuntimeVersion(this.config, target, context.id);
-			const wasHostOwned = context.runtimeVersion?.endsWith(":scheduled-host-v1") === true;
+			const siteFactory = resolveSiteFactory(
+				this.config,
+				this.store,
+				target,
+				context.id,
+				this.routingKey,
+			);
+			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}`;
+			const wasHostOwned = context.runtimeVersion?.includes(":scheduled-host-v1") === true;
 			if (context.runtimeVersion === expected || (!hostOwned && !wasHostOwned)) continue;
 			await this.stopOciContext(target, { ...context, contextId: context.id });
 			if (!hostOwned && wasHostOwned) {

@@ -53,7 +53,11 @@ token, or the Hostd signing key.
     "productionNamespace": "example-sites-production",
     "capabilityPrivateKeyEnv": "SITES_CAPABILITY_PRIVATE_KEY",
     "capabilityKeyId": "hostd-example-1",
-    "capabilityTtlSeconds": 60
+    "capabilityTtlSeconds": 60,
+    "relationshipFactory": {
+      "maximumSites": 1,
+      "artifactKinds": ["static"]
+    }
   },
   "routing": {
     "knownPrincipals": [
@@ -86,10 +90,13 @@ artifact directory, rejects links and special files, enforces file and byte
 limits, creates a deterministic archive, and signs a short-lived Ed25519
 capability bound to immutable grant/customer/project/site IDs, branch slot,
 host-derived source commit, preview environment/namespace/hostname, artifact
-digest, actor reference, expiry, and idempotency key. Hostd requires the bound
-workspace to be one clean, attached Git repository on the requested branch;
-the runtime cannot supply the signed SHA. Sites Publish independently verifies
-those claims against site custody and recomputes the artifact digest.
+digest, actor reference, expiry, and idempotency key. Hostd requires the
+requested artifact to live inside one clean Git repository on the requested
+branch. That repository may be an isolated project nested under the relationship
+workspace; conversation logs, memory, credentials, and unrelated projects stay
+outside its Git root. The runtime cannot supply the signed SHA. Sites Publish
+independently verifies those claims against site custody and recomputes the
+artifact digest.
 
 Preview hostnames follow the Cloudflare Pages shape:
 `<branch-label>.<site-slug>.tinyfat.dev`. Here `site-slug` is the actual
@@ -110,10 +117,21 @@ only that signed metadata. The factory is fixed to main-branch root review hosts
 under `sites.previewApex` and cannot configure DNS/custom domains, billing,
 promotion, deletion, or another user/customer scope.
 
-The phone number remains in Hostd configuration and is matched through the
-routing-key-derived principal hash; it is never copied into the runtime. The
-runtime receives only the same context-scoped Hostd capability used by
-configured email/project contexts, never provider credentials or the signer.
+For the normal Operator path, top-level `sites.relationshipFactory` removes the
+need for a per-principal config entry. Before exposing either Sites tool, Hostd
+creates a durable relationship factory keyed by the authoritative context and
+principal scope, then asks Sites Publish through a signed `relationship:ensure`
+capability to provision one real, non-contacting custody user and customer row.
+Only an exact active receipt enables `site_create` and `site_deploy`. The default
+and current maximum is one static main-branch root preview. Failed or interrupted
+provisioning retries the same relationship/customer/project/grant identity;
+conflicting identities and cross-context reuse fail closed.
+
+The phone address remains in encrypted host-owned routing state and is matched
+through the routing-key-derived principal hash; it is never copied into Sites
+custody or the runtime. The runtime receives only the same context-scoped Hostd
+capability used by configured email/project contexts, never provider
+credentials or the signer.
 
 The host signer may be loaded from either `sites.capabilityPrivateKeyEnv` or
 `sites.capabilityPrivateKeyFile`, but never both. Prefer the file form for a

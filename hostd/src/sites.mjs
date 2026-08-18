@@ -15,12 +15,14 @@ import {
 	resolveSiteDeploymentBinding,
 	resolveSiteDeploymentBindings,
 	resolveSiteFactory,
+	resolveSiteRelationshipScope,
 } from "./site-deployment-binding.mjs";
 
 const execFileAsync = promisify(execFile);
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
 const SOURCE_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const IDEMPOTENCY_RE = /^site_deploy:[0-9a-f]{64}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export class HostSitesError extends Error {
 	constructor(status, code) {
@@ -125,16 +127,47 @@ async function gitOutput(repository, args, failureCode) {
 	}
 }
 
-export async function inspectWorkspaceGitSource(workspace, requestedBranch) {
+async function resolveArtifactRoot(workspace, requestedDirectory) {
+	const rawDirectory = typeof requestedDirectory === "string" ? requestedDirectory.trim() : "";
+	if (
+		!rawDirectory
+		|| rawDirectory.length > 240
+		|| rawDirectory.includes("\0")
+		|| rawDirectory.split(/[\\/]/).some((part) => part === "..")
+	) {
+		throw new HostSitesError(400, "artifact_directory_invalid");
+	}
 	const workspaceReal = await realpath(workspace);
-	const repository = await gitOutput(workspaceReal, ["rev-parse", "--show-toplevel"], "source_repository_required");
+	const candidate = resolve(workspaceReal, rawDirectory);
+	if (!within(workspaceReal, candidate)) throw new HostSitesError(400, "artifact_directory_outside_workspace");
+	let root;
+	try {
+		root = await realpath(candidate);
+	} catch (error) {
+		if (error?.code === "ENOENT") throw new HostSitesError(404, "artifact_directory_not_found");
+		throw error;
+	}
+	if (!within(workspaceReal, root)) throw new HostSitesError(400, "artifact_directory_outside_workspace");
+	const rootStat = await stat(root);
+	if (!rootStat.isDirectory()) throw new HostSitesError(400, "artifact_directory_required");
+	return { workspaceReal, root };
+}
+
+export async function inspectWorkspaceGitSource(workspace, requestedBranch, requestedDirectory = ".") {
+	const { workspaceReal, root } = await resolveArtifactRoot(workspace, requestedDirectory);
+	const repository = await gitOutput(root, ["rev-parse", "--show-toplevel"], "source_repository_required");
 	let repositoryReal;
 	try {
 		repositoryReal = await realpath(repository);
 	} catch {
 		throw new HostSitesError(409, "source_repository_required");
 	}
-	if (repositoryReal !== workspaceReal) throw new HostSitesError(409, "source_repository_root_mismatch");
+	if (!within(workspaceReal, repositoryReal)) {
+		throw new HostSitesError(409, "source_repository_outside_workspace");
+	}
+	if (!within(repositoryReal, root)) {
+		throw new HostSitesError(409, "source_artifact_outside_repository");
+	}
 	const branch = await gitOutput(repositoryReal, ["symbolic-ref", "--quiet", "--short", "HEAD"], "source_detached_head");
 	if (branch !== normalizeGitBranch(requestedBranch)) throw new HostSitesError(409, "source_branch_mismatch");
 	const sha = (await gitOutput(repositoryReal, ["rev-parse", "--verify", "HEAD^{commit}"], "source_commit_required")).toLowerCase();
@@ -282,29 +315,7 @@ async function collectArtifactFiles(root, limits, hooks = {}) {
 }
 
 export async function buildWorkspaceArtifact(workspace, requestedDirectory, limits, hooks = {}) {
-	const rawDirectory = typeof requestedDirectory === "string" ? requestedDirectory.trim() : "";
-	if (
-		!rawDirectory
-		|| rawDirectory.length > 240
-		|| rawDirectory.includes("\0")
-		|| rawDirectory.split(/[\\/]/).some((part) => part === "..")
-	) {
-		throw new HostSitesError(400, "artifact_directory_invalid");
-	}
-	const workspaceReal = await realpath(workspace);
-	const candidate = resolve(workspaceReal, rawDirectory);
-	if (!within(workspaceReal, candidate)) throw new HostSitesError(400, "artifact_directory_outside_workspace");
-	let root;
-	try {
-		root = await realpath(candidate);
-	} catch (error) {
-		if (error?.code === "ENOENT") throw new HostSitesError(404, "artifact_directory_not_found");
-		throw error;
-	}
-	if (!within(workspaceReal, root)) throw new HostSitesError(400, "artifact_directory_outside_workspace");
-	const rootStat = await stat(root);
-	if (!rootStat.isDirectory()) throw new HostSitesError(400, "artifact_directory_required");
-
+	const { root } = await resolveArtifactRoot(workspace, requestedDirectory);
 	const files = await collectArtifactFiles(root, limits, hooks);
 	const chunks = [];
 	for (const file of files) {
@@ -341,6 +352,122 @@ export class HostSites {
 		this.routingKey = routingKey;
 		this.request = request;
 		this.now = now;
+	}
+
+	async ensureRelationshipFactory(target, contextId) {
+		const existingFactory = resolveSiteFactory(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
+		if (existingFactory) return existingFactory;
+		const resolved = resolveSiteRelationshipScope(
+			this.config,
+			this.store,
+			target,
+			contextId,
+			this.routingKey,
+		);
+		if (!resolved) return null;
+		const { scope, policy } = resolved;
+		let factory = this.store.beginSiteRelationshipFactory({
+			contextId,
+			principalHash: scope.principalHash,
+			targetId: target.id,
+			relationshipId: randomUUID(),
+			customerId: randomUUID(),
+			projectId: randomUUID(),
+			grantId: randomUUID(),
+			maximumSites: policy.maximumSites,
+			artifactKinds: policy.artifactKinds,
+			allowedBranches: policy.allowedBranches,
+			hostnameMode: policy.hostnameMode,
+		});
+		if (factory.status === "active") {
+			return resolveSiteFactory(this.config, this.store, target, contextId, this.routingKey);
+		}
+		const contextReference = createHash("sha256").update(contextId).digest("hex");
+		const principalReference = createHash("sha256")
+			.update(target.id)
+			.update("\0")
+			.update(scope.principalHash)
+			.update("\0")
+			.update(scope.projectSlug)
+			.digest("hex");
+		const capability = signDeployCapability(this.config.sites, {
+			sub: `relationship:${factory.relationshipId}`,
+			jti: createHash("sha256")
+				.update(`relationship-ensure\0${factory.relationshipId}\0${factory.generation}`)
+				.digest("hex"),
+			action: "relationship:ensure",
+			relationship_id: factory.relationshipId,
+			customer_id: factory.customerId,
+			project_id: factory.projectId,
+			factory_grant_id: factory.grantId,
+			principal_ref: principalReference,
+			maximum_sites: factory.maximumSites,
+			artifact_kinds: factory.artifactKinds,
+			allowed_branches: factory.allowedBranches,
+			hostname_mode: factory.hostnameMode,
+			preview_apex: this.config.sites.previewApex,
+			actor_ref: `hostd-context:${contextReference}`,
+		}, Math.floor(this.now() / 1000));
+		try {
+			const response = await this.request(`${this.config.sites.publishUrl}/v1/scoped-relationships`, {
+				method: "POST",
+				headers: {
+					"authorization": `Bearer ${capability}`,
+					"content-type": "application/json",
+				},
+				body: "{}",
+				signal: AbortSignal.timeout(30_000),
+			});
+			const responseText = await response.text();
+			let result;
+			try { result = JSON.parse(responseText); } catch {
+				throw new HostSitesError(502, "sites_publish_invalid_response");
+			}
+			if (!response.ok) {
+				throw new HostSitesError(
+					response.status >= 400 && response.status < 500 ? response.status : 502,
+					typeof result?.error === "string" ? result.error : "sites_relationship_rejected",
+				);
+			}
+			const expected = {
+				relationship_id: factory.relationshipId,
+				customer_id: factory.customerId,
+				project_id: factory.projectId,
+				factory_grant_id: factory.grantId,
+				principal_ref: principalReference,
+				actor_ref: `hostd-context:${contextReference}`,
+				maximum_sites: factory.maximumSites,
+				hostname_mode: factory.hostnameMode,
+				preview_apex: this.config.sites.previewApex,
+			};
+			for (const [key, value] of Object.entries(expected)) {
+				if (result?.[key] !== value) throw new HostSitesError(502, "sites_relationship_receipt_scope_mismatch");
+			}
+			if (
+				!UUID_RE.test(result?.user_id || "")
+				|| JSON.stringify(result?.artifact_kinds) !== JSON.stringify(factory.artifactKinds)
+				|| JSON.stringify(result?.allowed_branches) !== JSON.stringify(factory.allowedBranches)
+			) {
+				throw new HostSitesError(502, "sites_relationship_receipt_identity_invalid");
+			}
+			factory = this.store.activateSiteRelationshipFactory(contextId, {
+				relationshipId: factory.relationshipId,
+				customerId: factory.customerId,
+				userId: result.user_id,
+				projectId: factory.projectId,
+				grantId: factory.grantId,
+			});
+			return resolveSiteFactory(this.config, this.store, target, contextId, this.routingKey);
+		} catch (error) {
+			this.store.failSiteRelationshipFactory(contextId, error instanceof Error ? error.message : String(error));
+			throw error;
+		}
 	}
 
 	async create(target, contextId, body) {
@@ -380,17 +507,25 @@ export class HostSites {
 		if (configuredSiteBinding(this.config, siteSlug)) {
 			throw new HostSitesError(409, "site_slug_unavailable");
 		}
+		const prior = this.store.getSiteDeploymentBinding(contextId, siteSlug);
+		const identity = prior || {
+			siteId: randomUUID(),
+			grantId: factory.grantId || randomUUID(),
+			customerId: factory.customerId,
+			userId: factory.userId,
+			projectId: factory.projectId || randomUUID(),
+		};
 		let binding;
 		try {
 			binding = this.store.beginSiteDeploymentBinding({
 				contextId,
 				siteSlug,
 				displayName,
-				siteId: randomUUID(),
-				grantId: randomUUID(),
-				customerId: factory.customerId,
-				userId: factory.userId,
-				projectId: randomUUID(),
+				siteId: identity.siteId,
+				grantId: identity.grantId,
+				customerId: identity.customerId,
+				userId: identity.userId,
+				projectId: identity.projectId,
 				previewHostname: `${siteSlug}.${this.config.sites.previewApex}`,
 				artifactKinds: factory.artifactKinds,
 				allowedBranches: factory.allowedBranches,
@@ -423,6 +558,7 @@ export class HostSites {
 				.update(`site-create\0${binding.contextId}\0${binding.siteId}`)
 				.digest("hex"),
 			action: "site:create",
+			...(factory.relationshipId ? { relationship_id: factory.relationshipId } : {}),
 			customer_id: binding.customerId,
 			user_id: binding.userId,
 			project_id: binding.projectId,
@@ -514,9 +650,9 @@ export class HostSites {
 		if (message.length > 500) throw new HostSitesError(400, "deploy_message_too_long");
 
 		const workspace = resolve(safeContextDirectory(target, contextId), "workspace");
-		const sourceBefore = await inspectWorkspaceGitSource(workspace, branch);
+		const sourceBefore = await inspectWorkspaceGitSource(workspace, branch, body.directory);
 		const artifact = await buildWorkspaceArtifact(workspace, body.directory, this.config.sites);
-		const sourceAfter = await inspectWorkspaceGitSource(workspace, branch);
+		const sourceAfter = await inspectWorkspaceGitSource(workspace, branch, body.directory);
 		if (sourceAfter.sha !== sourceBefore.sha || sourceAfter.repository !== sourceBefore.repository) {
 			throw new HostSitesError(409, "source_changed_during_snapshot");
 		}

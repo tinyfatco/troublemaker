@@ -7,6 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
+import { resolveSiteFactory } from "../src/site-deployment-binding.mjs";
 import { siteDeploymentBinding, siteDeploymentBindings } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability, stablePrivateKey } from "../src/security.mjs";
@@ -117,6 +118,31 @@ test("Hostd derives Git provenance from one clean attached workspace repository"
 		await assert.rejects(
 			inspectWorkspaceGitSource(workspace, "feature/example"),
 			(error) => error instanceof HostSitesError && error.code === "source_detached_head",
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Hostd binds provenance to one clean nested project repository", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-nested-git-"));
+	const workspace = join(directory, "workspace");
+	const project = join(workspace, "projects", "example");
+	const artifact = join(project, "site");
+	try {
+		await mkdir(artifact, { recursive: true });
+		await writeFile(join(artifact, "index.html"), "<!doctype html><title>Nested source</title>\n");
+		const sourceSha = commitWorkspace(project, "main");
+		await writeFile(join(workspace, "private-runtime-log.jsonl"), "not project source\n");
+		assert.deepEqual(await inspectWorkspaceGitSource(workspace, "main", "projects/example/site"), {
+			branch: "main",
+			sha: sourceSha,
+			repository: project,
+		});
+		await writeFile(join(project, "untracked.txt"), "dirty\n");
+		await assert.rejects(
+			inspectWorkspaceGitSource(workspace, "main", "projects/example/site"),
+			(error) => error instanceof HostSitesError && error.code === "source_repository_dirty",
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
@@ -617,6 +643,217 @@ test("a verified user scope creates durable exact site grants without per-site c
 			}),
 			(error) => error instanceof HostSitesError && error.code === "site_factory_unbound",
 		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("relationship factories provision real custody once and isolate unrelated contexts", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-relationship-sites-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+	const routingKey = Buffer.alloc(32, 9);
+	const target = { id: "operator", driver: "oci" };
+	const policy = {
+		maximumSites: 1,
+		artifactKinds: ["static"],
+		allowedBranches: ["main"],
+		hostnameMode: "site-root-preview",
+	};
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+			relationshipFactory: policy,
+		},
+		routing: { actorTarget: target.id, knownPrincipals: [], knownPhonePrincipals: [] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, routingKey);
+	const makeContext = (providerThreadId, contactAddress) => {
+		const route = router.resolvePhone({ providerThreadId, contactAddress, label: "Example customer" });
+		store.createContext({
+			id: route.contextId,
+			targetId: route.targetId,
+			driver: "oci",
+			runtimeName: `runtime-${providerThreadId}`,
+			port: providerThreadId === "thread-one" ? 32000 : 32001,
+		});
+		store.bindRoute({
+			source: "phone",
+			providerThreadId,
+			principalHash: route.principalHash,
+			projectSlug: route.projectSlug,
+			targetId: route.targetId,
+			contextId: route.contextId,
+		});
+		return route;
+	};
+	const one = makeContext("thread-one", "+15551230001");
+	const two = makeContext("thread-two", "+15551230002");
+	const users = new Map();
+	const calls = [];
+	const service = new HostSites({
+		config,
+		store,
+		routingKey,
+		now: () => 1_800_000_000_000,
+		fetch: async (url, init) => {
+			const signed = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, ""));
+			assert.equal(verifyBytes(null, signed.signed, publicKey, signed.signature), true);
+			calls.push({ url, payload: signed.payload });
+			if (url.endsWith("/v1/scoped-relationships")) {
+				assert.equal(signed.payload.action, "relationship:ensure");
+				assert.equal(signed.payload.maximum_sites, 1);
+				assert.deepEqual(signed.payload.artifact_kinds, ["static"]);
+				assert.deepEqual(signed.payload.allowed_branches, ["main"]);
+				const userId = users.size === 0
+					? "99999999-9999-4999-8999-999999999999"
+					: "88888888-8888-4888-8888-888888888888";
+				users.set(signed.payload.relationship_id, userId);
+				return new Response(JSON.stringify({
+					ok: true,
+					created: true,
+					relationship_id: signed.payload.relationship_id,
+					customer_id: signed.payload.customer_id,
+					user_id: userId,
+					project_id: signed.payload.project_id,
+					factory_grant_id: signed.payload.factory_grant_id,
+					principal_ref: signed.payload.principal_ref,
+					actor_ref: signed.payload.actor_ref,
+					maximum_sites: signed.payload.maximum_sites,
+					artifact_kinds: signed.payload.artifact_kinds,
+					allowed_branches: signed.payload.allowed_branches,
+					hostname_mode: signed.payload.hostname_mode,
+					preview_apex: signed.payload.preview_apex,
+				}), { status: 201 });
+			}
+			assert(url.endsWith("/v1/scoped-sites"));
+			assert.equal(signed.payload.relationship_id, store.getSiteRelationshipFactory(one.contextId).relationshipId);
+			return new Response(JSON.stringify({
+				ok: true,
+				created: true,
+				site: signed.payload.site_slug,
+				site_id: signed.payload.site_id,
+				customer_id: signed.payload.customer_id,
+				user_id: signed.payload.user_id,
+				project_id: signed.payload.project_id,
+				deployment_grant_id: signed.payload.deployment_grant_id,
+				hostname: signed.payload.hostname,
+			}), { status: 201 });
+		},
+	});
+	try {
+		const oneFactory = await service.ensureRelationshipFactory(target, one.contextId);
+		const oneRetry = await service.ensureRelationshipFactory(target, one.contextId);
+		assert.equal(oneFactory.userId, "99999999-9999-4999-8999-999999999999");
+		assert.deepEqual(oneRetry, oneFactory);
+		assert.equal(calls.filter((call) => call.url.endsWith("/v1/scoped-relationships")).length, 1);
+
+		const twoFactory = await service.ensureRelationshipFactory(target, two.contextId);
+		assert.equal(twoFactory.userId, "88888888-8888-4888-8888-888888888888");
+		assert.notEqual(twoFactory.customerId, oneFactory.customerId);
+		assert.notEqual(twoFactory.projectId, oneFactory.projectId);
+		assert.notEqual(twoFactory.grantId, oneFactory.grantId);
+
+		const created = await service.create(target, one.contextId, {
+			site_slug: "first-example",
+			display_name: "First Example",
+		});
+		assert.equal(created.created, true);
+		assert.equal(store.getSiteDeploymentBinding(one.contextId, "first-example").status, "active");
+		await assert.rejects(
+			service.create(target, two.contextId, {
+				site_slug: "first-example",
+				display_name: "Wrong Context",
+			}),
+			(error) => error instanceof HostSitesError && error.code === "site_slug_unavailable",
+		);
+		await assert.rejects(
+			service.create(target, one.contextId, {
+				site_slug: "second-example",
+				display_name: "Over Quota",
+			}),
+			(error) => error instanceof HostSitesError && error.code === "site_factory_limit_reached",
+		);
+		assert.equal(resolveSiteFactory(config, store, target, one.contextId, routingKey).ownershipMode, "relationship");
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("failed relationship provisioning retries the same durable identity", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-relationship-retry-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey } = generateKeyPairSync("ed25519");
+	const routingKey = Buffer.alloc(32, 7);
+	const target = { id: "operator", driver: "oci" };
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			previewNamespace: "preview",
+			productionNamespace: "production",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+			relationshipFactory: { maximumSites: 1, artifactKinds: ["static"], allowedBranches: ["main"], hostnameMode: "site-root-preview" },
+		},
+		routing: { actorTarget: target.id, knownPrincipals: [], knownPhonePrincipals: [] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, routingKey);
+	const route = router.resolvePhone({ providerThreadId: "thread", contactAddress: "+15551230003" });
+	store.createContext({ id: route.contextId, targetId: target.id, driver: "oci", runtimeName: "runtime", port: 32000 });
+	store.bindRoute({ source: "phone", providerThreadId: "thread", principalHash: route.principalHash, projectSlug: "intake", targetId: target.id, contextId: route.contextId });
+	const failed = new HostSites({ config, store, routingKey, fetch: async () => new Response(JSON.stringify({ error: "temporary" }), { status: 503 }) });
+	try {
+		await assert.rejects(failed.ensureRelationshipFactory(target, route.contextId));
+		const before = store.getSiteRelationshipFactory(route.contextId);
+		assert.equal(before.status, "failed");
+		const recovered = new HostSites({
+			config,
+			store,
+			routingKey,
+			fetch: async (_url, init) => {
+				const payload = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, "")).payload;
+				return new Response(JSON.stringify({
+					ok: true,
+					created: false,
+					relationship_id: payload.relationship_id,
+					customer_id: payload.customer_id,
+					user_id: "77777777-7777-4777-8777-777777777777",
+					project_id: payload.project_id,
+					factory_grant_id: payload.factory_grant_id,
+					principal_ref: payload.principal_ref,
+					actor_ref: payload.actor_ref,
+					maximum_sites: payload.maximum_sites,
+					artifact_kinds: payload.artifact_kinds,
+					allowed_branches: payload.allowed_branches,
+					hostname_mode: payload.hostname_mode,
+					preview_apex: payload.preview_apex,
+				}));
+			},
+		});
+		await recovered.ensureRelationshipFactory(target, route.contextId);
+		const after = store.getSiteRelationshipFactory(route.contextId);
+		assert.equal(after.status, "active");
+		assert.equal(after.relationshipId, before.relationshipId);
+		assert.equal(after.customerId, before.customerId);
+		assert.equal(after.projectId, before.projectId);
+		assert.equal(after.grantId, before.grantId);
+		assert(after.generation > before.generation);
 	} finally {
 		store.close();
 		await rm(directory, { recursive: true, force: true });

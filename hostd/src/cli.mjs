@@ -19,6 +19,7 @@ import { readRoutingKey, stablePrivateKey } from "./security.mjs";
 import { EventScheduler } from "./scheduler.mjs";
 import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
 import { createHostServer } from "./server.mjs";
+import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
 
 function usage() {
@@ -81,7 +82,14 @@ async function components(configPath) {
 			label: zulip ? "Zulip" : rocketChat ? "Rocket.Chat" : "Mattermost",
 		})
 		: undefined;
-	const runtime = new RuntimeManager(config, store, { mattermost, rocketChat, zulip, routingKey });
+	const sites = config.sites ? new HostSites({ config, store, routingKey }) : undefined;
+	const runtime = new RuntimeManager(config, store, {
+		mattermost,
+		rocketChat,
+		zulip,
+		routingKey,
+		sites,
+	});
 	const scheduler = new EventScheduler({ config, store, runtime });
 	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail
@@ -126,6 +134,7 @@ async function components(configPath) {
 		controlNotifier,
 		scheduler,
 		scheduledWakes,
+		sitesGateway: sites,
 		mattermostGateway,
 		rocketChatGateway,
 		zulipGateway,
@@ -150,6 +159,7 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
+	await state.runtime.reconcileSiteRelationships();
 	const initialScheduledWake = await state.scheduledWakes.tick();
 	if (initialScheduledWake.materialized > 0) state.scheduler.pump();
 

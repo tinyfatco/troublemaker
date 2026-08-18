@@ -165,6 +165,10 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 			productionNamespace: "example-sites-production",
 			capabilityPrivateKeyEnv: "SITES_CAPABILITY_PRIVATE_KEY",
 			capabilityKeyId: "hostd-example-1",
+			relationshipFactory: {
+				maximumSites: 1,
+				artifactKinds: ["static"],
+			},
 		};
 		raw.routing.knownPrincipals[0].projects.push({
 			slug: "website",
@@ -190,6 +194,12 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		assert.equal(config.sites.previewNamespace, "example-sites-preview");
 		assert.equal(config.sites.productionNamespace, "example-sites-production");
 		assert.equal(config.sites.capabilityTtlSeconds, 60);
+		assert.deepEqual(config.sites.relationshipFactory, {
+			maximumSites: 1,
+			artifactKinds: ["static"],
+			allowedBranches: ["main"],
+			hostnameMode: "site-root-preview",
+		});
 		assert.deepEqual(config.routing.knownPrincipals[0].projects[0].siteDeployment, {
 			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
 			customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -419,6 +429,17 @@ test("rejects broad, duplicate, or non-Ed25519 Sites deploy custody", async () =
 				SITES_CAPABILITY_PRIVATE_KEY: edPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
 			}),
 			/previewNamespace and productionNamespace must differ/,
+		);
+
+		const broadFactory = structuredClone(base);
+		broadFactory.sites.relationshipFactory = { maximumSites: 2, artifactKinds: ["static"] };
+		await writeFile(path, JSON.stringify(broadFactory));
+		await assert.rejects(
+			loadConfig(path, {
+				...ENVIRONMENT,
+				SITES_CAPABILITY_PRIVATE_KEY: edPrivate.export({ type: "pkcs8", format: "pem" }).toString(),
+			}),
+			/sites.relationshipFactory.maximumSites/,
 		);
 
 		const duplicate = structuredClone(base);
