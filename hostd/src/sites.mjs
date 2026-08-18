@@ -450,7 +450,8 @@ export class HostSites {
 				if (result?.[key] !== value) throw new HostSitesError(502, "sites_relationship_receipt_scope_mismatch");
 			}
 			if (
-				!UUID_RE.test(result?.user_id || "")
+				result?.ok !== true
+				|| !UUID_RE.test(result?.user_id || "")
 				|| JSON.stringify(result?.artifact_kinds) !== JSON.stringify(factory.artifactKinds)
 				|| JSON.stringify(result?.allowed_branches) !== JSON.stringify(factory.allowedBranches)
 			) {

@@ -66,6 +66,7 @@ export function resolveSiteFactory(config, store, target, contextId, routingKey)
 	const resolved = contextScope(config, store, target, contextId, routingKey);
 	if (!resolved) return null;
 	if (resolved.configuredOwner?.siteFactory) return resolved.configuredOwner.siteFactory;
+	if (!config.sites.relationshipFactory) return null;
 	return relationshipFactoryOwner(resolved.relationshipFactory);
 }
 

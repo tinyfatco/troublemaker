@@ -785,6 +785,12 @@ test("relationship factories provision real custody once and isolate unrelated c
 			(error) => error instanceof HostSitesError && error.code === "site_factory_limit_reached",
 		);
 		assert.equal(resolveSiteFactory(config, store, target, one.contextId, routingKey).ownershipMode, "relationship");
+		const rolledBackConfig = { ...config, sites: { ...config.sites, relationshipFactory: undefined } };
+		assert.equal(resolveSiteFactory(rolledBackConfig, store, target, one.contextId, routingKey), null);
+		assert.equal(
+			siteDeploymentBinding(rolledBackConfig, store, target, one.contextId, routingKey, "first-example").siteSlug,
+			"first-example",
+		);
 	} finally {
 		store.close();
 		await rm(directory, { recursive: true, force: true });
