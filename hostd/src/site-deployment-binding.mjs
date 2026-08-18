@@ -52,6 +52,7 @@ export function resolveSiteRelationshipScope(config, store, target, contextId, r
 	if (
 		!resolved
 		|| resolved.configuredOwner?.siteFactory
+		|| resolved.configuredOwner?.siteDeployment
 		|| (resolved.configuredOwner?.siteDeployments?.length ?? 0) > 0
 	) return null;
 	return {

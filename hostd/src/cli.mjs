@@ -159,7 +159,12 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
-	await state.runtime.reconcileSiteRelationships();
+	void state.runtime.reconcileSiteRelationships().catch((error) => {
+		console.error(
+			"troublemaker-hostd: relationship Sites startup reconciliation failed:",
+			error instanceof Error ? error.message : String(error),
+		);
+	});
 	const initialScheduledWake = await state.scheduledWakes.tick();
 	if (initialScheduledWake.materialized > 0) state.scheduler.pump();
 

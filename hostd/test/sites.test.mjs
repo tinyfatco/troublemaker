@@ -149,6 +149,50 @@ test("Hostd binds provenance to one clean nested project repository", async () =
 	}
 });
 
+test("nested artifacts reject VCS metadata and ignored private files but allow ignored build output", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-private-artifact-"));
+	const workspace = join(directory, "workspace");
+	const project = join(workspace, "projects", "example");
+	try {
+		await mkdir(join(project, "site"), { recursive: true });
+		await writeFile(join(project, ".gitignore"), "site/.env\nsite/private.txt\ndist/\n");
+		await writeFile(join(project, "site", "index.html"), "<!doctype html><title>Safe</title>\n");
+		commitWorkspace(project, "main");
+		const source = await inspectWorkspaceGitSource(workspace, "main", "projects/example/site");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "projects/example", LIMITS, { repository: source.repository }),
+			(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
+		);
+
+		await writeFile(join(project, "site", ".env"), "SYNTHETIC_SECRET=not-for-an-artifact\n");
+		assert.equal(git(project, "status", "--porcelain=v1"), "");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "projects/example/site", LIMITS, { repository: source.repository }),
+			(error) => error instanceof HostSitesError && error.code === "artifact_private_path_forbidden",
+		);
+		await rm(join(project, "site", ".env"));
+		await writeFile(join(project, "site", "private.txt"), "ignored private data\n");
+		await assert.rejects(
+			buildWorkspaceArtifact(workspace, "projects/example/site", LIMITS, { repository: source.repository }),
+			(error) => error instanceof HostSitesError && error.code === "artifact_ignored_path_forbidden",
+		);
+		await rm(join(project, "site", "private.txt"));
+
+		await mkdir(join(project, "dist"), { recursive: true });
+		await writeFile(join(project, "dist", "index.html"), "<!doctype html><title>Ignored build</title>\n");
+		assert.equal(git(project, "status", "--porcelain=v1"), "");
+		const artifact = await buildWorkspaceArtifact(
+			workspace,
+			"projects/example/dist",
+			LIMITS,
+			{ repository: source.repository },
+		);
+		assert.deepEqual(artifactPaths(artifact.body), ["index.html"]);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("workspace artifacts are deterministic and reject escaping links", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-artifact-"));
 	const workspace = join(directory, "workspace");
@@ -791,6 +835,43 @@ test("relationship factories provision real custody once and isolate unrelated c
 			siteDeploymentBinding(rolledBackConfig, store, target, one.contextId, routingKey, "first-example").siteSlug,
 			"first-example",
 		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("singular configured site grants never gain generic create authority", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-singular-site-grant-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const routingKey = Buffer.alloc(32, 6);
+	const target = { id: "operator", driver: "oci" };
+	const phone = "+15551230004";
+	const siteDeployment = {
+		grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		customerId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		siteId: "11111111-1111-4111-8111-111111111111",
+		siteSlug: "configured-example",
+		artifactKinds: ["static"],
+		allowedBranches: ["main"],
+	};
+	const config = {
+		sites: { relationshipFactory: { maximumSites: 1, artifactKinds: ["static"], allowedBranches: ["main"], hostnameMode: "site-root-preview" } },
+		routing: { actorTarget: target.id, knownPrincipals: [], knownPhonePrincipals: [{ phone, siteDeployment }] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, routingKey);
+	const route = router.resolvePhone({ providerThreadId: "thread", contactAddress: phone });
+	store.createContext({ id: route.contextId, targetId: target.id, driver: "oci", runtimeName: "runtime", port: 32000 });
+	store.bindRoute({ source: "phone", providerThreadId: "thread", principalHash: route.principalHash, projectSlug: "intake", targetId: target.id, contextId: route.contextId });
+	let calls = 0;
+	const service = new HostSites({ config, store, routingKey, fetch: async () => { calls++; throw new Error("unexpected"); } });
+	try {
+		assert.equal(await service.ensureRelationshipFactory(target, route.contextId), null);
+		assert.equal(calls, 0);
+		assert.equal(store.getSiteRelationshipFactory(route.contextId), null);
+		assert.equal(siteDeploymentBinding(config, store, target, route.contextId, routingKey, "configured-example").siteSlug, "configured-example");
 	} finally {
 		store.close();
 		await rm(directory, { recursive: true, force: true });

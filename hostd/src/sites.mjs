@@ -107,24 +107,55 @@ export function scopedScriptName(siteId, branch) {
 	return `s-${siteId.replace(/-/g, "").toLowerCase()}-${branchDigest}`;
 }
 
+function gitEnvironment() {
+	return {
+		PATH: process.env.PATH,
+		HOME: process.env.HOME,
+		GIT_CONFIG_NOSYSTEM: "1",
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_TERMINAL_PROMPT: "0",
+	};
+}
+
 async function gitOutput(repository, args, failureCode) {
 	try {
 		const { stdout } = await execFileAsync("git", ["-C", repository, ...args], {
 			encoding: "utf8",
 			timeout: 10_000,
 			maxBuffer: 1024 * 1024,
-			env: {
-				PATH: process.env.PATH,
-				HOME: process.env.HOME,
-				GIT_CONFIG_NOSYSTEM: "1",
-				GIT_CONFIG_GLOBAL: "/dev/null",
-				GIT_TERMINAL_PROMPT: "0",
-			},
+			env: gitEnvironment(),
 		});
 		return stdout.trim();
 	} catch {
 		throw new HostSitesError(409, failureCode);
 	}
+}
+
+async function gitPathIgnored(repository, absolute) {
+	const path = relative(repository, absolute).split(sep).join("/") || ".";
+	try {
+		await execFileAsync("git", ["-C", repository, "check-ignore", "--quiet", "--", path], {
+			encoding: "utf8",
+			timeout: 10_000,
+			maxBuffer: 1024 * 1024,
+			env: gitEnvironment(),
+		});
+		return true;
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === 1) return false;
+		throw new HostSitesError(409, "source_ignore_status_unavailable");
+	}
+}
+
+function sensitiveArtifactPath(path) {
+	const parts = path.split("/");
+	return parts.some((part) => [".git", ".hg", ".svn", ".gitignore", ".gitattributes", ".gitmodules"].includes(part))
+		|| parts.some((part) => part === ".env" || part.startsWith(".env."));
+}
+
+function safeIgnoredArtifactRoot(path) {
+	const name = path.split("/").filter(Boolean).at(-1)?.toLowerCase() || "";
+	return ["build", "dist", "out", "public", "site"].includes(name);
 }
 
 async function resolveArtifactRoot(workspace, requestedDirectory) {
@@ -265,7 +296,12 @@ async function collectArtifactFiles(root, limits, hooks = {}) {
 		for (const entry of entries) {
 			const absolute = resolve(directoryReal, entry.name);
 			const metadata = await lstat(absolute);
+			const path = relative(root, absolute).split(sep).join("/");
+			if (!path || path.startsWith("../") || path.includes("/../") || path.includes("\0")) {
+				throw new HostSitesError(400, "artifact_path_invalid");
+			}
 			await hooks.afterLstat?.({ absolute, metadata });
+			await hooks.validateEntry?.({ absolute, metadata, path });
 			if (metadata.isSymbolicLink()) throw new HostSitesError(400, "artifact_links_forbidden");
 			if (metadata.isDirectory()) {
 				await walk(absolute);
@@ -273,10 +309,6 @@ async function collectArtifactFiles(root, limits, hooks = {}) {
 			}
 			if (!metadata.isFile()) throw new HostSitesError(400, "artifact_special_file_forbidden");
 			if (files.length + 1 > limits.maximumFiles) throw new HostSitesError(413, "artifact_file_count_exceeded");
-			const path = relative(root, absolute).split(sep).join("/");
-			if (!path || path.startsWith("../") || path.includes("/../") || path.includes("\0")) {
-				throw new HostSitesError(400, "artifact_path_invalid");
-			}
 
 			let descriptor;
 			try {
@@ -315,8 +347,30 @@ async function collectArtifactFiles(root, limits, hooks = {}) {
 }
 
 export async function buildWorkspaceArtifact(workspace, requestedDirectory, limits, hooks = {}) {
-	const { root } = await resolveArtifactRoot(workspace, requestedDirectory);
-	const files = await collectArtifactFiles(root, limits, hooks);
+	const { workspaceReal, root } = await resolveArtifactRoot(workspace, requestedDirectory);
+	const repository = hooks.repository ? await realpath(hooks.repository) : null;
+	if (repository && !within(workspaceReal, repository)) {
+		throw new HostSitesError(409, "source_repository_outside_workspace");
+	}
+	const rootRelative = repository ? relative(repository, root).split(sep).join("/") || "." : "";
+	const rootIgnored = repository ? await gitPathIgnored(repository, root) : false;
+	if (rootIgnored && !safeIgnoredArtifactRoot(rootRelative)) {
+		throw new HostSitesError(400, "artifact_ignored_root_forbidden");
+	}
+	const validateEntry = hooks.validateEntry;
+	const guardedHooks = {
+		...hooks,
+		validateEntry: async ({ absolute, metadata, path }) => {
+			if (sensitiveArtifactPath(path)) {
+				throw new HostSitesError(400, "artifact_private_path_forbidden");
+			}
+			if (repository && !rootIgnored && await gitPathIgnored(repository, absolute)) {
+				throw new HostSitesError(400, "artifact_ignored_path_forbidden");
+			}
+			await validateEntry?.({ absolute, metadata, path });
+		},
+	};
+	const files = await collectArtifactFiles(root, limits, guardedHooks);
 	const chunks = [];
 	for (const file of files) {
 		chunks.push(tarHeader(file.path, file.content.length), file.content);
@@ -652,7 +706,12 @@ export class HostSites {
 
 		const workspace = resolve(safeContextDirectory(target, contextId), "workspace");
 		const sourceBefore = await inspectWorkspaceGitSource(workspace, branch, body.directory);
-		const artifact = await buildWorkspaceArtifact(workspace, body.directory, this.config.sites);
+		const artifact = await buildWorkspaceArtifact(
+			workspace,
+			body.directory,
+			this.config.sites,
+			{ repository: sourceBefore.repository },
+		);
 		const sourceAfter = await inspectWorkspaceGitSource(workspace, branch, body.directory);
 		if (sourceAfter.sha !== sourceBefore.sha || sourceAfter.repository !== sourceBefore.repository) {
 			throw new HostSitesError(409, "source_changed_during_snapshot");
