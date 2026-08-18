@@ -50,6 +50,7 @@ function createMockResponse(onEnd: () => void): MockResponse {
 function dispatch(adapter: WebAdapter, payload: Record<string, unknown>): Promise<MockResponse> {
 	return new Promise((resolve) => {
 		const req = new EventEmitter() as any;
+		req.headers = { "content-type": "application/json" };
 		const res = createMockResponse(() => resolve(res));
 		adapter.dispatch(req, res as any);
 		req.emit("data", Buffer.from(JSON.stringify(payload)));
@@ -60,6 +61,7 @@ function dispatch(adapter: WebAdapter, payload: Record<string, unknown>): Promis
 function dispatchStop(adapter: WebAdapter, payload: Record<string, unknown> = {}): Promise<MockResponse> {
 	return new Promise((resolve) => {
 		const req = new EventEmitter() as any;
+		req.headers = { "content-type": "application/json" };
 		const res = createMockResponse(() => resolve(res));
 		(adapter as any).dispatchStop(req, res as any);
 		req.emit("data", Buffer.from(JSON.stringify(payload)));

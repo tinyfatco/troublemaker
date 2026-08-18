@@ -3,7 +3,11 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-const files = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
+const files = execFileSync(
+	"git",
+	["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+	{ encoding: "utf8" },
+)
 	.split("\0")
 	.filter(Boolean);
 const errors = [];
@@ -64,4 +68,4 @@ if (errors.length > 0) {
 	process.exit(1);
 }
 
-console.log(`Public-safety check passed (${files.length} tracked files).`);
+console.log(`Public-safety check passed (${files.length} repository files).`);

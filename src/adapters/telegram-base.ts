@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import TelegramBot from "node-telegram-bot-api";
+import { Bot, InputFile, type Message } from "node-telegram-bot-api";
 import { basename, join } from "path";
 import { MomSettingsManager } from "../context.js";
 import * as log from "../log.js";
@@ -31,7 +31,7 @@ export abstract class TelegramBase implements PlatformAdapter {
 Use markdown: **bold**, *italic*, \`code\`, \`\`\`blocks\`\`\`, [links](url), ~~strikethrough~~.
 When mentioning users, use @username format.`;
 
-	protected bot: TelegramBot;
+	protected bot: Bot;
 	protected handler!: MomHandler;
 	protected workingDir: string;
 	protected botToken: string;
@@ -45,8 +45,7 @@ When mentioning users, use @username format.`;
 	constructor(config: TelegramBaseConfig) {
 		this.workingDir = config.workingDir;
 		this.botToken = config.botToken;
-		// Always construct with polling: false — subclasses control lifecycle
-		this.bot = new TelegramBot(config.botToken, { polling: false });
+		this.bot = new Bot(config.botToken);
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -67,7 +66,7 @@ When mentioning users, use @username format.`;
 	/** Promise that resolves when the last enqueued run completes. Used by hold-connection mode. */
 	public lastRunDone: Promise<void> = Promise.resolve();
 
-	protected handleIncomingMessage(msg: TelegramBot.Message): void {
+	protected handleIncomingMessage(msg: Message): void {
 		const hasMedia = !!(msg.voice || msg.audio || msg.document || msg.photo || msg.video || msg.video_note);
 		if ((!msg.text && !msg.caption && !hasMedia) || msg.from?.is_bot) return;
 
@@ -92,7 +91,7 @@ When mentioning users, use @username format.`;
 		});
 	}
 
-	private describeMedia(msg: TelegramBot.Message): string {
+	private describeMedia(msg: Message): string {
 		if (msg.voice) return "[Voice message]";
 		if (msg.audio) return `[Audio: ${msg.audio.title || "audio"}]`;
 		if (msg.video_note) return "[Video message]";
@@ -103,7 +102,7 @@ When mentioning users, use @username format.`;
 	}
 
 	private async processMessageWithMedia(
-		msg: TelegramBot.Message,
+		msg: Message,
 		chatId: string,
 		userId: string,
 		userName: string,
@@ -182,7 +181,7 @@ When mentioning users, use @username format.`;
 		}
 	}
 
-	private extractFileInfo(msg: TelegramBot.Message): { fileId: string; fileName: string } | null {
+	private extractFileInfo(msg: Message): { fileId: string; fileName: string } | null {
 		if (msg.voice) {
 			return { fileId: msg.voice.file_id, fileName: "voice.ogg" };
 		}
@@ -209,7 +208,9 @@ When mentioning users, use @username format.`;
 	}
 
 	private async downloadTelegramFile(_chatId: string, fileId: string, fileName: string, timestamp: string): Promise<string> {
-		const fileUrl = await this.bot.getFileLink(fileId);
+		const file = await this.bot.api.getFile({ file_id: fileId });
+		if (!file.file_path) throw new Error("Telegram did not return a file path");
+		const fileUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
 
 		const response = await fetch(fileUrl);
 		if (!response.ok) {
@@ -238,15 +239,20 @@ When mentioning users, use @username format.`;
 	// ==========================================================================
 
 	async postMessage(channel: string, text: string): Promise<string> {
-		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), { parse_mode: "HTML" });
+		const result = await this.bot.api.sendMessage({
+			chat_id: Number(channel),
+			text: markdownToTelegramHtml(text),
+			parse_mode: "HTML",
+		});
 		return String(result.message_id);
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
 		try {
-			await this.bot.editMessageText(markdownToTelegramHtml(text), {
+			await this.bot.api.editMessageText({
 				chat_id: Number(channel),
 				message_id: Number(ts),
+				text: markdownToTelegramHtml(text),
 				parse_mode: "HTML",
 			});
 		} catch (err) {
@@ -260,7 +266,7 @@ When mentioning users, use @username format.`;
 
 	async deleteMessage(channel: string, ts: string): Promise<void> {
 		try {
-			await this.bot.deleteMessage(Number(channel), Number(ts));
+			await this.bot.api.deleteMessage({ chat_id: Number(channel), message_id: Number(ts) });
 		} catch {
 			// Ignore errors (message may be too old to delete)
 		}
@@ -268,8 +274,10 @@ When mentioning users, use @username format.`;
 
 	async postInThread(channel: string, _threadTs: string, text: string): Promise<string> {
 		// Telegram doesn't have threads in the same way — just post as reply
-		const result = await this.bot.sendMessage(Number(channel), markdownToTelegramHtml(text), {
-			reply_to_message_id: Number(_threadTs),
+		const result = await this.bot.api.sendMessage({
+			chat_id: Number(channel),
+			text: markdownToTelegramHtml(text),
+			reply_parameters: { message_id: Number(_threadTs) },
 			parse_mode: "HTML",
 		});
 		return String(result.message_id);
@@ -278,7 +286,10 @@ When mentioning users, use @username format.`;
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
 		const fileName = title || basename(filePath);
 		const fileContent = readFileSync(filePath);
-		await this.bot.sendDocument(Number(channel), fileContent, {}, { filename: fileName });
+		await this.bot.api.sendDocument({
+			chat_id: Number(channel),
+			document: new InputFile(fileContent, { filename: fileName }),
+		});
 	}
 
 	logToFile(entry: object): void {
@@ -364,7 +375,10 @@ When mentioning users, use @username format.`;
 				logBotResponse: (ch, text, ts) => this.logBotResponse(ch, text, ts),
 				sendTyping: async () => {
 					try {
-						await this.bot.sendChatAction(Number(event.channel), "typing");
+						await this.bot.api.sendChatAction({
+							chat_id: Number(event.channel),
+							action: "typing",
+						});
 					} catch {
 						// Ignore typing errors
 					}

@@ -42,24 +42,32 @@ async function main(): Promise<void> {
 		});
 		assert.equal(unauthenticated.status, 401);
 
-		const missingVerifiedHeader = await fetch(endpoint, {
+		const authenticated = await fetch(endpoint, {
 			method: "POST",
 			headers: { Authorization: "Bearer resident-token-example", "Content-Type": "application/json" },
 			body: JSON.stringify(payload),
 		});
-		assert.equal(missingVerifiedHeader.status, 401);
+		assert.equal(authenticated.status, 200);
+		assert.deepEqual(await authenticated.json(), { ok: true });
 
-		const authenticated = await fetch(endpoint, {
+		const forgedVerificationHeader = await fetch(endpoint, {
 			method: "POST",
 			headers: {
-				Authorization: "Bearer resident-token-example",
+				Authorization: "Bearer wrong-token",
 				"X-Crawdad-VPS-Verified": "true",
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(payload),
 		});
-		assert.equal(authenticated.status, 200);
-		assert.deepEqual(await authenticated.json(), { ok: true });
+		assert.equal(forgedVerificationHeader.status, 401);
+
+		delete process.env.MOM_PHONE_INBOUND_TOKEN;
+		const missingServerSecret = await fetch(endpoint, {
+			method: "POST",
+			headers: { Authorization: "Bearer resident-token-example", "Content-Type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		assert.equal(missingServerSecret.status, 401, "phone ingress fails closed without a configured secret");
 	} finally {
 		await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 		if (previous === undefined) delete process.env.MOM_PHONE_INBOUND_TOKEN;

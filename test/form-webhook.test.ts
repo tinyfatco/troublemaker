@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FormWebhookAdapter, type FormInboundPayload } from "../src/adapters/form-webhook.js";
@@ -25,11 +26,38 @@ function makeHandler() {
 }
 
 const workingDir = mkdtempSync(join(tmpdir(), "tm-form-webhook-"));
+let server: Server | undefined;
 
 try {
-	const adapter = new FormWebhookAdapter({ workingDir });
+	const adapter = new FormWebhookAdapter({ workingDir, inboundToken: "form-inbound-token-example-32-bytes" });
 	const { handler, handled, steered } = makeHandler();
 	adapter.setHandler(handler);
+	server = createServer((request, response) => adapter.dispatch(request, response));
+	await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	assert(address && typeof address === "object");
+	const endpoint = `http://127.0.0.1:${address.port}/form/webhook`;
+	const unauthenticated = await fetch(endpoint, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+	});
+	assert.equal(unauthenticated.status, 401);
+	const forgedVerificationHeader = await fetch(endpoint, {
+		method: "POST",
+		headers: { "content-type": "application/json", "x-crawdad-dev-verified": "true" },
+		body: "{}",
+	});
+	assert.equal(forgedVerificationHeader.status, 401);
+	const authenticated = await fetch(endpoint, {
+		method: "POST",
+		headers: {
+			authorization: "Bearer form-inbound-token-example-32-bytes",
+			"content-type": "application/json",
+		},
+		body: "{}",
+	});
+	assert.equal(authenticated.status, 400, "authenticated invalid payload reaches payload validation");
 
 	const payload: FormInboundPayload = {
 		source: "website_form",
@@ -98,5 +126,8 @@ try {
 
 	console.log("form-webhook happy path ok");
 } finally {
+	if (server) {
+		await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()));
+	}
 	rmSync(workingDir, { recursive: true, force: true });
 }

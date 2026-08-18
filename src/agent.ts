@@ -3,11 +3,11 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
 	AgentSession,
-	AuthStorage,
 	convertToLlm,
 	DefaultResourceLoader,
 	getAgentDir,
 	loadSkillsFromDir,
+	ModelRuntime,
 	ModelRegistry,
 	SessionManager,
 	type Skill,
@@ -345,7 +345,7 @@ function formatToolArgs(_toolName: string, args: Record<string, unknown>): strin
 }
 
 // Cache runners per awareness dir
-const runners = new Map<string, AgentRunner>();
+const runners = new Map<string, Promise<AgentRunner>>();
 
 function parseExtensionPaths(value: string | undefined): string[] {
 	if (!value) return [];
@@ -366,20 +366,23 @@ export function getOrCreateRunner(
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
 	workspaceDirOverride?: string,
-): AgentRunner {
+): Promise<AgentRunner> {
 	const existing = runners.get(awarenessDir);
 	if (existing) return existing;
 
-	const runner = createRunner(
+	const runnerPromise = createRunner(
 		sandboxConfig,
 		awarenessDir,
 		formatInstructions,
 		extraSkillsDirs,
 		extraTools,
 		workspaceDirOverride,
-	);
-	runners.set(awarenessDir, runner);
-	return runner;
+	).catch((error) => {
+		if (runners.get(awarenessDir) === runnerPromise) runners.delete(awarenessDir);
+		throw error;
+	});
+	runners.set(awarenessDir, runnerPromise);
+	return runnerPromise;
 }
 
 /**
@@ -387,14 +390,14 @@ export function getOrCreateRunner(
  * workspace root. Zulip topic contexts use this to share tools/memory without
  * sharing their Pi transcript.
  */
-function createRunner(
+async function createRunner(
 	sandboxConfig: SandboxConfig,
 	awarenessDir: string,
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
 	workspaceDirOverride?: string,
-): AgentRunner {
+): Promise<AgentRunner> {
 	const t0 = performance.now();
 	const workspaceDir = workspaceDirOverride ?? join(awarenessDir, "..");
 	const executor = withExecutorCwd(createExecutor(sandboxConfig), workspaceDir);
@@ -418,10 +421,16 @@ function createRunner(
 	const workspaceStore = new FilesystemWorkspaceStore(workspaceDir);
 	const settingsManager = new MomSettingsManager(workspaceDir);
 
-	// Create AuthStorage and ModelRegistry
-	const authStorage = AuthStorage.create();
-	registerClaudeCliRuntimeAuth(authStorage);
-	const modelRegistry = ModelRegistry.create(authStorage, join(workspaceDir, "models.json"));
+	// The canonical model runtime owns credential storage, provider composition,
+	// and request auth. Keep the compatibility registry only for synchronous
+	// model selection used by the surrounding Troublemaker code.
+	const modelRuntime = await ModelRuntime.create({
+		authPath: join(getAgentDir(), "auth.json"),
+		modelsPath: join(workspaceDir, "models.json"),
+		allowModelNetwork: false,
+	});
+	await registerClaudeCliRuntimeAuth(modelRuntime);
+	const modelRegistry = new ModelRegistry(modelRuntime);
 
 	// Resolve model: env vars > settings.json > defaults
 	const model = resolveModelWithAuth(workspaceDir, modelRegistry);
@@ -459,7 +468,7 @@ function createRunner(
 		convertToLlm,
 		streamFn,
 		steeringMode: "all",
-		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(authStorage, provider),
+		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
 	});
 
 	// Defer context loading to run()
@@ -553,7 +562,7 @@ function createRunner(
 				sessionManager: getSessionManager(),
 				settingsManager: compactionSettingsProxy as any,
 				cwd: process.cwd(),
-				modelRegistry,
+				modelRuntime,
 				resourceLoader,
 				baseToolsOverride,
 			});
@@ -1024,7 +1033,7 @@ function createRunner(
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	};
 
-	return {
+	const runner: AgentRunner = {
 		async run(
 			ctx: MomContext,
 			_store: ChannelStore,
@@ -1240,7 +1249,7 @@ function createRunner(
 
 			const resolveCurrentModelCredential = async () => {
 				if (getClaudeCliRuntimeAuth(currentModel.provider)) return;
-				await resolveApiKey(authStorage, currentModel.provider);
+				await resolveApiKey(modelRegistry, currentModel.provider);
 			};
 			const tPrompt = performance.now();
 			try {
@@ -1632,7 +1641,8 @@ function createRunner(
 			}
 			return result;
 		},
-	};
+		};
+	return runner;
 }
 
 /**

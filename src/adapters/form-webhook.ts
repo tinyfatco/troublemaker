@@ -1,12 +1,14 @@
 import { appendFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
-import { createHash } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 type FieldValue = string | string[];
+
+const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
 
 export interface FormInboundPayload {
 	source: "website_form";
@@ -47,6 +49,7 @@ interface FormChannelRecord {
 
 export interface FormWebhookAdapterConfig {
 	workingDir: string;
+	inboundToken: string;
 }
 
 export class FormWebhookAdapter implements PlatformAdapter {
@@ -56,12 +59,14 @@ export class FormWebhookAdapter implements PlatformAdapter {
 You are handling a website contact-form submission. Treat it as a lead or customer inquiry for the site's owner. There is no direct website-form reply transport in this channel yet, so do not assume your final answer is sent to the visitor and do not send_message to a form-* channel. Use available tools such as send_message to notify the owner or another configured channel only when you know a real outbound target.`;
 
 	private workingDir: string;
+	private inboundToken: string;
 	private handler!: MomHandler;
 	private channels = new Map<string, FormChannelRecord>();
 	private users = new Map<string, UserInfo>();
 
 	constructor(config: FormWebhookAdapterConfig) {
 		this.workingDir = config.workingDir;
+		this.inboundToken = config.inboundToken;
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -79,9 +84,32 @@ You are handling a website contact-form submission. Treat it as a lead or custom
 	}
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		if (!matchesBearerToken(req.headers.authorization, this.inboundToken)) {
+			res.writeHead(401, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+			res.end(JSON.stringify({ error: "unauthorized" }));
+			return;
+		}
+		if (!isJsonContentType(req.headers["content-type"])) {
+			res.writeHead(415, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+			res.end(JSON.stringify({ error: "json_required" }));
+			return;
+		}
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413, { "Content-Type": "application/json", "X-Content-Type-Options": "nosniff" });
+				res.end(JSON.stringify({ error: "request_too_large" }));
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", async () => {
+			if (rejected) return;
 			const body = Buffer.concat(chunks).toString("utf-8");
 			let payload: FormInboundPayload;
 			try {
@@ -311,6 +339,18 @@ function validatePayload(payload: FormInboundPayload): string | null {
 	if (!payload.site?.displayName) return "site.displayName";
 	if (!payload.fields || typeof payload.fields !== "object") return "fields";
 	return null;
+}
+
+function matchesBearerToken(header: string | undefined, expected: string): boolean {
+	const actualBytes = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
+	const expectedBytes = Buffer.from(expected);
+	return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
+
+function isJsonContentType(value: string | string[] | undefined): boolean {
+	if (typeof value !== "string") return false;
+	const mediaType = value.split(";", 1)[0]?.trim().toLowerCase();
+	return mediaType === "application/json" || mediaType?.endsWith("+json") === true;
 }
 
 function visitorIdentity(payload: FormInboundPayload): string {

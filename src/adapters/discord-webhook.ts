@@ -4,6 +4,8 @@ import { stripDiscordMentions } from "./discord-format.js";
 import { DiscordBase, type DiscordBaseConfig } from "./discord-base.js";
 import type { MomEvent } from "./types.js";
 
+const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
+
 // ============================================================================
 // DiscordWebhookAdapter — HTTP Interactions endpoint
 //
@@ -15,15 +17,19 @@ import type { MomEvent } from "./types.js";
 export interface DiscordWebhookAdapterConfig extends DiscordBaseConfig {
 	/** Ed25519 public key for verifying interaction signatures */
 	publicKey: string;
+	/** Scoped capability for trusted Gateway MESSAGE_CREATE relay traffic. */
+	upstreamToken?: string;
 }
 
 export class DiscordWebhookAdapter extends DiscordBase {
 	private publicKey: string;
+	private upstreamToken?: string;
 	private cryptoKey: Awaited<ReturnType<typeof crypto.subtle.importKey>> | null = null;
 
 	constructor(config: DiscordWebhookAdapterConfig) {
 		super(config);
 		this.publicKey = config.publicKey;
+		this.upstreamToken = config.upstreamToken;
 	}
 
 	async start(): Promise<void> {
@@ -51,14 +57,47 @@ export class DiscordWebhookAdapter extends DiscordBase {
 	// ==========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
+		const url = req.url || "";
+		let pathname = "";
+		try {
+			pathname = new URL(url, "http://localhost").pathname;
+		} catch {
+			res.writeHead(400);
+			res.end("Invalid request URL");
+			return;
+		}
+		const gatewayRelay = pathname === "/discord/messages";
+		if (gatewayRelay && (!this.upstreamToken || !bearerMatches(req.headers.authorization, this.upstreamToken))) {
+			res.writeHead(401);
+			res.end("Unauthorized");
+			return;
+		}
+		const mediaType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+		if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
+			res.writeHead(415);
+			res.end("JSON required");
+			return;
+		}
 		const chunks: Buffer[] = [];
-		req.on("data", (chunk: Buffer) => chunks.push(chunk));
+		let totalBytes = 0;
+		let rejected = false;
+		req.on("data", (chunk: Buffer) => {
+			if (rejected) return;
+			totalBytes += chunk.byteLength;
+			if (totalBytes > MAXIMUM_WEBHOOK_BYTES) {
+				rejected = true;
+				res.writeHead(413);
+				res.end("Request too large");
+				return;
+			}
+			chunks.push(chunk);
+		});
 		req.on("end", async () => {
+			if (rejected) return;
 			const rawBody = Buffer.concat(chunks).toString("utf-8");
-			const url = req.url || "";
 
-			// Route: /discord/messages — Gateway relay MESSAGE_CREATE (trusted, no sig verification)
-			if (url.includes("/discord/messages")) {
+			// Route: /discord/messages — scoped Gateway relay MESSAGE_CREATE.
+			if (gatewayRelay) {
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ ok: true }));
 
@@ -260,6 +299,15 @@ export class DiscordWebhookAdapter extends DiscordBase {
 			this.enqueueWork(channelId, async () => { await this.handler.handleEvent(momEvent, this); });
 		}
 	}
+}
+
+function bearerMatches(header: string | undefined, expected: string): boolean {
+	const actual = new TextEncoder().encode(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
+	const wanted = new TextEncoder().encode(expected);
+	if (actual.byteLength !== wanted.byteLength) return false;
+	let difference = 0;
+	for (let index = 0; index < actual.byteLength; index++) difference |= actual[index]! ^ wanted[index]!;
+	return difference === 0;
 }
 
 // ============================================================================
