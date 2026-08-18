@@ -1257,19 +1257,41 @@ export class HostStore {
 				const expected = {
 					principalHash,
 					targetId,
+					relationshipId,
+					customerId,
+					projectId,
+					grantId,
 					maximumSites,
-					hostnameMode,
 				};
 				for (const [key, value] of Object.entries(expected)) {
 					if (existing[key] !== value) throw new Error("site_relationship_factory_identity_mismatch");
 				}
+				if (JSON.stringify(existing.artifactKinds) !== JSON.stringify(artifactKinds)) {
+					throw new Error("site_relationship_factory_policy_mismatch");
+				}
+				const policyChanged = existing.hostnameMode !== hostnameMode
+					|| JSON.stringify(existing.allowedBranches) !== JSON.stringify(allowedBranches);
+				const approvedPolicies = new Set([
+					'["main"]\0site-root-preview',
+					'["*"]\0pages-style-preview',
+				]);
 				if (
-					JSON.stringify(existing.artifactKinds) !== JSON.stringify(artifactKinds)
-					|| JSON.stringify(existing.allowedBranches) !== JSON.stringify(allowedBranches)
+					policyChanged
+					&& (
+						!approvedPolicies.has(`${JSON.stringify(existing.allowedBranches)}\0${existing.hostnameMode}`)
+						|| !approvedPolicies.has(`${JSON.stringify(allowedBranches)}\0${hostnameMode}`)
+					)
 				) {
 					throw new Error("site_relationship_factory_policy_mismatch");
 				}
-				if (existing.status === "failed") {
+				if (policyChanged) {
+					this.database.prepare(`
+						UPDATE site_relationship_factories
+						SET allowed_branches_json = ?, hostname_mode = ?, status = 'provisioning',
+							last_error = NULL, generation = generation + 1, updated_at = ?
+						WHERE context_id = ?
+					`).run(JSON.stringify(allowedBranches), hostnameMode, now(), contextId);
+				} else if (existing.status === "failed") {
 					this.database.prepare(`
 						UPDATE site_relationship_factories
 						SET status = 'provisioning', last_error = NULL,
@@ -1342,6 +1364,17 @@ export class HostStore {
 				SET user_id = ?, status = 'active', last_error = NULL, updated_at = ?
 				WHERE context_id = ?
 			`).run(userId, now(), contextId);
+			const active = this.getSiteRelationshipFactory(contextId);
+			this.database.prepare(`
+				UPDATE site_deployment_bindings
+				SET allowed_branches_json = ?, updated_at = ?
+				WHERE context_id = ? AND allowed_branches_json <> ?
+			`).run(
+				JSON.stringify(active.allowedBranches),
+				now(),
+				contextId,
+				JSON.stringify(active.allowedBranches),
+			);
 			this.database.exec("COMMIT");
 			return this.getSiteRelationshipFactory(contextId);
 		} catch (error) {

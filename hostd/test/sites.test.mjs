@@ -314,6 +314,7 @@ test("Hostd signs and proxies one exact project, branch, artifact, and idempoten
 		projectId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
 		siteId: "11111111-1111-4111-8111-111111111111",
 		siteSlug: "example-business",
+		previewHostname: "example-business.tinyfat.dev",
 		artifactKinds: ["static", "worker"],
 		allowedBranches: ["*"],
 	};
@@ -735,8 +736,8 @@ test("relationship factories provision real custody once and isolate unrelated c
 	const policy = {
 		maximumSites: 1,
 		artifactKinds: ["static"],
-		allowedBranches: ["main"],
-		hostnameMode: "site-root-preview",
+		allowedBranches: ["*"],
+		hostnameMode: "pages-style-preview",
 	};
 	const config = {
 		sites: {
@@ -791,7 +792,7 @@ test("relationship factories provision real custody once and isolate unrelated c
 				assert.equal(signed.payload.action, "relationship:ensure");
 				assert.equal(signed.payload.maximum_sites, 1);
 				assert.deepEqual(signed.payload.artifact_kinds, ["static"]);
-				assert.deepEqual(signed.payload.allowed_branches, ["main"]);
+				assert.deepEqual(signed.payload.allowed_branches, ["*"]);
 				const userId = users.size === 0
 					? "99999999-9999-4999-8999-999999999999"
 					: "88888888-8888-4888-8888-888888888888";
@@ -877,6 +878,133 @@ test("relationship factories provision real custody once and isolate unrelated c
 		assert.equal(
 			siteDeploymentBinding(rolledBackConfig, store, target, one.contextId, routingKey, "first-example").siteSlug,
 			"first-example",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("relationship factories upgrade existing main-only custody without replacing identity", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-relationship-sites-upgrade-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey } = generateKeyPairSync("ed25519");
+	const routingKey = Buffer.alloc(32, 4);
+	const target = { id: "operator", driver: "oci" };
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+			relationshipFactory: {
+				maximumSites: 1,
+				artifactKinds: ["static"],
+				allowedBranches: ["*"],
+				hostnameMode: "pages-style-preview",
+			},
+		},
+		routing: { actorTarget: target.id, knownPrincipals: [], knownPhonePrincipals: [] },
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, routingKey);
+	const route = router.resolvePhone({
+		providerThreadId: "thread-upgrade",
+		contactAddress: "+15551230005",
+		label: "Example customer",
+	});
+	store.createContext({
+		id: route.contextId,
+		targetId: route.targetId,
+		driver: "oci",
+		runtimeName: "runtime-upgrade",
+		port: 32000,
+	});
+	store.bindRoute({
+		source: "phone",
+		providerThreadId: "thread-upgrade",
+		principalHash: route.principalHash,
+		projectSlug: route.projectSlug,
+		targetId: route.targetId,
+		contextId: route.contextId,
+	});
+	const identity = {
+		relationshipId: "11111111-1111-4111-8111-111111111111",
+		customerId: "22222222-2222-4222-8222-222222222222",
+		projectId: "33333333-3333-4333-8333-333333333333",
+		grantId: "44444444-4444-4444-8444-444444444444",
+		userId: "55555555-5555-4555-8555-555555555555",
+	};
+	store.beginSiteRelationshipFactory({
+		contextId: route.contextId,
+		principalHash: route.principalHash,
+		targetId: target.id,
+		...identity,
+		maximumSites: 1,
+		artifactKinds: ["static"],
+		allowedBranches: ["main"],
+		hostnameMode: "site-root-preview",
+	});
+	store.activateSiteRelationshipFactory(route.contextId, identity);
+	store.beginSiteDeploymentBinding({
+		contextId: route.contextId,
+		siteSlug: "example-business",
+		displayName: "Example Business",
+		siteId: "66666666-6666-4666-8666-666666666666",
+		grantId: identity.grantId,
+		customerId: identity.customerId,
+		userId: identity.userId,
+		projectId: identity.projectId,
+		previewHostname: "example-business.tinyfat.dev",
+		artifactKinds: ["static"],
+		allowedBranches: ["main"],
+		maximumSites: 1,
+	});
+	store.activateSiteDeploymentBinding(route.contextId, "example-business");
+	const before = store.getSiteRelationshipFactory(route.contextId);
+	let observed;
+	const service = new HostSites({
+		config,
+		store,
+		routingKey,
+		now: () => 1_800_000_000_000,
+		fetch: async (_url, init) => {
+			observed = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, "")).payload;
+			return new Response(JSON.stringify({
+				ok: true,
+				created: false,
+				relationship_id: observed.relationship_id,
+				customer_id: observed.customer_id,
+				user_id: identity.userId,
+				project_id: observed.project_id,
+				factory_grant_id: observed.factory_grant_id,
+				principal_ref: observed.principal_ref,
+				actor_ref: observed.actor_ref,
+				maximum_sites: observed.maximum_sites,
+				artifact_kinds: observed.artifact_kinds,
+				allowed_branches: observed.allowed_branches,
+				hostname_mode: observed.hostname_mode,
+				preview_apex: observed.preview_apex,
+			}));
+		},
+	});
+	try {
+		const upgraded = await service.ensureRelationshipFactory(target, route.contextId);
+		assert.deepEqual(observed.allowed_branches, ["*"]);
+		assert.equal(observed.hostname_mode, "pages-style-preview");
+		assert.equal(upgraded.relationshipId, identity.relationshipId);
+		assert.equal(upgraded.customerId, identity.customerId);
+		assert.equal(upgraded.projectId, identity.projectId);
+		assert.equal(upgraded.grantId, identity.grantId);
+		assert(store.getSiteRelationshipFactory(route.contextId).generation > before.generation);
+		assert.deepEqual(
+			store.getSiteDeploymentBinding(route.contextId, "example-business").allowedBranches,
+			["*"],
 		);
 	} finally {
 		store.close();

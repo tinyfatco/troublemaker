@@ -392,8 +392,8 @@ test("loads one exact principal/project Sites deploy binding with an Ed25519 sig
 		assert.deepEqual(config.sites.relationshipFactory, {
 			maximumSites: 1,
 			artifactKinds: ["static"],
-			allowedBranches: ["main"],
-			hostnameMode: "site-root-preview",
+			allowedBranches: ["*"],
+			hostnameMode: "pages-style-preview",
 		});
 		assert.deepEqual(config.routing.knownPrincipals[0].projects[0].siteDeployment, {
 			grantId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -519,15 +519,15 @@ test("loads two exact Sites grants for one phone intake without merging their id
 			"second-example.example.com",
 		);
 
-		const broadRoot = structuredClone(raw);
-		broadRoot.routing.knownPhonePrincipals[0].siteDeployments[1].allowedBranches = ["*"];
-		await writeFile(path, JSON.stringify(broadRoot));
+		const rootWithoutMain = structuredClone(raw);
+		rootWithoutMain.routing.knownPhonePrincipals[0].siteDeployments[1].allowedBranches = ["feature"];
+		await writeFile(path, JSON.stringify(rootWithoutMain));
 		await assert.rejects(
 			loadConfig(path, {
 				...ENVIRONMENT,
 				SITES_CAPABILITY_PRIVATE_KEY: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
 			}),
-			/previewHostname requires allowedBranches to be exactly main/,
+			/previewHostname requires allowedBranches to include main or use \*/,
 		);
 
 		raw.routing.knownPhonePrincipals[0].siteDeployment = raw.routing.knownPhonePrincipals[0].siteDeployments[0];

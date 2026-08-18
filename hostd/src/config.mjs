@@ -809,8 +809,8 @@ function siteDeploymentProjectConfig(raw, label) {
 	const previewHostname = deployment.previewHostname === undefined
 		? undefined
 		: normalizeDomain(deployment.previewHostname, `${label}.previewHostname`);
-	if (previewHostname && (allowedBranches.length !== 1 || allowedBranches[0] !== "main")) {
-		throw new Error(`${label}.previewHostname requires allowedBranches to be exactly main`);
+	if (previewHostname && !allowedBranches.includes("*") && !allowedBranches.includes("main")) {
+		throw new Error(`${label}.previewHostname requires allowedBranches to include main or use *`);
 	}
 	return {
 		grantId,
@@ -894,8 +894,8 @@ function relationshipSiteFactoryConfig(raw, label) {
 	return {
 		maximumSites,
 		artifactKinds,
-		allowedBranches: ["main"],
-		hostnameMode: "site-root-preview",
+		allowedBranches: ["*"],
+		hostnameMode: "pages-style-preview",
 	};
 }
 

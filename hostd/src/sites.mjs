@@ -429,7 +429,6 @@ export class HostSites {
 			contextId,
 			this.routingKey,
 		);
-		if (existingFactory) return existingFactory;
 		const resolved = resolveSiteRelationshipScope(
 			this.config,
 			this.store,
@@ -437,16 +436,16 @@ export class HostSites {
 			contextId,
 			this.routingKey,
 		);
-		if (!resolved) return null;
-		const { scope, policy } = resolved;
+		if (!resolved) return existingFactory;
+		const { scope, policy, existing } = resolved;
 		let factory = this.store.beginSiteRelationshipFactory({
 			contextId,
 			principalHash: scope.principalHash,
 			targetId: target.id,
-			relationshipId: randomUUID(),
-			customerId: randomUUID(),
-			projectId: randomUUID(),
-			grantId: randomUUID(),
+			relationshipId: existing?.relationshipId || randomUUID(),
+			customerId: existing?.customerId || randomUUID(),
+			projectId: existing?.projectId || randomUUID(),
+			grantId: existing?.grantId || randomUUID(),
 			maximumSites: policy.maximumSites,
 			artifactKinds: policy.artifactKinds,
 			allowedBranches: policy.allowedBranches,
@@ -735,9 +734,11 @@ export class HostSites {
 		}
 		const sourceSha = sourceBefore.sha;
 		const branchLabel = branchPreviewLabel(branch);
-		const hostname = binding.previewHostname
-			|| branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
-		const hostnameMode = binding.previewHostname ? "site-root-preview" : "branch-preview";
+		const rootPreview = branch === "main" && Boolean(binding.previewHostname);
+		const hostname = rootPreview
+			? binding.previewHostname
+			: branchPreviewHostname(binding.siteSlug, branch, this.config.sites.previewApex);
+		const hostnameMode = rootPreview ? "site-root-preview" : "branch-preview";
 		const nowSeconds = Math.floor(this.now() / 1000);
 		const jti = createHash("sha256")
 			.update(idempotencyKey)
