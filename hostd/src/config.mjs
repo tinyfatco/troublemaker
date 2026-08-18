@@ -927,6 +927,9 @@ function targetConfig(raw, index, environment) {
 			Object.entries(object(target.runtimeEnv, `targets[${index}].runtimeEnv`)).map(([rawKey, rawValue]) => {
 				const label = `targets[${index}].runtimeEnv.${rawKey}`;
 				const key = text(rawKey, `targets[${index}].runtimeEnv key`);
+				const isHostOwnedChannelSetting =
+					/^(?:MOM_(?:EMAIL|FORM|MATTERMOST|MCP|OPERATOR|PHONE|ROCKETCHAT|SCHEDULED|SITE|SLACK|TELEGRAM|WEB|ZULIP)_|FAT_TOOLS_TOKEN)/.test(key)
+					&& key !== "MOM_EMAIL_LOG_MODE";
 				if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(key)) {
 					throw new Error(`${label} has an invalid environment variable name`);
 				}
@@ -934,7 +937,7 @@ function targetConfig(raw, index, environment) {
 					key === "HOME"
 					|| key.startsWith("TROUBLEMAKER_HOSTD_")
 					|| key === "TROUBLEMAKER_CONTEXT_ID"
-					|| /^(?:MOM_(?:EMAIL|FORM|MATTERMOST|MCP|OPERATOR|PHONE|ROCKETCHAT|SCHEDULED|SITE|SLACK|TELEGRAM|WEB|ZULIP)_|FAT_TOOLS_TOKEN)/.test(key)
+					|| isHostOwnedChannelSetting
 				) {
 					throw new Error(`${label} is owned by Hostd and cannot be overridden`);
 				}

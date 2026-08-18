@@ -183,6 +183,7 @@ test("prevents target runtime defaults from overriding scoped Hostd authority", 
 	try {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.targets[0].runtimeEnv = {
+			MOM_EMAIL_LOG_MODE: "none",
 			MOM_MODEL_PROVIDER: "openai-codex",
 			MOM_MODEL_ID: "gpt-5.6-sol",
 			MOM_THINKING: "high",
