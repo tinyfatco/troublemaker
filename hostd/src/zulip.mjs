@@ -378,6 +378,26 @@ export class ZulipProvisioner {
 	async postEmailLedgerNotification(notification) {
 		const binding = await this.ensureContext(notification.contextId);
 		const payload = JSON.parse(notification.payloadJson || "{}");
+		if (notification.source === "web_chat") {
+			const sender = cleanInline(payload.sender) || "Website visitor";
+			const body = ledgerBody(payload.message?.body);
+			const created = await this.request("messages", {
+				method: "POST",
+				auth: "projector",
+				form: zulipForm({
+					type: "channel",
+					to: binding.channelId,
+					topic: "",
+					content: [
+						"**Website chat received**",
+						`**From:** ${sender}`,
+						"",
+						body,
+					].join("\n"),
+				}),
+			});
+			return String(positiveInteger(created.id, "message ID"));
+		}
 		const phoneOutbound = notification.source === "phone_outbound";
 		if (phoneOutbound || notification.source === "phone") {
 			const sender = cleanInline(payload.sender) || "unknown sender";

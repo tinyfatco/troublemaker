@@ -21,6 +21,7 @@ import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
 import { createHostServer } from "./server.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
+import { WebChatGateway } from "./web-chat.mjs";
 import { HostWorkersAi } from "./workers-ai.mjs";
 
 function usage() {
@@ -112,8 +113,23 @@ async function components(configPath) {
 	const rocketChatGateway = rocketChat
 		? new RocketChatGateway({ config, store, provisioner: rocketChat, scheduler })
 		: undefined;
+	const webChatGateway = config.webChat
+		? new WebChatGateway({
+			config,
+			store,
+			router,
+			scheduler,
+			controlNotifier,
+		})
+		: undefined;
 	const zulipGateway = zulip
-		? new ZulipGateway({ config, store, provisioner: zulip, scheduler })
+		? new ZulipGateway({
+			config,
+			store,
+			provisioner: zulip,
+			scheduler,
+			webChatGateway,
+		})
 		: undefined;
 	const phoneGateway = config.phone
 		? new PhoneGateway({
@@ -143,6 +159,7 @@ async function components(configPath) {
 		mattermostGateway,
 		rocketChatGateway,
 		zulipGateway,
+		webChatGateway,
 		phoneGateway,
 		daemon,
 	};
@@ -164,6 +181,7 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
+	await state.webChatGateway?.start();
 	void state.runtime.reconcileSiteRelationships().catch((error) => {
 		console.error(
 			"troublemaker-hostd: relationship Sites startup reconciliation failed:",
@@ -184,6 +202,7 @@ async function serve(configPath) {
 		console.log(`troublemaker-hostd: stopping after ${signal}`);
 		await state.mattermostGateway?.stop();
 		await state.rocketChatGateway?.stop();
+		await state.webChatGateway?.stop();
 		await state.zulipGateway?.stop();
 		await state.phoneGateway?.stop();
 		await state.controlNotifier?.stop();

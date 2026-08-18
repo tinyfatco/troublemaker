@@ -478,6 +478,34 @@ function phoneConfig(raw, environment) {
 	};
 }
 
+function webChatConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const webChat = object(raw, "webChat");
+	const relay = object(webChat.relay, "webChat.relay");
+	const token = envSecret(relay.tokenEnv, "webChat.relay.tokenEnv", environment);
+	if (token.length < 32) {
+		throw new Error("webChat.relay.tokenEnv must contain at least 32 characters");
+	}
+	return {
+		relay: {
+			url: httpUrl(relay.url, "webChat.relay.url"),
+			token,
+			encryptionKey: envSecret(
+				relay.encryptionKeyEnv,
+				"webChat.relay.encryptionKeyEnv",
+				environment,
+			),
+			pollIntervalSeconds: integer(
+				relay.pollIntervalSeconds,
+				1,
+				"webChat.relay.pollIntervalSeconds",
+				1,
+				60,
+			),
+		},
+	};
+}
+
 async function sitesConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const sites = object(raw, "sites");
@@ -800,6 +828,7 @@ export async function loadConfig(path, environment = process.env) {
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
+	const webChat = webChatConfig(raw.webChat, environment);
 	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
 		throw new Error("phone.ingress.path must be an absolute URL path");
@@ -813,6 +842,17 @@ export async function loadConfig(path, environment = process.env) {
 		}
 		if (key.length !== 32) {
 			throw new Error("phone.relay.encryptionKeyEnv must contain a base64-encoded 32-byte key");
+		}
+	}
+	if (webChat?.relay) {
+		let key;
+		try {
+			key = Buffer.from(webChat.relay.encryptionKey, "base64");
+		} catch {
+			throw new Error("webChat.relay.encryptionKeyEnv must contain base64");
+		}
+		if (key.length !== 32) {
+			throw new Error("webChat.relay.encryptionKeyEnv must contain a base64-encoded 32-byte key");
 		}
 	}
 	const rawContactRelays = gmail?.contactRelays === undefined ? [] : gmail.contactRelays;
@@ -849,6 +889,7 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
+	if (webChat && !zulip) throw new Error("webChat integration currently requires zulip");
 	if (!phone && knownPhonePrincipals.length > 0) {
 		throw new Error("routing.knownPhonePrincipals requires phone configuration");
 	}
@@ -1012,6 +1053,7 @@ export async function loadConfig(path, environment = process.env) {
 		zulip,
 		phone,
 		workersAi,
+		webChat,
 		sites,
 		routing: {
 			actorTarget,

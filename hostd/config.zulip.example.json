@@ -85,6 +85,14 @@
       "path": "/webhooks/sendly"
     }
   },
+  "webChat": {
+    "relay": {
+      "url": "https://example.com/api/internal/landing-chat",
+      "tokenEnv": "LANDING_CHAT_RELAY_TOKEN",
+      "encryptionKeyEnv": "LANDING_CHAT_RELAY_ENCRYPTION_KEY",
+      "pollIntervalSeconds": 1
+    }
+  },
   "routing": {
     "actorTarget": "front-desk",
     "knownPrincipals": [

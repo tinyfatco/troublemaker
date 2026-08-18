@@ -69,6 +69,47 @@ export class ContextRouter {
 		};
 	}
 
+	ensureWebChatScope(sessionId, { label } = {}) {
+		const normalized = sessionId.trim().toLowerCase();
+		const principalHash = stablePrivateKey(this.routingKey, "web-chat-principal", normalized);
+		const targetId = this.config.routing.actorTarget;
+		const target = this.config.targetsById.get(targetId);
+		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
+		this.store.ensurePrincipal(principalHash, undefined, label);
+		this.store.ensureProject(principalHash, "website-chat", "Website chat");
+		return {
+			principalHash,
+			targetId,
+			contextId: `${target.id}:${principalHash.slice(0, 24)}:website-chat`,
+			projectSlug: "website-chat",
+		};
+	}
+
+	resolveWebChat({ sessionId, label }) {
+		const providerThreadId = sessionId.trim().toLowerCase();
+		const principalHash = stablePrivateKey(
+			this.routingKey,
+			"web-chat-principal",
+			providerThreadId,
+		);
+		const existing = this.store.getRoute("web-chat", providerThreadId);
+		if (existing) {
+			if (!this.store.hasRouteParticipant("web-chat", providerThreadId, principalHash)) {
+				throw new RouteParticipantDeniedError("web-chat", providerThreadId);
+			}
+			this.store.ensurePrincipal(principalHash, undefined, label);
+			this.store.touchRoute("web-chat", providerThreadId);
+			this.store.touchRouteParticipant("web-chat", providerThreadId, principalHash);
+			return existing;
+		}
+		const scope = this.ensureWebChatScope(providerThreadId, { label });
+		return this.store.bindRoute({
+			source: "web-chat",
+			providerThreadId,
+			...scope,
+		});
+	}
+
 	resolvePhone({ providerThreadId, contactAddress, label }) {
 		const principalHash = stablePrivateKey(
 			this.routingKey,

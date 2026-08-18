@@ -36,11 +36,12 @@ export function isExpiredZulipEventQueueError(error) {
 }
 
 export class ZulipGateway {
-	constructor({ config, store, provisioner, scheduler }) {
+	constructor({ config, store, provisioner, scheduler, webChatGateway }) {
 		this.config = config;
 		this.store = store;
 		this.provisioner = provisioner;
 		this.scheduler = scheduler;
+		this.webChatGateway = webChatGateway;
 		this.stopped = true;
 		this.pollPromise = null;
 		this.queueId = null;
@@ -248,7 +249,7 @@ export class ZulipGateway {
 				json(response, 400, { result: "error", msg: "content_required" });
 				return;
 			}
-			json(response, 200, await this.provisioner.request("messages", {
+			const created = await this.provisioner.request("messages", {
 				method: "POST",
 				auth: "agent",
 				form: new URLSearchParams({
@@ -257,7 +258,16 @@ export class ZulipGateway {
 					topic: "",
 					content,
 				}),
-			}));
+			});
+			try {
+				this.webChatGateway?.queueOperatorMessage(contextId, created.id, content);
+			} catch (error) {
+				console.error(
+					`troublemaker-hostd: website chat reply ${String(created.id || "unknown")} could not be queued:`,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			json(response, 200, created);
 			return;
 		}
 		if (messageMatch && request.method === "PATCH") {

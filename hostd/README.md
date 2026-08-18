@@ -266,6 +266,24 @@ The example Zulip configuration uses reserved `+1 555` fixtures. Keep real
 numbers, API keys, webhook secrets, tunnel hostnames, and deployment receipts
 in host configuration or a private operations repository.
 
+## Website chat relay
+
+An optional `webChat` relay connects a public website chat to the same private
+Zulip relationship model. The browser talks only to the website: it receives
+an opaque HttpOnly session and never receives a Zulip credential, Hostd token,
+or runtime capability. The website stores authenticated AES-GCM envelopes in a
+private relay queue; Hostd polls that queue, binds each browser session to one
+durable principal/project context, and projects the inbound message into the
+context's private Zulip channel through TINYFAT. Operator replies remain
+agent-authored `send_message` calls in Zulip and are mirrored back to only the
+bound browser session through a durable Hostd outbox.
+
+Configure the relay with a scoped bearer token and a base64-encoded 32-byte
+encryption key shared only by the website server and Hostd. `webChat` requires
+Zulip so every session has one private topic-free channel and the configured
+members—including resident collaborator agents—are reconciled by the normal
+Zulip provisioner. Hostd itself remains loopback-only.
+
 Website forms and other server-owned relays still enter through the native
 Gmail inbox. Configure a `gmail.contactRelays` entry with the relay sender,
 shared HMAC secret environment variable, and control-plane-owned project. This

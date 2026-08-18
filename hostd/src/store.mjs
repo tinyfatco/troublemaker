@@ -262,6 +262,34 @@ export class HostStore {
 				FOREIGN KEY (principal_hash) REFERENCES principals(id)
 			);
 
+			CREATE TABLE IF NOT EXISTS web_chat_conversations (
+				session_id TEXT PRIMARY KEY,
+				provider_thread_id TEXT NOT NULL UNIQUE,
+				principal_hash TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL UNIQUE,
+				display_label TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'active',
+				created_at TEXT NOT NULL,
+				last_seen_at TEXT NOT NULL,
+				FOREIGN KEY (principal_hash) REFERENCES principals(id)
+			);
+
+			CREATE TABLE IF NOT EXISTS web_chat_outbox (
+				external_id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				body TEXT NOT NULL,
+				status TEXT NOT NULL,
+				attempts INTEGER NOT NULL DEFAULT 0,
+				available_at TEXT NOT NULL,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				completed_at TEXT,
+				FOREIGN KEY (session_id) REFERENCES web_chat_conversations(session_id)
+			);
+
 			CREATE TABLE IF NOT EXISTS gmail_drafts (
 				provider_draft_id TEXT PRIMARY KEY,
 				target_id TEXT NOT NULL,
@@ -438,7 +466,15 @@ export class HostStore {
 				ON gmail_drafts(context_id, status, updated_at);
 			CREATE INDEX IF NOT EXISTS phone_conversations_context
 				ON phone_conversations(context_id, last_seen_at);
+			CREATE INDEX IF NOT EXISTS web_chat_outbox_dispatch
+				ON web_chat_outbox(status, available_at, created_at);
 		`);
+		this.database.prepare(`
+			UPDATE web_chat_outbox SET status = 'failed', available_at = ?,
+				last_error = COALESCE(last_error, 'host restarted during website chat delivery'),
+				updated_at = ?
+			WHERE status = 'sending'
+		`).run(now(), now());
 	}
 
 	close() {
@@ -760,6 +796,148 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT opted_out AS optedOut FROM phone_opt_outs WHERE principal_hash = ?
 		`).get(principalHash)?.optedOut === 1;
+	}
+
+	getWebChatConversation(sessionId) {
+		return this.database.prepare(`
+			SELECT session_id AS sessionId, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, display_label AS displayLabel, status,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM web_chat_conversations WHERE session_id = ?
+		`).get(sessionId);
+	}
+
+	getWebChatConversationByContext(contextId) {
+		return this.database.prepare(`
+			SELECT session_id AS sessionId, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, display_label AS displayLabel, status,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM web_chat_conversations WHERE context_id = ?
+		`).get(contextId);
+	}
+
+	upsertWebChatConversation({
+		sessionId,
+		providerThreadId,
+		principalHash,
+		targetId,
+		contextId,
+		displayLabel,
+	}) {
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO web_chat_conversations(
+				session_id, provider_thread_id, principal_hash, target_id,
+				context_id, display_label, status, created_at, last_seen_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+			ON CONFLICT(session_id) DO UPDATE SET last_seen_at = excluded.last_seen_at
+		`).run(
+			sessionId,
+			providerThreadId,
+			principalHash,
+			targetId,
+			contextId,
+			displayLabel,
+			timestamp,
+			timestamp,
+		);
+		const stored = this.getWebChatConversation(sessionId);
+		if (
+			!stored
+			|| stored.providerThreadId !== providerThreadId
+			|| stored.principalHash !== principalHash
+			|| stored.targetId !== targetId
+			|| stored.contextId !== contextId
+			|| stored.displayLabel !== displayLabel
+		) {
+			throw new Error("website chat conversation conflicts with existing route");
+		}
+		return stored;
+	}
+
+	getWebChatOutbox(externalId) {
+		return this.database.prepare(`
+			SELECT external_id AS externalId, session_id AS sessionId,
+				context_id AS contextId, body, status, attempts,
+				available_at AS availableAt, last_error AS lastError,
+				created_at AS createdAt, updated_at AS updatedAt,
+				completed_at AS completedAt
+			FROM web_chat_outbox WHERE external_id = ?
+		`).get(externalId);
+	}
+
+	queueWebChatOutbox({ externalId, sessionId, contextId, body }) {
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO web_chat_outbox(
+				external_id, session_id, context_id, body, status,
+				available_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+			ON CONFLICT(external_id) DO NOTHING
+		`).run(externalId, sessionId, contextId, body, timestamp, timestamp, timestamp);
+		const stored = this.getWebChatOutbox(externalId);
+		if (
+			!stored
+			|| stored.sessionId !== sessionId
+			|| stored.contextId !== contextId
+			|| stored.body !== body
+		) {
+			throw new Error("website chat outbox id conflicts with existing delivery");
+		}
+		return stored;
+	}
+
+	claimWebChatOutbox(maximumAttempts = 10) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const row = this.database.prepare(`
+				SELECT external_id AS externalId FROM web_chat_outbox
+				WHERE status IN ('queued', 'failed')
+					AND attempts < ? AND available_at <= ?
+				ORDER BY created_at LIMIT 1
+			`).get(maximumAttempts, timestamp);
+			if (!row) {
+				this.database.exec("COMMIT");
+				return null;
+			}
+			this.database.prepare(`
+				UPDATE web_chat_outbox
+				SET status = 'sending', attempts = attempts + 1,
+					last_error = NULL, updated_at = ?
+				WHERE external_id = ? AND status IN ('queued', 'failed')
+			`).run(timestamp, row.externalId);
+			this.database.exec("COMMIT");
+			return this.getWebChatOutbox(row.externalId);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	completeWebChatOutbox(externalId) {
+		const timestamp = now();
+		this.database.prepare(`
+			UPDATE web_chat_outbox
+			SET status = 'completed', completed_at = ?, updated_at = ?, last_error = NULL
+			WHERE external_id = ? AND status = 'sending'
+		`).run(timestamp, timestamp, externalId);
+		return this.getWebChatOutbox(externalId);
+	}
+
+	failWebChatOutbox(externalId, error, maximumAttempts = 10) {
+		const current = this.getWebChatOutbox(externalId);
+		if (!current) return null;
+		const status = current.attempts >= maximumAttempts ? "dead" : "failed";
+		const delaySeconds = Math.min(300, 2 ** Math.max(0, current.attempts - 1));
+		this.database.prepare(`
+			UPDATE web_chat_outbox
+			SET status = ?, available_at = ?, last_error = ?, updated_at = ?
+			WHERE external_id = ? AND status = 'sending'
+		`).run(status, future(delaySeconds), String(error).slice(0, 1000), now(), externalId);
+		return this.getWebChatOutbox(externalId);
 	}
 
 	getLatestContextEventPayload(contextId, source) {
@@ -2554,6 +2732,7 @@ export class HostStore {
 		return {
 			lastSuccessfulPollAt: this.getMeta("gmail:last_successful_poll_at") ?? null,
 			lastPollError: this.getMeta("gmail:last_poll_error") || null,
+			lastWebChatPollError: this.getMeta("web-chat:last_poll_error") || null,
 			principals: this.database.prepare("SELECT COUNT(*) AS count FROM principals").get().count,
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,
@@ -2608,6 +2787,16 @@ export class HostStore {
 				phoneConversations: this.database.prepare(`
 					SELECT COUNT(*) AS count FROM phone_conversations
 				`).get().count,
+			webChatConversations: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM web_chat_conversations
+			`).get().count,
+			pendingWebChatOutbox: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM web_chat_outbox
+				WHERE status IN ('queued', 'sending', 'failed')
+			`).get().count,
+			deadWebChatOutbox: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM web_chat_outbox WHERE status = 'dead'
+			`).get().count,
 			gmailDrafts: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM gmail_drafts WHERE status = 'draft'
 			`).get().count,

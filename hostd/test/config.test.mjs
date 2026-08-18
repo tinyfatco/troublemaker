@@ -18,6 +18,8 @@ const ENVIRONMENT = {
 	PHONE_WEBHOOK_SECRET: "test-phone-webhook-secret-at-least-24-bytes",
 	PHONE_API_KEY: "test-phone-api-key",
 	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
+	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
+	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 };
 
 test("loads a signed Gmail contact relay with a control-plane-owned project", async () => {
@@ -64,6 +66,14 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	assert.deepEqual(config.routing.knownPhonePrincipals[0].model, {
 		provider: "cloudflare-workers-ai",
 		id: "@cf/zai-org/glm-5.2",
+	});
+	assert.deepEqual(config.webChat, {
+		relay: {
+			url: "https://example.com/api/internal/landing-chat",
+			token: "test-landing-chat-relay-token-at-least-32-bytes",
+			encryptionKey: Buffer.alloc(32, 9).toString("base64"),
+			pollIntervalSeconds: 1,
+		},
 	});
 });
 

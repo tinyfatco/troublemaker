@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import test from "node:test";
 import {
 	isExpiredZulipEventQueueError,
@@ -309,4 +310,77 @@ test("projects redacted direct SMS ledger events into the bound customer channel
 	assert.match(posted.content, /^\*\*SMS received\*\*/);
 	assert.match(posted.content, /Phone ending 0123/);
 	assert.match(posted.content, /> Can you help with an estimate\?/);
+});
+
+test("projects website chat into the private channel without inventing an Operator reply", async () => {
+	const provisioner = new ZulipProvisioner({}, {});
+	provisioner.ensureContext = async () => ({ channelId: 12 });
+	let posted;
+	provisioner.request = async (path, input) => {
+		assert.equal(path, "messages");
+		posted = Object.fromEntries(input.form);
+		return { id: 84 };
+	};
+	const result = await provisioner.postEmailLedgerNotification({
+		contextId: "front-desk:0123456789abcdef01234567:website-chat",
+		source: "web_chat",
+		providerMessageId: "123e4567-e89b-42d3-a456-426614174001",
+		payloadJson: JSON.stringify({
+			sender: "Website visitor 4000",
+			message: { body: "I need a small store." },
+		}),
+	});
+	assert.equal(result, "84");
+	assert.equal(posted.to, "12");
+	assert.match(posted.content, /^\*\*Website chat received\*\*/);
+	assert.match(posted.content, /> I need a small store\./);
+	assert.doesNotMatch(posted.content, /Operator replied|Thanks for reaching out/i);
+});
+
+test("an explicit Operator Zulip post is mirrored only when its context is a website chat", async () => {
+	const mirrored = [];
+	const contextId = "front-desk:0123456789abcdef01234567:website-chat";
+	const gateway = new ZulipGateway({
+		config: { zulip: {} },
+		store: {},
+		scheduler: {},
+		webChatGateway: {
+			queueOperatorMessage(...args) { mirrored.push(args); },
+		},
+		provisioner: {
+			async runtimeBinding() {
+				return { contextId, channelId: 17, channelName: "customer · Website visitor" };
+			},
+			async request(path, input) {
+				assert.equal(path, "messages");
+				assert.equal(input.auth, "agent");
+				return { result: "success", id: 501 };
+			},
+		},
+	});
+	const server = createServer((request, response) => {
+		void gateway.proxy(request, response, contextId, request.url, "scoped-token");
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	try {
+		const response = await fetch(`http://127.0.0.1:${address.port}/messages`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer scoped-token",
+				"content-type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({
+				type: "channel",
+				to: "17",
+				topic: "",
+				content: "I can help with that.",
+			}),
+		});
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { result: "success", id: 501 });
+		assert.deepEqual(mirrored, [[contextId, 501, "I can help with that."]]);
+	} finally {
+		await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+	}
 });

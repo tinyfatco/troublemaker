@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
@@ -256,6 +257,10 @@ export class RuntimeManager {
 			await this.deliverPhoneWebhook(target, context, event, payload);
 			return;
 		}
+		if (event.source === "web_chat") {
+			await this.deliverWebChatWebhook(target, context, event, payload);
+			return;
+		}
 		if (event.source === "scheduled-prompt") {
 			await this.deliverScheduledPromptWebhook(target, context, event, payload);
 			return;
@@ -406,6 +411,50 @@ export class RuntimeManager {
 		const text = await response.text();
 		if (!response.ok) {
 			throw new Error(`phone runtime returned HTTP ${response.status}: ${text.slice(0, 200)}`);
+		}
+	}
+
+	async deliverWebChatWebhook(target, context, event, input) {
+		if (!this.config.webChat || !this.config.zulip || !context.zulip) {
+			throw new Error("website chat event received without a Zulip binding");
+		}
+		const inboundToken = contextCapability(target.inboundToken, "zulip-inbound", context.contextId);
+		const messageId = Number.parseInt(
+			createHash("sha256").update(event.providerMessageId, "utf8").digest("hex").slice(0, 12),
+			16,
+		) + 1;
+		const timestamp = Date.parse(input.message?.timestamp || event.receivedAt) / 1000;
+		const response = await fetch(context.zulipEndpoint, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${inboundToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				deliveryId: event.id,
+				hostContextId: event.contextId,
+				message: {
+					id: messageId,
+					type: "stream",
+					stream_id: Number(context.zulip.channelId),
+					display_recipient: context.zulip.channelName,
+					sender_id: 2_147_483_647,
+					sender_email: "website-visitor@example.com",
+					sender_full_name: input.webChat?.displayName || input.sender || "Website visitor",
+					sender_is_bot: false,
+					subject: "",
+					content: "",
+					raw_content: input.message?.body || "",
+					timestamp: Number.isFinite(timestamp) ? timestamp : Date.now() / 1000,
+					is_mentioned: true,
+				},
+				hostReceipt: this.hostReceipt(target, event),
+			}),
+			signal: AbortSignal.timeout(30_000),
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(`website chat runtime returned HTTP ${response.status}: ${text.slice(0, 200)}`);
 		}
 	}
 
@@ -684,6 +733,7 @@ export class RuntimeManager {
 			mattermostEndpoint: `http://127.0.0.1:${context.port}/mattermost/inbound`,
 			rocketChatEndpoint: `http://127.0.0.1:${context.port}/rocketchat/inbound`,
 			zulipEndpoint: `http://127.0.0.1:${context.port}/zulip/inbound`,
+			zulip,
 			phoneEndpoint: `http://127.0.0.1:${context.port}/phone-messaging/webhook`,
 			scheduledPromptEndpoint: `http://127.0.0.1:${context.port}/scheduled-prompt/inbound`,
 			statusEndpoint: `http://127.0.0.1:${context.port}/status`,
