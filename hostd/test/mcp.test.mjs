@@ -20,7 +20,6 @@ import {
 	initializeHostMcpSettings,
 	mcpRuntimeVersionSuffix,
 } from "../src/runtime.mjs";
-import { contextCapability } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
 
 const EDGE_SECRET = "example-MCP-edge-assertion-secret-with-32-bytes";
@@ -43,7 +42,10 @@ function config() {
 			handoffTtlSeconds: 3600,
 			maximumRequestBytes: 2 * 1024 * 1024,
 			edge: {
-				assertionSecret: EDGE_SECRET,
+				issuerSecrets: {
+					"crawdad-cf": EDGE_SECRET,
+					"fat-platform": `${EDGE_SECRET}-fat`,
+				},
 				audience: "troublemaker-hostd-mcp",
 				issuers: ["crawdad-cf", "fat-platform"],
 				assertionTtlSeconds: 60,
@@ -62,15 +64,37 @@ async function fixture() {
 		runtimeName: "example-runtime",
 		port: 32000,
 	});
+	store.ensurePrincipal("example-principal", undefined, "Example principal");
+	store.ensureProject("example-principal", "intake", "Intake");
+	store.bindRoute({
+		source: "phone",
+		providerThreadId: "example-thread",
+		principalHash: "example-principal",
+		projectSlug: "intake",
+		targetId: TARGET.id,
+		contextId: CONTEXT_ID,
+	});
+	store.upsertPhoneConversation({
+		threadTarget: "phone-example",
+		provider: "example",
+		providerThreadId: "example-thread",
+		principalHash: "example-principal",
+		targetId: TARGET.id,
+		contextId: CONTEXT_ID,
+		contactCiphertext: "sealed-example-contact",
+		contactLastFour: "0123",
+	});
 	const changes = [];
+	const pumps = [];
 	const mcp = new HostMcp({
 		config: config(),
 		store,
 		routingKey: Buffer.alloc(32, 7),
 		runtime: { async ensureOciContext() { return { port: 32000 }; } },
 		onContextChanged: async (contextId) => { changes.push(contextId); },
+		onEventQueued: () => { pumps.push("pump"); },
 	});
-	return { directory, store, mcp, changes };
+	return { directory, store, mcp, changes, pumps };
 }
 
 test("MCP edge assertions bind issuer, body, bearer credential, and nonce", () => {
@@ -118,9 +142,99 @@ test("MCP edge assertions bind issuer, body, bearer credential, and nonce", () =
 	}), /invalid MCP edge assertion/);
 });
 
+test("MCP edge replay denial survives verifier recreation and keys are issuer-specific", async () => {
+	const { directory, store } = await fixture();
+	try {
+		const edge = config().mcp.edge;
+		const body = Buffer.from("{}");
+		const authorization = "Bearer tfat_mcp_example";
+		const headers = {
+			...createMcpEdgeAssertionHeaders({
+				secret: edge.issuerSecrets["crawdad-cf"],
+				issuer: "crawdad-cf",
+				audience: edge.audience,
+				method: "POST",
+				path: "/v1/mcp/resources/example",
+				body,
+				authorization,
+				timestamp: 2_000_000_000,
+				nonce: "durable_nonce_1234567890",
+			}),
+			authorization,
+		};
+		const verify = () => new McpEdgeAssertionVerifier(edge, {
+			now: () => 2_000_000_000_000,
+			consumeNonce: (issuer, nonce, expiresAt) => store.consumeMcpEdgeNonce(issuer, nonce, expiresAt),
+		}).verify({
+			headers,
+			method: "POST",
+			path: "/v1/mcp/resources/example",
+			body,
+			allowedIssuers: ["crawdad-cf"],
+		});
+		assert.deepEqual(verify(), { issuer: "crawdad-cf" });
+		assert.throws(verify, /invalid MCP edge assertion/);
+		const wrongIssuerKey = {
+			...headers,
+			...createMcpEdgeAssertionHeaders({
+				secret: edge.issuerSecrets["fat-platform"],
+				issuer: "crawdad-cf",
+				audience: edge.audience,
+				method: "POST",
+				path: "/v1/mcp/resources/example",
+				body,
+				authorization,
+				timestamp: 2_000_000_000,
+				nonce: "wrong_key_nonce_123456789",
+			}),
+		};
+		assert.throws(() => new McpEdgeAssertionVerifier(edge, {
+			now: () => 2_000_000_000_000,
+		}).verify({
+			headers: wrongIssuerKey,
+			method: "POST",
+			path: "/v1/mcp/resources/example",
+			body,
+			allowedIssuers: ["crawdad-cf"],
+		}), /invalid MCP edge assertion/);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("MCP handoffs fail closed when a context owns more than one relationship route", async () => {
+	const { directory, store, mcp } = await fixture();
+	try {
+		store.bindRoute({
+			source: "gmail",
+			providerThreadId: "second-thread",
+			principalHash: "example-principal",
+			projectSlug: "intake",
+			targetId: TARGET.id,
+			contextId: CONTEXT_ID,
+		});
+		assert.throws(
+			() => mcp.createHandoff(TARGET, CONTEXT_ID, { direction: "inbound" }),
+			(error) => error instanceof HostMcpError && error.code === "relationship_ambiguous",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("one-time handoffs keep tokens hashed and upstream credentials encrypted", async () => {
 	const { directory, store, mcp, changes } = await fixture();
 	try {
+		const canceledHandoff = mcp.createHandoff(TARGET, CONTEXT_ID, {
+			direction: "inbound",
+			name: "Canceled handoff",
+		});
+		const canceledToken = new URL(canceledHandoff.url).hash.slice("#v=".length);
+		await mcp.revoke(CONTEXT_ID, { direction: "handoff", id: canceledHandoff.id });
+		assert.throws(() => mcp.openHandoff(canceledToken), /handoff_unavailable/);
+
 		const inboundHandoff = mcp.createHandoff(TARGET, CONTEXT_ID, {
 			direction: "inbound",
 			name: "Vellum client",
@@ -128,19 +242,21 @@ test("one-time handoffs keep tokens hashed and upstream credentials encrypted", 
 		const inboundToken = new URL(inboundHandoff.url).hash.slice("#v=".length);
 		assert.match(inboundToken, /^tfat_one_/);
 		assert.equal(JSON.stringify(store.listMcpHandoffs(CONTEXT_ID)).includes(inboundToken), false);
-		assert.equal(mcp.openHandoff(inboundToken).direction, "inbound");
+		assert.equal(JSON.stringify(inboundHandoff).includes("+15555550123"), false);
+		const openedInbound = mcp.openHandoff(inboundToken);
+		assert.equal(openedInbound.direction, "inbound");
+		assert.match(openedInbound.session_token, /^tfat_session_/);
+		assert.throws(() => mcp.openHandoff(inboundToken), /handoff_unavailable/);
+		assert.equal(mcp.openHandoff(openedInbound.session_token).direction, "inbound");
+		assert.equal(openedInbound.relationship.recipient_hint, "ending 0123");
 
-		const inbound = await mcp.completeHandoff(inboundToken, { name: "Vellum client" });
+		const inbound = await mcp.completeHandoff(openedInbound.session_token, { name: "Vellum client" });
 		assert.match(inbound.api_key, /^tfat_mcp_/);
 		assert.match(inbound.server_url, /^https:\/\/mcp\.example\.com\/mcp\/resources\/mcp_/);
 		assert.equal(JSON.stringify(mcp.list(CONTEXT_ID)).includes(inbound.api_key), false);
 		const resourceId = new URL(inbound.server_url).pathname.split("/").at(-1);
 		const authenticated = mcp.authenticateInbound(resourceId, `Bearer ${inbound.api_key}`);
 		assert.equal(authenticated.grant.contextId, CONTEXT_ID);
-		assert.equal(
-			mcp.inboundRuntimeToken(TARGET, CONTEXT_ID),
-			contextCapability(TARGET.inboundToken, "mcp-ingress", CONTEXT_ID),
-		);
 		assert.throws(() => mcp.openHandoff(inboundToken), /handoff_unavailable/);
 
 		const outboundHandoff = mcp.createHandoff(TARGET, CONTEXT_ID, {
@@ -149,7 +265,8 @@ test("one-time handoffs keep tokens hashed and upstream credentials encrypted", 
 			server_url: "https://vellum.example.com/mcp",
 		});
 		const outboundToken = new URL(outboundHandoff.url).hash.slice("#v=".length);
-		const outbound = await mcp.completeHandoff(outboundToken, {
+		const outboundSession = mcp.openHandoff(outboundToken).session_token;
+		const outbound = await mcp.completeHandoff(outboundSession, {
 			auth_type: "bearer",
 			secret: "example-upstream-secret",
 		});
@@ -162,6 +279,184 @@ test("one-time handoffs keep tokens hashed and upstream credentials encrypted", 
 		assert.equal(mcpRuntimeVersionSuffix(config(), store, CONTEXT_ID).startsWith(":mcp-"), true);
 	} finally {
 		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an established grant fails closed if its context later becomes relationship-ambiguous", async () => {
+	const { directory, store, mcp } = await fixture();
+	try {
+		const handoff = mcp.createHandoff(TARGET, CONTEXT_ID, {
+			direction: "inbound",
+			name: "Example client",
+		});
+		const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
+		const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
+		const connected = await mcp.completeHandoff(sessionToken, {});
+		const resourceId = new URL(connected.server_url).pathname.split("/").at(-1);
+		store.bindRoute({
+			source: "gmail",
+			providerThreadId: "later-route",
+			principalHash: "example-principal",
+			projectSlug: "intake",
+			targetId: TARGET.id,
+			contextId: CONTEXT_ID,
+		});
+		assert.throws(
+			() => mcp.authenticateInbound(resourceId, `Bearer ${connected.api_key}`),
+			(error) => error instanceof HostMcpError && error.code === "unauthorized",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("inbound MCP exposes only an idempotent relationship Operator instruction", async () => {
+	const { directory, store, mcp, pumps } = await fixture();
+	try {
+		const handoff = mcp.createHandoff(TARGET, CONTEXT_ID, {
+			direction: "inbound",
+			name: "Ghost",
+		});
+		const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
+		const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
+		const connected = await mcp.completeHandoff(sessionToken, { name: "Ghost" });
+		const resourceId = new URL(connected.server_url).pathname.split("/").at(-1);
+		const authorization = `Bearer ${connected.api_key}`;
+		const requestHeaders = { "content-type": "application/json" };
+
+		const initialize = await mcp.proxyInbound({
+			resourceId,
+			authorization,
+			requestHeaders,
+			body: Buffer.from(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "initialize",
+				params: { protocolVersion: "2025-06-18" },
+			})),
+		});
+		assert.equal(initialize.status, 200);
+		assert.equal((await initialize.json()).result.serverInfo.name, "tinyfat-relationship-operator");
+		assert.equal(store.listContexts().some((context) => context.status === "online"), false);
+
+		const listed = await mcp.proxyInbound({
+			resourceId,
+			authorization,
+			requestHeaders,
+			body: Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })),
+		});
+		const tools = (await listed.json()).result.tools;
+		assert.deepEqual(tools.map((tool) => tool.name), ["instruct_operator"]);
+		assert.deepEqual(tools[0].inputSchema.required, ["instruction", "idempotency_key"]);
+		assert.equal(JSON.stringify(tools[0]).includes("recipient"), true);
+		assert.equal(JSON.stringify(tools[0].inputSchema.properties).includes("recipient"), false);
+
+		const call = (instruction) => mcp.proxyInbound({
+			resourceId,
+			authorization,
+			requestHeaders,
+			body: Buffer.from(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 3,
+				method: "tools/call",
+				params: {
+					name: "instruct_operator",
+					arguments: {
+						instruction,
+						idempotency_key: "acceptance:ghost:0001",
+					},
+				},
+			})),
+		});
+		const first = (await (await call("Send one bounded acceptance message.")).json()).result.structuredContent;
+		assert.equal(first.status, "queued");
+		assert.equal(first.duplicate, false);
+		assert.equal(first.relationship.recipient_hint, "ending 0123");
+		const event = store.getEvent(first.receipt_id);
+		assert.equal(event.source, "mcp-operator");
+		assert.equal(event.contextId, CONTEXT_ID);
+		assert.equal(event.principalHash, "example-principal");
+		assert.equal(pumps.length, 1);
+
+		const duplicate = (await (await call("Send one bounded acceptance message.")).json()).result.structuredContent;
+		assert.equal(duplicate.receipt_id, first.receipt_id);
+		assert.equal(duplicate.duplicate, true);
+		assert.equal(pumps.length, 1);
+		const conflict = await (await call("A different instruction.")).json();
+		assert.equal(conflict.error.message, "idempotency_conflict");
+		const substitution = await (await mcp.proxyInbound({
+			resourceId,
+			authorization,
+			requestHeaders,
+			body: Buffer.from(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 4,
+				method: "tools/call",
+				params: {
+					name: "instruct_operator",
+					arguments: {
+						instruction: "Try another recipient.",
+						idempotency_key: "acceptance:ghost:0002",
+						recipient: "substitution-is-forbidden",
+					},
+				},
+			})),
+		})).json();
+		assert.equal(substitution.error.message, "arguments_invalid");
+		assert.equal(pumps.length, 1);
+
+		assert.equal(await mcp.revoke(CONTEXT_ID, { direction: "inbound", id: resourceId }).then(() => true), true);
+		assert.equal(store.getEvent(first.receipt_id).status, "dead");
+		assert.throws(
+			() => mcp.authenticateInbound(resourceId, authorization),
+			(error) => error instanceof HostMcpError && error.code === "unauthorized",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("queued relationship instructions and receipts survive a Hostd store restart", async () => {
+	const { directory, store, mcp } = await fixture();
+	let reopened;
+	try {
+		const handoff = mcp.createHandoff(TARGET, CONTEXT_ID, { direction: "inbound", name: "Ghost" });
+		const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
+		const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
+		const connected = await mcp.completeHandoff(sessionToken, { name: "Ghost" });
+		const resourceId = new URL(connected.server_url).pathname.split("/").at(-1);
+		const response = await mcp.proxyInbound({
+			resourceId,
+			authorization: `Bearer ${connected.api_key}`,
+			requestHeaders: { "content-type": "application/json" },
+			body: Buffer.from(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "instruct_operator",
+					arguments: {
+						instruction: "Durable restart check.",
+						idempotency_key: "restart-check-0001",
+					},
+				},
+			})),
+		});
+		const receiptId = (await response.json()).result.structuredContent.receipt_id;
+		store.close();
+		reopened = new HostStore(join(directory, "state.sqlite"));
+		const receipt = reopened.getMcpInstructionReceiptByEvent(receiptId);
+		assert.equal(receipt.status, "queued");
+		assert.equal(receipt.contextId, CONTEXT_ID);
+		const claimed = reopened.claimNextEvent();
+		assert.equal(claimed.id, receiptId);
+		assert.equal(claimed.contextId, CONTEXT_ID);
+	} finally {
+		reopened?.close();
+		try { store.close(); } catch {}
 		await rm(directory, { recursive: true, force: true });
 	}
 });
@@ -209,10 +504,22 @@ test("outbound MCP SSRF checks reject private, mixed, and rebinding destinations
 		"::ffff:7f00:1",
 		"fd00::1",
 		"fec0::1",
+		"192.88.99.1",
+		"240.0.0.1",
+		"2001:0000:0000:0000:0000:0000:0000:0001",
+		"2001:0db8::1",
+		"2002:0a00:0001::1",
+		"3fff::1",
+		"64:ff9b::a00:1",
 	]) {
 		assert.equal(isPublicMcpAddress(address), false);
 	}
 	assert.equal(isPublicMcpAddress("93.184.216.34"), true);
+	assert.equal(isPublicMcpAddress("2606:4700:4700::1111"), true);
+	await assert.rejects(
+		resolvePublicMcpDestination("https://mcp.example.com/mcp?target=other"),
+		/server_url_invalid/,
+	);
 	await assert.rejects(
 		resolvePublicMcpDestination("https://127.0.0.1/mcp"),
 		/mcp_upstream_address_denied/,
@@ -286,8 +593,9 @@ test("custom auth headers cannot override transport authority", async () => {
 	try {
 		const handoff = mcp.createHandoff(TARGET, CONTEXT_ID, { direction: "outbound" });
 		const token = new URL(handoff.url).hash.slice("#v=".length);
+		const sessionToken = mcp.openHandoff(token).session_token;
 		await assert.rejects(
-			mcp.completeHandoff(token, {
+			mcp.completeHandoff(sessionToken, {
 				server_url: "https://vellum.example.com/mcp",
 				auth_type: "header",
 				header_name: "Host",

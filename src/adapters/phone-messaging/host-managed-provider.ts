@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { currentHostDeliveryScope } from "../host-delivery-scope.js";
 import type {
 	PhoneMessagingProvider,
 	PhoneSendRequest,
@@ -41,6 +42,10 @@ export class HostManagedPhoneProvider implements PhoneMessagingProvider {
 			throw new Error("Host-managed phone delivery supports direct text messages only");
 		}
 		const digest = createHash("sha256").update(request.text, "utf8").digest("hex").slice(0, 24);
+		const hostDelivery = currentHostDeliveryScope();
+		const idempotencyKey = hostDelivery?.source === "mcp-operator"
+			? `${this.contextId}:mcp:${hostDelivery.eventId}:${digest}`
+			: `${this.contextId}:${randomUUID()}:${digest}`;
 		const response = await fetch(this.endpoint, {
 			method: "POST",
 			headers: {
@@ -51,7 +56,10 @@ export class HostManagedPhoneProvider implements PhoneMessagingProvider {
 				context_id: this.contextId,
 				thread_target: request.channel.channelId,
 				agent_body: request.text,
-				idempotency_key: `${this.contextId}:${randomUUID()}:${digest}`,
+				idempotency_key: idempotencyKey,
+				...(hostDelivery?.source === "mcp-operator"
+					? { origin_event_id: hostDelivery.eventId }
+					: {}),
 			}),
 			signal: AbortSignal.timeout(35_000),
 		});

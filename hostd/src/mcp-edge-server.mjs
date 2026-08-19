@@ -52,9 +52,13 @@ async function proxyFetchResponse(response, upstream) {
 	response.end();
 }
 
-export function createMcpEdgeServer({ config, mcp }) {
+export function createMcpEdgeServer({ config, mcp, store }) {
 	if (!config.mcp) throw new Error("MCP edge configuration is required");
-	const verifier = new McpEdgeAssertionVerifier(config.mcp.edge);
+	const verifier = new McpEdgeAssertionVerifier(config.mcp.edge, {
+		consumeNonce: store
+			? (issuer, nonce, expiresAt) => store.consumeMcpEdgeNonce(issuer, nonce, expiresAt)
+			: undefined,
+	});
 	return createServer(async (request, response) => {
 		const path = request.url || "/";
 		const url = new URL(path, `http://${request.headers.host || "localhost"}`);

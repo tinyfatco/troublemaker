@@ -1,6 +1,9 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { contextCapability, openPrivateValue, sealPrivateValue } from "./security.mjs";
 
+export const MCP_RELATIONSHIP_PROFILE = "relationship-operator-v1";
+const MCP_PROTOCOL_VERSION = "2025-06-18";
+
 export class HostMcpError extends Error {
 	constructor(code, status = 400) {
 		super(code);
@@ -33,6 +36,24 @@ function boundedText(value, label, maximum = 120) {
 	return normalized;
 }
 
+function boundedInstruction(value) {
+	if (typeof value !== "string") throw new HostMcpError("instruction_required");
+	const normalized = value.replace(/\r\n?/g, "\n").trim();
+	if (
+		!normalized
+		|| normalized.length > 8_000
+		|| /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(normalized)
+	) throw new HostMcpError("instruction_invalid");
+	return normalized;
+}
+
+function idempotencyKey(value) {
+	if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{8,128}$/.test(value)) {
+		throw new HostMcpError("idempotency_key_invalid");
+	}
+	return value;
+}
+
 export function normalizeMcpServerUrl(value) {
 	const raw = boundedText(value, "server_url", 2048);
 	let url;
@@ -45,6 +66,7 @@ export function normalizeMcpServerUrl(value) {
 		url.protocol !== "https:"
 		|| url.username
 		|| url.password
+		|| url.search
 		|| url.hash
 		|| !url.hostname
 	) {
@@ -93,19 +115,33 @@ function bearerToken(header) {
 	return match?.[1] || "";
 }
 
-function publicInboundGrant(grant, publicBaseUrl) {
+function publicRelationship(relationship) {
+	return {
+		id: relationship.id,
+		source: relationship.source,
+		label: relationship.recipientHint
+			? `Verified ${relationship.source} relationship ${relationship.recipientHint}`
+			: `Verified ${relationship.source} relationship`,
+		recipient_hint: relationship.recipientHint || undefined,
+		profile: relationship.profile,
+	};
+}
+
+function publicInboundGrant(grant, relationship, publicBaseUrl) {
 	return {
 		id: grant.id,
 		direction: "inbound",
 		name: grant.displayName,
 		status: grant.status,
+		profile: grant.profile,
+		relationship: relationship ? publicRelationship(relationship) : undefined,
 		server_url: `${publicBaseUrl}/resources/${encodeURIComponent(grant.id)}`,
 		created_at: grant.createdAt,
 		last_used_at: grant.lastUsedAt,
 	};
 }
 
-function publicOutboundConnection(connection) {
+function publicOutboundConnection(connection, relationship) {
 	return {
 		id: connection.id,
 		direction: "outbound",
@@ -115,45 +151,146 @@ function publicOutboundConnection(connection) {
 		auth_type: connection.authType,
 		header_name: connection.headerName,
 		status: connection.status,
+		relationship: relationship ? publicRelationship(relationship) : undefined,
 		created_at: connection.createdAt,
 		last_used_at: connection.lastUsedAt,
 	};
 }
 
+function jsonRpcResult(id, result) {
+	return new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), {
+		status: 200,
+		headers: {
+			"content-type": "application/json",
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+		},
+	});
+}
+
+function jsonRpcError(id, code, message) {
+	return new Response(JSON.stringify({
+		jsonrpc: "2.0",
+		id: id ?? null,
+		error: { code, message },
+	}), {
+		status: 200,
+		headers: {
+			"content-type": "application/json",
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+		},
+	});
+}
+
+function handoffToken(value) {
+	return /^tfat_one_[A-Za-z0-9_-]{43}$/.test(value || "");
+}
+
+function handoffSessionToken(value) {
+	return /^tfat_session_[A-Za-z0-9_-]{43}$/.test(value || "");
+}
+
 export class HostMcp {
-	constructor({ config, store, routingKey, runtime, onContextChanged } = {}) {
+	constructor({ config, store, routingKey, runtime, onContextChanged, onEventQueued } = {}) {
 		this.config = config;
 		this.store = store;
 		this.routingKey = routingKey;
 		this.runtime = runtime;
 		this.onContextChanged = onContextChanged;
-		this.contextLocks = new Map();
-		this.activeInboundRequests = new Map();
+		this.onEventQueued = onEventQueued;
 	}
 
-	async withContextLock(contextId, operation) {
-		const prior = this.contextLocks.get(contextId) || Promise.resolve();
-		let release;
-		const current = new Promise((resolvePromise) => { release = resolvePromise; });
-		const queued = prior.then(() => current);
-		this.contextLocks.set(contextId, queued);
-		await prior;
-		try {
-			return await operation();
-		} finally {
-			release();
-			if (this.contextLocks.get(contextId) === queued) this.contextLocks.delete(contextId);
+	setEventPump(pump) {
+		this.onEventQueued = pump;
+	}
+
+	resolveRelationship(target, contextId) {
+		const context = this.store.getContext(contextId);
+		if (!context || context.targetId !== target.id) throw new HostMcpError("context_not_found", 404);
+		const routes = this.store.listRoutesForContext(contextId, target.id);
+		if (routes.length === 0) throw new HostMcpError("relationship_not_found", 409);
+		if (routes.length !== 1) throw new HostMcpError("relationship_ambiguous", 409);
+		const route = routes[0];
+		if (!this.store.hasRouteParticipant(route.source, route.providerThreadId, route.principalHash)) {
+			throw new HostMcpError("relationship_unverified", 409);
 		}
+		let recipientHint;
+		if (route.source === "phone") {
+			const conversation = this.store.getPhoneConversationByProviderThread(route.providerThreadId);
+			if (
+				!conversation
+				|| conversation.status !== "active"
+				|| conversation.principalHash !== route.principalHash
+				|| conversation.targetId !== route.targetId
+				|| conversation.contextId !== route.contextId
+			) throw new HostMcpError("relationship_unverified", 409);
+			recipientHint = `ending ${conversation.contactLastFour}`;
+		}
+		try {
+			return this.store.bindMcpRelationship({
+				source: route.source,
+				providerThreadId: route.providerThreadId,
+				principalHash: route.principalHash,
+				projectSlug: route.projectSlug,
+				targetId: route.targetId,
+				contextId: route.contextId,
+				profile: MCP_RELATIONSHIP_PROFILE,
+				recipientHint,
+			});
+		} catch {
+			throw new HostMcpError("relationship_unavailable", 409);
+		}
+	}
+
+	assertRelationship(relationship) {
+		if (!relationship || relationship.status !== "active") {
+			throw new HostMcpError("relationship_unavailable", 403);
+		}
+		const route = this.store.getRoute(relationship.source, relationship.providerThreadId);
+		const context = this.store.getContext(relationship.contextId);
+		const contextRoutes = this.store.listRoutesForContext(
+			relationship.contextId,
+			relationship.targetId,
+		);
+		if (
+			!route
+			|| !context
+			|| contextRoutes.length !== 1
+			|| contextRoutes[0].source !== relationship.source
+			|| contextRoutes[0].providerThreadId !== relationship.providerThreadId
+			|| route.principalHash !== relationship.principalHash
+			|| route.projectSlug !== relationship.projectSlug
+			|| route.targetId !== relationship.targetId
+			|| route.contextId !== relationship.contextId
+			|| context.targetId !== relationship.targetId
+			|| !this.store.hasRouteParticipant(
+				relationship.source,
+				relationship.providerThreadId,
+				relationship.principalHash,
+			)
+		) throw new HostMcpError("relationship_unavailable", 403);
+		if (relationship.source === "phone") {
+			const conversation = this.store.getPhoneConversationByProviderThread(relationship.providerThreadId);
+			if (
+				!conversation
+				|| conversation.status !== "active"
+				|| conversation.principalHash !== relationship.principalHash
+				|| conversation.targetId !== relationship.targetId
+				|| conversation.contextId !== relationship.contextId
+				|| `ending ${conversation.contactLastFour}` !== relationship.recipientHint
+			) throw new HostMcpError("relationship_unavailable", 403);
+		}
+		return relationship;
 	}
 
 	createHandoff(target, contextId, input = {}) {
 		if (!this.config.mcp) throw new HostMcpError("mcp_unavailable", 503);
-		const context = this.store.getContext(contextId);
-		if (!context || context.targetId !== target.id) throw new HostMcpError("context_not_found", 404);
-		const direction = input.direction ?? "either";
-		if (!["inbound", "outbound", "either"].includes(direction)) {
+		const direction = input.direction;
+		if (!["inbound", "outbound"].includes(direction)) {
 			throw new HostMcpError("direction_invalid");
 		}
+		const relationship = this.resolveRelationship(target, contextId);
 		const displayName = boundedText(input.name || "MCP connection", "name", 120);
 		const upstreamUrl = input.server_url ? normalizeMcpServerUrl(input.server_url) : undefined;
 		if (direction === "inbound" && upstreamUrl) throw new HostMcpError("server_url_not_allowed");
@@ -163,6 +300,7 @@ export class HostMcp {
 			tokenHash: digest(rawToken),
 			targetId: target.id,
 			contextId,
+			relationshipId: relationship.id,
 			direction,
 			displayName,
 			upstreamUrl,
@@ -175,82 +313,112 @@ export class HostMcp {
 			expires_at: expiresAt,
 			direction,
 			name: displayName,
+			relationship: publicRelationship(relationship),
 		};
 	}
 
-	openHandoff(rawToken) {
-		if (!/^tfat_one_[A-Za-z0-9_-]{43}$/.test(rawToken || "")) {
-			throw new HostMcpError("handoff_unavailable", 404);
-		}
-		const handoff = this.store.getMcpHandoffByTokenHash(digest(rawToken), { touch: true });
-		if (!handoff || handoff.status !== "pending") {
-			throw new HostMcpError("handoff_unavailable", 404);
-		}
+	handoffPayload(handoff, { sessionToken } = {}) {
+		const relationship = this.assertRelationship(this.store.getMcpRelationship(handoff.relationshipId));
 		return {
 			direction: handoff.direction,
 			name: handoff.displayName,
 			server_url: handoff.upstreamUrl,
 			allowed_auth: handoff.allowedAuth,
 			expires_at: handoff.expiresAt,
-			agent_name: this.config.company.actor,
+			operator_name: "Relationship Operator",
+			relationship: publicRelationship(relationship),
+			...(sessionToken ? { session_token: sessionToken } : {}),
 		};
 	}
 
-	async completeHandoff(rawToken, input = {}) {
-		if (!/^tfat_one_[A-Za-z0-9_-]{43}$/.test(rawToken || "")) {
-			throw new HostMcpError("handoff_unavailable", 404);
+	openHandoff(rawToken) {
+		if (handoffToken(rawToken)) {
+			const sessionToken = `tfat_session_${contextCapability(
+				this.routingKey,
+				"mcp-handoff-session",
+				rawToken,
+			)}`;
+			let handoff;
+			try {
+				handoff = this.store.exchangeMcpHandoffToken(digest(rawToken), digest(sessionToken));
+			} catch {
+				throw new HostMcpError("handoff_unavailable", 404);
+			}
+			return this.handoffPayload(handoff, { sessionToken });
 		}
-		const tokenHash = digest(rawToken);
-		const handoff = this.store.getMcpHandoffByTokenHash(tokenHash);
+		if (handoffSessionToken(rawToken)) {
+			const handoff = this.store.getMcpHandoffBySessionTokenHash(digest(rawToken));
+			if (!handoff || handoff.status !== "pending") {
+				throw new HostMcpError("handoff_unavailable", 404);
+			}
+			return this.handoffPayload(handoff);
+		}
+		throw new HostMcpError("handoff_unavailable", 404);
+	}
+
+	async completeHandoff(rawToken, input = {}) {
+		if (!handoffSessionToken(rawToken)) throw new HostMcpError("handoff_unavailable", 404);
+		const sessionTokenHash = digest(rawToken);
+		const handoff = this.store.getMcpHandoffBySessionTokenHash(sessionTokenHash);
 		if (!handoff || handoff.status !== "pending") {
 			throw new HostMcpError("handoff_unavailable", 404);
 		}
-		const direction = handoff.direction === "either" ? input.direction : handoff.direction;
-		if (!['inbound', 'outbound'].includes(direction)) throw new HostMcpError("direction_invalid");
-		if (input.direction && handoff.direction !== "either" && input.direction !== direction) {
+		this.assertRelationship(this.store.getMcpRelationship(handoff.relationshipId));
+		if (input.direction && input.direction !== handoff.direction) {
 			throw new HostMcpError("direction_not_allowed", 403);
 		}
 
 		let response;
-		if (direction === "inbound") {
-			const id = `mcp_${randomBytes(18).toString("base64url")}`;
-			const apiKey = secret("tfat_mcp_");
-			const displayName = boundedText(input.name || handoff.displayName, "name", 120);
-			this.store.completeMcpHandoff(tokenHash, {
-				inboundGrant: { id, displayName, tokenHash: digest(apiKey) },
-			});
-			response = {
-				direction,
-				name: displayName,
-				server_url: `${this.config.mcp.publicBaseUrl}/resources/${encodeURIComponent(id)}`,
-				api_key: apiKey,
-			};
-		} else {
-			const id = randomUUID();
-			const displayName = boundedText(input.name || handoff.displayName, "name", 120);
-			const upstreamUrl = normalizeMcpServerUrl(input.server_url || handoff.upstreamUrl);
-			const authType = input.auth_type || "bearer";
-			if (!handoff.allowedAuth.includes(authType)) throw new HostMcpError("auth_type_not_allowed", 403);
-			const headerName = authType === "header" ? normalizeHeaderName(input.header_name) : undefined;
-			const credential = authType === "none"
-				? undefined
-				: boundedText(input.secret, "secret", 8192);
-			if (authType === "none" && input.secret) throw new HostMcpError("secret_not_allowed");
-			const alias = aliasFor(displayName, id);
-			this.store.completeMcpHandoff(tokenHash, {
-				outboundConnection: {
-					id,
-					alias,
-					displayName,
-					upstreamUrl,
-					authType,
-					headerName,
-					credentialCiphertext: credential === undefined
-						? undefined
-						: sealPrivateValue(this.routingKey, `mcp-upstream:${id}`, credential),
-				},
-			});
-			response = { direction, name: displayName, alias, server_url: upstreamUrl };
+		try {
+			if (handoff.direction === "inbound") {
+				const id = `mcp_${randomBytes(18).toString("base64url")}`;
+				const apiKey = secret("tfat_mcp_");
+				const displayName = boundedText(input.name || handoff.displayName, "name", 120);
+				this.store.completeMcpHandoff(sessionTokenHash, {
+					inboundGrant: {
+						id,
+						displayName,
+						tokenHash: digest(apiKey),
+						profile: MCP_RELATIONSHIP_PROFILE,
+					},
+				});
+				response = {
+					direction: "inbound",
+					name: displayName,
+					server_url: `${this.config.mcp.publicBaseUrl}/resources/${encodeURIComponent(id)}`,
+					api_key: apiKey,
+					tool: "instruct_operator",
+				};
+			} else {
+				const id = randomUUID();
+				const displayName = boundedText(input.name || handoff.displayName, "name", 120);
+				const upstreamUrl = normalizeMcpServerUrl(input.server_url || handoff.upstreamUrl);
+				const authType = input.auth_type || "bearer";
+				if (!handoff.allowedAuth.includes(authType)) throw new HostMcpError("auth_type_not_allowed", 403);
+				const headerName = authType === "header" ? normalizeHeaderName(input.header_name) : undefined;
+				const credential = authType === "none"
+					? undefined
+					: boundedText(input.secret, "secret", 8192);
+				if (authType === "none" && input.secret) throw new HostMcpError("secret_not_allowed");
+				const alias = aliasFor(displayName, id);
+				this.store.completeMcpHandoff(sessionTokenHash, {
+					outboundConnection: {
+						id,
+						alias,
+						displayName,
+						upstreamUrl,
+						authType,
+						headerName,
+						credentialCiphertext: credential === undefined
+							? undefined
+							: sealPrivateValue(this.routingKey, `mcp-upstream:${id}`, credential),
+					},
+				});
+				response = { direction: "outbound", name: displayName, alias, server_url: upstreamUrl };
+			}
+		} catch (error) {
+			if (error instanceof HostMcpError) throw error;
+			throw new HostMcpError("handoff_unavailable", 404);
 		}
 		try {
 			await this.onContextChanged?.(handoff.contextId);
@@ -260,7 +428,8 @@ export class HostMcp {
 				error instanceof Error ? error.message : String(error),
 			);
 		}
-		return response;
+		const relationship = this.store.getMcpRelationship(handoff.relationshipId);
+		return { ...response, relationship: publicRelationship(relationship) };
 	}
 
 	authenticateInbound(resourceId, authorization) {
@@ -269,77 +438,244 @@ export class HostMcp {
 			throw new HostMcpError("unauthorized", 401);
 		}
 		const grant = this.store.getMcpInboundGrant(resourceId);
-		if (!grant || grant.status !== "active" || !safeEqual(digest(supplied), grant.tokenHash)) {
-			throw new HostMcpError("unauthorized", 401);
-		}
+		if (
+			!grant
+			|| grant.status !== "active"
+			|| grant.profile !== MCP_RELATIONSHIP_PROFILE
+			|| !grant.relationshipId
+			|| !safeEqual(digest(supplied), grant.tokenHash)
+		) throw new HostMcpError("unauthorized", 401);
 		const target = this.config.targetsById.get(grant.targetId);
 		const context = this.store.getContext(grant.contextId);
-		if (!target || !context || context.targetId !== target.id) {
+		const relationship = this.store.getMcpRelationship(grant.relationshipId);
+		if (
+			!target
+			|| !context
+			|| context.targetId !== target.id
+			|| !relationship
+			|| relationship.contextId !== grant.contextId
+			|| relationship.targetId !== grant.targetId
+		) throw new HostMcpError("unauthorized", 401);
+		try {
+			this.assertRelationship(relationship);
+		} catch {
 			throw new HostMcpError("unauthorized", 401);
 		}
 		this.store.touchMcpInboundGrant(grant.id);
-		return { grant, target };
+		return { grant, target, relationship };
+	}
+
+	enqueueInstruction(grant, relationship, input) {
+		if (
+			!input
+			|| typeof input !== "object"
+			|| Array.isArray(input)
+			|| Object.keys(input).some((key) => !["instruction", "idempotency_key"].includes(key))
+		) throw new HostMcpError("arguments_invalid");
+		const instruction = boundedInstruction(input?.instruction);
+		const key = idempotencyKey(input?.idempotency_key);
+		const instructionSha256 = digest(instruction);
+		const existing = this.store.getMcpInstructionReceipt(grant.id, key);
+		if (existing && existing.instructionSha256 !== instructionSha256) {
+			throw new HostMcpError("idempotency_conflict", 409);
+		}
+		const eventId = existing?.eventId || randomUUID();
+		let receipt;
+		try {
+			receipt = existing
+				? { ...existing, duplicate: true }
+				: this.store.enqueueMcpInstruction({
+				grantId: grant.id,
+				idempotencyKey: key,
+				instructionSha256,
+				relationshipId: relationship.id,
+				relationshipGeneration: relationship.generation,
+				targetId: relationship.targetId,
+				contextId: relationship.contextId,
+				principalHash: relationship.principalHash,
+				eventId,
+				providerMessageId: digest(`${grant.id}\0${key}`),
+				payload: {
+					instruction,
+					mcp: {
+						grantId: grant.id,
+						relationshipId: relationship.id,
+						relationshipGeneration: relationship.generation,
+						connectionName: grant.displayName,
+					},
+					},
+				});
+		} catch (error) {
+			if (error instanceof Error && error.message === "mcp_instruction_idempotency_conflict") {
+				throw new HostMcpError("idempotency_conflict", 409);
+			}
+			throw error;
+		}
+		if (!receipt.duplicate) this.onEventQueued?.();
+		return receipt;
+	}
+
+	authorizeInstructionEvent(event, input) {
+		const grantId = input?.mcp?.grantId;
+		const relationshipId = input?.mcp?.relationshipId;
+		const relationshipGeneration = input?.mcp?.relationshipGeneration;
+		const grant = typeof grantId === "string" ? this.store.getMcpInboundGrant(grantId) : null;
+		const relationship = typeof relationshipId === "string"
+			? this.store.getMcpRelationship(relationshipId)
+			: null;
+		const receipt = this.store.getMcpInstructionReceiptByEvent(event.id);
+		if (
+			!grant
+			|| grant.status !== "active"
+			|| grant.profile !== MCP_RELATIONSHIP_PROFILE
+			|| grant.relationshipId !== relationshipId
+			|| grant.contextId !== event.contextId
+			|| grant.targetId !== event.targetId
+			|| !relationship
+			|| relationship.generation !== relationshipGeneration
+			|| relationship.contextId !== event.contextId
+			|| relationship.targetId !== event.targetId
+			|| relationship.principalHash !== event.principalHash
+			|| !receipt
+			|| receipt.grantId !== grant.id
+			|| receipt.relationshipId !== relationship.id
+			|| receipt.relationshipGeneration !== relationship.generation
+			|| receipt.instructionSha256 !== digest(boundedInstruction(input?.instruction))
+		) throw new HostMcpError("instruction_revoked", 403);
+		this.assertRelationship(relationship);
+		return { grant, relationship, receipt };
 	}
 
 	async proxyInbound({ resourceId, authorization, body, requestHeaders }) {
-		const { grant, target } = this.authenticateInbound(resourceId, authorization);
-		this.activeInboundRequests.set(
-			grant.contextId,
-			(this.activeInboundRequests.get(grant.contextId) || 0) + 1,
-		);
-		try {
-			return await this.withContextLock(grant.contextId, async () => {
-				const context = await this.runtime.ensureOciContext(target, grant.contextId);
-				const headers = {
-					"content-type": requestHeaders["content-type"] || "application/json",
-					"accept": requestHeaders.accept || "application/json, text/event-stream",
-					"x-tools-token": this.inboundRuntimeToken(target, grant.contextId),
-				};
-				for (const name of ["mcp-protocol-version", "mcp-session-id", "last-event-id"]) {
-					if (typeof requestHeaders[name] === "string") headers[name] = requestHeaders[name];
-				}
-				const upstream = await fetch(`http://127.0.0.1:${context.port}/mcp`, {
-					method: "POST",
-					headers,
-					body,
-					signal: AbortSignal.timeout(180_000),
-				});
-				const responseBody = await upstream.arrayBuffer();
-				if (responseBody.byteLength > 12 * 1024 * 1024) {
-					throw new HostMcpError("mcp_runtime_response_too_large", 502);
-				}
-				return new Response(responseBody, {
-					status: upstream.status,
-					statusText: upstream.statusText,
-					headers: upstream.headers,
-				});
-			});
-		} finally {
-			const remaining = (this.activeInboundRequests.get(grant.contextId) || 1) - 1;
-			if (remaining > 0) this.activeInboundRequests.set(grant.contextId, remaining);
-			else this.activeInboundRequests.delete(grant.contextId);
+		const { grant, relationship } = this.authenticateInbound(resourceId, authorization);
+		const mediaType = String(requestHeaders?.["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
+		if (mediaType !== "application/json" && !mediaType.endsWith("+json")) {
+			throw new HostMcpError("json_required", 415);
 		}
+		let request;
+		try {
+			request = JSON.parse(Buffer.from(body).toString("utf8"));
+		} catch {
+			return jsonRpcError(null, -32700, "Parse error");
+		}
+		if (!request || typeof request !== "object" || Array.isArray(request) || request.jsonrpc !== "2.0") {
+			return jsonRpcError(request?.id, -32600, "Invalid Request");
+		}
+		if (request.method === "notifications/initialized") {
+			return new Response(null, { status: 202, headers: { "cache-control": "no-store" } });
+		}
+		if (request.id === undefined || request.id === null) {
+			return jsonRpcError(null, -32600, "Request id required");
+		}
+		if (request.method === "initialize") {
+			return jsonRpcResult(request.id, {
+				protocolVersion: MCP_PROTOCOL_VERSION,
+				capabilities: { tools: { listChanged: false } },
+				serverInfo: { name: "tinyfat-relationship-operator", version: "1.0.0" },
+				instructions: "This server can submit an instruction only to its one bound relationship Operator. It cannot select a recipient, send a message directly, read files, or run commands.",
+			});
+		}
+		if (request.method === "ping") return jsonRpcResult(request.id, {});
+		if (request.method === "tools/list") {
+			return jsonRpcResult(request.id, {
+				tools: [{
+					name: "instruct_operator",
+					description: "Submit one durable instruction to this connection's exact relationship Operator. The Operator decides whether and how to act; this tool cannot choose a recipient or send a user-facing message directly.",
+					inputSchema: {
+						type: "object",
+						additionalProperties: false,
+						required: ["instruction", "idempotency_key"],
+						properties: {
+							instruction: { type: "string", minLength: 1, maxLength: 8000 },
+							idempotency_key: {
+								type: "string",
+								pattern: "^[A-Za-z0-9._:-]{8,128}$",
+								description: "Stable opaque key reused only when retrying this exact instruction.",
+							},
+						},
+					},
+				}],
+			});
+		}
+		if (request.method === "tools/call") {
+			if (request.params?.name !== "instruct_operator") {
+				return jsonRpcError(request.id, -32602, "Unknown tool");
+			}
+			try {
+				const receipt = this.enqueueInstruction(grant, relationship, request.params?.arguments);
+				const structuredContent = {
+					receipt_id: receipt.eventId,
+					status: receipt.status,
+					duplicate: receipt.duplicate,
+					relationship: publicRelationship(relationship),
+					provider_receipts: this.store.listProviderReceiptsForEvent(receipt.eventId).map((provider) => ({
+						provider_message_id: provider.providerMessageId || undefined,
+						provider_status: provider.providerStatus || undefined,
+						host_status: provider.hostStatus,
+						completed_at: provider.completedAt || undefined,
+					})),
+				};
+				return jsonRpcResult(request.id, {
+					content: [{
+						type: "text",
+						text: `Instruction ${receipt.duplicate ? "already" : "durably"} accepted for the bound Relationship Operator (receipt ${receipt.eventId}, status ${receipt.status}).`,
+					}],
+					structuredContent,
+				});
+			} catch (error) {
+				if (error instanceof HostMcpError) {
+					return jsonRpcError(request.id, -32602, error.code);
+				}
+				throw error;
+			}
+		}
+		return jsonRpcError(request.id, -32601, "Method not found");
 	}
 
-	isContextActive(contextId) {
-		return (this.activeInboundRequests.get(contextId) || 0) > 0;
+	isContextActive() {
+		return false;
 	}
 
-	inboundRuntimeToken(target, contextId) {
-		return contextCapability(target.inboundToken, "mcp-ingress", contextId);
+	activeInboundRelationship(contextId) {
+		const active = this.store.listMcpInboundGrants(contextId, { activeOnly: true })
+			.filter((grant) => grant.profile === MCP_RELATIONSHIP_PROFILE && grant.relationshipId);
+		if (active.length === 0) return null;
+		const ids = new Set(active.map((grant) => grant.relationshipId));
+		if (ids.size !== 1) throw new HostMcpError("relationship_ambiguous", 409);
+		return this.assertRelationship(this.store.getMcpRelationship(active[0].relationshipId));
+	}
+
+	operatorRuntimeToken(target, relationship) {
+		return contextCapability(
+			target.inboundToken,
+			`mcp-operator:${relationship.id}:${relationship.generation}`,
+			relationship.contextId,
+		);
 	}
 
 	list(contextId) {
 		return {
 			inbound: this.store.listMcpInboundGrants(contextId).map((grant) => (
-				publicInboundGrant(grant, this.config.mcp.publicBaseUrl)
+				publicInboundGrant(
+					grant,
+					grant.relationshipId ? this.store.getMcpRelationship(grant.relationshipId) : null,
+					this.config.mcp.publicBaseUrl,
+				)
 			)),
-			outbound: this.store.listMcpOutboundConnections(contextId).map(publicOutboundConnection),
+			outbound: this.store.listMcpOutboundConnections(contextId).map((connection) => (
+				publicOutboundConnection(
+					connection,
+					connection.relationshipId ? this.store.getMcpRelationship(connection.relationshipId) : null,
+				)
+			)),
 			handoffs: this.store.listMcpHandoffs(contextId).map((handoff) => ({
 				id: handoff.id,
 				direction: handoff.direction,
 				name: handoff.displayName,
 				status: handoff.status,
+				relationship: handoff.relationshipId
+					? publicRelationship(this.store.getMcpRelationship(handoff.relationshipId))
+					: undefined,
 				expires_at: handoff.expiresAt,
 				created_at: handoff.createdAt,
 			})),
@@ -347,27 +683,51 @@ export class HostMcp {
 	}
 
 	async revoke(contextId, { direction, id }) {
-		if (!['inbound', 'outbound'].includes(direction)) throw new HostMcpError("direction_invalid");
-		const revoked = direction === "inbound"
-			? this.store.revokeMcpInboundGrant(contextId, id)
-			: this.store.revokeMcpOutboundConnection(contextId, id);
+		if (!["handoff", "inbound", "outbound"].includes(direction)) {
+			throw new HostMcpError("direction_invalid");
+		}
+		const revoked = direction === "handoff"
+			? this.store.revokeMcpHandoff(contextId, id)
+			: direction === "inbound"
+				? this.store.revokeMcpInboundGrant(contextId, id)
+				: this.store.revokeMcpOutboundConnection(contextId, id);
 		if (!revoked) throw new HostMcpError("connection_not_found", 404);
-		try {
-			await this.onContextChanged?.(contextId);
-		} catch (error) {
-			console.error(
-				`troublemaker-hostd: MCP runtime refresh failed for ${contextId}:`,
-				error instanceof Error ? error.message : String(error),
-			);
+		if (direction !== "handoff") {
+			try {
+				await this.onContextChanged?.(contextId);
+			} catch (error) {
+				console.error(
+					`troublemaker-hostd: MCP runtime refresh failed for ${contextId}:`,
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 		}
 		return { ok: true, id, direction };
 	}
 
 	activeOutboundConnections(contextId) {
-		return this.store.listMcpOutboundConnections(contextId, { activeOnly: true });
+		return this.store.listMcpOutboundConnections(contextId, { activeOnly: true })
+			.filter((connection) => connection.relationshipId)
+			.map((connection) => {
+				this.assertOutboundConnection(connection);
+				return connection;
+			});
+	}
+
+	assertOutboundConnection(connection) {
+		if (!connection || connection.status !== "active" || !connection.relationshipId) {
+			throw new HostMcpError("connection_not_found", 404);
+		}
+		const relationship = this.assertRelationship(this.store.getMcpRelationship(connection.relationshipId));
+		if (
+			relationship.contextId !== connection.contextId
+			|| relationship.targetId !== connection.targetId
+		) throw new HostMcpError("connection_not_found", 404);
+		return relationship;
 	}
 
 	openOutboundCredential(connection) {
+		this.assertOutboundConnection(connection);
 		if (!connection.credentialCiphertext) return undefined;
 		return openPrivateValue(
 			this.routingKey,

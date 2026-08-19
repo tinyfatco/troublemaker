@@ -114,6 +114,31 @@ export class HostStore {
 			CREATE INDEX IF NOT EXISTS mcp_handoffs_context
 				ON mcp_handoffs(context_id, status, created_at);
 
+			CREATE TABLE IF NOT EXISTS mcp_relationships (
+				id TEXT PRIMARY KEY,
+				source TEXT NOT NULL,
+				provider_thread_id TEXT NOT NULL,
+				principal_hash TEXT NOT NULL,
+				project_slug TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				profile TEXT NOT NULL,
+				recipient_hint TEXT,
+				status TEXT NOT NULL DEFAULT 'active'
+					CHECK(status IN ('active', 'revoked')),
+				generation INTEGER NOT NULL DEFAULT 1,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				revoked_at TEXT,
+				UNIQUE(source, provider_thread_id, profile),
+				FOREIGN KEY (source, provider_thread_id)
+					REFERENCES routes(source, provider_thread_id),
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_relationships_context
+				ON mcp_relationships(context_id, status, created_at);
+
 			CREATE TABLE IF NOT EXISTS mcp_inbound_grants (
 				id TEXT PRIMARY KEY,
 				target_id TEXT NOT NULL,
@@ -156,6 +181,33 @@ export class HostStore {
 
 			CREATE INDEX IF NOT EXISTS mcp_outbound_connections_context
 				ON mcp_outbound_connections(context_id, status, created_at);
+
+			CREATE TABLE IF NOT EXISTS mcp_instruction_receipts (
+				grant_id TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				instruction_sha256 TEXT NOT NULL,
+				relationship_id TEXT NOT NULL,
+				relationship_generation INTEGER NOT NULL,
+				context_id TEXT NOT NULL,
+				event_id TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (grant_id, idempotency_key),
+				FOREIGN KEY (grant_id) REFERENCES mcp_inbound_grants(id) ON DELETE CASCADE,
+				FOREIGN KEY (relationship_id) REFERENCES mcp_relationships(id),
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE,
+				FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_instruction_receipts_context
+				ON mcp_instruction_receipts(context_id, created_at);
+
+			CREATE TABLE IF NOT EXISTS mcp_edge_nonces (
+				issuer TEXT NOT NULL,
+				nonce TEXT NOT NULL,
+				expires_at INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (issuer, nonce)
+			);
 
 			CREATE TABLE IF NOT EXISTS site_relationship_factories (
 				context_id TEXT PRIMARY KEY,
@@ -298,9 +350,11 @@ export class HostStore {
 				target_id TEXT NOT NULL,
 				context_id TEXT NOT NULL,
 				provider_thread_id TEXT NOT NULL,
+				origin_event_id TEXT,
 				body_sha256 TEXT,
 				status TEXT NOT NULL,
 				provider_message_id TEXT,
+				provider_status TEXT,
 				last_error TEXT,
 				created_at TEXT NOT NULL,
 				completed_at TEXT
@@ -496,9 +550,19 @@ export class HostStore {
 		add("events", "started_at TEXT");
 		add("events", "updated_at TEXT");
 		add("outbox", "body_sha256 TEXT");
+		add("outbox", "origin_event_id TEXT");
+		add("outbox", "provider_status TEXT");
 		add("gmail_drafts", "to_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("workers_ai_requests", "rejection_count INTEGER NOT NULL DEFAULT 0");
+		add("mcp_handoffs", "relationship_id TEXT");
+		add("mcp_handoffs", "session_token_hash TEXT");
+		add("mcp_handoffs", "session_expires_at TEXT");
+		add("mcp_inbound_grants", "relationship_id TEXT");
+		add("mcp_inbound_grants", "profile TEXT NOT NULL DEFAULT 'legacy-runtime-mcp-v0'");
+		add("mcp_inbound_grants", "generation INTEGER NOT NULL DEFAULT 1");
+		add("mcp_outbound_connections", "relationship_id TEXT");
+		add("mcp_outbound_connections", "generation INTEGER NOT NULL DEFAULT 1");
 		const legacyDraftRecipients = this.database.prepare(`
 			SELECT provider_draft_id AS providerDraftId, contact_address AS contactAddress
 			FROM gmail_drafts WHERE to_addresses_json = '[]'
@@ -510,6 +574,8 @@ export class HostStore {
 			bindLegacyDraftRecipient.run(JSON.stringify([draft.contactAddress]), draft.providerDraftId);
 		}
 		this.database.exec(`
+			CREATE UNIQUE INDEX IF NOT EXISTS mcp_handoffs_session_token
+				ON mcp_handoffs(session_token_hash) WHERE session_token_hash IS NOT NULL;
 			UPDATE events SET status = 'queued' WHERE status = 'pending';
 			UPDATE events SET status = 'queued', lease_token = NULL, lease_expires_at = NULL
 				WHERE status = 'delivering';
@@ -1597,11 +1663,104 @@ export class HostStore {
 		`).get(id);
 	}
 
+	bindMcpRelationship({
+		id = randomUUID(),
+		source,
+		providerThreadId,
+		principalHash,
+		projectSlug,
+		targetId,
+		contextId,
+		profile,
+		recipientHint,
+	}) {
+		const route = this.getRoute(source, providerThreadId);
+		const context = this.getContext(contextId);
+		if (
+			!route
+			|| !context
+			|| route.principalHash !== principalHash
+			|| route.projectSlug !== projectSlug
+			|| route.targetId !== targetId
+			|| route.contextId !== contextId
+			|| context.targetId !== targetId
+			|| !this.hasRouteParticipant(source, providerThreadId, principalHash)
+		) {
+			throw new Error("mcp_relationship_route_mismatch");
+		}
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO mcp_relationships(
+				id, source, provider_thread_id, principal_hash, project_slug,
+				target_id, context_id, profile, recipient_hint, status,
+				generation, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
+			ON CONFLICT(source, provider_thread_id, profile) DO NOTHING
+		`).run(
+			id,
+			source,
+			providerThreadId,
+			principalHash,
+			projectSlug,
+			targetId,
+			contextId,
+			profile,
+			recipientHint ?? null,
+			timestamp,
+			timestamp,
+		);
+		const relationship = this.getMcpRelationshipByRoute(source, providerThreadId, profile);
+		if (!relationship) throw new Error("mcp_relationship_create_failed");
+		for (const [key, value] of Object.entries({
+			principalHash,
+			projectSlug,
+			targetId,
+			contextId,
+			profile,
+		})) {
+			if (relationship[key] !== value) throw new Error("mcp_relationship_identity_mismatch");
+		}
+		if ((relationship.recipientHint ?? null) !== (recipientHint ?? null)) {
+			throw new Error("mcp_relationship_recipient_mismatch");
+		}
+		if (relationship.status !== "active") throw new Error("mcp_relationship_revoked");
+		return relationship;
+	}
+
+	getMcpRelationship(id) {
+		return this.database.prepare(`
+			SELECT id, source, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, project_slug AS projectSlug,
+				target_id AS targetId, context_id AS contextId, profile,
+				recipient_hint AS recipientHint, status, generation,
+				created_at AS createdAt, updated_at AS updatedAt,
+				revoked_at AS revokedAt
+			FROM mcp_relationships WHERE id = ?
+		`).get(id) ?? null;
+	}
+
+	getMcpRelationshipByRoute(source, providerThreadId, profile) {
+		const row = this.database.prepare(`
+			SELECT id FROM mcp_relationships
+			WHERE source = ? AND provider_thread_id = ? AND profile = ?
+		`).get(source, providerThreadId, profile);
+		return row ? this.getMcpRelationship(row.id) : null;
+	}
+
+	listMcpRelationshipsForContext(contextId, { activeOnly = false } = {}) {
+		return this.database.prepare(`
+			SELECT id FROM mcp_relationships
+			WHERE context_id = ? ${activeOnly ? "AND status = 'active'" : ""}
+			ORDER BY created_at, id
+		`).all(contextId).map((row) => this.getMcpRelationship(row.id));
+	}
+
 	createMcpHandoff({
 		id = randomUUID(),
 		tokenHash,
 		targetId,
 		contextId,
+		relationshipId,
 		direction,
 		displayName,
 		upstreamUrl,
@@ -1609,18 +1768,27 @@ export class HostStore {
 		expiresAt,
 	}) {
 		const context = this.getContext(contextId);
-		if (!context || context.targetId !== targetId) throw new Error("mcp_context_not_found");
+		const relationship = this.getMcpRelationship(relationshipId);
+		if (
+			!context
+			|| context.targetId !== targetId
+			|| !relationship
+			|| relationship.status !== "active"
+			|| relationship.targetId !== targetId
+			|| relationship.contextId !== contextId
+		) throw new Error("mcp_context_not_found");
 		const timestamp = now();
 		this.database.prepare(`
 			INSERT INTO mcp_handoffs(
-				id, token_hash, target_id, context_id, direction, display_name,
+				id, token_hash, target_id, context_id, relationship_id, direction, display_name,
 				upstream_url, allowed_auth_json, expires_at, status, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 		`).run(
 			id,
 			tokenHash,
 			targetId,
 			contextId,
+			relationshipId,
 			direction,
 			displayName,
 			upstreamUrl ?? null,
@@ -1635,9 +1803,12 @@ export class HostStore {
 	getMcpHandoff(id) {
 		const row = this.database.prepare(`
 			SELECT id, token_hash AS tokenHash, target_id AS targetId,
-				context_id AS contextId, direction, display_name AS displayName,
+				context_id AS contextId, relationship_id AS relationshipId,
+				direction, display_name AS displayName,
 				upstream_url AS upstreamUrl, allowed_auth_json AS allowedAuthJson,
 				expires_at AS expiresAt, status, result_id AS resultId,
+				session_token_hash AS sessionTokenHash,
+				session_expires_at AS sessionExpiresAt,
 				opened_at AS openedAt, completed_at AS completedAt,
 				created_at AS createdAt, updated_at AS updatedAt
 			FROM mcp_handoffs WHERE id = ?
@@ -1668,12 +1839,64 @@ export class HostStore {
 		return handoff;
 	}
 
-	completeMcpHandoff(tokenHash, { inboundGrant, outboundConnection }) {
+	exchangeMcpHandoffToken(tokenHash, sessionTokenHash) {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const handoff = this.getMcpHandoffByTokenHash(tokenHash);
+			if (
+				!handoff
+				|| handoff.status !== "pending"
+				|| Date.parse(handoff.expiresAt) <= Date.now()
+			) throw new Error("mcp_handoff_unavailable");
+			if (handoff.openedAt || handoff.sessionTokenHash) {
+				throw new Error("mcp_handoff_unavailable");
+			}
+			const timestamp = now();
+			const result = this.database.prepare(`
+				UPDATE mcp_handoffs
+				SET opened_at = ?, session_token_hash = ?, session_expires_at = ?, updated_at = ?
+				WHERE id = ? AND status = 'pending' AND opened_at IS NULL
+					AND session_token_hash IS NULL
+			`).run(timestamp, sessionTokenHash, handoff.expiresAt, timestamp, handoff.id);
+			if (result.changes !== 1) throw new Error("mcp_handoff_unavailable");
+			this.database.exec("COMMIT");
+			return this.getMcpHandoff(handoff.id);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	getMcpHandoffBySessionTokenHash(sessionTokenHash) {
+		const row = this.database.prepare(`
+			SELECT id FROM mcp_handoffs WHERE session_token_hash = ?
+		`).get(sessionTokenHash);
+		if (!row) return null;
+		let handoff = this.getMcpHandoff(row.id);
+		const expiresAt = handoff.sessionExpiresAt || handoff.expiresAt;
+		if (handoff.status === "pending" && Date.parse(expiresAt) <= Date.now()) {
+			this.database.prepare(`
+				UPDATE mcp_handoffs SET status = 'expired', updated_at = ?
+				WHERE id = ? AND status = 'pending'
+			`).run(now(), handoff.id);
+			handoff = this.getMcpHandoff(handoff.id);
+		}
+		return handoff;
+	}
+
+	completeMcpHandoff(sessionTokenHash, { inboundGrant, outboundConnection }) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const handoff = this.getMcpHandoffBySessionTokenHash(sessionTokenHash);
 			if (!handoff || handoff.status !== "pending") throw new Error("mcp_handoff_unavailable");
 			if (Date.parse(handoff.expiresAt) <= Date.now()) throw new Error("mcp_handoff_unavailable");
+			const relationship = this.getMcpRelationship(handoff.relationshipId);
+			if (
+				!relationship
+				|| relationship.status !== "active"
+				|| relationship.contextId !== handoff.contextId
+				|| relationship.targetId !== handoff.targetId
+			) throw new Error("mcp_relationship_unavailable");
 			const result = inboundGrant ?? outboundConnection;
 			if (!result || Boolean(inboundGrant) === Boolean(outboundConnection)) {
 				throw new Error("mcp_handoff_result_invalid");
@@ -1681,29 +1904,32 @@ export class HostStore {
 			if (inboundGrant) {
 				this.database.prepare(`
 					INSERT INTO mcp_inbound_grants(
-						id, target_id, context_id, display_name, token_hash,
-						status, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+						id, target_id, context_id, relationship_id, display_name,
+						token_hash, profile, generation, status, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)
 				`).run(
 					inboundGrant.id,
 					handoff.targetId,
 					handoff.contextId,
+					handoff.relationshipId,
 					inboundGrant.displayName,
 					inboundGrant.tokenHash,
+					inboundGrant.profile,
 					now(),
 					now(),
 				);
 			} else {
 				this.database.prepare(`
 					INSERT INTO mcp_outbound_connections(
-						id, target_id, context_id, alias, display_name, upstream_url,
+						id, target_id, context_id, relationship_id, alias, display_name, upstream_url,
 						auth_type, header_name, credential_ciphertext, status,
-						created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+						generation, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
 				`).run(
 					outboundConnection.id,
 					handoff.targetId,
 					handoff.contextId,
+					handoff.relationshipId,
 					outboundConnection.alias,
 					outboundConnection.displayName,
 					outboundConnection.upstreamUrl,
@@ -1733,10 +1959,19 @@ export class HostStore {
 		`).all(contextId).map((row) => this.getMcpHandoff(row.id));
 	}
 
+	revokeMcpHandoff(contextId, id) {
+		const result = this.database.prepare(`
+			UPDATE mcp_handoffs SET status = 'revoked', updated_at = ?
+			WHERE context_id = ? AND id = ? AND status = 'pending'
+		`).run(now(), contextId, id);
+		return result.changes === 1;
+	}
+
 	getMcpInboundGrant(id) {
 		return this.database.prepare(`
 			SELECT id, target_id AS targetId, context_id AS contextId,
-				display_name AS displayName, token_hash AS tokenHash, status,
+				relationship_id AS relationshipId, display_name AS displayName,
+				token_hash AS tokenHash, profile, generation, status,
 				created_at AS createdAt, updated_at AS updatedAt,
 				last_used_at AS lastUsedAt, revoked_at AS revokedAt
 			FROM mcp_inbound_grants WHERE id = ?
@@ -1746,7 +1981,8 @@ export class HostStore {
 	listMcpInboundGrants(contextId, { activeOnly = false } = {}) {
 		return this.database.prepare(`
 			SELECT id, target_id AS targetId, context_id AS contextId,
-				display_name AS displayName, status, created_at AS createdAt,
+				relationship_id AS relationshipId, display_name AS displayName,
+				profile, generation, status, created_at AS createdAt,
 				updated_at AS updatedAt, last_used_at AS lastUsedAt,
 				revoked_at AS revokedAt
 			FROM mcp_inbound_grants
@@ -1762,19 +1998,179 @@ export class HostStore {
 	}
 
 	revokeMcpInboundGrant(contextId, id) {
-		const result = this.database.prepare(`
-			UPDATE mcp_inbound_grants SET status = 'revoked', revoked_at = ?, updated_at = ?
-			WHERE context_id = ? AND id = ? AND status = 'active'
-		`).run(now(), now(), contextId, id);
-		return result.changes === 1;
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const timestamp = now();
+			const result = this.database.prepare(`
+				UPDATE mcp_inbound_grants
+				SET status = 'revoked', generation = generation + 1,
+					revoked_at = ?, updated_at = ?
+				WHERE context_id = ? AND id = ? AND status = 'active'
+			`).run(timestamp, timestamp, contextId, id);
+			if (result.changes === 1) {
+				this.database.prepare(`
+					UPDATE events
+					SET status = 'dead', last_error = 'mcp_grant_revoked',
+						lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+					WHERE id IN (
+						SELECT event_id FROM mcp_instruction_receipts WHERE grant_id = ?
+					) AND status IN ('queued', 'failed', 'leased', 'accepted')
+				`).run(timestamp, id);
+			}
+			this.database.exec("COMMIT");
+			return result.changes === 1;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	getMcpInstructionReceipt(grantId, idempotencyKey) {
+		return this.database.prepare(`
+			SELECT receipt.grant_id AS grantId,
+				receipt.idempotency_key AS idempotencyKey,
+				receipt.instruction_sha256 AS instructionSha256,
+				receipt.relationship_id AS relationshipId,
+				receipt.relationship_generation AS relationshipGeneration,
+				receipt.context_id AS contextId, receipt.event_id AS eventId,
+				receipt.created_at AS createdAt,
+				event.status, event.last_error AS lastError,
+				event.completed_at AS completedAt
+			FROM mcp_instruction_receipts receipt
+			JOIN events event ON event.id = receipt.event_id
+			WHERE receipt.grant_id = ? AND receipt.idempotency_key = ?
+		`).get(grantId, idempotencyKey) ?? null;
+	}
+
+	getMcpInstructionReceiptByEvent(eventId) {
+		const row = this.database.prepare(`
+			SELECT grant_id AS grantId, idempotency_key AS idempotencyKey
+			FROM mcp_instruction_receipts WHERE event_id = ?
+		`).get(eventId);
+		return row ? this.getMcpInstructionReceipt(row.grantId, row.idempotencyKey) : null;
+	}
+
+	enqueueMcpInstruction({
+		grantId,
+		idempotencyKey,
+		instructionSha256,
+		relationshipId,
+		relationshipGeneration,
+		targetId,
+		contextId,
+		principalHash,
+		eventId,
+		providerMessageId,
+		payload,
+	}) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existing = this.getMcpInstructionReceipt(grantId, idempotencyKey);
+			if (existing) {
+				if (existing.instructionSha256 !== instructionSha256) {
+					throw new Error("mcp_instruction_idempotency_conflict");
+				}
+				this.database.exec("COMMIT");
+				return { ...existing, duplicate: true };
+			}
+			const grant = this.getMcpInboundGrant(grantId);
+			const relationship = this.getMcpRelationship(relationshipId);
+			if (
+				!grant
+				|| grant.status !== "active"
+				|| grant.profile !== "relationship-operator-v1"
+				|| grant.contextId !== contextId
+				|| grant.targetId !== targetId
+				|| grant.relationshipId !== relationshipId
+				|| !relationship
+				|| relationship.status !== "active"
+				|| relationship.generation !== relationshipGeneration
+				|| relationship.contextId !== contextId
+				|| relationship.targetId !== targetId
+				|| relationship.principalHash !== principalHash
+			) throw new Error("mcp_instruction_scope_mismatch");
+			const timestamp = now();
+			const awarenessSequence = this.nextAwarenessSequence(contextId);
+			this.database.prepare(`
+				INSERT INTO events(
+					id, source, provider_message_id, provider_thread_id,
+					principal_hash, target_id, context_id, awareness_sequence,
+					status, payload_json, received_at, available_at, updated_at
+				) VALUES (?, 'mcp-operator', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+			`).run(
+				eventId,
+				providerMessageId,
+				relationshipId,
+				principalHash,
+				targetId,
+				contextId,
+				awarenessSequence,
+				JSON.stringify(payload),
+				timestamp,
+				timestamp,
+				timestamp,
+			);
+			this.database.prepare(`
+				INSERT INTO mcp_instruction_receipts(
+					grant_id, idempotency_key, instruction_sha256,
+					relationship_id, relationship_generation, context_id,
+					event_id, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				grantId,
+				idempotencyKey,
+				instructionSha256,
+				relationshipId,
+				relationshipGeneration,
+				contextId,
+				eventId,
+				timestamp,
+			);
+			this.database.exec("COMMIT");
+			return { ...this.getMcpInstructionReceipt(grantId, idempotencyKey), duplicate: false };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	activeMcpInstructionForContext(contextId) {
+		return this.database.prepare(`
+			SELECT receipt.grant_id AS grantId,
+				receipt.relationship_id AS relationshipId,
+				receipt.relationship_generation AS relationshipGeneration,
+				receipt.event_id AS eventId, event.status
+			FROM mcp_instruction_receipts receipt
+			JOIN events event ON event.id = receipt.event_id
+			WHERE receipt.context_id = ?
+				AND event.status IN ('leased', 'accepted', 'running')
+			ORDER BY event.received_at DESC LIMIT 1
+		`).get(contextId) ?? null;
+	}
+
+	consumeMcpEdgeNonce(issuer, nonce, expiresAt) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare("DELETE FROM mcp_edge_nonces WHERE expires_at < ?").run(Math.floor(Date.now() / 1000));
+			const result = this.database.prepare(`
+				INSERT OR IGNORE INTO mcp_edge_nonces(issuer, nonce, expires_at, created_at)
+				VALUES (?, ?, ?, ?)
+			`).run(issuer, nonce, expiresAt, now());
+			this.database.exec("COMMIT");
+			return result.changes === 1;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	getMcpOutboundConnection(contextId, id) {
 		return this.database.prepare(`
-			SELECT id, target_id AS targetId, context_id AS contextId, alias,
+			SELECT id, target_id AS targetId, context_id AS contextId,
+				relationship_id AS relationshipId, alias,
 				display_name AS displayName, upstream_url AS upstreamUrl,
 				auth_type AS authType, header_name AS headerName,
-				credential_ciphertext AS credentialCiphertext, status, revision,
+				credential_ciphertext AS credentialCiphertext, status, generation, revision,
 				created_at AS createdAt, updated_at AS updatedAt,
 				last_used_at AS lastUsedAt, last_error AS lastError,
 				revoked_at AS revokedAt
@@ -1784,9 +2180,10 @@ export class HostStore {
 
 	listMcpOutboundConnections(contextId, { activeOnly = false } = {}) {
 		return this.database.prepare(`
-			SELECT id, target_id AS targetId, context_id AS contextId, alias,
+			SELECT id, target_id AS targetId, context_id AS contextId,
+				relationship_id AS relationshipId, alias,
 				display_name AS displayName, upstream_url AS upstreamUrl,
-				auth_type AS authType, header_name AS headerName, status, revision,
+				auth_type AS authType, header_name AS headerName, status, generation, revision,
 				created_at AS createdAt, updated_at AS updatedAt,
 				last_used_at AS lastUsedAt, last_error AS lastError,
 				revoked_at AS revokedAt
@@ -1806,7 +2203,8 @@ export class HostStore {
 	revokeMcpOutboundConnection(contextId, id) {
 		const result = this.database.prepare(`
 			UPDATE mcp_outbound_connections
-			SET status = 'revoked', revision = revision + 1, revoked_at = ?, updated_at = ?
+			SET status = 'revoked', generation = generation + 1,
+				revision = revision + 1, revoked_at = ?, updated_at = ?
 			WHERE context_id = ? AND id = ? AND status = 'active'
 		`).run(now(), now(), contextId, id);
 		return result.changes === 1;
@@ -2725,6 +3123,15 @@ export class HostStore {
 					AND candidate.attempts < ?
 					AND candidate.available_at <= ?
 					AND NOT EXISTS (
+						SELECT 1 FROM events relationship_turn
+						WHERE relationship_turn.context_id = candidate.context_id
+							AND relationship_turn.status = 'running'
+							AND (
+								relationship_turn.source = 'mcp-operator'
+								OR candidate.source = 'mcp-operator'
+							)
+					)
+					AND NOT EXISTS (
 						SELECT 1 FROM events delivering
 						WHERE delivering.context_id = candidate.context_id
 							AND delivering.id != candidate.id
@@ -2805,11 +3212,19 @@ export class HostStore {
 	failEvent(id, error, leaseToken, retrySeconds = 15, maximumAttempts = 5) {
 		const event = this.getEvent(id);
 		if (!event || (leaseToken && event.leaseToken !== leaseToken)) return event;
+		if (event.status === "running") {
+			return this.markEventUncertain(
+				id,
+				`runtime failed after reporting running: ${String(error)}`,
+				leaseToken,
+			);
+		}
+		if (!["leased", "accepted"].includes(event.status)) return event;
 		const status = event.attempts >= maximumAttempts ? "dead" : "failed";
 		this.database.prepare(`
 			UPDATE events SET status = ?, last_error = ?, available_at = ?,
 				lease_token = NULL, lease_expires_at = NULL, updated_at = ?
-			WHERE id = ?
+			WHERE id = ? AND status IN ('leased', 'accepted')
 		`).run(status, String(error).slice(0, 1000), future(retrySeconds), now(), id);
 		return this.getEvent(id);
 	}
@@ -2886,25 +3301,34 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT id, idempotency_key AS idempotencyKey, target_id AS targetId,
 				context_id AS contextId, provider_thread_id AS providerThreadId,
-				body_sha256 AS bodySha256,
-				status, provider_message_id AS providerMessageId, last_error AS lastError,
+				origin_event_id AS originEventId, body_sha256 AS bodySha256,
+				status, provider_message_id AS providerMessageId,
+				provider_status AS providerStatus, last_error AS lastError,
 				created_at AS createdAt, completed_at AS completedAt
 			FROM outbox WHERE idempotency_key = ?
 		`).get(idempotencyKey);
 	}
 
-	startOutbox({ idempotencyKey, targetId, contextId, providerThreadId, bodySha256 }) {
+	startOutbox({
+		idempotencyKey,
+		targetId,
+		contextId,
+		providerThreadId,
+		originEventId,
+		bodySha256,
+	}) {
 		const inserted = this.database.prepare(`
 			INSERT INTO outbox(
 				idempotency_key, target_id, context_id, provider_thread_id,
-				body_sha256, status, created_at
-			) VALUES (?, ?, ?, ?, ?, 'sending', ?)
+				origin_event_id, body_sha256, status, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, 'sending', ?)
 			ON CONFLICT(idempotency_key) DO NOTHING
 		`).run(
 			idempotencyKey,
 			targetId,
 			contextId,
 			providerThreadId,
+			originEventId ?? null,
 			bodySha256 ?? null,
 			now(),
 		);
@@ -2915,6 +3339,7 @@ export class HostStore {
 				|| existing.targetId !== targetId
 				|| existing.contextId !== contextId
 				|| existing.providerThreadId !== providerThreadId
+				|| (existing.originEventId ?? null) !== (originEventId ?? null)
 				|| (bodySha256 !== undefined && existing.bodySha256 !== bodySha256)
 			) {
 				throw new Error("outbox idempotency key conflicts with existing delivery");
@@ -2928,6 +3353,17 @@ export class HostStore {
 		return { ...this.getOutbox(idempotencyKey), claimed: true };
 	}
 
+	listProviderReceiptsForEvent(eventId) {
+		return this.database.prepare(`
+			SELECT provider_message_id AS providerMessageId, status AS hostStatus,
+				provider_status AS providerStatus,
+				created_at AS createdAt, completed_at AS completedAt
+			FROM outbox
+			WHERE origin_event_id = ?
+			ORDER BY id
+		`).all(eventId);
+	}
+
 	completeOutbox(idempotencyKey, providerMessageId) {
 		this.database.prepare(`
 			UPDATE outbox SET status = 'completed', provider_message_id = ?,
@@ -2937,15 +3373,16 @@ export class HostStore {
 		return this.getOutbox(idempotencyKey);
 	}
 
-	completePhoneOutboxWithLedger(idempotencyKey, providerMessageId, ledgerEvent) {
+	completePhoneOutboxWithLedger(idempotencyKey, providerMessageId, providerStatus, ledgerEvent) {
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const updated = this.database.prepare(`
 				UPDATE outbox SET status = 'completed', provider_message_id = ?,
+					provider_status = ?,
 					completed_at = ?, last_error = NULL
 				WHERE idempotency_key = ? AND status = 'sending'
-			`).run(providerMessageId, timestamp, idempotencyKey);
+			`).run(providerMessageId, providerStatus ?? null, timestamp, idempotencyKey);
 			if (updated.changes !== 1) {
 				throw new Error("phone outbox is no longer claimable");
 			}
@@ -2983,11 +3420,13 @@ export class HostStore {
 					WHEN ? IN ('failed', 'rejected') THEN ?
 					ELSE status
 				END,
+				provider_status = ?,
 				last_error = CASE WHEN ? IN ('failed', 'rejected') THEN ? ELSE last_error END,
 				completed_at = CASE WHEN ? IN ('queued', 'sent', 'delivered')
 					THEN COALESCE(completed_at, ?) ELSE completed_at END
 			WHERE provider_message_id = ?
 		`).run(
+			status,
 			status,
 			status,
 			status,

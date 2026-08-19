@@ -61,6 +61,36 @@ function authenticateContext(request, config, contextId, purpose) {
 	return bearerMatches(request.headers.authorization, expected) ? target : null;
 }
 
+function activeMcpRelationshipScope(store, mcp, contextId) {
+	const active = store.activeMcpInstructionForContext(contextId);
+	if (!active) return null;
+	const relationship = store.getMcpRelationship(active.relationshipId);
+	const grant = store.getMcpInboundGrant(active.grantId);
+	if (
+		!grant
+		|| grant.status !== "active"
+		|| grant.relationshipId !== active.relationshipId
+		|| grant.contextId !== contextId
+		|| !relationship
+		|| !mcp
+		|| relationship.status !== "active"
+		|| relationship.contextId !== contextId
+		|| relationship.generation !== active.relationshipGeneration
+	) return { invalid: true };
+	try {
+		mcp.assertRelationship(relationship);
+	} catch {
+		return { invalid: true };
+	}
+	return { ...relationship, eventId: active.eventId };
+}
+
+function denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response) {
+	if (!activeMcpRelationshipScope(store, mcp, contextId)) return false;
+	json(response, 403, { error: "relationship_instruction_scope_denied" });
+	return true;
+}
+
 export function createHostServer({
 	config,
 	store,
@@ -130,6 +160,7 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				if (body.action === "request") {
 					json(response, 200, mcp.createHandoff(target, contextId, body));
 					return;
@@ -157,6 +188,7 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				await mcpOutbound.proxy(
 					request,
 					response,
@@ -254,6 +286,7 @@ export function createHostServer({
 					json(response, 404, { error: "context_not_found" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				await mattermostGateway.proxy(
 					request,
 					response,
@@ -272,6 +305,7 @@ export function createHostServer({
 					json(response, 404, { error: "context_not_found" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				await rocketChatGateway.proxy(
 					request,
 					response,
@@ -290,6 +324,7 @@ export function createHostServer({
 					json(response, 404, { error: "context_not_found" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				await zulipGateway.proxy(
 					request,
 					response,
@@ -320,6 +355,7 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				const handlers = {
 					"/v1/gmail/search": () => gmailTools.search(target, contextId, body),
 					"/v1/gmail/read": () => gmailTools.read(target, contextId, body),
@@ -345,6 +381,7 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				json(response, 200, url.pathname === "/v1/sites/create"
 					? await sites.create(target, contextId, body)
 					: await sites.deploy(target, contextId, body));
@@ -366,6 +403,7 @@ export function createHostServer({
 					json(response, 401, { error: "unauthorized" });
 					return;
 				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
 				if (target.gmailToolsOnly) {
 					json(response, 409, { error: "gmail_draft_required" });
 					return;
@@ -463,6 +501,26 @@ export function createHostServer({
 					json(response, 403, { error: "conversation_scope_denied" });
 					return;
 				}
+				const originEventId = typeof body.origin_event_id === "string"
+					? body.origin_event_id.trim()
+					: "";
+				const mcpRelationship = activeMcpRelationshipScope(store, mcp, contextId);
+				if (
+					(originEventId && !mcpRelationship)
+					|| (mcpRelationship && (
+						mcpRelationship.invalid
+						|| mcpRelationship.source !== "phone"
+						|| mcpRelationship.eventId !== originEventId
+						|| mcpRelationship.providerThreadId !== conversation.providerThreadId
+						|| mcpRelationship.principalHash !== conversation.principalHash
+						|| mcpRelationship.targetId !== conversation.targetId
+						|| mcpRelationship.contextId !== conversation.contextId
+						|| conversation.status !== "active"
+					))
+				) {
+					json(response, 403, { error: "relationship_instruction_scope_denied" });
+					return;
+				}
 				const message = typeof body.agent_body === "string" ? body.agent_body.trim() : "";
 				if (!message || message.length > 1600) {
 					json(response, 400, { error: "agent_body_invalid" });
@@ -481,6 +539,7 @@ export function createHostServer({
 					targetId: target.id,
 					contextId,
 					providerThreadId: conversation.providerThreadId,
+					originEventId: originEventId || undefined,
 					bodySha256: sha256,
 				});
 				if (outbox.status === "completed" && outbox.providerMessageId) {
@@ -529,6 +588,7 @@ export function createHostServer({
 						outbox = store.completePhoneOutboxWithLedger(
 							idempotencyKey,
 							receipt.providerMessageId,
+							receipt.status,
 							ledgerEvent,
 						);
 					} catch (error) {

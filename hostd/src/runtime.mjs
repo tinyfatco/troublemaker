@@ -180,10 +180,15 @@ export async function initializeHostMcpSettings(
 export function mcpRuntimeVersionSuffix(config, store, contextId) {
 	if (!config.mcp) return "";
 	const state = {
-		inbound: store.listMcpInboundGrants(contextId, { activeOnly: true }).map((grant) => ({
+		inbound: store.listMcpInboundGrants(contextId, { activeOnly: true })
+			.filter((grant) => grant.profile === "relationship-operator-v1" && grant.relationshipId)
+			.map((grant) => ({
 			id: grant.id,
-			updatedAt: grant.updatedAt,
-		})),
+			relationshipId: grant.relationshipId,
+				profile: grant.profile,
+				generation: grant.generation,
+				updatedAt: grant.updatedAt,
+			})),
 		outbound: store.listMcpOutboundConnections(contextId, { activeOnly: true }).map((connection) => ({
 			id: connection.id,
 			revision: connection.revision,
@@ -296,11 +301,17 @@ export class RuntimeManager {
 		this.routingKey = routingKey;
 		this.sites = sites;
 		this.externalActivityProbe = () => false;
+		this.mcp = undefined;
 		this.contextStartupLocks = new Map();
+		this.pendingMcpRefresh = new Set();
 	}
 
 	setExternalActivityProbe(probe) {
 		this.externalActivityProbe = typeof probe === "function" ? probe : () => false;
+	}
+
+	setMcp(mcp) {
+		this.mcp = mcp;
 	}
 
 	async acceptEvent(event) {
@@ -340,6 +351,10 @@ export class RuntimeManager {
 		}
 		if (event.source === "scheduled-prompt") {
 			await this.deliverScheduledPromptWebhook(target, context, event, payload);
+			return;
+		}
+		if (event.source === "mcp-operator") {
+			await this.deliverMcpOperatorWebhook(target, context, event, payload);
 			return;
 		}
 		throw new Error(`unsupported event source ${event.source}`);
@@ -564,6 +579,30 @@ export class RuntimeManager {
 		}
 	}
 
+	async deliverMcpOperatorWebhook(target, context, event, input) {
+		if (!this.mcp) throw new Error("MCP Operator delivery is unavailable");
+		const { grant, relationship } = this.mcp.authorizeInstructionEvent(event, input);
+		const inboundToken = this.mcp.operatorRuntimeToken(target, relationship);
+		const response = await fetch(context.relationshipOperatorEndpoint, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${inboundToken}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				text: `Authenticated instruction from MCP connection ${JSON.stringify(grant.displayName)}:\n${input.instruction}`,
+				deliveryId: event.id,
+				hostContextId: event.contextId,
+				hostReceipt: this.hostReceipt(target, event),
+			}),
+			signal: AbortSignal.timeout(30_000),
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(`relationship Operator runtime returned HTTP ${response.status}: ${text.slice(0, 200)}`);
+		}
+	}
+
 	async provisionOciContext(target, contextId) {
 		let context = this.store.getContext(contextId);
 		if (!context) {
@@ -654,11 +693,11 @@ export class RuntimeManager {
 			target,
 			contextId,
 		);
-		const activeMcpInboundGrants = this.config.mcp
-			? this.store.listMcpInboundGrants(contextId, { activeOnly: true })
-			: [];
-		const activeMcpOutboundConnections = this.config.mcp
-			? this.store.listMcpOutboundConnections(contextId, { activeOnly: true })
+		const activeMcpRelationship = this.config.mcp && this.mcp
+			? this.mcp.activeInboundRelationship(contextId)
+			: null;
+		const activeMcpOutboundConnections = this.config.mcp && this.mcp
+			? this.mcp.activeOutboundConnections(contextId)
 			: [];
 		if (this.config.mcp) {
 			await initializeHostMcpSettings(workspace, activeMcpOutboundConnections, {
@@ -682,6 +721,7 @@ export class RuntimeManager {
 				`troublemaker-hostd: replacing ${contextId} runtime ${context.runtimeVersion || "unknown"} with ${expectedRuntimeVersion}`,
 			);
 			await this.stopOciContext(target, { ...context, contextId });
+			this.pendingMcpRefresh.delete(contextId);
 			inspect = { ...inspect, code: 1, stdout: "false" };
 		}
 		if (inspect.code !== 0 || inspect.stdout.trim() !== "true") {
@@ -721,8 +761,11 @@ export class RuntimeManager {
 					MOM_MCP_CONTROL_TOKEN: contextCapability(target.outboundToken, "mcp-control", contextId),
 					MOM_MCP_OUTBOUND_TOKEN: contextCapability(target.outboundToken, "mcp-outbound", contextId),
 				} : {}),
-				...(activeMcpInboundGrants.length > 0 ? {
-					MOM_MCP_AUTH_TOKEN: contextCapability(target.inboundToken, "mcp-ingress", contextId),
+				...(activeMcpRelationship ? {
+					MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN: this.mcp.operatorRuntimeToken(
+						target,
+						activeMcpRelationship,
+					),
 				} : {}),
 				...(siteDeployments.length > 0 || siteFactory ? {
 					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
@@ -813,7 +856,6 @@ export class RuntimeManager {
 				...(rocketChat ? ["rocket-chat:webhook"] : []),
 				...(zulip ? ["zulip:webhook"] : []),
 				...(this.config.phone ? ["phone-messaging:webhook"] : []),
-				...(activeMcpInboundGrants.length > 0 ? ["mcp"] : []),
 			];
 			if (adapters.length === 0) throw new Error(`context ${contextId} has no configured adapters`);
 			args.push(
@@ -841,6 +883,7 @@ export class RuntimeManager {
 		const endpoint = `http://127.0.0.1:${context.port}/email/inbound`;
 		await waitForHealth(`http://127.0.0.1:${context.port}/health`);
 		this.store.updateContext(contextId, { status: "online", runtimeVersion: expectedRuntimeVersion });
+		this.pendingMcpRefresh.delete(contextId);
 		return {
 			...this.store.getContext(contextId),
 			contextId,
@@ -851,6 +894,7 @@ export class RuntimeManager {
 			zulip,
 			phoneEndpoint: `http://127.0.0.1:${context.port}/phone-messaging/webhook`,
 			scheduledPromptEndpoint: `http://127.0.0.1:${context.port}/scheduled-prompt/inbound`,
+			relationshipOperatorEndpoint: `http://127.0.0.1:${context.port}/operator/relationship-message`,
 			statusEndpoint: `http://127.0.0.1:${context.port}/status`,
 		};
 	}
@@ -929,10 +973,14 @@ export class RuntimeManager {
 			|| context.status !== "online"
 			|| this.store.hasActiveEvent(contextId)
 			|| this.externalActivityProbe(contextId)
-		) return false;
+		) {
+			if (context?.status === "online") this.pendingMcpRefresh.add(contextId);
+			return false;
+		}
 		const target = this.config.targetsById.get(context.targetId);
 		if (!target) return false;
 		await this.stopOciContext(target, { ...context, contextId });
+		this.pendingMcpRefresh.delete(contextId);
 		return true;
 	}
 
@@ -958,6 +1006,14 @@ export class RuntimeManager {
 				|| this.store.hasActiveEvent(context.id)
 				|| this.externalActivityProbe(context.id)
 			) continue;
+			if (this.pendingMcpRefresh.has(context.id)) {
+				const target = this.config.targetsById.get(context.targetId);
+				if (!target) continue;
+				await this.stopOciContext(target, { ...context, contextId: context.id });
+				this.pendingMcpRefresh.delete(context.id);
+				console.log(`troublemaker-hostd: stopped runtime ${context.id} for MCP capability refresh`);
+				continue;
+			}
 			if (Date.parse(context.lastSeenAt) > cutoff) continue;
 			const target = this.config.targetsById.get(context.targetId);
 			if (!target) continue;

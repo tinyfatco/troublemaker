@@ -57,7 +57,7 @@ export function createMcpConnectionToolDefinitions(
 	return [defineTool({
 		name: "mcp_connection",
 		label: "mcp_connection",
-		description: "Request a one-time human handoff for an MCP connection, list this context's connections, or revoke one. Use request instead of asking anyone to paste a credential into chat. Inbound lets another MCP client connect to this TinyFat context. Outbound lets this context connect to a remote MCP server while Hostd keeps the remote credential outside the runtime.",
+		description: "Request a one-time human handoff for an MCP connection instead of asking anyone to paste a credential into chat, list this relationship's connections, or revoke one. The request fails unless this Hostd context has exactly one verified durable relationship. Inbound exposes only instruct_operator for that exact Relationship Operator; it never exposes shell, files, channels, recipient selection, or direct sending. Outbound projects a remote MCP only into that same relationship context while Hostd keeps its credential outside the runtime.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("request"),
@@ -65,9 +65,9 @@ export function createMcpConnectionToolDefinitions(
 				Type.Literal("revoke"),
 			]),
 			direction: Type.Optional(Type.Union([
+				Type.Literal("handoff"),
 				Type.Literal("inbound"),
 				Type.Literal("outbound"),
-				Type.Literal("either"),
 			])),
 			name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
 			server_url: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
@@ -82,9 +82,12 @@ export function createMcpConnectionToolDefinitions(
 				id?: string;
 			};
 			if (body.action === "request") {
+				if (!["inbound", "outbound"].includes(body.direction || "")) {
+					throw new Error("Requesting an MCP connection requires an inbound or outbound direction.");
+				}
 				return textResult(await hostRequest(options, {
 					action: "request",
-					direction: body.direction || "either",
+					direction: body.direction,
 					name: body.name || "MCP connection",
 					...(body.server_url ? { server_url: body.server_url } : {}),
 				}));
@@ -93,8 +96,8 @@ export function createMcpConnectionToolDefinitions(
 				return textResult(await hostRequest(options, { action: "list" }));
 			}
 			if (body.action === "revoke") {
-				if (!body.id || !["inbound", "outbound"].includes(body.direction || "")) {
-					throw new Error("Revoking an MCP connection requires its id and inbound/outbound direction.");
+				if (!body.id || !["handoff", "inbound", "outbound"].includes(body.direction || "")) {
+					throw new Error("Revoking MCP access requires its id and handoff/inbound/outbound direction.");
 				}
 				return textResult(await hostRequest(options, {
 					action: "revoke",

@@ -99,9 +99,10 @@ function requiredHeader(headers, name) {
 }
 
 export class McpEdgeAssertionVerifier {
-	constructor(config, { now = () => Date.now() } = {}) {
+	constructor(config, { now = () => Date.now(), consumeNonce } = {}) {
 		this.config = config;
 		this.now = now;
+		this.consumeNonce = consumeNonce;
 		this.usedNonces = new Map();
 	}
 
@@ -145,8 +146,10 @@ export class McpEdgeAssertionVerifier {
 			bodyDigest: mcpEdgeBodyDigest(body),
 			credentialDigest: mcpEdgeCredentialDigest(authorization),
 		});
+		const assertionSecret = this.config.issuerSecrets?.[issuer];
+		if (!assertionSecret) throw new McpEdgeAuthError();
 		const expected = Buffer.from(
-			createHmac("sha256", this.config.assertionSecret).update(canonical).digest("hex"),
+			createHmac("sha256", assertionSecret).update(canonical).digest("hex"),
 			"utf8",
 		);
 		const supplied = Buffer.from(signature, "utf8");
@@ -154,9 +157,15 @@ export class McpEdgeAssertionVerifier {
 			throw new McpEdgeAuthError();
 		}
 
-		this.pruneNonces(nowSeconds);
-		if (this.usedNonces.has(nonce)) throw new McpEdgeAuthError();
-		this.usedNonces.set(nonce, timestamp + this.config.assertionTtlSeconds);
+		const expiresAt = timestamp + this.config.assertionTtlSeconds;
+		if (this.consumeNonce) {
+			if (!this.consumeNonce(issuer, nonce, expiresAt)) throw new McpEdgeAuthError();
+		} else {
+			this.pruneNonces(nowSeconds);
+			const nonceKey = `${issuer}:${nonce}`;
+			if (this.usedNonces.has(nonceKey)) throw new McpEdgeAuthError();
+			this.usedNonces.set(nonceKey, expiresAt);
+		}
 		return { issuer };
 	}
 

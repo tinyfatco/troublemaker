@@ -12,6 +12,33 @@ function inIpv4Range(value, base, bits) {
 	return (value & mask) === (ipv4Number(base) & mask);
 }
 
+function ipv6Number(address) {
+	let normalized = address.toLowerCase();
+	if (normalized.includes(".")) {
+		const lastColon = normalized.lastIndexOf(":");
+		const ipv4 = normalized.slice(lastColon + 1);
+		if (isIP(ipv4) !== 4) return null;
+		const value = ipv4Number(ipv4);
+		normalized = `${normalized.slice(0, lastColon)}:${(value >>> 16).toString(16)}:${(value & 0xffff).toString(16)}`;
+	}
+	const halves = normalized.split("::");
+	if (halves.length > 2) return null;
+	const left = halves[0] ? halves[0].split(":") : [];
+	const right = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+	const missing = 8 - left.length - right.length;
+	if ((halves.length === 1 && missing !== 0) || (halves.length === 2 && missing < 1)) return null;
+	const parts = [...left, ...Array(missing).fill("0"), ...right];
+	if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
+	return parts.reduce((value, part) => (value << 16n) | BigInt(`0x${part}`), 0n);
+}
+
+function inIpv6Range(value, base, bits) {
+	const baseValue = ipv6Number(base);
+	if (value === null || baseValue === null) return false;
+	const shift = 128n - BigInt(bits);
+	return (value >> shift) === (baseValue >> shift);
+}
+
 export function isPublicMcpAddress(rawAddress) {
 	const address = String(rawAddress).replace(/^\[|\]$/g, "").toLowerCase();
 	const family = isIP(address);
@@ -26,25 +53,24 @@ export function isPublicMcpAddress(rawAddress) {
 			["172.16.0.0", 12],
 			["192.0.0.0", 24],
 			["192.0.2.0", 24],
+			["192.88.99.0", 24],
 			["192.168.0.0", 16],
 			["198.18.0.0", 15],
 			["198.51.100.0", 24],
 			["203.0.113.0", 24],
 			["224.0.0.0", 4],
+			["240.0.0.0", 4],
 		].some(([base, bits]) => inIpv4Range(value, base, bits));
 	}
 	if (family !== 6) return false;
-	if (
-		address === "::"
-		|| address === "::1"
-		|| address.startsWith("::")
-		|| address.startsWith("fc")
-		|| address.startsWith("fd")
-		|| /^fe[89abcdef]/.test(address)
-		|| address.startsWith("ff")
-		|| address.startsWith("2001:db8:")
-	) return false;
-	return true;
+	const value = ipv6Number(address);
+	if (!inIpv6Range(value, "2000::", 3)) return false;
+	return ![
+		["2001::", 23],
+		["2001:db8::", 32],
+		["2002::", 16],
+		["3fff::", 20],
+	].some(([base, bits]) => inIpv6Range(value, base, bits));
 }
 
 export async function resolvePublicMcpDestination(rawUrl, lookup = dnsLookup) {
@@ -130,6 +156,7 @@ export class HostMcpOutboundProxy {
 		if (!connection || connection.status !== "active") {
 			throw new HostMcpError("connection_not_found", 404);
 		}
+		this.mcp.assertOutboundConnection(connection);
 		const destination = await resolvePublicMcpDestination(connection.upstreamUrl, this.lookup);
 		const credential = this.mcp.openOutboundCredential(connection);
 		if (connection.authType !== "none" && !credential) {
@@ -149,13 +176,47 @@ export class HostMcpOutboundProxy {
 					},
 					timeout: 180_000,
 				}, (upstreamResponse) => {
+					const rawDeclaredLength = upstreamResponse.headers["content-length"];
+					const declaredLength = typeof rawDeclaredLength === "string" && /^\d+$/.test(rawDeclaredLength)
+						? Number(rawDeclaredLength)
+						: undefined;
+					if (
+						(rawDeclaredLength !== undefined && declaredLength === undefined)
+						|| (declaredLength !== undefined && declaredLength > this.config.mcp.maximumResponseBytes)
+					) {
+						upstreamResponse.resume();
+						reject(new HostMcpError("mcp_upstream_response_too_large", 502));
+						return;
+					}
 					response.writeHead(
 						upstreamResponse.statusCode || 502,
 						responseHeaders(upstreamResponse.headers),
 					);
-					upstreamResponse.on("error", reject);
-					upstreamResponse.on("end", resolvePromise);
-					upstreamResponse.pipe(response);
+					let received = 0;
+					let failed = false;
+					upstreamResponse.on("data", (chunk) => {
+						received += chunk.length;
+						if (received > this.config.mcp.maximumResponseBytes) {
+							failed = true;
+							const error = new HostMcpError("mcp_upstream_response_too_large", 502);
+							upstreamResponse.destroy();
+							response.destroy(error);
+							reject(error);
+							return;
+						}
+						if (!response.write(chunk)) {
+							upstreamResponse.pause();
+							response.once("drain", () => upstreamResponse.resume());
+						}
+					});
+					upstreamResponse.on("error", (error) => {
+						if (!failed) reject(error);
+					});
+					upstreamResponse.on("end", () => {
+						if (failed) return;
+						response.end();
+						resolvePromise();
+					});
 				});
 				upstream.on("timeout", () => upstream.destroy(new Error("MCP upstream timed out")));
 				upstream.on("error", reject);

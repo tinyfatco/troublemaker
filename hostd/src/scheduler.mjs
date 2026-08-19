@@ -93,6 +93,15 @@ export class EventScheduler {
 			this.pump();
 			return event;
 		}
+		if (status === "uncertain") {
+			const event = this.store.markEventUncertain(
+				eventId,
+				error || "runtime reported an uncertain post-running result",
+				leaseToken,
+			);
+			this.pump();
+			return event;
+		}
 		throw new Error(`unsupported receipt status ${status}`);
 	}
 

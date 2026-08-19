@@ -841,9 +841,16 @@ const operatorInboundToken = process.env.MOM_OPERATOR_INBOUND_TOKEN?.trim();
 if (operatorInboundToken && Buffer.byteLength(operatorInboundToken, "utf8") < 32) {
 	throw new Error("MOM_OPERATOR_INBOUND_TOKEN must be at least 32 bytes");
 }
+const relationshipOperatorInboundToken = process.env.MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN?.trim();
+if (relationshipOperatorInboundToken && Buffer.byteLength(relationshipOperatorInboundToken, "utf8") < 32) {
+	throw new Error("MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN must be at least 32 bytes");
+}
 const operatorAdapter = new OperatorAdapter({
 	workingDir,
 	inboundToken: operatorInboundToken,
+	relationshipInboundToken: relationshipOperatorInboundToken,
+	hostContextId: process.env.TROUBLEMAKER_CONTEXT_ID?.trim(),
+	hostdUrl: process.env.TROUBLEMAKER_HOSTD_URL?.trim(),
 }) as AdapterWithHandler;
 adapters.push(operatorAdapter);
 
@@ -1742,6 +1749,8 @@ for (const path of ["/operator/message", "/operator/assign", "/operator/configur
 	gateway.register(path, (req, res) => operatorAdapter.dispatch!(req, res));
 	gateway.markReady(path);
 }
+gateway.register("/operator/relationship-message", (req, res) => operatorAdapter.dispatch!(req, res));
+gateway.markReady("/operator/relationship-message");
 
 const gatewayListenHost = resolveGatewayListenHost(parsedArgs.host);
 await gateway.start(parsedArgs.port, gatewayListenHost);

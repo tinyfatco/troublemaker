@@ -50,6 +50,8 @@ import type {
 	PlatformAdapter,
 	UserInfo,
 } from "./types.js";
+import { withHostReceipt } from "./host-receipt.js";
+import { withHostDeliveryScope } from "./host-delivery-scope.js";
 import { findModel, listModels } from "../model-config.js";
 import {
 	DEFAULT_REALTIME_VOICE,
@@ -119,6 +121,9 @@ interface AssignBody {
 
 interface MessageBody {
 	text: string;
+	deliveryId?: string;
+	hostContextId?: string;
+	hostReceipt?: unknown;
 }
 
 interface ConfigureBody {
@@ -188,13 +193,28 @@ Replies to the operator happen through whatever channel you were already using w
 
 	private workingDir: string;
 	private inboundToken?: string;
+	private relationshipInboundToken?: string;
+	private hostContextId?: string;
+	private hostdUrl?: string;
 	private handler!: MomHandler;
 	private queue: MomEvent[] = [];
 	private processing = false;
+	private completedRelationshipDeliveries = new Set<string>();
+	private activeRelationshipDeliveries = new Set<string>();
 
-	constructor(config: { workingDir: string; inboundToken?: string }) {
+	constructor(config: {
+		workingDir: string;
+		inboundToken?: string;
+		relationshipInboundToken?: string;
+		hostContextId?: string;
+		hostdUrl?: string;
+	}) {
 		this.workingDir = config.workingDir;
 		this.inboundToken = config.inboundToken;
+		this.relationshipInboundToken = config.relationshipInboundToken;
+		this.hostContextId = config.hostContextId;
+		this.hostdUrl = config.hostdUrl;
+		this.loadCompletedRelationshipDeliveries();
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -290,16 +310,22 @@ Replies to the operator happen through whatever channel you were already using w
 	// ========================================================================
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
-		if (!this.inboundToken) {
-			sendError(res, 503, "operator_ingress_disabled");
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const pathname = url.pathname;
+		const relationshipMessage = pathname === "/operator/relationship-message";
+		const expectedToken = relationshipMessage
+			? this.relationshipInboundToken
+			: this.inboundToken;
+		if (!expectedToken) {
+			sendError(res, 503, relationshipMessage
+				? "relationship_operator_ingress_disabled"
+				: "operator_ingress_disabled");
 			return;
 		}
-		if (!matchesBearerToken(req.headers.authorization, this.inboundToken)) {
+		if (!matchesBearerToken(req.headers.authorization, expectedToken)) {
 			sendError(res, 401, "unauthorized");
 			return;
 		}
-		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-		const pathname = url.pathname;
 		const method = req.method?.toUpperCase() ?? "GET";
 		if (method === "POST") {
 			const mediaType = String(req.headers["content-type"] || "").split(";", 1)[0].trim().toLowerCase();
@@ -311,6 +337,12 @@ Replies to the operator happen through whatever channel you were already using w
 
 		(async () => {
 			try {
+				if (relationshipMessage && method === "POST") {
+					return this.handleRelationshipMessage(req, res);
+				}
+				if (relationshipMessage) {
+					return sendError(res, 405, "method_not_allowed");
+				}
 				if (pathname === "/operator/read" && method === "GET") {
 					return this.handleRead(url, res);
 				}
@@ -366,6 +398,129 @@ Replies to the operator happen through whatever channel you were already using w
 		const slice = allLines.slice(startIndex, endIndex);
 
 		sendJson(res, 200, { lines: slice, total, offset: startIndex });
+	}
+
+	// ------------------------------------------------------------------------
+	// /operator/relationship-message
+	// ------------------------------------------------------------------------
+
+	private relationshipDeliveryPath(): string {
+		return join(this.workingDir, "awareness", "relationship-operator-deliveries.jsonl");
+	}
+
+	private loadCompletedRelationshipDeliveries(): void {
+		const path = this.relationshipDeliveryPath();
+		if (!existsSync(path)) return;
+		try {
+			const ids = readFileSync(path, "utf8").split("\n").filter(Boolean).slice(-10_000);
+			this.completedRelationshipDeliveries = new Set(ids);
+		} catch (error) {
+			log.logWarning(
+				"[operator] Failed to load relationship delivery receipts",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+
+	private markRelationshipDeliveryCompleted(deliveryId: string): void {
+		if (this.completedRelationshipDeliveries.has(deliveryId)) return;
+		appendFileSync(this.relationshipDeliveryPath(), `${deliveryId}\n`, { mode: 0o600 });
+		this.completedRelationshipDeliveries.add(deliveryId);
+	}
+
+	private async handleRelationshipMessage(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		let body: MessageBody;
+		try {
+			body = await readJsonBody<MessageBody>(req);
+		} catch (error) {
+			return sendBodyParseError(res, error);
+		}
+		let receiptUrl: URL | undefined;
+		let expectedReceiptUrl: URL | undefined;
+		try {
+			receiptUrl = new URL((body.hostReceipt as { url?: unknown } | undefined)?.url as string);
+			if (this.hostdUrl) {
+				expectedReceiptUrl = new URL(
+					`/v1/events/${encodeURIComponent(body.deliveryId || "")}/receipt`,
+					this.hostdUrl,
+				);
+			}
+		} catch {
+			// The common validation below rejects an absent or malformed Hostd receipt.
+		}
+		const receipt = body.hostReceipt as {
+			url?: unknown;
+			token?: unknown;
+			leaseToken?: unknown;
+		} | undefined;
+		if (
+			!this.hostContextId
+			|| !this.hostdUrl
+			|| body.hostContextId !== this.hostContextId
+			|| typeof body.deliveryId !== "string"
+			|| !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.deliveryId)
+			|| typeof body.text !== "string"
+			|| !body.text.trim()
+			|| body.text.length > 16_000
+			|| !receiptUrl
+			|| !expectedReceiptUrl
+			|| receiptUrl.href !== expectedReceiptUrl.href
+			|| typeof receipt?.token !== "string"
+			|| !/^[A-Za-z0-9_-]{43}$/.test(receipt.token)
+			|| typeof receipt?.leaseToken !== "string"
+			|| !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(receipt.leaseToken)
+		) {
+			return sendError(res, 400, "invalid_relationship_delivery");
+		}
+		if (
+			this.completedRelationshipDeliveries.has(body.deliveryId)
+			|| this.activeRelationshipDeliveries.has(body.deliveryId)
+		) {
+			return sendJson(res, 202, {
+				accepted: true,
+				delivery_id: body.deliveryId,
+				duplicate: true,
+			});
+		}
+		if (this.handler.isRunning(OPERATOR_CHANNEL_ID)) {
+			return sendError(res, 409, "relationship_operator_busy");
+		}
+		this.activeRelationshipDeliveries.add(body.deliveryId);
+		sendJson(res, 202, {
+			accepted: true,
+			delivery_id: body.deliveryId,
+		});
+		void this.processRelationshipMessage(body)
+			.catch((error) => {
+				log.logWarning(
+					"[operator] Relationship instruction failed",
+					error instanceof Error ? error.message : String(error),
+				);
+			})
+			.finally(() => this.activeRelationshipDeliveries.delete(body.deliveryId!));
+	}
+
+	private async processRelationshipMessage(body: MessageBody): Promise<void> {
+		await withHostReceipt(body.hostReceipt, async () => {
+			const deliveryId = body.deliveryId!;
+			if (this.completedRelationshipDeliveries.has(deliveryId)) return;
+			this.writeAwareness(`[relationship operator instruction] ${body.text.trim()}`);
+			const event: MomEvent = {
+				type: "dm",
+				channel: OPERATOR_CHANNEL_ID,
+				ts: String(Date.now()),
+				user: OPERATOR_USER,
+				text: "An authenticated MCP connection bound to this exact relationship sent an Operator instruction. Check the latest [relationship operator instruction] awareness entry, decide what is appropriate, and act only through this relationship's existing scoped capabilities.",
+				attachments: [],
+			};
+			await withHostDeliveryScope({ source: "mcp-operator", eventId: deliveryId }, async () => {
+				if (this.handler.isRunning(OPERATOR_CHANNEL_ID)) {
+					throw new Error("relationship Operator became busy before delivery");
+				}
+				await this.handler.handleEvent(event, this, true);
+			});
+			this.markRelationshipDeliveryCompleted(deliveryId);
+		}, { failureStatus: "uncertain" });
 	}
 
 	// ------------------------------------------------------------------------

@@ -226,11 +226,11 @@ troublemaker-hostd import-legacy-checkpoint \
   --checkpoint /var/lib/legacy-inbox/checkpoint.json \
   --key-file /etc/legacy-inbox/state.key
 troublemaker-hostd mcp-handoff --config /etc/troublemaker-hostd/config.json \
-  --context <context-id> --direction either --name "MCP connection"
+  --context <context-id> --direction inbound --name "MCP client"
 troublemaker-hostd mcp-list --config /etc/troublemaker-hostd/config.json \
   --context <context-id>
 troublemaker-hostd mcp-revoke --config /etc/troublemaker-hostd/config.json \
-  --context <context-id> --direction inbound --id <grant-id>
+  --context <context-id> --direction <handoff|inbound|outbound> --id <id>
 troublemaker-hostd status --config /etc/troublemaker-hostd/config.json
 ```
 
@@ -239,11 +239,26 @@ on loopback only. Do not expose the host API or child gateway ports publicly.
 
 ## One-time MCP handoffs
 
-An optional `mcp` listener supports two narrowly scoped connection directions.
-An inbound grant produces one revocable MCP URL and a show-once bearer key so a
-remote client such as Vellum can use the tools of one exact Hostd context. An
-outbound connection lets the same context use one remote HTTPS MCP server while
-Hostd encrypts the upstream credential and adds it only at the host proxy.
+An optional `mcp` listener supports two relationship-scoped connection
+directions. A handoff can be created only for a context with one exact verified
+route. Hostd freezes that route, principal, project, target, context, and safe
+recipient hint into a durable relationship record; later route ambiguity or
+identity drift fails closed.
+
+An inbound grant exposes one tool, `instruct_operator`. It durably queues an
+idempotent instruction for the relationship's Operator and wakes only that
+context's OCI runtime. It does not proxy the runtime's general MCP server and
+cannot directly read files, run commands, enumerate channels, choose a
+recipient, or send a user-facing message. During that turn Hostd denies every
+host-managed messaging/control surface except delivery to the relationship's
+exact active phone conversation. The Operator remains the author and decision
+maker. Its phone delivery is linked back to the instruction event and provider
+message receipt.
+
+An outbound connection lets that same relationship Operator use one remote
+HTTPS MCP server. Hostd encrypts the upstream credential and adds it only at
+the host proxy. Pending handoffs and completed connections are independently
+revocable.
 
 ```json
 {
@@ -251,30 +266,38 @@ Hostd encrypts the upstream credential and adds it only at the host proxy.
     "edge": {
       "host": "127.0.0.1",
       "port": 3121,
-      "assertionSecretEnv": "TROUBLEMAKER_HOSTD_MCP_EDGE_SECRET",
+      "issuerSecretEnvs": {
+        "crawdad-cf": "TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET",
+        "fat-platform": "TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET"
+      },
       "audience": "troublemaker-hostd-mcp",
       "issuers": ["crawdad-cf", "fat-platform"]
     },
     "publicBaseUrl": "https://crawdad.example.com/mcp",
     "handoffBaseUrl": "https://app.example.com/connect",
     "handoffTtlSeconds": 3600,
-    "maximumRequestBytes": 2097152
+    "maximumRequestBytes": 2097152,
+    "maximumResponseBytes": 8388608
   }
 }
 ```
 
-One-time and inbound bearer values are stored only as SHA-256 digests. Outbound
-credentials use the existing routing-key envelope and never enter the runtime,
-its workspace, or model context. A runtime receives only exact context-scoped
-Hostd capabilities and a loopback proxy URL. Remote destinations must be HTTPS;
-Hostd resolves and pins a public address, rejects mixed or private DNS answers,
-and does not follow redirects.
+The URL fragment capability is exchanged exactly once for an HttpOnly handoff
+session. One-time, session, and inbound bearer values are stored only as SHA-256
+digests. Outbound credentials use the existing routing-key envelope and never
+enter the runtime, its workspace, or model context. A runtime receives only
+exact context- and relationship-scoped Hostd capabilities and loopback proxy
+URLs. Remote destinations must be HTTPS without credentials, query, or fragment;
+Hostd resolves and pins one public address, rejects mixed or special-purpose DNS
+answers, bounds request and response bodies, and does not follow redirects.
 
 Keep the MCP listener on loopback and expose it only through the two signed
-edge services. Their short-lived HMAC assertions bind issuer, audience, method,
-exact path, request body, bearer digest, timestamp, and nonce. `crawdad-cf` may
+edge services. Each issuer has a distinct HMAC key. Assertions bind issuer,
+audience, method, exact path, request body, bearer digest, timestamp, and a
+durably consumed nonce. `crawdad-cf` may
 reach only the MCP resource proxy, while `fat-platform` may reach only handoff
-session and completion routes. The browser receives no Hostd assertion secret.
+session and completion routes. The browser receives no Hostd assertion secret,
+and the URL capability is never accepted as a completion credential.
 
 ## Authenticated web app gateway
 

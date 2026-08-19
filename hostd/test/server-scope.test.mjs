@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ContextRouter } from "../src/router.mjs";
+import { HostMcp } from "../src/mcp.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability, sealPrivateValue } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
@@ -219,6 +220,11 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		server: {},
 		routing: { actorTarget: "front-desk", knownPrincipals: [] },
 		targetsById: new Map([["front-desk", target]]),
+		mcp: {
+			publicBaseUrl: "https://mcp.example.com/mcp",
+			handoffBaseUrl: "https://app.example.com/connect",
+			handoffTtlSeconds: 3600,
+		},
 	};
 	const router = new ContextRouter(config, store, routingKey);
 	const ownerRoute = router.resolvePhone({
@@ -230,6 +236,13 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		providerThreadId: "stranger-provider-thread",
 		contactAddress: "+15555550124",
 		label: "Phone •••• 0124",
+	});
+	store.createContext({
+		id: ownerRoute.contextId,
+		targetId: target.id,
+		driver: "oci",
+		runtimeName: "owner-runtime",
+		port: 32001,
 	});
 	const conversation = (threadTarget, contactAddress, route) => store.upsertPhoneConversation({
 		threadTarget,
@@ -243,10 +256,30 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 	});
 	const owner = conversation("phone-0123456789abcdef0123", "+15555550123", ownerRoute);
 	const stranger = conversation("phone-123456789abcdef01234", "+15555550124", strangerRoute);
+	const mcp = new HostMcp({ config, store, routingKey });
+	const handoff = mcp.createHandoff(target, owner.contextId, {
+		direction: "inbound",
+		name: "Scoped caller",
+	});
+	const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
+	const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
+	const connected = await mcp.completeHandoff(sessionToken, { name: "Scoped caller" });
+	const grantId = new URL(connected.server_url).pathname.split("/").at(-1);
+	const grant = store.getMcpInboundGrant(grantId);
+	const relationship = store.getMcpRelationship(grant.relationshipId);
+	mcp.enqueueInstruction(grant, relationship, {
+		instruction: "Send one bounded acceptance message.",
+		idempotency_key: "server-scope-0001",
+	});
+	const claimed = store.claimNextEvent();
+	store.acceptEvent(claimed.id, claimed.leaseToken);
+	store.heartbeatEvent(claimed.id, claimed.leaseToken);
 	const sends = [];
+	const mattermostCalls = [];
 	const server = createHostServer({
 		config,
 		store,
+		mcp,
 		daemon: {
 			polling: false,
 			controlNotifier: { wake() {} },
@@ -256,6 +289,9 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 				sends.push({ threadTarget: selected.threadTarget, body });
 				return { providerMessageId: `phone-sent-${sends.length}`, status: "queued" };
 			},
+		},
+		mattermostGateway: {
+			async proxy() { mattermostCalls.push("called"); },
 		},
 	});
 	await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
@@ -273,11 +309,33 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 	});
 
 	try {
+		const mcpControl = await fetch(`${base}/v1/mcp/control`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${contextCapability(target.outboundToken, "mcp-control", owner.contextId)}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ action: "list", context_id: owner.contextId }),
+		});
+		assert.equal(mcpControl.status, 403);
+
+		const otherChannel = await fetch(`${base}/v1/mattermost/${encodeURIComponent(owner.contextId)}/api/v4/posts`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${contextCapability(target.outboundToken, "mattermost", owner.contextId)}`,
+				"content-type": "application/json",
+			},
+			body: "{}",
+		});
+		assert.equal(otherChannel.status, 403);
+		assert.equal(mattermostCalls.length, 0);
+
 		const denied = await post({
 			context_id: owner.contextId,
 			thread_target: stranger.threadTarget,
 			agent_body: "Cross-context attempt.",
 			idempotency_key: "phone-denied",
+			origin_event_id: claimed.id,
 		});
 		assert.equal(denied.status, 403);
 		assert.equal(sends.length, 0);
@@ -287,11 +345,40 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 			thread_target: owner.threadTarget,
 			agent_body: "A direct agent-authored reply.",
 			idempotency_key: "phone-owner-reply",
+			origin_event_id: claimed.id,
 		});
 		assert.equal(sent.status, 200);
 		assert.deepEqual(sends, [{
 			threadTarget: owner.threadTarget,
 			body: "A direct agent-authored reply.",
+		}]);
+		assert.deepEqual(store.listProviderReceiptsForEvent(claimed.id).map((receipt) => ({
+			providerMessageId: receipt.providerMessageId,
+			providerStatus: receipt.providerStatus,
+			hostStatus: receipt.hostStatus,
+		})), [{ providerMessageId: "phone-sent-1", providerStatus: "queued", hostStatus: "completed" }]);
+		const receiptResult = await mcp.proxyInbound({
+			resourceId: grant.id,
+			authorization: `Bearer ${connected.api_key}`,
+			requestHeaders: { "content-type": "application/json" },
+			body: Buffer.from(JSON.stringify({
+				jsonrpc: "2.0",
+				id: 1,
+				method: "tools/call",
+				params: {
+					name: "instruct_operator",
+					arguments: {
+						instruction: "Send one bounded acceptance message.",
+						idempotency_key: "server-scope-0001",
+					},
+				},
+			})),
+		});
+		assert.deepEqual((await receiptResult.json()).result.structuredContent.provider_receipts, [{
+			provider_message_id: "phone-sent-1",
+			provider_status: "queued",
+			host_status: "completed",
+			completed_at: store.listProviderReceiptsForEvent(claimed.id)[0].completedAt,
 		}]);
 
 		const duplicate = await post({
@@ -299,8 +386,20 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 			thread_target: owner.threadTarget,
 			agent_body: "A direct agent-authored reply.",
 			idempotency_key: "phone-owner-reply",
+			origin_event_id: claimed.id,
 		});
 		assert.equal(duplicate.status, 200);
+		assert.equal(sends.length, 1);
+
+		await mcp.revoke(owner.contextId, { direction: "inbound", id: grant.id });
+		const revoked = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "Must be denied after revocation.",
+			idempotency_key: "phone-after-revoke",
+			origin_event_id: claimed.id,
+		});
+		assert.equal(revoked.status, 403);
 		assert.equal(sends.length, 1);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));

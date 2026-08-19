@@ -21,6 +21,8 @@ export interface HostReceiptOptions {
 	 * bridges can defer it until the adapter has actually routed the event.
 	 */
 	deferRunning?: boolean;
+	/** Classify a post-running failure as uncertain so side effects are never replayed. */
+	failureStatus?: "failed" | "uncertain";
 }
 
 function validReceipt(value: unknown): value is HostDeliveryReceipt {
@@ -84,7 +86,11 @@ export async function withHostReceipt<T>(
 		return result;
 	} catch (error) {
 		try {
-			await report(receipt, "failed", error instanceof Error ? error.message : String(error));
+		await report(
+			receipt,
+			options.failureStatus ?? "failed",
+			error instanceof Error ? error.message : String(error),
+		);
 		} catch (receiptError) {
 			log.logWarning(
 				"Host delivery failure receipt failed",

@@ -27,7 +27,10 @@
     "edge": {
       "host": "127.0.0.1",
       "port": 3121,
-      "assertionSecretEnv": "TROUBLEMAKER_HOSTD_MCP_EDGE_SECRET",
+      "issuerSecretEnvs": {
+        "crawdad-cf": "TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET",
+        "fat-platform": "TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET"
+      },
       "audience": "troublemaker-hostd-mcp",
       "issuers": [
         "crawdad-cf",
@@ -37,7 +40,8 @@
     "publicBaseUrl": "https://mcp.example.com/mcp",
     "handoffBaseUrl": "https://app.example.com/connect",
     "handoffTtlSeconds": 3600,
-    "maximumRequestBytes": 2097152
+    "maximumRequestBytes": 2097152,
+    "maximumResponseBytes": 8388608
   },
   "state": {
     "database": "/var/lib/troublemaker-hostd/state.sqlite",

@@ -72,7 +72,7 @@ assert.deepEqual(seen[2].body, {
 
 await assert.rejects(
 	() => tool.execute("bad-revoke", { action: "revoke", id: "mcp_example" }),
-	/requires its id and inbound\/outbound direction/,
+	/requires its id and handoff\/inbound\/outbound direction/,
 );
 
 console.log("MCP connection tool: ok");

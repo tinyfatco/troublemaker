@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
+import { withHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 import { HostManagedPhoneProvider } from "../src/adapters/phone-messaging/host-managed-provider.js";
 import type { PhoneChannelRecord } from "../src/adapters/phone-messaging/types.js";
 
 async function run() {
 	const originalFetch = globalThis.fetch;
-	let sentBody: Record<string, unknown> | undefined;
+	const sentBodies: Record<string, unknown>[] = [];
 	globalThis.fetch = async (_input, init) => {
-		sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+		sentBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 		return Response.json({
 			ok: true,
 			messageId: "provider-message-example",
@@ -36,6 +37,7 @@ async function run() {
 			channel,
 			text: "An agent-authored direct reply.",
 		});
+		const sentBody = sentBodies[0];
 		assert.equal(receipt.providerMessageId, "provider-message-example");
 		assert.equal(sentBody?.context_id, channel.hostContextId);
 		assert.equal(sentBody?.thread_target, channel.channelId);
@@ -44,6 +46,18 @@ async function run() {
 		assert.equal("to" in (sentBody || {}), false);
 		assert.equal("from" in (sentBody || {}), false);
 		assert.equal("recipients" in (sentBody || {}), false);
+		assert.equal("origin_event_id" in (sentBody || {}), false);
+
+		const eventId = "00000000-0000-4000-8000-000000000001";
+		await withHostDeliveryScope({ source: "mcp-operator", eventId }, () => provider.sendMessage({
+			channel,
+			text: "One relationship-scoped reply.",
+		}));
+		assert.equal(sentBodies[1]?.origin_event_id, eventId);
+		assert.match(
+			String(sentBodies[1]?.idempotency_key),
+			new RegExp(`:mcp:${eventId}:[a-f0-9]{24}$`),
+		);
 
 		await assert.rejects(
 			() => provider.sendMessage({

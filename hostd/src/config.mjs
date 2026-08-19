@@ -672,14 +672,6 @@ function mcpConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const mcp = object(raw, "mcp");
 	const edge = object(mcp.edge, "mcp.edge");
-	const assertionSecret = envSecret(
-		edge.assertionSecretEnv,
-		"mcp.edge.assertionSecretEnv",
-		environment,
-	);
-	if (Buffer.byteLength(assertionSecret, "utf8") < 32) {
-		throw new Error("mcp.edge.assertionSecretEnv must contain at least 32 bytes");
-	}
 	const audience = text(edge.audience ?? "troublemaker-hostd-mcp", "mcp.edge.audience");
 	if (audience.length > 128 || !/^[A-Za-z0-9._:/-]+$/.test(audience)) {
 		throw new Error("mcp.edge.audience contains unsupported characters");
@@ -699,6 +691,26 @@ function mcpConfig(raw, environment) {
 	for (const required of ["crawdad-cf", "fat-platform"]) {
 		if (!issuers.includes(required)) throw new Error(`mcp.edge.issuers must include ${required}`);
 	}
+	const issuerSecretEnvs = object(edge.issuerSecretEnvs, "mcp.edge.issuerSecretEnvs");
+	for (const configuredIssuer of Object.keys(issuerSecretEnvs)) {
+		if (!issuers.includes(configuredIssuer)) {
+			throw new Error(`mcp.edge.issuerSecretEnvs contains unknown issuer ${configuredIssuer}`);
+		}
+	}
+	const issuerSecrets = Object.fromEntries(issuers.map((issuer) => {
+		const assertionSecret = envSecret(
+			issuerSecretEnvs[issuer],
+			`mcp.edge.issuerSecretEnvs.${issuer}`,
+			environment,
+		);
+		if (Buffer.byteLength(assertionSecret, "utf8") < 32) {
+			throw new Error(`mcp.edge.issuerSecretEnvs.${issuer} must contain at least 32 bytes`);
+		}
+		return [issuer, assertionSecret];
+	}));
+	if (new Set(Object.values(issuerSecrets)).size !== issuers.length) {
+		throw new Error("mcp.edge issuer assertion secrets must be distinct");
+	}
 	const secureUrl = (value, label) => {
 		const normalized = httpUrl(value, label);
 		const parsed = new URL(normalized);
@@ -711,7 +723,7 @@ function mcpConfig(raw, environment) {
 		edge: {
 			host: loopbackHost(edge.host, "127.0.0.1", "mcp.edge.host"),
 			port: integer(edge.port, 3121, "mcp.edge.port", 1024, 65535),
-			assertionSecret,
+			issuerSecrets,
 			audience,
 			issuers,
 			assertionTtlSeconds: integer(
@@ -737,6 +749,13 @@ function mcpConfig(raw, environment) {
 			"mcp.maximumRequestBytes",
 			1024,
 			8 * 1024 * 1024,
+		),
+		maximumResponseBytes: integer(
+			mcp.maximumResponseBytes,
+			8 * 1024 * 1024,
+			"mcp.maximumResponseBytes",
+			1024,
+			32 * 1024 * 1024,
 		),
 	};
 }

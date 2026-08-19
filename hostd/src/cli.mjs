@@ -37,9 +37,9 @@ function usage() {
   troublemaker-hostd provision-rocketchat --config <path>
   troublemaker-hostd provision-zulip --config <path>
   troublemaker-hostd import-legacy-checkpoint --config <path> --checkpoint <path> --key-file <path>
-  troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound|either> --name <name> [--server-url <https-url>]
+  troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound> --name <name> [--server-url <https-url>]
   troublemaker-hostd mcp-list --config <path> --context <id>
-  troublemaker-hostd mcp-revoke --config <path> --context <id> --direction <inbound|outbound> --id <id>
+  troublemaker-hostd mcp-revoke --config <path> --context <id> --direction <handoff|inbound|outbound> --id <id>
   troublemaker-hostd status --config <path>`);
 	process.exit(2);
 }
@@ -114,8 +114,9 @@ async function components(configPath) {
 	const mcpOutbound = mcp
 		? new HostMcpOutboundProxy({ config, store, mcp })
 		: undefined;
-	if (mcp) runtime.setExternalActivityProbe((contextId) => mcp.isContextActive(contextId));
+	if (mcp) runtime.setMcp(mcp);
 	const scheduler = new EventScheduler({ config, store, runtime });
+	if (mcp) mcp.setEventPump(() => scheduler.pump());
 	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail
 		? new InboxDaemon({

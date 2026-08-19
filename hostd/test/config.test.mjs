@@ -22,7 +22,28 @@ const ENVIRONMENT = {
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
+	TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET: "test-crawdad-assertion-secret-at-least-32-bytes",
+	TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET: "test-fat-assertion-secret-at-least-32-bytes",
+	ROCKETCHAT_HOSTD_ADMIN_USER_ID: "example-admin-user",
+	ROCKETCHAT_HOSTD_ADMIN_TOKEN: "example-admin-token-at-least-32-bytes",
+	ROCKETCHAT_CREATE_TOKENS_FOR_USERS_SECRET: "example-create-token-secret-at-least-32-bytes",
 };
+
+test("requires distinct MCP assertion authority for each edge issuer", async () => {
+	const path = fileURLToPath(new URL("../config.example.json", import.meta.url));
+	const config = await loadConfig(path, ENVIRONMENT);
+	assert.equal(config.mcp.edge.issuerSecrets["crawdad-cf"], ENVIRONMENT.TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET);
+	assert.equal(config.mcp.edge.issuerSecrets["fat-platform"], ENVIRONMENT.TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET);
+	assert.equal(config.mcp.maximumResponseBytes, 8 * 1024 * 1024);
+	await assert.rejects(
+		loadConfig(path, {
+			...ENVIRONMENT,
+			TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET:
+				ENVIRONMENT.TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET,
+		}),
+		/issuer assertion secrets must be distinct/,
+	);
+});
 
 test("loads a signed Gmail contact relay with a control-plane-owned project", async () => {
 	const path = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));

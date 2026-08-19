@@ -217,6 +217,47 @@ test("expired post-running leases become uncertain instead of replaying side eff
 	}
 });
 
+test("an explicit post-running uncertainty receipt is terminal and never replayed", async () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-explicit-uncertain", subject.contexts[0], 1);
+		const event = subject.store.claimNextEvent();
+		subject.store.acceptEvent(event.id, event.leaseToken);
+		subject.store.heartbeatEvent(event.id, event.leaseToken);
+		const scheduler = new EventScheduler({
+			config: { scheduler: { maximumAttempts: 5, turnLeaseSeconds: 900 } },
+			store: subject.store,
+			runtime: {},
+		});
+		scheduler.receipt(event.id, event.leaseToken, "uncertain", "side effect may have completed");
+		assert.equal(subject.store.getEvent(event.id).status, "uncertain");
+		assert.equal(subject.store.claimNextEvent(), null);
+		await new Promise((resolvePromise) => setImmediate(resolvePromise));
+	} finally {
+		subject.close();
+	}
+});
+
+test("a transport failure cannot reopen running or completed work", () => {
+	const subject = fixture();
+	try {
+		enqueue(subject.store, "event-running-failure", subject.contexts[0], 1);
+		const running = subject.store.claimNextEvent();
+		subject.store.heartbeatEvent(running.id, running.leaseToken);
+		subject.store.failEvent(running.id, "response became ambiguous", running.leaseToken, 0, 5);
+		assert.equal(subject.store.getEvent(running.id).status, "uncertain");
+
+		enqueue(subject.store, "event-completed-failure", subject.contexts[1], 2);
+		const completed = subject.store.claimNextEvent();
+		subject.store.completeEvent(completed.id, completed.leaseToken);
+		subject.store.failEvent(completed.id, "late transport error", completed.leaseToken, 0, 5);
+		assert.equal(subject.store.getEvent(completed.id).status, "completed");
+		assert.equal(subject.store.claimNextEvent(), null);
+	} finally {
+		subject.close();
+	}
+});
+
 test("exhausted pre-running events become terminal without losing failure evidence", () => {
 	const subject = fixture();
 	try {
