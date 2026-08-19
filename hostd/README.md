@@ -271,7 +271,9 @@ recipient, or send a user-facing message. During that turn Hostd denies every
 host-managed messaging/control surface except delivery to the relationship's
 exact active phone conversation. The Operator remains the author and decision
 maker. Its phone delivery is linked back to the instruction event and provider
-message receipt.
+message receipt. A durable unique origin fence permits at most one provider
+delivery for one MCP instruction event, including when an Operator attempts a
+second body after the first send.
 
 An outbound connection lets that same relationship Operator use one remote
 HTTPS MCP server. Hostd encrypts the upstream credential and adds it only at

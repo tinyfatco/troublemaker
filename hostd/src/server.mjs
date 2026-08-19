@@ -534,6 +534,13 @@ export function createHostServer({
 					return;
 				}
 				const sha256 = bodyDigest(message);
+				if (mcpRelationship) {
+					const existingDelivery = store.getOutboxForOriginEvent(originEventId);
+					if (existingDelivery && existingDelivery.idempotencyKey !== idempotencyKey) {
+						json(response, 409, { error: "relationship_instruction_delivery_already_exists" });
+						return;
+					}
+				}
 				let outbox = store.startOutbox({
 					idempotencyKey,
 					targetId: target.id,

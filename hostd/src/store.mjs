@@ -664,6 +664,8 @@ export class HostStore {
 				ON control_notifications(context_id, sequence);
 			CREATE UNIQUE INDEX IF NOT EXISTS events_context_awareness_sequence
 				ON events(context_id, awareness_sequence);
+			CREATE UNIQUE INDEX IF NOT EXISTS outbox_origin_event_unique
+				ON outbox(origin_event_id) WHERE origin_event_id IS NOT NULL;
 			UPDATE rocket_chat_posts SET status = 'failed',
 				last_error = COALESCE(last_error, 'host restarted during Rocket.Chat post')
 				WHERE status = 'sending';
@@ -3489,6 +3491,19 @@ export class HostStore {
 				created_at AS createdAt, completed_at AS completedAt
 			FROM outbox WHERE idempotency_key = ?
 		`).get(idempotencyKey);
+	}
+
+	getOutboxForOriginEvent(eventId) {
+		return this.database.prepare(`
+			SELECT id, idempotency_key AS idempotencyKey,
+				target_id AS targetId, context_id AS contextId,
+				provider_thread_id AS providerThreadId,
+				origin_event_id AS originEventId, body_sha256 AS bodySha256,
+				status, provider_message_id AS providerMessageId,
+				provider_status AS providerStatus, last_error AS lastError,
+				created_at AS createdAt, completed_at AS completedAt
+			FROM outbox WHERE origin_event_id = ?
+		`).get(eventId);
 	}
 
 	startOutbox({

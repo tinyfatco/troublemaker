@@ -391,6 +391,20 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(duplicate.status, 200);
 		assert.equal(sends.length, 1);
 
+		const secondBody = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "A different second message must not leave this instruction.",
+			idempotency_key: "phone-owner-second-body",
+			origin_event_id: claimed.id,
+		});
+		assert.equal(secondBody.status, 409);
+		assert.deepEqual(await secondBody.json(), {
+			error: "relationship_instruction_delivery_already_exists",
+		});
+		assert.equal(sends.length, 1);
+		assert.equal(store.listProviderReceiptsForEvent(claimed.id).length, 1);
+
 		await mcp.revoke(owner.contextId, { direction: "inbound", id: grant.id });
 		const revoked = await post({
 			context_id: owner.contextId,
