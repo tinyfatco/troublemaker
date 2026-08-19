@@ -1,10 +1,19 @@
 import { stablePrivateKey } from "./security.mjs";
+import { relationshipOperatorContextId } from "./relationship-context.mjs";
 
 export class RouteParticipantDeniedError extends Error {
 	constructor(source, threadId) {
 		super(`sender is not an authorized participant in ${source} thread ${threadId}`);
 		this.name = "RouteParticipantDeniedError";
 		this.code = "route_participant_denied";
+	}
+}
+
+export class RelationshipContextMismatchError extends Error {
+	constructor(source) {
+		super(`verified ${source} relationship requires a custody migration`);
+		this.name = "RelationshipContextMismatchError";
+		this.code = "relationship_context_migration_required";
 	}
 }
 
@@ -53,7 +62,7 @@ export class ContextRouter {
 		}));
 	}
 
-	ensurePhoneScope(contactAddress, { label } = {}) {
+	ensurePhoneScope(contactAddress, { providerThreadId, label } = {}) {
 		const normalized = contactAddress.trim();
 		const principalHash = stablePrivateKey(this.routingKey, "phone-principal", normalized);
 		const targetId = this.config.routing.actorTarget;
@@ -64,7 +73,13 @@ export class ContextRouter {
 		return {
 			principalHash,
 			targetId,
-			contextId: `${target.id}:${principalHash.slice(0, 24)}:intake`,
+			contextId: relationshipOperatorContextId(this.routingKey, {
+				targetId: target.id,
+				source: "phone",
+				providerThreadId,
+				principalHash,
+				projectSlug: "intake",
+			}),
 			projectSlug: "intake",
 		};
 	}
@@ -111,22 +126,22 @@ export class ContextRouter {
 	}
 
 	resolvePhone({ providerThreadId, contactAddress, label }) {
-		const principalHash = stablePrivateKey(
-			this.routingKey,
-			"phone-principal",
-			contactAddress.trim(),
-		);
+		const scope = this.ensurePhoneScope(contactAddress, { providerThreadId, label });
 		const existing = this.store.getRoute("phone", providerThreadId);
 		if (existing) {
-			if (!this.store.hasRouteParticipant("phone", providerThreadId, principalHash)) {
+			if (!this.store.hasRouteParticipant("phone", providerThreadId, scope.principalHash)) {
 				throw new RouteParticipantDeniedError("phone", providerThreadId);
 			}
-			this.store.ensurePrincipal(principalHash, undefined, label);
+			if (
+				existing.principalHash !== scope.principalHash
+				|| existing.projectSlug !== scope.projectSlug
+				|| existing.targetId !== scope.targetId
+				|| existing.contextId !== scope.contextId
+			) throw new RelationshipContextMismatchError("phone");
 			this.store.touchRoute("phone", providerThreadId);
-			this.store.touchRouteParticipant("phone", providerThreadId, principalHash);
+			this.store.touchRouteParticipant("phone", providerThreadId, scope.principalHash);
 			return existing;
 		}
-		const scope = this.ensurePhoneScope(contactAddress, { label });
 		return this.store.bindRoute({
 			source: "phone",
 			providerThreadId,

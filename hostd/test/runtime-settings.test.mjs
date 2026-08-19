@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
 	initializeChannelWorkingOutput,
+	contextWorkspacePath,
 	hostOwnsScheduledWakes,
 	initializeMattermostWorkingOutput,
 	RuntimeManager,
@@ -13,6 +14,7 @@ import {
 	serializeRuntimeEnvironment,
 } from "../src/runtime.mjs";
 import { contextCapability } from "../src/security.mjs";
+import { HostStore } from "../src/store.mjs";
 
 const CHANNEL_ID = "cccccccccccccccccccccccccc";
 
@@ -29,6 +31,49 @@ test("runtime env-file serialization rejects line injection", () => {
 		() => serializeRuntimeEnvironment({ MOM_MODEL_ID: "safe\rINJECTED=value" }),
 		/control characters/,
 	);
+});
+
+test("stopped context rehome preserves its durable workspace and port", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-runtime-rehome-"));
+	const contextsDirectory = join(directory, "contexts");
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const fromContextId = "front-desk:legacy:intake";
+	const toContextId = "front-desk:relationship:relationship-operator";
+	const target = {
+		id: "front-desk",
+		driver: "oci",
+		engine: "/usr/bin/false",
+		contextsDirectory,
+	};
+	try {
+		store.createContext({
+			id: fromContextId,
+			targetId: target.id,
+			driver: "oci",
+			runtimeName: "legacy-runtime",
+			port: 32001,
+		});
+		const oldWorkspace = contextWorkspacePath(target, fromContextId);
+		await mkdir(oldWorkspace, { recursive: true });
+		await writeFile(join(oldWorkspace, "continuity.txt"), "durable relationship state\n");
+		const runtime = new RuntimeManager({ targetsById: new Map([[target.id, target]]) }, store);
+		const migrated = await runtime.rehomeStoppedContext(target, fromContextId, toContextId, {
+			relationshipId: "relationship-example",
+		});
+
+		assert.equal(migrated.workspaceMoved, true);
+		assert.equal(migrated.retainedStoppedRuntime, "legacy-runtime");
+		assert.equal(store.getContext(fromContextId), undefined);
+		assert.equal(store.getContext(toContextId).port, 32001);
+		assert.equal(
+			await readFile(join(contextWorkspacePath(target, toContextId), "continuity.txt"), "utf8"),
+			"durable relationship state\n",
+		);
+		await assert.rejects(readFile(join(oldWorkspace, "continuity.txt"), "utf8"), /ENOENT/);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("private Operator initializes fixed Mattermost working output without overriding self configuration", async () => {

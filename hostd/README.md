@@ -225,6 +225,8 @@ troublemaker-hostd import-legacy-checkpoint \
   --config /etc/troublemaker-hostd/config.json \
   --checkpoint /var/lib/legacy-inbox/checkpoint.json \
   --key-file /etc/legacy-inbox/state.key
+troublemaker-hostd mcp-rehome-context --config /etc/troublemaker-hostd/config.json \
+  --context <legacy-context-id>
 troublemaker-hostd mcp-handoff --config /etc/troublemaker-hostd/config.json \
   --context <context-id> --direction inbound --name "MCP client"
 troublemaker-hostd mcp-list --config /etc/troublemaker-hostd/config.json \
@@ -241,9 +243,25 @@ on loopback only. Do not expose the host API or child gateway ports publicly.
 
 An optional `mcp` listener supports two relationship-scoped connection
 directions. A handoff can be created only for a context with one exact verified
-route. Hostd freezes that route, principal, project, target, context, and safe
-recipient hint into a durable relationship record; later route ambiguity or
-identity drift fails closed.
+route and one verified participant. Phone ingress derives an opaque context ID
+from the target, native thread, principal, and project, so two relationships
+can never collapse into a shared intake runtime. Hostd freezes that route,
+principal, project, target, relationship-Operator context, and safe recipient
+hint into a durable relationship record; later route ambiguity, context drift,
+or participant drift fails closed.
+
+Legacy phone routes must be rehomed before they may create or use an MCP
+handoff. Drain Hostd, wait for the exact context and OCI runtime to stop, stop
+the Hostd listener, and run `mcp-rehome-context` as the Hostd state owner
+(including its rootless container environment) while the route still has
+exactly one verified participant. The command rejects a live Hostd listener or
+any other OS identity, atomically moves every context-owned SQLite row,
+preserves the port and durable workspace, records a `context_rehomes` audit
+entry, and retains the old stopped container as a rollback artifact. It never
+accepts a recipient or raw contact address. A legacy context named in
+`scheduledWakes.contextIds` is rejected until that exact host-owned schedule
+configuration is migrated under the same maintenance window, preventing a
+silent scheduling-ownership split.
 
 An inbound grant exposes one tool, `instruct_operator`. It durably queues an
 idempotent instruction for the relationship's Operator and wakes only that

@@ -130,7 +130,7 @@ test("routes one direct text into an isolated context without exposing phone num
 		const events = state.store.listRetryableEvents();
 		assert.equal(events.length, 1);
 		assert.equal(events[0].source, "phone");
-		assert.match(events[0].contextId, /^front-desk:[a-f0-9]{24}:intake$/);
+		assert.match(events[0].contextId, /^front-desk:[a-f0-9]{24}:relationship-operator$/);
 		const payload = JSON.parse(events[0].payloadJson);
 		assert.match(payload.phone.threadTarget, /^phone-[a-f0-9]{20}$/);
 		assert.equal(payload.message.body, "Could you help with an estimate?");

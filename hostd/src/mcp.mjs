@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { relationshipOperatorContextId } from "./relationship-context.mjs";
 import { contextCapability, openPrivateValue, sealPrivateValue } from "./security.mjs";
 
 export const MCP_RELATIONSHIP_PROFILE = "relationship-operator-v1";
@@ -205,6 +206,16 @@ export class HostMcp {
 		this.onEventQueued = pump;
 	}
 
+	relationshipContextId(route) {
+		return relationshipOperatorContextId(this.routingKey, {
+			targetId: route.targetId,
+			source: route.source,
+			providerThreadId: route.providerThreadId,
+			principalHash: route.principalHash,
+			projectSlug: route.projectSlug,
+		});
+	}
+
 	resolveRelationship(target, contextId) {
 		const context = this.store.getContext(contextId);
 		if (!context || context.targetId !== target.id) throw new HostMcpError("context_not_found", 404);
@@ -212,8 +223,14 @@ export class HostMcp {
 		if (routes.length === 0) throw new HostMcpError("relationship_not_found", 409);
 		if (routes.length !== 1) throw new HostMcpError("relationship_ambiguous", 409);
 		const route = routes[0];
-		if (!this.store.hasRouteParticipant(route.source, route.providerThreadId, route.principalHash)) {
+		if (
+			!this.store.hasRouteParticipant(route.source, route.providerThreadId, route.principalHash)
+			|| this.store.countRouteParticipants(route.source, route.providerThreadId) !== 1
+		) {
 			throw new HostMcpError("relationship_unverified", 409);
+		}
+		if (this.relationshipContextId(route) !== contextId) {
+			throw new HostMcpError("relationship_context_migration_required", 409);
 		}
 		let recipientHint;
 		if (route.source === "phone") {
@@ -243,6 +260,90 @@ export class HostMcp {
 		}
 	}
 
+	async rehomeRelationshipContext(target, contextId) {
+		if (!this.runtime?.rehomeStoppedContext) {
+			throw new HostMcpError("relationship_context_migration_unavailable", 503);
+		}
+		if (this.store.getMeta("scheduler:draining") !== "true") {
+			throw new HostMcpError("relationship_context_drain_required", 409);
+		}
+		const context = this.store.getContext(contextId);
+		if (
+			!context
+			|| context.targetId !== target.id
+			|| context.status !== "stopped"
+			|| this.store.hasContextMaintenanceActivity(contextId)
+		) throw new HostMcpError("relationship_context_not_stopped", 409);
+		const routes = this.store.listRoutesForContext(contextId, target.id);
+		if (routes.length !== 1) throw new HostMcpError("relationship_ambiguous", 409);
+		const route = routes[0];
+		if (
+			!this.store.hasRouteParticipant(route.source, route.providerThreadId, route.principalHash)
+			|| this.store.countRouteParticipants(route.source, route.providerThreadId) !== 1
+		) throw new HostMcpError("relationship_unverified", 409);
+		if (route.source === "phone") {
+			const conversation = this.store.getPhoneConversationByProviderThread(route.providerThreadId);
+			if (
+				!conversation
+				|| conversation.status !== "active"
+				|| conversation.principalHash !== route.principalHash
+				|| conversation.targetId !== route.targetId
+				|| conversation.contextId !== route.contextId
+			) throw new HostMcpError("relationship_unverified", 409);
+		}
+		const destinationContextId = this.relationshipContextId(route);
+		if (
+			destinationContextId !== contextId
+			&& this.config.scheduledWakes?.contextIds?.includes(contextId)
+		) throw new HostMcpError("relationship_context_schedule_config_migration_required", 409);
+		const relationship = this.store.getMcpRelationshipByRoute(
+			route.source,
+			route.providerThreadId,
+			MCP_RELATIONSHIP_PROFILE,
+		);
+		if (
+			relationship
+			&& (
+				relationship.status !== "active"
+				|| relationship.contextId !== contextId
+				|| relationship.targetId !== target.id
+				|| relationship.principalHash !== route.principalHash
+			)
+		) throw new HostMcpError("relationship_unavailable", 409);
+		if (destinationContextId === contextId) {
+			if (relationship) this.assertRelationship(relationship);
+			return {
+				migrated: false,
+				from_context_id: contextId,
+				to_context_id: contextId,
+				relationship_id: relationship?.id,
+			};
+		}
+		let migrated;
+		try {
+			migrated = await this.runtime.rehomeStoppedContext(
+				target,
+				contextId,
+				destinationContextId,
+				{ relationshipId: relationship?.id },
+			);
+		} catch {
+			throw new HostMcpError("relationship_context_migration_failed", 409);
+		}
+		const migratedRelationship = relationship
+			? this.assertRelationship(this.store.getMcpRelationship(relationship.id))
+			: null;
+		return {
+			migrated: true,
+			from_context_id: contextId,
+			to_context_id: destinationContextId,
+			relationship_id: migratedRelationship?.id,
+			audit_id: migrated.auditId,
+			workspace_moved: migrated.workspaceMoved,
+			retained_stopped_runtime: migrated.retainedStoppedRuntime,
+		};
+	}
+
 	assertRelationship(relationship) {
 		if (!relationship || relationship.status !== "active") {
 			throw new HostMcpError("relationship_unavailable", 403);
@@ -259,11 +360,16 @@ export class HostMcp {
 			|| contextRoutes.length !== 1
 			|| contextRoutes[0].source !== relationship.source
 			|| contextRoutes[0].providerThreadId !== relationship.providerThreadId
+			|| this.relationshipContextId(contextRoutes[0]) !== relationship.contextId
 			|| route.principalHash !== relationship.principalHash
 			|| route.projectSlug !== relationship.projectSlug
 			|| route.targetId !== relationship.targetId
 			|| route.contextId !== relationship.contextId
 			|| context.targetId !== relationship.targetId
+			|| this.store.countRouteParticipants(
+				relationship.source,
+				relationship.providerThreadId,
+			) !== 1
 			|| !this.store.hasRouteParticipant(
 				relationship.source,
 				relationship.providerThreadId,

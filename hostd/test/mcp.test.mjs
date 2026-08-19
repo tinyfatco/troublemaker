@@ -12,6 +12,7 @@ import {
 	HostMcp,
 	HostMcpError,
 } from "../src/mcp.mjs";
+import { relationshipOperatorContextId } from "../src/relationship-context.mjs";
 import {
 	isPublicMcpAddress,
 	resolvePublicMcpDestination,
@@ -23,13 +24,21 @@ import {
 import { HostStore } from "../src/store.mjs";
 
 const EDGE_SECRET = "example-MCP-edge-assertion-secret-with-32-bytes";
-const CONTEXT_ID = "front-desk:example:intake";
+const ROUTING_KEY = Buffer.alloc(32, 7);
 const TARGET = {
 	id: "front-desk",
 	driver: "oci",
 	inboundToken: "example-inbound-token-at-least-32-bytes",
 	outboundToken: "example-outbound-token-at-least-32-bytes",
 };
+const ROUTE = {
+	targetId: TARGET.id,
+	source: "phone",
+	providerThreadId: "example-thread",
+	principalHash: "example-principal",
+	projectSlug: "intake",
+};
+const CONTEXT_ID = relationshipOperatorContextId(ROUTING_KEY, ROUTE);
 
 function config() {
 	return {
@@ -89,7 +98,7 @@ async function fixture() {
 	const mcp = new HostMcp({
 		config: config(),
 		store,
-		routingKey: Buffer.alloc(32, 7),
+		routingKey: ROUTING_KEY,
 		runtime: { async ensureOciContext() { return { port: 32000 }; } },
 		onContextChanged: async (contextId) => { changes.push(contextId); },
 		onEventQueued: () => { pumps.push("pump"); },
@@ -217,6 +226,125 @@ test("MCP handoffs fail closed when a context owns more than one relationship ro
 		assert.throws(
 			() => mcp.createHandoff(TARGET, CONTEXT_ID, { direction: "inbound" }),
 			(error) => error instanceof HostMcpError && error.code === "relationship_ambiguous",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("legacy phone custody is atomically rehomed into one relationship Operator context", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-mcp-rehome-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const legacyContextId = "front-desk:example-principal:intake";
+	try {
+		store.createContext({
+			id: legacyContextId,
+			targetId: TARGET.id,
+			driver: "oci",
+			runtimeName: "legacy-runtime",
+			port: 32001,
+		});
+		store.ensurePrincipal(ROUTE.principalHash, undefined, "Example principal");
+		store.ensureProject(ROUTE.principalHash, ROUTE.projectSlug, "Intake");
+		store.bindRoute({ ...ROUTE, contextId: legacyContextId });
+		store.upsertPhoneConversation({
+			threadTarget: "phone-legacy",
+			provider: "example",
+			providerThreadId: ROUTE.providerThreadId,
+			principalHash: ROUTE.principalHash,
+			targetId: TARGET.id,
+			contextId: legacyContextId,
+			contactCiphertext: "sealed-example-contact",
+			contactLastFour: "0123",
+		});
+		const relationship = store.bindMcpRelationship({
+			...ROUTE,
+			contextId: legacyContextId,
+			profile: "relationship-operator-v1",
+			recipientHint: "ending 0123",
+		});
+		store.upsertEvent({
+			id: "legacy-event",
+			source: "phone",
+			providerMessageId: "legacy-provider-message",
+			providerThreadId: ROUTE.providerThreadId,
+			principalHash: ROUTE.principalHash,
+			targetId: TARGET.id,
+			contextId: legacyContextId,
+			payload: { message: { body: "historical" } },
+		});
+		store.setMeta("scheduler:draining", "true");
+
+		const runtime = {
+			async rehomeStoppedContext(target, fromContextId, toContextId, options) {
+				return {
+					...store.rehomeContext({
+						fromContextId,
+						toContextId,
+						targetId: target.id,
+						runtimeName: "relationship-runtime",
+						relationshipId: options.relationshipId,
+					}),
+					workspaceMoved: true,
+					retainedStoppedRuntime: "legacy-runtime",
+				};
+			},
+		};
+		const scheduledConfig = config();
+		scheduledConfig.scheduledWakes = { mode: "host", contextIds: [legacyContextId] };
+		const scheduleBound = new HostMcp({
+			config: scheduledConfig,
+			store,
+			routingKey: ROUTING_KEY,
+			runtime,
+		});
+		await assert.rejects(
+			scheduleBound.rehomeRelationshipContext(TARGET, legacyContextId),
+			(error) => error instanceof HostMcpError
+				&& error.code === "relationship_context_schedule_config_migration_required",
+		);
+		const mcp = new HostMcp({ config: config(), store, routingKey: ROUTING_KEY, runtime });
+		store.startOutbox({
+			idempotencyKey: "maintenance-in-progress",
+			targetId: TARGET.id,
+			contextId: legacyContextId,
+			providerThreadId: ROUTE.providerThreadId,
+		});
+		await assert.rejects(
+			mcp.rehomeRelationshipContext(TARGET, legacyContextId),
+			(error) => error instanceof HostMcpError
+				&& error.code === "relationship_context_not_stopped",
+			"in-flight host-owned delivery must block custody movement",
+		);
+		store.failOutbox("maintenance-in-progress", "test maintenance release");
+		assert.throws(
+			() => mcp.assertRelationship(relationship),
+			(error) => error instanceof HostMcpError && error.code === "relationship_unavailable",
+			"an existing grant cannot use a legacy intake-bound relationship",
+		);
+		assert.throws(
+			() => mcp.createHandoff(TARGET, legacyContextId, { direction: "inbound" }),
+			(error) => error instanceof HostMcpError
+				&& error.code === "relationship_context_migration_required",
+		);
+		const migrated = await mcp.rehomeRelationshipContext(TARGET, legacyContextId);
+		assert.equal(migrated.migrated, true);
+		assert.equal(migrated.to_context_id, CONTEXT_ID);
+		assert.equal(migrated.relationship_id, relationship.id);
+		assert.equal(migrated.workspace_moved, true);
+		assert.equal(store.getContext(legacyContextId), undefined);
+		assert.equal(store.getContext(CONTEXT_ID).port, 32001);
+		assert.equal(store.getRoute(ROUTE.source, ROUTE.providerThreadId).contextId, CONTEXT_ID);
+		assert.equal(store.getPhoneConversation("phone-legacy").contextId, CONTEXT_ID);
+		assert.equal(store.getEvent("legacy-event").contextId, CONTEXT_ID);
+		assert.equal(store.getOutbox("maintenance-in-progress").contextId, CONTEXT_ID);
+		assert.equal(store.getMcpRelationship(relationship.id).contextId, CONTEXT_ID);
+		assert.equal(store.listContextRehomes().length, 1);
+		assert.equal(store.listContextRehomes()[0].relationshipId, relationship.id);
+		assert.equal(
+			mcp.createHandoff(TARGET, CONTEXT_ID, { direction: "inbound" }).relationship.recipient_hint,
+			"ending 0123",
 		);
 	} finally {
 		store.close();

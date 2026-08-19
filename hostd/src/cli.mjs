@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { chmod } from "node:fs/promises";
+import { chmod, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ChannelControlNotifier } from "./channel-control-notifier.mjs";
 import { loadConfig } from "./config.mjs";
@@ -37,6 +37,7 @@ function usage() {
   troublemaker-hostd provision-rocketchat --config <path>
   troublemaker-hostd provision-zulip --config <path>
   troublemaker-hostd import-legacy-checkpoint --config <path> --checkpoint <path> --key-file <path>
+  troublemaker-hostd mcp-rehome-context --config <path> --context <id>
   troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound> --name <name> [--server-url <https-url>]
   troublemaker-hostd mcp-list --config <path> --context <id>
   troublemaker-hostd mcp-revoke --config <path> --context <id> --direction <handoff|inbound|outbound> --id <id>
@@ -405,6 +406,36 @@ async function main() {
 				scheduledWakeMode: state.config.scheduledWakes.mode,
 				scheduledWakeContextCount: state.config.scheduledWakes.contextIds.length,
 			}, null, 2));
+			return;
+		}
+		if (command === "mcp-rehome-context") {
+			if (!state.mcp) throw new Error("MCP is not configured");
+			let hostdListenerRunning = false;
+			try {
+				await fetch(`http://${state.config.server.host}:${state.config.server.port}/health`, {
+					signal: AbortSignal.timeout(500),
+				});
+				hostdListenerRunning = true;
+			} catch {
+				// A stopped loopback listener is required for this maintenance command.
+			}
+			if (hostdListenerRunning) {
+				throw new Error("mcp-rehome-context requires the Hostd listener to be stopped");
+			}
+			const databaseStat = await stat(state.config.state.database);
+			if (typeof process.getuid === "function" && process.getuid() !== databaseStat.uid) {
+				throw new Error("mcp-rehome-context must run as the Hostd state owner");
+			}
+			const contextId = option("--context");
+			if (!contextId) usage();
+			const context = state.store.getContext(contextId);
+			const target = context ? state.config.targetsById.get(context.targetId) : undefined;
+			if (!target) throw new Error("unknown MCP context");
+			console.log(JSON.stringify(
+				await state.mcp.rehomeRelationshipContext(target, contextId),
+				null,
+				2,
+			));
 			return;
 		}
 		if (command === "mcp-handoff") {

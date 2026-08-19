@@ -11,6 +11,33 @@ function future(seconds) {
 	return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+export const CONTEXT_CUSTODY_TABLES = Object.freeze([
+	"routes",
+	"mcp_handoffs",
+	"mcp_relationships",
+	"mcp_inbound_grants",
+	"mcp_outbound_connections",
+	"mcp_instruction_receipts",
+	"site_relationship_factories",
+	"site_deployment_bindings",
+	"mattermost_bindings",
+	"rocket_chat_bindings",
+	"zulip_bindings",
+	"rocket_chat_omnichannel_conversations",
+	"events",
+	"scheduled_prompts",
+	"outbox",
+	"phone_conversations",
+	"web_chat_conversations",
+	"web_chat_outbox",
+	"workers_ai_requests",
+	"gmail_drafts",
+	"gmail_tool_requests",
+	"control_notifications",
+	"awareness_sequences",
+	"rocket_chat_posts",
+]);
+
 export class HostStore {
 	constructor(path) {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -90,6 +117,19 @@ export class HostStore {
 
 			CREATE UNIQUE INDEX IF NOT EXISTS contexts_port_unique
 				ON contexts(port) WHERE port IS NOT NULL;
+
+			CREATE TABLE IF NOT EXISTS context_rehomes (
+				id TEXT PRIMARY KEY,
+				from_context_id TEXT NOT NULL,
+				to_context_id TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				relationship_id TEXT,
+				reason TEXT NOT NULL,
+				created_at TEXT NOT NULL
+			);
+
+			CREATE INDEX IF NOT EXISTS context_rehomes_created
+				ON context_rehomes(created_at, id);
 
 			CREATE TABLE IF NOT EXISTS mcp_handoffs (
 				id TEXT PRIMARY KEY,
@@ -1068,6 +1108,13 @@ export class HostStore {
 			SELECT 1 FROM route_participants
 			WHERE source = ? AND provider_thread_id = ? AND principal_hash = ?
 		`).get(source, providerThreadId, principalHash));
+	}
+
+	countRouteParticipants(source, providerThreadId) {
+		return this.database.prepare(`
+			SELECT COUNT(*) AS count FROM route_participants
+			WHERE source = ? AND provider_thread_id = ?
+		`).get(source, providerThreadId).count;
 	}
 
 	touchRouteParticipant(source, providerThreadId, principalHash) {
@@ -2229,6 +2276,113 @@ export class HostStore {
 		return this.getContext(id);
 	}
 
+	rehomeContext({
+		fromContextId,
+		toContextId,
+		targetId,
+		runtimeName,
+		relationshipId,
+		reason = "relationship_operator_custody",
+	}) {
+		if (!fromContextId || !toContextId || fromContextId === toContextId) {
+			throw new Error("context_rehome_identity_invalid");
+		}
+		if (!runtimeName || typeof runtimeName !== "string") {
+			throw new Error("context_rehome_runtime_invalid");
+		}
+		const source = this.getContext(fromContextId);
+		if (!source || source.targetId !== targetId || source.status !== "stopped") {
+			throw new Error("context_rehome_source_unavailable");
+		}
+		if (this.getContext(toContextId)) throw new Error("context_rehome_destination_exists");
+		if (this.hasContextMaintenanceActivity(fromContextId)) {
+			throw new Error("context_rehome_activity_active");
+		}
+
+		const schemaTables = this.database.prepare(`
+			SELECT DISTINCT schema.name
+			FROM sqlite_schema AS schema
+			JOIN pragma_table_info(schema.name) AS info
+			WHERE schema.type = 'table' AND info.name = 'context_id'
+			ORDER BY schema.name
+		`).all().map((row) => row.name);
+		const expectedTables = [...CONTEXT_CUSTODY_TABLES].sort();
+		if (JSON.stringify(schemaTables) !== JSON.stringify(expectedTables)) {
+			throw new Error("context_rehome_schema_unaccounted");
+		}
+
+		const timestamp = now();
+		const auditId = randomUUID();
+		const movedRows = {};
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const inserted = this.database.prepare(`
+				INSERT INTO contexts(
+					id, target_id, driver, runtime_name, port, status,
+					created_at, last_seen_at, last_started_at, last_stopped_at,
+					runtime_version
+				)
+				SELECT ?, target_id, driver, ?, NULL, 'stopped',
+					created_at, last_seen_at, last_started_at, last_stopped_at,
+					runtime_version
+				FROM contexts WHERE id = ? AND target_id = ? AND status = 'stopped'
+			`).run(toContextId, runtimeName, fromContextId, targetId);
+			if (inserted.changes !== 1) throw new Error("context_rehome_source_changed");
+
+			for (const table of CONTEXT_CUSTODY_TABLES) {
+				movedRows[table] = this.database.prepare(`
+					UPDATE "${table}" SET context_id = ? WHERE context_id = ?
+				`).run(toContextId, fromContextId).changes;
+			}
+			const removed = this.database.prepare(`
+				DELETE FROM contexts WHERE id = ? AND target_id = ? AND status = 'stopped'
+			`).run(fromContextId, targetId);
+			if (removed.changes !== 1) throw new Error("context_rehome_source_changed");
+			this.database.prepare(`
+				UPDATE contexts SET port = ? WHERE id = ?
+			`).run(source.port ?? null, toContextId);
+			this.database.prepare(`
+				INSERT INTO context_rehomes(
+					id, from_context_id, to_context_id, target_id,
+					relationship_id, reason, created_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?)
+			`).run(
+				auditId,
+				fromContextId,
+				toContextId,
+				targetId,
+				relationshipId ?? null,
+				reason,
+				timestamp,
+			);
+			const violations = this.database.prepare("PRAGMA foreign_key_check").all();
+			if (violations.length > 0) throw new Error("context_rehome_foreign_key_violation");
+			const migratedContext = this.getContext(toContextId);
+			if (!migratedContext) throw new Error("context_rehome_destination_missing");
+			this.database.exec("COMMIT");
+			return {
+				auditId,
+				fromContextId,
+				toContextId,
+				context: migratedContext,
+				movedRows,
+			};
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	listContextRehomes() {
+		return this.database.prepare(`
+			SELECT id, from_context_id AS fromContextId,
+				to_context_id AS toContextId, target_id AS targetId,
+				relationship_id AS relationshipId, reason,
+				created_at AS createdAt
+			FROM context_rehomes ORDER BY created_at, id
+		`).all();
+	}
+
 	updateContext(id, updates) {
 		const current = this.getContext(id);
 		if (!current) throw new Error(`unknown context ${id}`);
@@ -3289,6 +3443,34 @@ export class HostStore {
 		`).get(contextId));
 	}
 
+	hasContextMaintenanceActivity(contextId) {
+		const row = this.database.prepare(`
+			SELECT
+				(SELECT COUNT(*) FROM events
+					WHERE context_id = ? AND status IN ('leased', 'accepted', 'running'))
+				+ (SELECT COUNT(*) FROM outbox
+					WHERE context_id = ? AND status = 'sending')
+				+ (SELECT COUNT(*) FROM web_chat_outbox
+					WHERE context_id = ? AND status = 'sending')
+				+ (SELECT COUNT(*) FROM workers_ai_requests
+					WHERE context_id = ? AND status = 'in_progress')
+				+ (SELECT COUNT(*) FROM gmail_tool_requests
+					WHERE context_id = ? AND status = 'running')
+				+ (SELECT COUNT(*) FROM gmail_drafts
+					WHERE context_id = ? AND status = 'sending')
+				+ (SELECT COUNT(*) FROM control_notifications
+					WHERE context_id = ? AND status = 'sending')
+				+ (SELECT COUNT(*) FROM rocket_chat_posts
+					WHERE context_id = ? AND status = 'sending')
+				+ (SELECT COUNT(*) FROM site_relationship_factories
+					WHERE context_id = ? AND status = 'provisioning')
+				+ (SELECT COUNT(*) FROM site_deployment_bindings
+					WHERE context_id = ? AND status = 'creating')
+				AS count
+		`).get(...Array(10).fill(contextId));
+		return row.count > 0;
+	}
+
 	hasRunningEvent(contextId, excludedEventId) {
 		return Boolean(this.database.prepare(`
 			SELECT 1 FROM events
@@ -3748,6 +3930,7 @@ export class HostStore {
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,
 			contexts: this.database.prepare("SELECT COUNT(*) AS count FROM contexts").get().count,
+			contextRehomes: this.database.prepare("SELECT COUNT(*) AS count FROM context_rehomes").get().count,
 			pendingMcpHandoffs: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM mcp_handoffs
 				WHERE status = 'pending' AND expires_at > ?

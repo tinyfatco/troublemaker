@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { relationshipOperatorContextId } from "../src/relationship-context.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { HostStore } from "../src/store.mjs";
 
@@ -24,6 +25,32 @@ function fixture(knownPrincipals = []) {
 		},
 	};
 }
+
+test("relationship Operator identity partitions target, thread, and principal", () => {
+	const routingKey = Buffer.alloc(32, 7);
+	const base = {
+		targetId: "front-desk",
+		source: "phone",
+		providerThreadId: "native-thread-one",
+		principalHash: "principal-one",
+		projectSlug: "intake",
+	};
+	const first = relationshipOperatorContextId(routingKey, base);
+	assert.notEqual(first, relationshipOperatorContextId(routingKey, {
+		...base,
+		targetId: "another-customer",
+	}));
+	assert.notEqual(first, relationshipOperatorContextId(routingKey, {
+		...base,
+		providerThreadId: "native-thread-two",
+	}));
+	assert.notEqual(first, relationshipOperatorContextId(routingKey, {
+		...base,
+		principalHash: "principal-two",
+	}));
+	assert.equal(first.includes(base.providerThreadId), false);
+	assert.match(first, /^front-desk:[a-f0-9]{24}:relationship-operator$/);
+});
 
 test("routes each sender to a private context and keeps native thread affinity", () => {
 	const subject = fixture();
@@ -55,6 +82,57 @@ test("routes each sender to a private context and keeps native thread affinity",
 			sender: "one@example.com",
 		});
 		assert.equal(existingThread.contextId, first.contextId);
+	} finally {
+		subject.close();
+	}
+});
+
+test("routes each verified phone relationship to its own Operator context", () => {
+	const subject = fixture();
+	try {
+		const first = subject.router.resolvePhone({
+			providerThreadId: "phone-thread-one",
+			contactAddress: "+15555550123",
+		});
+		const repeat = subject.router.resolvePhone({
+			providerThreadId: "phone-thread-one",
+			contactAddress: "+15555550123",
+		});
+		const secondRelationship = subject.router.resolvePhone({
+			providerThreadId: "phone-thread-two",
+			contactAddress: "+15555550123",
+		});
+
+		assert.equal(repeat.contextId, first.contextId);
+		assert.notEqual(secondRelationship.contextId, first.contextId);
+		assert.match(first.contextId, /^front-desk:[a-f0-9]{24}:relationship-operator$/);
+		assert.match(secondRelationship.contextId, /^front-desk:[a-f0-9]{24}:relationship-operator$/);
+	} finally {
+		subject.close();
+	}
+});
+
+test("fails closed instead of reusing a legacy phone intake context", () => {
+	const subject = fixture();
+	try {
+		const scope = subject.router.ensurePhoneScope("+15555550123", {
+			providerThreadId: "legacy-phone-thread",
+		});
+		subject.store.bindRoute({
+			source: "phone",
+			providerThreadId: "legacy-phone-thread",
+			principalHash: scope.principalHash,
+			projectSlug: scope.projectSlug,
+			targetId: scope.targetId,
+			contextId: "front-desk:legacy-principal:intake",
+		});
+		assert.throws(
+			() => subject.router.resolvePhone({
+				providerThreadId: "legacy-phone-thread",
+				contactAddress: "+15555550123",
+			}),
+			(error) => error?.code === "relationship_context_migration_required",
+		);
 	} finally {
 		subject.close();
 	}

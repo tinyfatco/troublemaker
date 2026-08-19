@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
+import { cp, mkdir, open, readFile, rename, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
@@ -312,6 +312,55 @@ export class RuntimeManager {
 
 	setMcp(mcp) {
 		this.mcp = mcp;
+	}
+
+	async rehomeStoppedContext(target, fromContextId, toContextId, { relationshipId } = {}) {
+		const source = this.store.getContext(fromContextId);
+		if (
+			!source
+			|| source.targetId !== target.id
+			|| source.status !== "stopped"
+			|| this.store.hasContextMaintenanceActivity(fromContextId)
+		) throw new Error("relationship_context_not_stopped");
+		if (this.store.getContext(toContextId)) throw new Error("relationship_context_destination_exists");
+		if (source.runtimeName) {
+			const inspect = await run(
+				target.engine,
+				["inspect", "--format", "{{.State.Running}}", source.runtimeName],
+				{ allowFailure: true, timeout: 30_000 },
+			);
+			if (inspect.code === 0 && inspect.stdout.trim() === "true") {
+				throw new Error("relationship_context_runtime_running");
+			}
+		}
+
+		const sourceDirectory = dirname(contextWorkspacePath(target, fromContextId));
+		const destinationDirectory = dirname(contextWorkspacePath(target, toContextId));
+		if (sourceDirectory === destinationDirectory) {
+			throw new Error("relationship_context_directory_collision");
+		}
+		if (await exists(destinationDirectory)) {
+			throw new Error("relationship_context_destination_workspace_exists");
+		}
+		const moveWorkspace = await exists(sourceDirectory);
+		if (moveWorkspace) await rename(sourceDirectory, destinationDirectory);
+		try {
+			const result = this.store.rehomeContext({
+				fromContextId,
+				toContextId,
+				targetId: target.id,
+				runtimeName: safeRuntimeName(toContextId),
+				relationshipId,
+			});
+			return {
+				...result,
+				workspaceMoved: moveWorkspace,
+				retainedStoppedRuntime: source.runtimeName || undefined,
+			};
+		} catch (error) {
+			if (moveWorkspace) await rename(destinationDirectory, sourceDirectory);
+			throw error;
+		}
 	}
 
 	async acceptEvent(event) {
