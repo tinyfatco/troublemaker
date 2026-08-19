@@ -4,6 +4,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { PlatformAdapter } from "../adapters/types.js";
 import { normalizeSlackEmojiName, parseSlackMessageTarget } from "../adapters/slack-reactions.js";
+import { currentHostDeliveryScope } from "../adapters/host-delivery-scope.js";
 import * as log from "../log.js";
 import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
 import { requiredToolLabelSchema, requireNonblankToolLabel } from "./tool-label.js";
@@ -59,6 +60,9 @@ export function createReactToMessageTool(adapters: PlatformAdapter[]): AgentTool
 		execute: async (toolCallId: string, params: unknown, signal?: AbortSignal) => {
 			requireNonblankToolLabel(params, "react_to_message");
 			if (signal?.aborted) throw new Error("Operation aborted");
+			if (currentHostDeliveryScope()?.source === "mcp-operator") {
+				throw new Error("Reactions are unavailable during an MCP relationship turn; only the exact Hostd-bound reply target may receive a user-visible action.");
+			}
 			const body = params as { target?: unknown; emoji?: unknown };
 			const resolved = resolveSlackReactionTarget(body.target, body.emoji, adapters);
 			await waitForToolDisplay(toolCallId);

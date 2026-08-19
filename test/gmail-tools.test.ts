@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { withHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 import { createGmailToolDefinitions } from "../src/tools/gmail.js";
 
 interface SeenRequest {
@@ -130,6 +131,31 @@ assert.deepEqual(seen.at(-1)?.body, {
 });
 assert.match(String(seen.at(-1)?.body.idempotency_key), /^gmail_send:[a-f0-9]{64}$/);
 assert.equal(seen.at(-1)?.authorization, "Bearer fake-context-capability");
+
+const requestsBeforeRelationshipBoundary = seen.length;
+await withHostDeliveryScope({
+	source: "mcp-operator",
+	eventId: "00000000-0000-4000-8000-000000000001",
+	replyTarget: "phone-0123456789abcdef0123",
+}, async () => {
+	await assert.rejects(
+		() => byName.get("gmail_draft")!.execute("relationship-draft", {
+			label: "Must remain phone-scoped",
+			body: "No cross-channel draft",
+			to: "person@example.com",
+			subject: "Denied",
+		}),
+		/Gmail drafts are unavailable during an MCP relationship turn/,
+	);
+	await assert.rejects(
+		() => byName.get("gmail_send")!.execute("relationship-send", {
+			label: "Must remain phone-scoped",
+			draft_id: "draft-fake",
+		}),
+		/Gmail send is unavailable during an MCP relationship turn/,
+	);
+});
+assert.equal(seen.length, requestsBeforeRelationshipBoundary, "MCP phone relationship turns cannot mutate or send Gmail state");
 
 const requestsBeforeMissingId = seen.length;
 await assert.rejects(

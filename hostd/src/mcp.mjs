@@ -759,6 +759,27 @@ export class HostMcp {
 		);
 	}
 
+	operatorRuntimeScope(relationship) {
+		const asserted = this.assertRelationship(relationship);
+		const scope = {
+			relationshipId: asserted.id,
+			generation: asserted.generation,
+			source: asserted.source,
+			...(asserted.recipientHint ? { recipientHint: asserted.recipientHint } : {}),
+		};
+		if (asserted.source !== "phone") return scope;
+		const conversation = this.store.getPhoneConversationByProviderThread(asserted.providerThreadId);
+		if (
+			!conversation
+			|| !/^phone-[a-f0-9]{20}$/.test(conversation.threadTarget)
+			|| conversation.contextId !== asserted.contextId
+			|| conversation.targetId !== asserted.targetId
+			|| conversation.principalHash !== asserted.principalHash
+			|| conversation.status !== "active"
+		) throw new HostMcpError("relationship_unavailable", 403);
+		return { ...scope, replyTarget: conversation.threadTarget };
+	}
+
 	list(contextId) {
 		return {
 			inbound: this.store.listMcpInboundGrants(contextId).map((grant) => (

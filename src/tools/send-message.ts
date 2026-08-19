@@ -26,6 +26,7 @@ import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import { parseZulipTarget } from "../adapters/zulip-target.js";
+import { currentHostDeliveryScope } from "../adapters/host-delivery-scope.js";
 import * as log from "../log.js";
 import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
 
@@ -172,6 +173,16 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			if (typeof text !== "string" || !text.trim()) {
 				throw new Error("send_message requires non-empty text.");
 			}
+			const normalizedTarget = target.trim();
+			const hostDelivery = currentHostDeliveryScope();
+			if (hostDelivery?.source === "mcp-operator") {
+				if (!hostDelivery.replyTarget || normalizedTarget !== hostDelivery.replyTarget) {
+					throw new Error("This MCP relationship turn can send only to Hostd's exact bound reply target.");
+				}
+				if ((attachments?.length ?? 0) > 0 || (recipients?.length ?? 0) > 0 || subject) {
+					throw new Error("This MCP relationship turn permits one direct plain-text relationship message only.");
+				}
+			}
 
 			if (isObsoleteSilentControlMessage(text)) {
 				log.logWarning(`[send_message] Suppressed obsolete [SILENT] message to ${target}`);
@@ -181,7 +192,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				};
 			}
 
-			const resolved = resolveMessageTarget(target.trim(), adapters);
+			const resolved = resolveMessageTarget(normalizedTarget, adapters);
 			if (!resolved) {
 				throw new Error(`No adapter found for target "${target}". Valid targets include rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
 			}

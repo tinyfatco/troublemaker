@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OperatorAdapter } from "../src/adapters/operator.js";
+import { currentHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 
 async function request(adapter: OperatorAdapter, init: RequestInit = {}, path = "/operator/read"): Promise<Response> {
 	const server = createServer((incoming, outgoing) => adapter.dispatch(incoming, outgoing));
@@ -51,16 +52,44 @@ try {
 	assert.deepEqual(await authorized.json(), { lines: [], total: 0, offset: 0 });
 
 	const relationshipToken = "relationship-operator-token-example-32-bytes";
-	const relationshipAdapter = new OperatorAdapter({
+	const relationshipScope = {
+		relationshipId: "00000000-0000-4000-8000-000000000010",
+		generation: 1,
+		source: "phone",
+		recipientHint: "ending 0123",
+		replyTarget: "phone-0123456789abcdef0123",
+	};
+	const scopeMissingAdapter = new OperatorAdapter({
 		workingDir,
 		relationshipInboundToken: relationshipToken,
 		hostContextId: "front-desk:principal:intake",
 		hostdUrl,
 	});
+	assert.equal((await request(scopeMissingAdapter, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${relationshipToken}`,
+			"content-type": "application/json",
+		},
+		body: "{}",
+	}, "/operator/relationship-message")).status, 503, "relationship ingress fails closed without Hostd scope");
+	const relationshipAdapter = new OperatorAdapter({
+		workingDir,
+		relationshipInboundToken: relationshipToken,
+		relationshipScope,
+		hostContextId: "front-desk:principal:intake",
+		hostdUrl,
+	});
 	let handled = 0;
+	let handledEvent: any;
+	let handledDeliveryScope: ReturnType<typeof currentHostDeliveryScope>;
 	relationshipAdapter.setHandler({
 		isRunning: () => false,
-		handleEvent: async () => { handled += 1; },
+		handleEvent: async (event: any) => {
+			handled += 1;
+			handledEvent = event;
+			handledDeliveryScope = currentHostDeliveryScope();
+		},
 	} as any);
 	assert.equal((await request(relationshipAdapter, {
 		headers: { authorization: `Bearer ${relationshipToken}` },
@@ -83,6 +112,7 @@ try {
 			text: "bounded instruction",
 			deliveryId: "00000000-0000-4000-8000-000000000001",
 			hostContextId: "another:principal:intake",
+			relationshipScope,
 		}),
 	}, "/operator/relationship-message")).status, 400, "cross-context delivery is denied");
 	const deliveryId = "00000000-0000-4000-8000-000000000001";
@@ -101,6 +131,7 @@ try {
 			text: "bounded instruction",
 			deliveryId,
 			hostContextId: "front-desk:principal:intake",
+			relationshipScope,
 			hostReceipt: { ...hostReceipt, url: "http://example.com/receipt" },
 		}),
 	}, "/operator/relationship-message")).status, 400, "receipt callbacks are pinned to Hostd");
@@ -114,6 +145,24 @@ try {
 			text: "bounded instruction",
 			deliveryId,
 			hostContextId: "front-desk:principal:intake",
+			relationshipScope: {
+				...relationshipScope,
+				replyTarget: "phone-fedcba98765432100123",
+			},
+			hostReceipt,
+		}),
+	}, "/operator/relationship-message")).status, 400, "relationship target substitution is denied");
+	assert.equal((await request(relationshipAdapter, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${relationshipToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			text: "bounded instruction",
+			deliveryId,
+			hostContextId: "front-desk:principal:intake",
+			relationshipScope,
 			hostReceipt,
 		}),
 	}, "/operator/relationship-message")).status, 202);
@@ -121,6 +170,15 @@ try {
 		await new Promise(resolve => setTimeout(resolve, 10));
 	}
 	assert.equal(handled, 1);
+	assert.equal(handledEvent.sourceEventType, "hostd:mcp-relationship-instruction");
+	assert.equal(handledEvent.replyTarget, relationshipScope.replyTarget);
+	assert.equal(handledEvent.replyTargetDescription, "Hostd-verified phone relationship ending 0123");
+	assert.deepEqual(handledEvent.hostRelationship, relationshipScope);
+	assert.deepEqual(handledDeliveryScope, {
+		source: "mcp-operator",
+		eventId: deliveryId,
+		replyTarget: relationshipScope.replyTarget,
+	});
 	assert.deepEqual(receiptStatuses, ["running", "completed"]);
 
 	const inFlightDeliveryId = "00000000-0000-4000-8000-000000000004";
@@ -141,6 +199,7 @@ try {
 		text: "bounded instruction",
 		deliveryId: inFlightDeliveryId,
 		hostContextId: "front-desk:principal:intake",
+		relationshipScope,
 		hostReceipt: {
 			...hostReceipt,
 			url: `${hostdUrl}/v1/events/${inFlightDeliveryId}/receipt`,
@@ -187,6 +246,7 @@ try {
 			text: "bounded instruction",
 			deliveryId: uncertainDeliveryId,
 			hostContextId: "front-desk:principal:intake",
+			relationshipScope,
 			hostReceipt: {
 				...hostReceipt,
 				url: `${hostdUrl}/v1/events/${uncertainDeliveryId}/receipt`,
@@ -223,6 +283,7 @@ try {
 			text: "bounded instruction",
 			deliveryId: failedResultDeliveryId,
 			hostContextId: "front-desk:principal:intake",
+			relationshipScope,
 			hostReceipt: {
 				...hostReceipt,
 				url: `${hostdUrl}/v1/events/${failedResultDeliveryId}/receipt`,

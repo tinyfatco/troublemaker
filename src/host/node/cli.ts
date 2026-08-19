@@ -10,6 +10,7 @@ import { EmailWebhookAdapter } from "../../adapters/email-webhook.js";
 import { HeartbeatAdapter, HEARTBEAT_CHANNEL_ID } from "../../adapters/heartbeat.js";
 import { FollowUpAdapter } from "../../adapters/follow-up.js";
 import { syncHeartbeatFromSpontaneity } from "../../heartbeat-schedule.js";
+import { parseHostRelationshipScope } from "../../host-relationship-scope.js";
 import { OperatorAdapter } from "../../adapters/operator.js";
 import { SlackSocketAdapter } from "../../adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "../../adapters/slack-webhook.js";
@@ -845,10 +846,15 @@ const relationshipOperatorInboundToken = process.env.MOM_OPERATOR_RELATIONSHIP_I
 if (relationshipOperatorInboundToken && Buffer.byteLength(relationshipOperatorInboundToken, "utf8") < 32) {
 	throw new Error("MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN must be at least 32 bytes");
 }
+const relationshipOperatorScope = parseHostRelationshipScope(process.env.MOM_OPERATOR_RELATIONSHIP_SCOPE);
+if (Boolean(relationshipOperatorInboundToken) !== Boolean(relationshipOperatorScope)) {
+	throw new Error("MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN and MOM_OPERATOR_RELATIONSHIP_SCOPE must be configured together");
+}
 const operatorAdapter = new OperatorAdapter({
 	workingDir,
 	inboundToken: operatorInboundToken,
 	relationshipInboundToken: relationshipOperatorInboundToken,
+	relationshipScope: relationshipOperatorScope,
 	hostContextId: process.env.TROUBLEMAKER_CONTEXT_ID?.trim(),
 	hostdUrl: process.env.TROUBLEMAKER_HOSTD_URL?.trim(),
 }) as AdapterWithHandler;

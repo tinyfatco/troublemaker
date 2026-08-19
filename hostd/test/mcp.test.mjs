@@ -84,7 +84,7 @@ async function fixture() {
 		contextId: CONTEXT_ID,
 	});
 	store.upsertPhoneConversation({
-		threadTarget: "phone-example",
+		threadTarget: "phone-0123456789abcdef0123",
 		provider: "example",
 		providerThreadId: "example-thread",
 		principalHash: "example-principal",
@@ -450,6 +450,18 @@ test("inbound MCP exposes only an idempotent relationship Operator instruction",
 		const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
 		const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
 		const connected = await mcp.completeHandoff(sessionToken, { name: "Ghost" });
+		const relationship = store.getMcpRelationshipByRoute(
+			ROUTE.source,
+			ROUTE.providerThreadId,
+			"relationship-operator-v1",
+		);
+		assert.deepEqual(mcp.operatorRuntimeScope(relationship), {
+			relationshipId: relationship.id,
+			generation: 1,
+			source: "phone",
+			recipientHint: "ending 0123",
+			replyTarget: "phone-0123456789abcdef0123",
+		});
 		const resourceId = new URL(connected.server_url).pathname.split("/").at(-1);
 		const authorization = `Bearer ${connected.api_key}`;
 		const requestHeaders = { "content-type": "application/json" };

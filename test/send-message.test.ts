@@ -1,4 +1,5 @@
 import type { PlatformAdapter } from "../src/adapters/types.js";
+import { withHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 import {
 	createSendMessageTool,
 	isObsoleteSilentControlMessage,
@@ -241,6 +242,41 @@ async function run() {
 	assertEqual(phone.groupSent.length, 1, "tool sends phone targets with explicit recipients through group-aware phone method");
 	assertEqual(phone.groupSent[0]?.channel, "phone-abc123", "phone group target preserves phone channel");
 	assertEqual(phone.groupSent[0]?.recipients.join(","), "+15555550124,+15555550125", "phone group recipients are trimmed and deduped");
+
+	const relationshipTarget = "phone-relationship-bound";
+	await withHostDeliveryScope({
+		source: "mcp-operator",
+		eventId: "00000000-0000-4000-8000-000000000001",
+		replyTarget: relationshipTarget,
+	}, async () => {
+		await (tool.execute as any)("call-relationship-exact", {
+			label: "bounded relationship reply",
+			target: relationshipTarget,
+			text: "one exact relationship reply",
+		});
+		assertEqual(phone.sent.at(-1)?.channel, relationshipTarget, "MCP relationship turn permits the exact Hostd-bound target");
+		try {
+			await (tool.execute as any)("call-relationship-substitute", {
+				label: "wrong relationship reply",
+				target: "zulip:4",
+				text: "must not leave the relationship",
+			});
+			assert(false, "MCP relationship turn denies another channel target");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("exact bound reply target"), "MCP relationship turn denies another channel target");
+		}
+		try {
+			await (tool.execute as any)("call-relationship-group", {
+				label: "wrong group reply",
+				target: relationshipTarget,
+				text: "must remain direct",
+				recipients: ["+15555550124"],
+			});
+			assert(false, "MCP relationship turn denies recipient expansion");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("direct plain-text"), "MCP relationship turn denies recipient expansion");
+		}
+	});
 
 	const silentResult = await (tool.execute as any)("call-2", {
 		label: "legacy silent",

@@ -85,6 +85,7 @@ function withFixedWorkingOutput(source: MomContext, working: MomContext, target:
  */
 export function routeWorkingOutputContext(options: WorkingOutputRoutingOptions): MomContext {
 	const { policy, sourceContext } = options;
+	if (sourceContext.message.hostRelationship) return withoutWorkingOutput(sourceContext);
 	if (policy.mode === "follow") return sourceContext;
 	if (policy.mode === "off") return withoutWorkingOutput(sourceContext);
 

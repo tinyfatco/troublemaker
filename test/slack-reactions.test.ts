@@ -8,6 +8,7 @@ import { Check } from "typebox/value";
 import { SlackBase } from "../src/adapters/slack-base.js";
 import { SlackSocketAdapter } from "../src/adapters/slack-socket.js";
 import { SlackWebhookAdapter } from "../src/adapters/slack-webhook.js";
+import { withHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "../src/adapters/types.js";
 import type { ChannelPulse } from "../src/engagement/channel-pulse.js";
 import type { ChannelStore } from "../src/store.js";
@@ -495,6 +496,21 @@ try {
 		emoji: "thumbsup",
 	}], "react_to_message normalizes the emoji and calls the Slack reaction API exactly once");
 	assert.equal(postedText, 0, "react_to_message never posts Slack text");
+	await withHostDeliveryScope({
+		source: "mcp-operator",
+		eventId: "00000000-0000-4000-8000-000000000001",
+		replyTarget: "phone-0123456789abcdef0123",
+	}, async () => {
+		await assert.rejects(
+			(reactTool.execute as any)("relationship-reaction", {
+				label: "Must stay relationship-scoped",
+				target: "slack:C5555555555:1710000005.000600",
+				emoji: "thumbsup",
+			}),
+			/Reactions are unavailable during an MCP relationship turn/,
+		);
+	});
+	assert.equal(reactionCalls.length, 1, "MCP relationship turns cannot react outside the bound recipient");
 
 	const live = new LiveThreadSlackAdapter({
 		botToken: "xoxb-test",

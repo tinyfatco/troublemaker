@@ -103,6 +103,33 @@ assert.equal(followed, followSource, "follow preserves the adapter's existing re
 await followed.respond("_→ Followed label_", false);
 assert.deepEqual(followHarness.responds, [{ text: "_→ Followed label_", shouldLog: false }]);
 
+const relationshipHarness = createHarness();
+const relationshipSource = createContext("operator", relationshipHarness);
+relationshipSource.message.hostRelationship = {
+	relationshipId: "00000000-0000-4000-8000-000000000010",
+	generation: 1,
+	source: "phone",
+	recipientHint: "ending 0123",
+	replyTarget: "phone-0123456789abcdef0123",
+};
+let relationshipWorkingOutputCreated = false;
+const relationshipOutputAdapter = createAdapter("slack", () => {
+	relationshipWorkingOutputCreated = true;
+	return createContext("D3333333333", createHarness());
+});
+const relationshipOutput = routeWorkingOutputContext({
+	policy: { mode: "fixed", target: { platform: "slack", channelId: "D3333333333" } },
+	sourceContext: relationshipSource,
+	adapters: [relationshipOutputAdapter],
+	store,
+	presentation,
+});
+await relationshipOutput.setWorking(true);
+await relationshipOutput.respond("_→ Must stay internal_", false, { show: true });
+assert.equal(relationshipWorkingOutputCreated, false, "MCP relationship turns never create a cross-channel working-output sink");
+assert.equal(relationshipHarness.responds.length, 0, "MCP relationship turns suppress visible working labels");
+assert.equal(relationshipOutput.workingReplyTarget, null, "MCP relationship turns expose no working-output send locus");
+
 const offHarness = createHarness();
 const off = routeWorkingOutputContext({
 	policy: { mode: "off" },

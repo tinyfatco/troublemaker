@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { ToolStreamingMode, WorkingOutputTarget, WorkingStreamPresentation } from "../context.js";
+import type { HostRelationshipScope } from "../host-relationship-scope.js";
 import type { Attachment, ChannelStore } from "../store.js";
 
 // ============================================================================
@@ -34,6 +35,8 @@ export interface MomEvent {
 	threadTs?: string;
 	replyTarget?: string;
 	replyTargetDescription?: string;
+	/** Host-authenticated relationship identity injected outside message text. */
+	hostRelationship?: HostRelationshipScope;
 	/** Present only on harness-generated idle follow-up checks. */
 	followUp?: FollowUpWakeMetadata;
 	files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
@@ -159,6 +162,7 @@ export interface MomContext {
 			threadTs?: string;
 			replyTarget?: string;
 			replyTargetDescription?: string;
+			hostRelationship?: HostRelationshipScope;
 			attachments: Array<{ local: string }>;
 	};
 	channelName?: string;

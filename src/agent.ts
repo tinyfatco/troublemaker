@@ -20,6 +20,7 @@ import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { formatDeliveryContext } from "./delivery-context.js";
+import { formatHostRelationshipSystemContext } from "./host-relationship-scope.js";
 import {
 	buildSessionPreamble,
 	buildSystemPrompt,
@@ -1049,7 +1050,10 @@ async function createRunner(
 			}
 
 			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
-			currentSession.agent.state.systemPrompt = systemPrompt;
+			const hostRelationshipContext = formatHostRelationshipSystemContext(ctx.message.hostRelationship);
+			currentSession.agent.state.systemPrompt = hostRelationshipContext
+				? `${systemPrompt}\n\n${hostRelationshipContext}`
+				: systemPrompt;
 
 			// Build dynamic preamble (injected into user message below)
 			settingsManager.reload();

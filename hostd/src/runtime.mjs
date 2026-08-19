@@ -182,13 +182,25 @@ export function mcpRuntimeVersionSuffix(config, store, contextId) {
 	const state = {
 		inbound: store.listMcpInboundGrants(contextId, { activeOnly: true })
 			.filter((grant) => grant.profile === "relationship-operator-v1" && grant.relationshipId)
-			.map((grant) => ({
-			id: grant.id,
-			relationshipId: grant.relationshipId,
-				profile: grant.profile,
-				generation: grant.generation,
-				updatedAt: grant.updatedAt,
-			})),
+			.map((grant) => {
+				const relationship = store.getMcpRelationship(grant.relationshipId);
+				const phone = relationship?.source === "phone"
+					? store.getPhoneConversationByProviderThread(relationship.providerThreadId)
+					: null;
+				return {
+					id: grant.id,
+					relationshipId: grant.relationshipId,
+					profile: grant.profile,
+					generation: grant.generation,
+					updatedAt: grant.updatedAt,
+					relationship: relationship ? {
+						generation: relationship.generation,
+						source: relationship.source,
+						recipientHint: relationship.recipientHint,
+						replyTarget: phone?.threadTarget,
+					} : null,
+				};
+			}),
 		outbound: store.listMcpOutboundConnections(contextId, { activeOnly: true }).map((connection) => ({
 			id: connection.id,
 			revision: connection.revision,
@@ -632,6 +644,7 @@ export class RuntimeManager {
 		if (!this.mcp) throw new Error("MCP Operator delivery is unavailable");
 		const { grant, relationship } = this.mcp.authorizeInstructionEvent(event, input);
 		const inboundToken = this.mcp.operatorRuntimeToken(target, relationship);
+		const relationshipScope = this.mcp.operatorRuntimeScope(relationship);
 		const response = await fetch(context.relationshipOperatorEndpoint, {
 			method: "POST",
 			headers: {
@@ -640,6 +653,7 @@ export class RuntimeManager {
 			},
 			body: JSON.stringify({
 				text: `Authenticated instruction from MCP connection ${JSON.stringify(grant.displayName)}:\n${input.instruction}`,
+				relationshipScope,
 				deliveryId: event.id,
 				hostContextId: event.contextId,
 				hostReceipt: this.hostReceipt(target, event),
@@ -814,6 +828,9 @@ export class RuntimeManager {
 					MOM_OPERATOR_RELATIONSHIP_INBOUND_TOKEN: this.mcp.operatorRuntimeToken(
 						target,
 						activeMcpRelationship,
+					),
+					MOM_OPERATOR_RELATIONSHIP_SCOPE: JSON.stringify(
+						this.mcp.operatorRuntimeScope(activeMcpRelationship),
 					),
 				} : {}),
 				...(siteDeployments.length > 0 || siteFactory ? {

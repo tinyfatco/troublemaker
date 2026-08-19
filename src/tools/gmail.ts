@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { currentHostDeliveryScope } from "../adapters/host-delivery-scope.js";
 
 interface GmailToolOptions {
 	baseUrl?: string;
@@ -120,6 +121,9 @@ export function createGmailToolDefinitions(options: GmailToolOptions = {}): Tool
 				subject: Type.Optional(Type.String({ description: "Subject for a new message. Reply subjects are derived by the host.", minLength: 1, maxLength: 998 })),
 			}),
 			execute: async (id: string, input: unknown) => {
+				if (currentHostDeliveryScope()?.source === "mcp-operator") {
+					throw new Error("Gmail drafts are unavailable during an MCP relationship turn; user-facing action is restricted to the exact Hostd-bound reply target.");
+				}
 				const body = input as GmailDraftInput;
 				return textResult(await gmailRequest(options, "/v1/gmail/draft", {
 					idempotency_key: gmailIdempotencyKey("draft", id),
@@ -139,6 +143,9 @@ export function createGmailToolDefinitions(options: GmailToolOptions = {}): Tool
 				draft_id: Type.String({ description: "Draft ID returned by gmail_draft.", minLength: 1, maxLength: 256 }),
 			}),
 			execute: async (id: string, input: unknown) => {
+				if (currentHostDeliveryScope()?.source === "mcp-operator") {
+					throw new Error("Gmail send is unavailable during an MCP relationship turn; user-facing action is restricted to the exact Hostd-bound reply target.");
+				}
 				const body = input as { draft_id?: string };
 				return textResult(await gmailRequest(options, "/v1/gmail/send", {
 					idempotency_key: gmailIdempotencyKey("send", id),

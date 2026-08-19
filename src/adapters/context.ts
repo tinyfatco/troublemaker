@@ -209,6 +209,7 @@ export function createTwoMessageContext(
 			threadTs: event.threadTs,
 			replyTarget: event.replyTarget,
 			replyTargetDescription: event.replyTargetDescription,
+			hostRelationship: event.hostRelationship,
 			attachments: (event.attachments || []).map((a) => ({ local: a.local })),
 		},
 		channelName,

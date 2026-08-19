@@ -290,6 +290,63 @@ test("scheduled occurrences use only the exact context ingress capability", asyn
 	}
 });
 
+test("MCP Operator delivery carries Hostd's exact relationship scope", async () => {
+	const contextId = "front-desk:relationship:relationship-operator";
+	const relationshipScope = {
+		relationshipId: "00000000-0000-4000-8000-000000000010",
+		generation: 3,
+		source: "phone",
+		recipientHint: "ending 0123",
+		replyTarget: "phone-0123456789abcdef0123",
+	};
+	const target = {
+		id: "front-desk",
+		inboundToken: "synthetic-inbound-secret",
+		hostGateway: "host.example",
+	};
+	const manager = new RuntimeManager({
+		server: { port: 3099 },
+		targetsById: new Map([[target.id, target]]),
+	}, {}, {});
+	manager.setMcp({
+		authorizeInstructionEvent: () => ({
+			grant: { displayName: "Example connection" },
+			relationship: { id: relationshipScope.relationshipId },
+		}),
+		operatorRuntimeToken: () => "relationship-runtime-token",
+		operatorRuntimeScope: () => relationshipScope,
+	});
+	manager.ensureOciContext = async () => ({
+		contextId,
+		relationshipOperatorEndpoint: "http://127.0.0.1:32000/operator/relationship-message",
+	});
+	const originalFetch = globalThis.fetch;
+	let request;
+	globalThis.fetch = async (input, init) => {
+		request = { input: String(input), init, body: JSON.parse(String(init?.body)) };
+		return new Response(JSON.stringify({ accepted: true }), { status: 202 });
+	};
+	try {
+		await manager.acceptEvent({
+			id: "00000000-0000-4000-8000-000000000011",
+			source: "mcp-operator",
+			targetId: target.id,
+			contextId,
+			leaseToken: "00000000-0000-4000-8000-000000000012",
+			deliveryMode: "turn",
+			payloadJson: JSON.stringify({ instruction: "Do the bounded thing.", mcp: {} }),
+		});
+		assert.equal(request.input, "http://127.0.0.1:32000/operator/relationship-message");
+		assert.equal(new Headers(request.init.headers).get("authorization"), "Bearer relationship-runtime-token");
+		assert.deepEqual(request.body.relationshipScope, relationshipScope);
+		assert.equal(request.body.hostContextId, contextId);
+		assert.equal(request.body.deliveryId, "00000000-0000-4000-8000-000000000011");
+		assert.equal(request.body.text.includes("Do the bounded thing."), true);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
 test("runtime engine flags keep Docker and rootless Podman launchers distinct", () => {
 	assert.deepEqual(runtimeEngineRunFlags("/usr/local/bin/docker"), [
 		"--add-host",

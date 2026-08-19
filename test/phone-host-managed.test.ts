@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { withHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
+import {
+	currentHostDeliveryScope,
+	withHostDeliveryScope,
+} from "../src/adapters/host-delivery-scope.js";
 import { HostManagedPhoneProvider } from "../src/adapters/phone-messaging/host-managed-provider.js";
 import type { PhoneChannelRecord } from "../src/adapters/phone-messaging/types.js";
 
@@ -49,7 +52,11 @@ async function run() {
 		assert.equal("origin_event_id" in (sentBody || {}), false);
 
 		const eventId = "00000000-0000-4000-8000-000000000001";
-		await withHostDeliveryScope({ source: "mcp-operator", eventId }, () => provider.sendMessage({
+		await withHostDeliveryScope({
+			source: "mcp-operator",
+			eventId,
+			replyTarget: channel.channelId,
+		}, () => provider.sendMessage({
 			channel,
 			text: "One relationship-scoped reply.",
 		}));
@@ -58,6 +65,19 @@ async function run() {
 			String(sentBodies[1]?.idempotency_key),
 			new RegExp(`:mcp:${eventId}:[a-f0-9]{24}$`),
 		);
+		assert.equal(currentHostDeliveryScope(), undefined, "relationship delivery scope clears after the turn");
+		await assert.rejects(
+			() => withHostDeliveryScope({ source: "mcp-operator", eventId, replyTarget: channel.channelId }, async () => {
+				await withHostDeliveryScope({
+					source: "mcp-operator",
+					eventId: "00000000-0000-4000-8000-000000000002",
+					replyTarget: channel.channelId,
+				}, async () => {});
+			}),
+			/different Host relationship delivery is already active/,
+			"overlapping relationship delivery scopes fail closed",
+		);
+		assert.equal(currentHostDeliveryScope(), undefined, "failed overlap leaves no stale delivery scope");
 
 		await assert.rejects(
 			() => provider.sendMessage({
