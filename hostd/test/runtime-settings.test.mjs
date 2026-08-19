@@ -76,6 +76,114 @@ test("stopped context rehome preserves its durable workspace and port", async ()
 	}
 });
 
+test("phone relationship rehome rewrites only its exact persisted channel custody", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-runtime-phone-rehome-"));
+	const contextsDirectory = join(directory, "contexts");
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const fromContextId = "front-desk:legacy:intake";
+	const toContextId = "front-desk:relationship:relationship-operator";
+	const threadTarget = "phone-0123456789abcdef0123";
+	const target = {
+		id: "front-desk",
+		driver: "oci",
+		engine: "/usr/bin/false",
+		contextsDirectory,
+	};
+	try {
+		store.createContext({
+			id: fromContextId,
+			targetId: target.id,
+			driver: "oci",
+			runtimeName: "legacy-runtime",
+			port: 32001,
+		});
+		const oldWorkspace = contextWorkspacePath(target, fromContextId);
+		await mkdir(oldWorkspace, { recursive: true });
+		await writeFile(join(oldWorkspace, "phone-channels.json"), JSON.stringify({
+			version: 1,
+			channels: {
+				[threadTarget]: {
+					channelId: threadTarget,
+					provider: "hostd",
+					hostManaged: true,
+					hostContextId: fromContextId,
+				},
+			},
+		}));
+		const runtime = new RuntimeManager({ targetsById: new Map([[target.id, target]]) }, store);
+		await runtime.rehomeStoppedContext(target, fromContextId, toContextId, {
+			relationshipId: "relationship-example",
+			phoneThreadTarget: threadTarget,
+		});
+
+		const registry = JSON.parse(await readFile(
+			join(contextWorkspacePath(target, toContextId), "phone-channels.json"),
+			"utf8",
+		));
+		assert.equal(registry.channels[threadTarget].hostContextId, toContextId);
+		assert.equal(store.getContext(fromContextId), undefined);
+		assert.equal(store.getContext(toContextId).port, 32001);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("phone relationship rehome rejects stale cross-context channel custody", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-runtime-phone-rehome-denied-"));
+	const contextsDirectory = join(directory, "contexts");
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const fromContextId = "front-desk:legacy:intake";
+	const toContextId = "front-desk:relationship:relationship-operator";
+	const threadTarget = "phone-0123456789abcdef0123";
+	const target = {
+		id: "front-desk",
+		driver: "oci",
+		engine: "/usr/bin/false",
+		contextsDirectory,
+	};
+	try {
+		store.createContext({
+			id: fromContextId,
+			targetId: target.id,
+			driver: "oci",
+			runtimeName: "legacy-runtime",
+			port: 32001,
+		});
+		const oldWorkspace = contextWorkspacePath(target, fromContextId);
+		await mkdir(oldWorkspace, { recursive: true });
+		await writeFile(join(oldWorkspace, "phone-channels.json"), JSON.stringify({
+			version: 1,
+			channels: {
+				[threadTarget]: {
+					channelId: threadTarget,
+					provider: "hostd",
+					hostManaged: true,
+					hostContextId: "front-desk:other:intake",
+				},
+			},
+		}));
+		const runtime = new RuntimeManager({ targetsById: new Map([[target.id, target]]) }, store);
+		await assert.rejects(
+			runtime.rehomeStoppedContext(target, fromContextId, toContextId, {
+				relationshipId: "relationship-example",
+				phoneThreadTarget: threadTarget,
+			}),
+			/conflicts with source custody/,
+		);
+		assert.equal(store.getContext(fromContextId).port, 32001);
+		assert.equal(store.getContext(toContextId), undefined);
+		assert.equal(
+			JSON.parse(await readFile(join(oldWorkspace, "phone-channels.json"), "utf8"))
+				.channels[threadTarget].hostContextId,
+			"front-desk:other:intake",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("private Operator initializes fixed Mattermost working output without overriding self configuration", async () => {
 	const workspace = await mkdtemp(join(tmpdir(), "hostd-runtime-settings-"));
 	try {

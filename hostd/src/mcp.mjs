@@ -345,7 +345,12 @@ export class HostMcp {
 				target,
 				contextId,
 				destinationContextId,
-				{ relationshipId: relationship?.id },
+				{
+					relationshipId: relationship?.id,
+					phoneThreadTarget: route.source === "phone"
+						? this.store.getPhoneConversationByProviderThread(route.providerThreadId)?.threadTarget
+						: undefined,
+				},
 			);
 		} catch {
 			throw new HostMcpError("relationship_context_migration_failed", 409);

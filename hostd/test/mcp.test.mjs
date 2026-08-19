@@ -350,8 +350,10 @@ test("legacy phone custody is atomically rehomed into one relationship Operator 
 		});
 		store.setMeta("scheduler:draining", "true");
 
+		let rehomeOptions;
 		const runtime = {
 			async rehomeStoppedContext(target, fromContextId, toContextId, options) {
+				rehomeOptions = options;
 				return {
 					...store.rehomeContext({
 						fromContextId,
@@ -407,6 +409,7 @@ test("legacy phone custody is atomically rehomed into one relationship Operator 
 		assert.equal(migrated.to_context_id, CONTEXT_ID);
 		assert.equal(migrated.relationship_id, relationship.id);
 		assert.equal(migrated.workspace_moved, true);
+		assert.equal(rehomeOptions.phoneThreadTarget, "phone-legacy");
 		assert.equal(store.getContext(legacyContextId), undefined);
 		assert.equal(store.getContext(CONTEXT_ID).port, 32001);
 		assert.equal(store.getRoute(ROUTE.source, ROUTE.providerThreadId).contextId, CONTEXT_ID);

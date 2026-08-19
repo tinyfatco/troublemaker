@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, open, readFile, rename, stat } from "node:fs/promises";
+import { cp, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
@@ -71,6 +71,74 @@ async function writePrivateFile(path, content) {
 	} finally {
 		await file.close();
 	}
+}
+
+async function replacePrivateFile(path, content) {
+	const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+	let file;
+	try {
+		file = await open(temporaryPath, "wx", 0o600);
+		await file.chmod(0o600);
+		await file.writeFile(content, "utf8");
+		await file.sync();
+		await file.close();
+		file = undefined;
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await file?.close().catch(() => {});
+		await unlink(temporaryPath).catch(() => {});
+		throw error;
+	}
+}
+
+async function rebindHostManagedPhoneChannelRegistry(
+	workspace,
+	fromContextId,
+	toContextId,
+	expectedThreadTarget,
+) {
+	const registryPath = join(workspace, "phone-channels.json");
+	let originalContent;
+	try {
+		originalContent = await readFile(registryPath, "utf8");
+	} catch (error) {
+		if (error?.code === "ENOENT" && !expectedThreadTarget) return null;
+		if (error?.code === "ENOENT") throw new Error("relationship phone registry is missing");
+		throw error;
+	}
+
+	let registry;
+	try {
+		registry = JSON.parse(originalContent);
+	} catch {
+		throw new Error("relationship phone registry is invalid");
+	}
+	if (
+		!registry
+		|| registry.version !== 1
+		|| !registry.channels
+		|| typeof registry.channels !== "object"
+		|| Array.isArray(registry.channels)
+	) throw new Error("relationship phone registry is invalid");
+
+	const managed = Object.entries(registry.channels).filter(([, record]) => record?.hostManaged === true);
+	if (!expectedThreadTarget) {
+		if (managed.length > 0) throw new Error("non-phone relationship retains host-managed phone authority");
+		return null;
+	}
+	if (managed.length !== 1) {
+		throw new Error("relationship phone registry is not exact-channel scoped");
+	}
+	const [registryKey, record] = managed[0];
+	if (
+		registryKey !== expectedThreadTarget
+		|| record.channelId !== expectedThreadTarget
+		|| record.hostContextId !== fromContextId
+	) throw new Error("relationship phone registry conflicts with source custody");
+
+	record.hostContextId = toContextId;
+	await replacePrivateFile(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+	return { registryPath, originalContent };
 }
 
 export function serializeRuntimeEnvironment(environment) {
@@ -326,7 +394,10 @@ export class RuntimeManager {
 		this.mcp = mcp;
 	}
 
-	async rehomeStoppedContext(target, fromContextId, toContextId, { relationshipId } = {}) {
+	async rehomeStoppedContext(target, fromContextId, toContextId, {
+		relationshipId,
+		phoneThreadTarget,
+	} = {}) {
 		const source = this.store.getContext(fromContextId);
 		if (
 			!source
@@ -355,7 +426,23 @@ export class RuntimeManager {
 			throw new Error("relationship_context_destination_workspace_exists");
 		}
 		const moveWorkspace = await exists(sourceDirectory);
-		if (moveWorkspace) await rename(sourceDirectory, destinationDirectory);
+		let phoneRegistryMigration;
+		if (moveWorkspace) {
+			await rename(sourceDirectory, destinationDirectory);
+			try {
+				phoneRegistryMigration = await rebindHostManagedPhoneChannelRegistry(
+					contextWorkspacePath(target, toContextId),
+					fromContextId,
+					toContextId,
+					phoneThreadTarget,
+				);
+			} catch (error) {
+				await rename(destinationDirectory, sourceDirectory);
+				throw error;
+			}
+		} else if (phoneThreadTarget) {
+			throw new Error("relationship phone workspace is missing");
+		}
 		try {
 			const result = this.store.rehomeContext({
 				fromContextId,
@@ -370,6 +457,12 @@ export class RuntimeManager {
 				retainedStoppedRuntime: source.runtimeName || undefined,
 			};
 		} catch (error) {
+			if (phoneRegistryMigration) {
+				await replacePrivateFile(
+					phoneRegistryMigration.registryPath,
+					phoneRegistryMigration.originalContent,
+				);
+			}
 			if (moveWorkspace) await rename(destinationDirectory, sourceDirectory);
 			throw error;
 		}
