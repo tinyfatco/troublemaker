@@ -179,6 +179,12 @@ try {
 		eventId: deliveryId,
 		replyTarget: relationshipScope.replyTarget,
 	});
+	const relationshipContext = relationshipAdapter.createContext(handledEvent, {} as any, true);
+	assert.equal(relationshipContext.message.sourceEventType, "hostd:mcp-relationship-instruction");
+	assert.equal(relationshipContext.message.directlyAddressed, true);
+	assert.equal(relationshipContext.message.replyTarget, relationshipScope.replyTarget);
+	assert.equal(relationshipContext.message.replyTargetDescription, "Hostd-verified phone relationship ending 0123");
+	assert.deepEqual(relationshipContext.message.hostRelationship, relationshipScope);
 	assert.deepEqual(receiptStatuses, ["running", "completed"]);
 
 	const inFlightDeliveryId = "00000000-0000-4000-8000-000000000004";

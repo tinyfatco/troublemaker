@@ -1415,12 +1415,21 @@ Replies to the operator happen through whatever channel you were already using w
 		return {
 			message: {
 				text: event.text,
-				rawText: event.text,
+				rawText: event.rawText ?? event.text,
 				user: event.user,
 				userName: OPERATOR_USER,
 				channel: event.channel,
 				ts: event.ts,
-				attachments: [],
+				eventType: event.type,
+				sourceEventType: event.sourceEventType,
+				directlyAddressed: event.directlyAddressed,
+				threadTs: event.threadTs,
+				replyTarget: event.replyTarget,
+				replyTargetDescription: event.replyTargetDescription,
+				hostRelationship: event.hostRelationship,
+				attachments: (event.attachments || []).map((attachment) => ({
+					local: attachment.local,
+				})),
 			},
 			channelName: OPERATOR_CHANNEL_LABEL,
 			channels: this.getAllChannels(),
