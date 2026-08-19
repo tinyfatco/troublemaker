@@ -334,7 +334,7 @@ test("MCP Operator delivery carries Hostd's exact relationship scope", async () 
 			contextId,
 			leaseToken: "00000000-0000-4000-8000-000000000012",
 			deliveryMode: "turn",
-			payloadJson: JSON.stringify({ instruction: "Do the bounded thing.", mcp: {} }),
+			payloadJson: JSON.stringify({ message: "Do the bounded thing.", mcp: {} }),
 		});
 		assert.equal(request.input, "http://127.0.0.1:32000/operator/relationship-message");
 		assert.equal(new Headers(request.init.headers).get("authorization"), "Bearer relationship-runtime-token");

@@ -57,7 +57,7 @@ export function createMcpConnectionToolDefinitions(
 	return [defineTool({
 		name: "mcp_connection",
 		label: "mcp_connection",
-		description: "Request a one-time human handoff for an MCP connection instead of asking anyone to paste a credential into chat, list this relationship's connections, or revoke one. The request fails unless this Hostd context has exactly one verified durable relationship. Inbound exposes only instruct_operator for that exact Relationship Operator; it never exposes shell, files, channels, recipient selection, or direct sending. Outbound projects a remote MCP only into that same relationship context while Hostd keeps its credential outside the runtime.",
+		description: "Request a one-time human handoff for an MCP connection instead of asking anyone to paste a credential into chat, list this relationship's connections, or revoke one. The request fails unless this Hostd context has exactly one verified durable relationship. A bidirectional handoff returns message_tinyfat credentials for the remote agent and seals its remote MCP credential as VELLUM_API_KEY at the Hostd boundary. It never exposes shell, files, channels, recipient selection, direct user-facing sending, or host-held secrets. Outbound MCP access is projected only into that same relationship context.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("request"),
@@ -68,6 +68,7 @@ export function createMcpConnectionToolDefinitions(
 				Type.Literal("handoff"),
 				Type.Literal("inbound"),
 				Type.Literal("outbound"),
+				Type.Literal("bidirectional"),
 			])),
 			name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
 			server_url: Type.Optional(Type.String({ minLength: 1, maxLength: 2048 })),
@@ -82,8 +83,8 @@ export function createMcpConnectionToolDefinitions(
 				id?: string;
 			};
 			if (body.action === "request") {
-				if (!["inbound", "outbound"].includes(body.direction || "")) {
-					throw new Error("Requesting an MCP connection requires an inbound or outbound direction.");
+				if (!["inbound", "outbound", "bidirectional"].includes(body.direction || "")) {
+					throw new Error("Requesting an MCP connection requires an inbound, outbound, or bidirectional direction.");
 				}
 				return textResult(await hostRequest(options, {
 					action: "request",

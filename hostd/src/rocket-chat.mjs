@@ -77,15 +77,18 @@ function verifiedContextEmail(store, contextId, knownEmailsByPrincipalHash) {
 }
 
 function awarenessMetadata(notification, outbound) {
+	const mcpInbound = notification.source === "mcp-operator";
 	return {
 		schema: 1,
 		kind: outbound ? "message.outbound.delivered" : "message.inbound.recorded",
 		eventId: notification.id,
 		customerChannelId: notification.contextId,
 		sequence: notification.sequence,
-		source: "email",
-		actorKind: outbound ? "agent" : "contact",
-		actorId: outbound ? notification.contextId.split(":", 1)[0] : notification.principalHash,
+		source: mcpInbound ? "mcp" : "email",
+		actorKind: outbound ? "agent" : mcpInbound ? "integration" : "contact",
+		actorId: outbound || mcpInbound
+			? notification.contextId.split(":", 1)[0]
+			: notification.principalHash,
 		visibility: "channel",
 		...(outbound ? { deliveryStatus: "delivered" } : {}),
 	};
@@ -716,6 +719,26 @@ export class RocketChatProvisioner {
 		}
 
 		const payload = JSON.parse(notification.payloadJson || "{}");
+		if (notification.source === "mcp-operator") {
+			const sender = safeInlineCode(payload.sender) || "Connected MCP client";
+			const created = await this.request("chat.postMessage", {
+				method: "POST",
+				auth: control.credentials,
+				body: {
+					roomId: binding.roomId,
+					text: [
+						`### ${this.config.notifierDisplayName} · MCP message received`,
+						`**From:** \`${sender}\``,
+						"",
+						ledgerBody(payload.message),
+					].join("\n"),
+					customFields: {
+						tinyfat: awarenessMetadata(notification, false),
+					},
+				},
+			});
+			return rocketId(created?.message?._id, "created message ID");
+		}
 		const outbound = notification.source === "gmail_outbound";
 		if (!outbound && notification.source !== "gmail") {
 			throw new Error(`unsupported TINYFAT awareness source ${notification.source}`);

@@ -170,7 +170,7 @@ try {
 		await new Promise(resolve => setTimeout(resolve, 10));
 	}
 	assert.equal(handled, 1);
-	assert.equal(handledEvent.sourceEventType, "hostd:mcp-relationship-instruction");
+	assert.equal(handledEvent.sourceEventType, "hostd:mcp-relationship-message");
 	assert.equal(handledEvent.replyTarget, relationshipScope.replyTarget);
 	assert.equal(handledEvent.replyTargetDescription, "Hostd-verified phone relationship ending 0123");
 	assert.deepEqual(handledEvent.hostRelationship, relationshipScope);
@@ -180,7 +180,7 @@ try {
 		replyTarget: relationshipScope.replyTarget,
 	});
 	const relationshipContext = relationshipAdapter.createContext(handledEvent, {} as any, true);
-	assert.equal(relationshipContext.message.sourceEventType, "hostd:mcp-relationship-instruction");
+	assert.equal(relationshipContext.message.sourceEventType, "hostd:mcp-relationship-message");
 	assert.equal(relationshipContext.message.directlyAddressed, true);
 	assert.equal(relationshipContext.message.replyTarget, relationshipScope.replyTarget);
 	assert.equal(relationshipContext.message.replyTargetDescription, "Hostd-verified phone relationship ending 0123");

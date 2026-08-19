@@ -298,6 +298,31 @@ export class MattermostProvisioner {
 		}
 
 		const payload = JSON.parse(notification.payloadJson || "{}");
+		if (notification.source === "mcp-operator") {
+			const sender = safeInlineCode(payload.sender) || "Connected MCP client";
+			const created = await this.request("/posts", {
+				method: "POST",
+				token: bot.token,
+				body: {
+					channel_id: binding.channelId,
+					message: [
+						"### MCP message received",
+						`**From:** \`${sender}\``,
+						"",
+						ledgerBody(payload.message),
+					].join("\n"),
+					props: {
+						tinyfat_ledger_id: notification.id,
+						tinyfat_customer_channel_id: notification.contextId,
+						tinyfat_sequence: notification.sequence,
+						tinyfat_direction: "inbound",
+						tinyfat_inbound_id: notification.id,
+						tinyfat_source: notification.source,
+					},
+				},
+			});
+			return mattermostId(created?.id, "created post ID");
+		}
 		const outbound = notification.source === "gmail_outbound";
 		if (!outbound && notification.source !== "gmail") {
 			throw new Error(`unsupported TINYFAT ledger source ${notification.source}`);

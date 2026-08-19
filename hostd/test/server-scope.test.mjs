@@ -261,16 +261,18 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		direction: "inbound",
 		name: "Scoped caller",
 	});
-	const oneTimeToken = new URL(handoff.url).hash.slice("#v=".length);
+	const oneTimeToken = new URL(handoff.url).searchParams.get("v");
 	const sessionToken = mcp.openHandoff(oneTimeToken).session_token;
 	const connected = await mcp.completeHandoff(sessionToken, { name: "Scoped caller" });
 	const grantId = new URL(connected.server_url).pathname.split("/").at(-1);
 	const grant = store.getMcpInboundGrant(grantId);
 	const relationship = store.getMcpRelationship(grant.relationshipId);
 	mcp.enqueueInstruction(grant, relationship, {
-		instruction: "Send one bounded acceptance message.",
+		message: "Send one bounded acceptance message.",
 		idempotency_key: "server-scope-0001",
 	});
+	const notification = store.claimControlNotification();
+	store.completeControlNotification(notification.id, "zulip-scope-message");
 	const claimed = store.claimNextEvent();
 	store.acceptEvent(claimed.id, claimed.leaseToken);
 	store.heartbeatEvent(claimed.id, claimed.leaseToken);
@@ -366,9 +368,9 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 				id: 1,
 				method: "tools/call",
 				params: {
-					name: "instruct_operator",
+					name: "message_tinyfat",
 					arguments: {
-						instruction: "Send one bounded acceptance message.",
+						message: "Send one bounded acceptance message.",
 						idempotency_key: "server-scope-0001",
 					},
 				},

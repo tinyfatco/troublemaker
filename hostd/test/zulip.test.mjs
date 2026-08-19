@@ -312,6 +312,41 @@ test("projects redacted direct SMS ledger events into the bound customer channel
 	assert.match(posted.content, /> Can you help with an estimate\?/);
 });
 
+test("projects a connected MCP message into only its exact relationship channel", async () => {
+	const provisioner = new ZulipProvisioner({}, {});
+	const ensured = [];
+	provisioner.ensureContext = async (contextId) => {
+		ensured.push(contextId);
+		return { channelId: 27 };
+	};
+	let posted;
+	provisioner.request = async (path, input) => {
+		assert.equal(path, "messages");
+		posted = Object.fromEntries(input.form);
+		return { id: 108 };
+	};
+	const contextId = "front-desk:0123456789abcdef01234567:relationship-operator";
+	const result = await provisioner.postEmailLedgerNotification({
+		contextId,
+		source: "mcp-operator",
+		providerMessageId: "mcp-message-example",
+		payloadJson: JSON.stringify({
+			sender: "Vellum @all",
+			message: "Please check the request.\nDo not ping @everyone.",
+		}),
+	});
+	assert.equal(result, "108");
+	assert.deepEqual(ensured, [contextId]);
+	assert.equal(posted.type, "channel");
+	assert.equal(posted.to, "27");
+	assert.equal(posted.topic, "");
+	assert.match(posted.content, /^\*\*MCP message received\*\*/);
+	assert.match(posted.content, /Vellum ＠all/);
+	assert.match(posted.content, /> Please check the request\./);
+	assert.match(posted.content, /> Do not ping ＠everyone\./);
+	assert.doesNotMatch(posted.content, /front-desk:|0123456789abcdef/);
+});
+
 test("projects website chat into the private channel without inventing an Operator reply", async () => {
 	const provisioner = new ZulipProvisioner({}, {});
 	provisioner.ensureContext = async () => ({ channelId: 12 });

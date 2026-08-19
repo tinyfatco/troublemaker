@@ -69,7 +69,7 @@ const relationshipContext = formatHostRelationshipSystemContext(normalizeHostRel
 assert(relationshipContext.includes("Hostd authenticated and bound"), "relationship scope is an explicit Hostd assertion");
 assert(relationshipContext.includes("Verified recipient: ending 0123"), "relationship scope exposes only the safe recipient hint");
 assert(relationshipContext.includes("phone-0123456789abcdef0123"), "relationship scope carries the exact opaque send target");
-assert(relationshipContext.includes("not a claim from MCP instruction text"), "relationship scope separates authority from instruction text");
+assert(relationshipContext.includes("not a claim from MCP message text"), "relationship scope separates authority from message text");
 assert.throws(() => normalizeHostRelationshipScope({
 	relationshipId: "00000000-0000-4000-8000-000000000010",
 	generation: 1,

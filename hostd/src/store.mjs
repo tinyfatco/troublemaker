@@ -17,6 +17,7 @@ export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"mcp_relationships",
 	"mcp_inbound_grants",
 	"mcp_outbound_connections",
+	"mcp_setup_requests",
 	"mcp_instruction_receipts",
 	"site_relationship_factories",
 	"site_deployment_bindings",
@@ -136,7 +137,7 @@ export class HostStore {
 				token_hash TEXT NOT NULL UNIQUE,
 				target_id TEXT NOT NULL,
 				context_id TEXT NOT NULL,
-				direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound', 'either')),
+				direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound', 'either', 'bidirectional')),
 				display_name TEXT NOT NULL,
 				upstream_url TEXT,
 				allowed_auth_json TEXT NOT NULL,
@@ -206,6 +207,7 @@ export class HostStore {
 				upstream_url TEXT NOT NULL,
 				auth_type TEXT NOT NULL CHECK(auth_type IN ('none', 'bearer', 'header')),
 				header_name TEXT,
+				credential_name TEXT,
 				credential_ciphertext TEXT,
 				status TEXT NOT NULL DEFAULT 'active'
 					CHECK(status IN ('active', 'revoked')),
@@ -221,6 +223,33 @@ export class HostStore {
 
 			CREATE INDEX IF NOT EXISTS mcp_outbound_connections_context
 				ON mcp_outbound_connections(context_id, status, created_at);
+
+			CREATE TABLE IF NOT EXISTS mcp_setup_requests (
+				id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				relationship_id TEXT NOT NULL,
+				inbound_grant_id TEXT NOT NULL,
+				display_name TEXT NOT NULL,
+				credential_name TEXT NOT NULL,
+				credential_ciphertext TEXT NOT NULL,
+				setup_material_ciphertext TEXT NOT NULL,
+				setup_material_sha256 TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending'
+					CHECK(status IN ('pending', 'completed', 'revoked')),
+				event_id TEXT NOT NULL UNIQUE,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				completed_at TEXT,
+				revoked_at TEXT,
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE,
+				FOREIGN KEY (relationship_id) REFERENCES mcp_relationships(id),
+				FOREIGN KEY (inbound_grant_id) REFERENCES mcp_inbound_grants(id),
+				FOREIGN KEY (event_id) REFERENCES events(id)
+			);
+
+			CREATE INDEX IF NOT EXISTS mcp_setup_requests_context
+				ON mcp_setup_requests(context_id, status, created_at);
 
 			CREATE TABLE IF NOT EXISTS mcp_instruction_receipts (
 				grant_id TEXT NOT NULL,
@@ -603,6 +632,54 @@ export class HostStore {
 		add("mcp_inbound_grants", "generation INTEGER NOT NULL DEFAULT 1");
 		add("mcp_outbound_connections", "relationship_id TEXT");
 		add("mcp_outbound_connections", "generation INTEGER NOT NULL DEFAULT 1");
+		add("mcp_outbound_connections", "credential_name TEXT");
+		const handoffSchema = this.database.prepare(`
+			SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mcp_handoffs'
+		`).get()?.sql || "";
+		if (!handoffSchema.includes("'bidirectional'")) {
+			this.database.exec(`
+				DROP INDEX IF EXISTS mcp_handoffs_context;
+				DROP INDEX IF EXISTS mcp_handoffs_session_token;
+				ALTER TABLE mcp_handoffs RENAME TO mcp_handoffs_pre_bidirectional;
+				CREATE TABLE mcp_handoffs (
+					id TEXT PRIMARY KEY,
+					token_hash TEXT NOT NULL UNIQUE,
+					target_id TEXT NOT NULL,
+					context_id TEXT NOT NULL,
+					relationship_id TEXT,
+					direction TEXT NOT NULL
+						CHECK(direction IN ('inbound', 'outbound', 'either', 'bidirectional')),
+					display_name TEXT NOT NULL,
+					upstream_url TEXT,
+					allowed_auth_json TEXT NOT NULL,
+					expires_at TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'pending'
+						CHECK(status IN ('pending', 'completed', 'expired', 'revoked')),
+					result_id TEXT,
+					session_token_hash TEXT,
+					session_expires_at TEXT,
+					opened_at TEXT,
+					completed_at TEXT,
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL,
+					FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+				);
+				INSERT INTO mcp_handoffs(
+					id, token_hash, target_id, context_id, relationship_id, direction,
+					display_name, upstream_url, allowed_auth_json, expires_at, status,
+					result_id, session_token_hash, session_expires_at, opened_at,
+					completed_at, created_at, updated_at
+				)
+				SELECT id, token_hash, target_id, context_id, relationship_id, direction,
+					display_name, upstream_url, allowed_auth_json, expires_at, status,
+					result_id, session_token_hash, session_expires_at, opened_at,
+					completed_at, created_at, updated_at
+				FROM mcp_handoffs_pre_bidirectional;
+				DROP TABLE mcp_handoffs_pre_bidirectional;
+				CREATE INDEX mcp_handoffs_context
+					ON mcp_handoffs(context_id, status, created_at);
+			`);
+		}
 		const legacyDraftRecipients = this.database.prepare(`
 			SELECT provider_draft_id AS providerDraftId, contact_address AS contactAddress
 			FROM gmail_drafts WHERE to_addresses_json = '[]'
@@ -644,6 +721,22 @@ export class HostStore {
 				ON events(status, available_at, received_at);
 			CREATE INDEX IF NOT EXISTS events_context_status_index
 				ON events(context_id, status);
+			UPDATE control_notifications
+			SET status = 'dead',
+				last_error = 'host restarted during MCP context projection',
+				updated_at = COALESCE(updated_at, created_at)
+			WHERE status = 'sending' AND event_id IN (
+				SELECT id FROM events WHERE source = 'mcp-operator'
+			);
+			UPDATE events
+			SET status = 'dead', last_error = 'mcp_context_projection_ambiguous',
+				lease_token = NULL, lease_expires_at = NULL,
+				updated_at = COALESCE(updated_at, received_at)
+			WHERE source = 'mcp-operator'
+				AND status IN ('queued', 'failed', 'leased', 'accepted')
+				AND id IN (
+					SELECT event_id FROM control_notifications WHERE status = 'dead'
+				);
 			UPDATE control_notifications SET status = 'queued', available_at = updated_at
 				WHERE status = 'sending';
 			UPDATE control_notifications AS notification
@@ -658,6 +751,15 @@ export class HostStore {
 			GROUP BY context_id
 			ON CONFLICT(context_id) DO UPDATE SET
 				last_sequence = MAX(last_sequence, excluded.last_sequence);
+			INSERT OR IGNORE INTO control_notifications(
+				id, event_id, context_id, sequence, status, available_at, created_at, updated_at
+			)
+			SELECT 'mcp-operator:' || event.provider_message_id,
+				event.id, event.context_id, event.awareness_sequence,
+				'queued', event.available_at, event.received_at, event.updated_at
+			FROM events AS event
+			WHERE event.source = 'mcp-operator'
+				AND event.status IN ('queued', 'failed', 'leased', 'accepted');
 			CREATE INDEX IF NOT EXISTS control_notifications_dispatch_index
 				ON control_notifications(status, available_at, created_at);
 			CREATE UNIQUE INDEX IF NOT EXISTS control_notifications_context_sequence
@@ -1933,7 +2035,7 @@ export class HostStore {
 		return handoff;
 	}
 
-	completeMcpHandoff(sessionTokenHash, { inboundGrant, outboundConnection }) {
+	completeMcpHandoff(sessionTokenHash, { inboundGrant, outboundConnection, setupRequest }) {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const handoff = this.getMcpHandoffBySessionTokenHash(sessionTokenHash);
@@ -1946,10 +2048,17 @@ export class HostStore {
 				|| relationship.contextId !== handoff.contextId
 				|| relationship.targetId !== handoff.targetId
 			) throw new Error("mcp_relationship_unavailable");
-			const result = inboundGrant ?? outboundConnection;
-			if (!result || Boolean(inboundGrant) === Boolean(outboundConnection)) {
+			const expectedInbound = ["inbound", "bidirectional"].includes(handoff.direction);
+			const expectedOutbound = ["outbound", "bidirectional"].includes(handoff.direction);
+			const outboundResultCount = Number(Boolean(outboundConnection)) + Number(Boolean(setupRequest));
+			if (
+				Boolean(inboundGrant) !== expectedInbound
+				|| outboundResultCount !== Number(expectedOutbound)
+				|| (setupRequest && handoff.direction !== "bidirectional")
+			) {
 				throw new Error("mcp_handoff_result_invalid");
 			}
+			const timestamp = now();
 			if (inboundGrant) {
 				this.database.prepare(`
 					INSERT INTO mcp_inbound_grants(
@@ -1964,16 +2073,17 @@ export class HostStore {
 					inboundGrant.displayName,
 					inboundGrant.tokenHash,
 					inboundGrant.profile,
-					now(),
-					now(),
+					timestamp,
+					timestamp,
 				);
-			} else {
+			}
+			if (outboundConnection) {
 				this.database.prepare(`
 					INSERT INTO mcp_outbound_connections(
 						id, target_id, context_id, relationship_id, alias, display_name, upstream_url,
-						auth_type, header_name, credential_ciphertext, status,
+						auth_type, header_name, credential_name, credential_ciphertext, status,
 						generation, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?)
 				`).run(
 					outboundConnection.id,
 					handoff.targetId,
@@ -1984,18 +2094,104 @@ export class HostStore {
 					outboundConnection.upstreamUrl,
 					outboundConnection.authType,
 					outboundConnection.headerName ?? null,
+					outboundConnection.credentialName ?? null,
 					outboundConnection.credentialCiphertext ?? null,
-					now(),
-					now(),
+					timestamp,
+					timestamp,
+				);
+			}
+			if (setupRequest) {
+				const awarenessSequence = this.nextAwarenessSequence(handoff.contextId);
+				this.database.prepare(`
+					INSERT INTO events(
+						id, source, provider_message_id, provider_thread_id,
+						principal_hash, target_id, context_id, awareness_sequence,
+						status, payload_json, received_at, available_at, updated_at
+					) VALUES (?, 'mcp-operator', ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+				`).run(
+					setupRequest.eventId,
+					setupRequest.providerMessageId,
+					handoff.relationshipId,
+					relationship.principalHash,
+					handoff.targetId,
+					handoff.contextId,
+					awarenessSequence,
+					JSON.stringify(setupRequest.payload),
+					timestamp,
+					timestamp,
+					timestamp,
+				);
+				this.database.prepare(`
+					INSERT INTO mcp_instruction_receipts(
+						grant_id, idempotency_key, instruction_sha256,
+						relationship_id, relationship_generation, context_id,
+						event_id, created_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				`).run(
+					inboundGrant.id,
+					setupRequest.idempotencyKey,
+					setupRequest.messageSha256,
+					handoff.relationshipId,
+					relationship.generation,
+					handoff.contextId,
+					setupRequest.eventId,
+					timestamp,
+				);
+				this.database.prepare(`
+					INSERT INTO control_notifications(
+						id, event_id, context_id, sequence, status,
+						available_at, created_at, updated_at
+					) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+				`).run(
+					`mcp-operator:${setupRequest.providerMessageId}`,
+					setupRequest.eventId,
+					handoff.contextId,
+					awarenessSequence,
+					timestamp,
+					timestamp,
+					timestamp,
+				);
+				this.database.prepare(`
+					INSERT INTO mcp_setup_requests(
+						id, target_id, context_id, relationship_id, inbound_grant_id,
+						display_name, credential_name, credential_ciphertext,
+						setup_material_ciphertext, setup_material_sha256,
+						status, event_id, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+				`).run(
+					setupRequest.id,
+					handoff.targetId,
+					handoff.contextId,
+					handoff.relationshipId,
+					inboundGrant.id,
+					setupRequest.displayName,
+					setupRequest.credentialName,
+					setupRequest.credentialCiphertext,
+					setupRequest.setupMaterialCiphertext,
+					setupRequest.setupMaterialSha256,
+					setupRequest.eventId,
+					timestamp,
+					timestamp,
 				);
 			}
 			this.database.prepare(`
 				UPDATE mcp_handoffs SET status = 'completed', result_id = ?,
 					completed_at = ?, updated_at = ?
 				WHERE id = ? AND status = 'pending'
-			`).run(result.id, now(), now(), handoff.id);
+			`).run(
+				inboundGrant?.id ?? outboundConnection?.id ?? setupRequest.id,
+				timestamp,
+				timestamp,
+				handoff.id,
+			);
 			this.database.exec("COMMIT");
-			return { handoff: this.getMcpHandoff(handoff.id), resultId: result.id };
+			return {
+				handoff: this.getMcpHandoff(handoff.id),
+				inboundGrantId: inboundGrant?.id,
+				outboundConnectionId: outboundConnection?.id,
+				setupRequestId: setupRequest?.id,
+				setupEventId: setupRequest?.eventId,
+			};
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
@@ -2006,6 +2202,28 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT id FROM mcp_handoffs WHERE context_id = ? ORDER BY created_at DESC
 		`).all(contextId).map((row) => this.getMcpHandoff(row.id));
+	}
+
+	getMcpSetupRequest(contextId, id) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId,
+				relationship_id AS relationshipId, inbound_grant_id AS inboundGrantId,
+				display_name AS displayName, credential_name AS credentialName,
+				credential_ciphertext AS credentialCiphertext,
+				setup_material_ciphertext AS setupMaterialCiphertext,
+				setup_material_sha256 AS setupMaterialSha256, status,
+				event_id AS eventId, created_at AS createdAt, updated_at AS updatedAt,
+				completed_at AS completedAt, revoked_at AS revokedAt
+			FROM mcp_setup_requests WHERE context_id = ? AND id = ?
+		`).get(contextId, id) ?? null;
+	}
+
+	listMcpSetupRequests(contextId, { pendingOnly = false } = {}) {
+		return this.database.prepare(`
+			SELECT id FROM mcp_setup_requests
+			WHERE context_id = ? ${pendingOnly ? "AND status = 'pending'" : ""}
+			ORDER BY created_at, id
+		`).all(contextId).map((row) => this.getMcpSetupRequest(contextId, row.id));
 	}
 
 	revokeMcpHandoff(contextId, id) {
@@ -2065,6 +2283,18 @@ export class HostStore {
 						SELECT event_id FROM mcp_instruction_receipts WHERE grant_id = ?
 					) AND status IN ('queued', 'failed', 'leased', 'accepted')
 				`).run(timestamp, id);
+				this.database.prepare(`
+					UPDATE control_notifications
+					SET status = 'dead', last_error = 'mcp_grant_revoked', updated_at = ?
+					WHERE event_id IN (
+						SELECT event_id FROM mcp_instruction_receipts WHERE grant_id = ?
+					) AND status != 'completed'
+				`).run(timestamp, id);
+				this.database.prepare(`
+					UPDATE mcp_setup_requests
+					SET status = 'revoked', revoked_at = ?, updated_at = ?
+					WHERE inbound_grant_id = ? AND status = 'pending'
+				`).run(timestamp, timestamp, id);
 			}
 			this.database.exec("COMMIT");
 			return result.changes === 1;
@@ -2175,6 +2405,20 @@ export class HostStore {
 				eventId,
 				timestamp,
 			);
+			this.database.prepare(`
+				INSERT INTO control_notifications(
+					id, event_id, context_id, sequence, status,
+					available_at, created_at, updated_at
+				) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+			`).run(
+				`mcp-operator:${providerMessageId}`,
+				eventId,
+				contextId,
+				awarenessSequence,
+				timestamp,
+				timestamp,
+				timestamp,
+			);
 			this.database.exec("COMMIT");
 			return { ...this.getMcpInstructionReceipt(grantId, idempotencyKey), duplicate: false };
 		} catch (error) {
@@ -2219,6 +2463,7 @@ export class HostStore {
 				relationship_id AS relationshipId, alias,
 				display_name AS displayName, upstream_url AS upstreamUrl,
 				auth_type AS authType, header_name AS headerName,
+				credential_name AS credentialName,
 				credential_ciphertext AS credentialCiphertext, status, generation, revision,
 				created_at AS createdAt, updated_at AS updatedAt,
 				last_used_at AS lastUsedAt, last_error AS lastError,
@@ -2232,7 +2477,8 @@ export class HostStore {
 			SELECT id, target_id AS targetId, context_id AS contextId,
 				relationship_id AS relationshipId, alias,
 				display_name AS displayName, upstream_url AS upstreamUrl,
-				auth_type AS authType, header_name AS headerName, status, generation, revision,
+				auth_type AS authType, header_name AS headerName,
+				credential_name AS credentialName, status, generation, revision,
 				created_at AS createdAt, updated_at AS updatedAt,
 				last_used_at AS lastUsedAt, last_error AS lastError,
 				revoked_at AS revokedAt
@@ -3249,12 +3495,29 @@ export class HostStore {
 		if (!current) return null;
 		const status = current.attempts >= maximumAttempts ? "dead" : "failed";
 		const delaySeconds = Math.min(300, 5 * (2 ** Math.max(0, current.attempts - 1)));
-		this.database.prepare(`
-			UPDATE control_notifications
-			SET status = ?, available_at = ?, last_error = ?, updated_at = ?
-			WHERE id = ? AND status = 'sending'
-		`).run(status, future(delaySeconds), String(error).slice(0, 1000), now(), id);
-		return this.getControlNotification(id);
+		const timestamp = now();
+		const message = String(error).slice(0, 1000);
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE control_notifications
+				SET status = ?, available_at = ?, last_error = ?, updated_at = ?
+				WHERE id = ? AND status = 'sending'
+			`).run(status, future(delaySeconds), message, timestamp, id);
+			if (status === "dead" && current.source === "mcp-operator") {
+				this.database.prepare(`
+					UPDATE events
+					SET status = 'dead', last_error = 'mcp_context_projection_failed',
+						lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+					WHERE id = ? AND status IN ('queued', 'failed')
+				`).run(timestamp, current.eventId);
+			}
+			this.database.exec("COMMIT");
+			return this.getControlNotification(id);
+		} catch (failure) {
+			this.database.exec("ROLLBACK");
+			throw failure;
+		}
 	}
 
 	claimNextEvent({
@@ -3278,6 +3541,16 @@ export class HostStore {
 				WHERE candidate.status IN ('queued', 'failed')
 					AND candidate.attempts < ?
 					AND candidate.available_at <= ?
+					AND (
+						candidate.source != 'mcp-operator'
+						OR EXISTS (
+							SELECT 1 FROM control_notifications projected
+							WHERE projected.event_id = candidate.id
+								AND projected.context_id = candidate.context_id
+								AND projected.sequence = candidate.awareness_sequence
+								AND projected.status = 'completed'
+						)
+					)
 					AND NOT EXISTS (
 						SELECT 1 FROM events relationship_turn
 						WHERE relationship_turn.context_id = candidate.context_id
@@ -3955,6 +4228,9 @@ export class HostStore {
 			`).get().count,
 			activeMcpOutboundConnections: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM mcp_outbound_connections WHERE status = 'active'
+			`).get().count,
+			pendingMcpSetupRequests: this.database.prepare(`
+				SELECT COUNT(*) AS count FROM mcp_setup_requests WHERE status = 'pending'
 			`).get().count,
 			dynamicSiteBindings: this.database.prepare(`
 				SELECT COUNT(*) AS count FROM site_deployment_bindings WHERE status = 'active'

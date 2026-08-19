@@ -38,7 +38,7 @@ function usage() {
   troublemaker-hostd provision-zulip --config <path>
   troublemaker-hostd import-legacy-checkpoint --config <path> --checkpoint <path> --key-file <path>
   troublemaker-hostd mcp-rehome-context --config <path> --context <id>
-  troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound> --name <name> [--server-url <https-url>]
+  troublemaker-hostd mcp-handoff --config <path> --context <id> --direction <inbound|outbound|bidirectional> --name <name> [--server-url <https-url>]
   troublemaker-hostd mcp-list --config <path> --context <id>
   troublemaker-hostd mcp-revoke --config <path> --context <id> --direction <handoff|inbound|outbound> --id <id>
   troublemaker-hostd status --config <path>`);
@@ -117,7 +117,13 @@ async function components(configPath) {
 		: undefined;
 	if (mcp) runtime.setMcp(mcp);
 	const scheduler = new EventScheduler({ config, store, runtime });
-	if (mcp) mcp.setEventPump(() => scheduler.pump());
+	if (mcp) {
+		mcp.setEventPump(() => {
+			controlNotifier?.wake();
+			return scheduler.pump();
+		});
+		controlNotifier?.setOnProjected(() => scheduler.pump());
+	}
 	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail
 		? new InboxDaemon({
@@ -441,7 +447,7 @@ async function main() {
 		if (command === "mcp-handoff") {
 			if (!state.mcp) throw new Error("MCP is not configured");
 			const contextId = option("--context");
-			const direction = option("--direction") || "either";
+			const direction = option("--direction") || "bidirectional";
 			const name = option("--name") || "MCP connection";
 			if (!contextId) usage();
 			const context = state.store.getContext(contextId);

@@ -652,7 +652,7 @@ export class RuntimeManager {
 				"content-type": "application/json",
 			},
 			body: JSON.stringify({
-				text: `Authenticated instruction from MCP connection ${JSON.stringify(grant.displayName)}:\n${input.instruction}`,
+				text: `Authenticated message from MCP connection ${JSON.stringify(grant.displayName)}:\n${input.message}`,
 				relationshipScope,
 				deliveryId: event.id,
 				hostContextId: event.contextId,

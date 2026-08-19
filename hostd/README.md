@@ -263,22 +263,33 @@ accepts a recipient or raw contact address. A legacy context named in
 configuration is migrated under the same maintenance window, preventing a
 silent scheduling-ownership split.
 
-An inbound grant exposes one tool, `instruct_operator`. It durably queues an
-idempotent instruction for the relationship's Operator and wakes only that
+An inbound grant exposes one tool, `message_tinyfat`. It durably queues an
+idempotent message for the relationship's Operator. TINYFAT projects that
+message into the relationship's exact private channel before waking only that
 context's OCI runtime. It does not proxy the runtime's general MCP server and
 cannot directly read files, run commands, enumerate channels, choose a
 recipient, or send a user-facing message. During that turn Hostd denies every
 host-managed messaging/control surface except delivery to the relationship's
 exact active phone conversation. The Operator remains the author and decision
-maker. Its phone delivery is linked back to the instruction event and provider
+maker. Its phone delivery is linked back to the message event and provider
 message receipt. A durable unique origin fence permits at most one provider
-delivery for one MCP instruction event, including when an Operator attempts a
+delivery for one MCP message event, including when an Operator attempts a
 second body after the first send.
 
 An outbound connection lets that same relationship Operator use one remote
 HTTPS MCP server. Hostd encrypts the upstream credential and adds it only at
 the host proxy. Pending handoffs and completed connections are independently
 revocable.
+
+A bidirectional Vellum handoff creates both sides in one relationship-bound
+transaction. The human may provide a final remote HTTPS MCP endpoint for an
+immediate outbound connection, or paste an MCP configuration block or public
+repository URL for review. Review-only material is projected into the exact
+private channel and queued to that same Operator only after the projection is
+durable. `VELLUM_API_KEY` and the original setup material remain separately
+sealed at Hostd; neither is copied to the runtime, channel, or legacy agent
+record. A repository URL is never treated as if it were already an MCP
+endpoint.
 
 ```json
 {

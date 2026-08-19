@@ -378,6 +378,26 @@ export class ZulipProvisioner {
 	async postEmailLedgerNotification(notification) {
 		const binding = await this.ensureContext(notification.contextId);
 		const payload = JSON.parse(notification.payloadJson || "{}");
+		if (notification.source === "mcp-operator") {
+			const sender = cleanInline(payload.sender) || "Connected MCP client";
+			const body = ledgerBody(payload.message);
+			const created = await this.request("messages", {
+				method: "POST",
+				auth: "projector",
+				form: zulipForm({
+					type: "channel",
+					to: binding.channelId,
+					topic: "",
+					content: [
+						"**MCP message received**",
+						`**From:** ${sender}`,
+						"",
+						body,
+					].join("\n"),
+				}),
+			});
+			return String(positiveInteger(created.id, "message ID"));
+		}
 		if (notification.source === "web_chat") {
 			const sender = cleanInline(payload.sender) || "Website visitor";
 			const body = ledgerBody(payload.message?.body);

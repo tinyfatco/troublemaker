@@ -14,7 +14,7 @@ const fakeFetch: typeof fetch = async (input, init) => {
 		body: JSON.parse(String(init?.body || "{}")) as Record<string, unknown>,
 	});
 	return Response.json({
-		url: `https://app.example.com/connect#v=tfat_one_${"a".repeat(43)}`,
+		url: `https://app.example.com/connect?v=tfat_one_${"a".repeat(24)}`,
 		expires_at: "2026-08-18T20:00:00.000Z",
 	});
 };
@@ -42,7 +42,7 @@ const requested = await tool.execute("request-call", {
 	name: "Custom Vellum",
 	server_url: "https://vellum.example.com/mcp",
 });
-assert.match(String(output(requested).url), /#v=tfat_one_/);
+assert.match(String(output(requested).url), /\?v=tfat_one_/);
 assert.deepEqual(seen[0], {
 	url: "http://127.0.0.1:3099/v1/mcp/control",
 	authorization: "Bearer example-context-MCP-control-capability",
@@ -55,15 +55,22 @@ assert.deepEqual(seen[0], {
 	},
 });
 
+await tool.execute("request-both", {
+	action: "request",
+	direction: "bidirectional",
+	name: "Vellum relationship exchange",
+});
+assert.equal(seen[1].body.direction, "bidirectional");
+
 await tool.execute("list-call", { action: "list" });
-assert.equal(seen[1].body.action, "list");
+assert.equal(seen[2].body.action, "list");
 
 await tool.execute("revoke-call", {
 	action: "revoke",
 	direction: "inbound",
 	id: "mcp_example",
 });
-assert.deepEqual(seen[2].body, {
+assert.deepEqual(seen[3].body, {
 	context_id: "front-desk:example:intake",
 	action: "revoke",
 	direction: "inbound",
