@@ -517,7 +517,10 @@ Replies to the operator happen through whatever channel you were already using w
 				if (this.handler.isRunning(OPERATOR_CHANNEL_ID)) {
 					throw new Error("relationship Operator became busy before delivery");
 				}
-				await this.handler.handleEvent(event, this, true);
+				const result = await this.handler.handleEvent(event, this, true);
+				if (result?.stopReason === "error" || result?.stopReason === "aborted") {
+					throw new Error("relationship Operator run did not complete");
+				}
 			});
 			this.markRelationshipDeliveryCompleted(deliveryId);
 		}, { failureStatus: "uncertain" });

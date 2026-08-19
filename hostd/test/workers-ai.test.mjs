@@ -105,6 +105,7 @@ test("Workers AI model selection and credentials are exact-principal scoped", ()
 		);
 		assert.equal(env.MOM_MODEL_PROVIDER, MODEL.provider);
 		assert.equal(env.MOM_MODEL_ID, MODEL.id);
+		assert.equal(env.CLOUDFLARE_ACCOUNT_ID, state.config.workersAi.accountId);
 		assert.equal(
 			env.CLOUDFLARE_WORKERS_AI_BASE_URL,
 			`http://host.containers.internal:3099/v1/workers-ai/${encodeURIComponent(state.owner.contextId)}`,

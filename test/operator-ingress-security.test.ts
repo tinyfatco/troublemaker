@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -204,6 +204,42 @@ try {
 		"running",
 		"uncertain",
 	]);
+
+	const failedResultDeliveryId = "00000000-0000-4000-8000-000000000005";
+	relationshipAdapter.setHandler({
+		isRunning: () => false,
+		handleEvent: async () => ({
+			stopReason: "error",
+			errorMessage: "model credential unavailable",
+		}),
+	} as any);
+	assert.equal((await request(relationshipAdapter, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${relationshipToken}`,
+			"content-type": "application/json",
+		},
+		body: JSON.stringify({
+			text: "bounded instruction",
+			deliveryId: failedResultDeliveryId,
+			hostContextId: "front-desk:principal:intake",
+			hostReceipt: {
+				...hostReceipt,
+				url: `${hostdUrl}/v1/events/${failedResultDeliveryId}/receipt`,
+			},
+		}),
+	}, "/operator/relationship-message")).status, 202);
+	for (let attempt = 0; receiptStatuses.length < 8 && attempt < 50; attempt += 1) {
+		await new Promise(resolve => setTimeout(resolve, 10));
+	}
+	assert.deepEqual(receiptStatuses.slice(-2), ["running", "uncertain"]);
+	assert.equal(
+		readFileSync(join(workingDir, "awareness", "relationship-operator-deliveries.jsonl"), "utf8")
+			.split("\n")
+			.includes(failedResultDeliveryId),
+		false,
+		"failed relationship turns must remain replayable rather than being recorded complete",
+	);
 } finally {
 	await new Promise<void>((resolve, reject) => receiptServer.close((error) => error ? reject(error) : resolve()));
 	rmSync(workingDir, { recursive: true, force: true });

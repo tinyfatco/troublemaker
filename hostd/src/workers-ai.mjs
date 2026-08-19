@@ -190,6 +190,10 @@ export function runtimeModelEnvironment(config, target, contextId, model) {
 		MOM_MODEL_PROVIDER: model.provider,
 		MOM_MODEL_ID: model.id,
 		CLOUDFLARE_API_KEY: contextCapability(target.outboundToken, "workers-ai", contextId),
+		// The model registry requires the account identifier before it considers
+		// Workers AI authentication configured. The scoped API key still points at
+		// Hostd's per-context proxy, so no Cloudflare credential enters the runtime.
+		CLOUDFLARE_ACCOUNT_ID: config.workersAi.accountId,
 		CLOUDFLARE_WORKERS_AI_BASE_URL:
 			`http://${target.hostGateway}:${config.server.port}/v1/workers-ai/${encodeURIComponent(contextId)}`,
 	};
