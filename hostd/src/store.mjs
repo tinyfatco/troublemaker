@@ -3640,6 +3640,7 @@ export class HostStore {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const existingEvent = this.getEventByProviderMessage(event.source, event.providerMessageId);
+			const previousRelationship = this.getPhoneConversation(conversation.threadTarget);
 			const previousInbound = this.database.prepare(`
 				SELECT 1 FROM events
 				WHERE source = 'phone' AND provider_thread_id = ?
@@ -3649,7 +3650,13 @@ export class HostStore {
 			const storedEvent = this.upsertEvent(event);
 			this.insertControlNotification(event, storedEvent);
 			let relationshipEventQueued = false;
-			if (relationshipEvent && attributionClaim && !existingEvent && !previousInbound) {
+			if (
+				relationshipEvent
+				&& attributionClaim
+				&& !existingEvent
+				&& !previousRelationship
+				&& !previousInbound
+			) {
 				const relationshipKey = `phone:${storedConversation.threadTarget}`;
 				const attributionAccepted = this.insertRelationshipAttribution({
 					...attributionClaim,

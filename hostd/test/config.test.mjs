@@ -27,6 +27,9 @@ const ENVIRONMENT = {
 	ROCKETCHAT_HOSTD_ADMIN_USER_ID: "example-admin-user",
 	ROCKETCHAT_HOSTD_ADMIN_TOKEN: "example-admin-token-at-least-32-bytes",
 	ROCKETCHAT_CREATE_TOKENS_FOR_USERS_SECRET: "example-create-token-secret-at-least-32-bytes",
+	META_CAPI_ACCESS_TOKEN: "synthetic-meta-access-token-at-least-32-bytes",
+	META_ATTRIBUTION_SECRET: "synthetic-meta-attribution-secret-at-least-32-bytes",
+	META_CAPI_TEST_EVENT_CODE: "TEST12345",
 };
 
 test("requires distinct MCP assertion authority for each edge issuer", async () => {
@@ -260,6 +263,53 @@ test("loads encrypted edge relay polling without a public Hostd listener", async
 			encryptionKey: Buffer.alloc(32, 4).toString("base64"),
 			pollIntervalSeconds: 3,
 		});
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("loads an optional host-owned Meta Contact exporter without exposing authority to runtimes", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-meta-contact-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.metaContact = {
+			datasetId: "123456789012345",
+			accessTokenEnv: "META_CAPI_ACCESS_TOKEN",
+			attributionSecretEnv: "META_ATTRIBUTION_SECRET",
+			campaignIds: ["campaign-example"],
+			testEventCodeEnv: "META_CAPI_TEST_EVENT_CODE",
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(config.metaContact, {
+			datasetId: "123456789012345",
+			accessToken: ENVIRONMENT.META_CAPI_ACCESS_TOKEN,
+			attributionSecret: ENVIRONMENT.META_ATTRIBUTION_SECRET,
+			campaignIds: ["campaign-example"],
+			testEventCode: "TEST12345",
+			apiBaseUrl: "https://graph.facebook.com",
+			apiVersion: "v25.0",
+			pollIntervalSeconds: 5,
+			maximumAttempts: 12,
+			leaseSeconds: 60,
+			retryBaseSeconds: 30,
+			retryMaximumSeconds: 3600,
+			requestTimeoutMs: 15_000,
+			maximumAttributionAgeSeconds: 3600,
+			maximumFutureSkewSeconds: 300,
+		});
+		assert.equal(config.targets[0].runtimeEnv.META_CAPI_ACCESS_TOKEN, undefined);
+
+		raw.metaContact.apiBaseUrl = "http://graph.example.com";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must use HTTPS/);
+
+		delete raw.metaContact.apiBaseUrl;
+		delete raw.phone;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /requires phone configuration/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

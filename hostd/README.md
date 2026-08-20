@@ -10,6 +10,58 @@ and delivery. Normal mail remains in Gmail; no forwarding mailbox or
 reconstructed email transport is involved. A phone-and-Zulip business may omit
 `gmail` entirely; those runtimes receive no email adapter or Gmail tools.
 
+## Attributed phone Contact events
+
+The optional `metaContact` exporter is disabled unless it has an exact Dataset,
+host-owned access token, host-owned attribution-signing secret, and a non-empty
+campaign allowlist. It does not treat a business line, UTM parameter, referrer,
+or ordinary inbound text as attribution.
+
+The narrow bridge is a short-lived, non-sensitive signed marker appended to a
+prefilled SMS by a trusted campaign landing flow. The landing service must mint
+the marker server-side only after it has established the exact Meta campaign;
+the signing secret must never be shipped to browser code. Hostd strips marker
+candidates from the agent-visible message, verifies the HMAC, source, campaign,
+issue time, and one-time nonce, and atomically consumes a hash of that claim with
+the relationship's first direct inbound event. Missing, malformed, stale,
+future-dated, duplicate, replayed, non-Meta, and non-allowlisted claims fail
+closed. An unmarked first contact also prevents a later message from backfilling
+that relationship as campaign-acquired.
+
+The protected Hostd configuration shape is:
+
+```json
+{
+  "metaContact": {
+    "datasetId": "<existing-dataset-id>",
+    "accessTokenEnv": "META_CAPI_ACCESS_TOKEN",
+    "attributionSecretEnv": "META_CONTACT_ATTRIBUTION_SECRET",
+    "campaignIds": ["<exact-campaign-id>"],
+    "testEventCodeEnv": "META_CAPI_TEST_EVENT_CODE"
+  }
+}
+```
+
+`testEventCodeEnv` is optional and should exist only during an intentional Meta
+Test Events acceptance. The access token and signing secret remain host-owned;
+neither belongs in the JSON file, browser, relay payload, or OCI runtime.
+
+Only the claim fingerprint, normalized source, campaign identifier, observation
+time, and minimized conversion outbox are retained for attribution. The Meta
+request contains standard `Contact`, a stable provider-message-derived
+`event_id`, `action_source: "chat"`, event time, and SHA-256-normalized phone.
+It omits SMS and form content, IP address, user agent, click identifiers,
+referrer, and unrelated customer data. The raw marker is not written to the
+phone event or attribution tables.
+
+A dedicated inbound number advertised only by one Meta campaign is the stronger
+future boundary because the signed Sendly destination itself becomes an
+independent campaign partition. If adopted, give that number its own encrypted
+relay partition and exact Hostd campaign binding; do not reuse a general
+business line or infer attribution from a shared number. Provisioning or
+changing a provider number is a separate reviewed activation and is not part of
+the source integration described here.
+
 ## Scoped Gmail tools
 
 A target with `gmailToolsOnly: true` exposes four short runtime tools:

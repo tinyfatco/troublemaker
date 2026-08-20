@@ -572,6 +572,130 @@ function phoneConfig(raw, environment) {
 	};
 }
 
+function metaContactConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const metaContact = object(raw, "metaContact");
+	const datasetId = text(metaContact.datasetId, "metaContact.datasetId");
+	if (!/^\d{5,32}$/.test(datasetId)) {
+		throw new Error("metaContact.datasetId must be a numeric Dataset ID");
+	}
+	const accessToken = envSecret(
+		metaContact.accessTokenEnv,
+		"metaContact.accessTokenEnv",
+		environment,
+	);
+	if (Buffer.byteLength(accessToken, "utf8") < 32) {
+		throw new Error("metaContact.accessTokenEnv must contain at least 32 bytes");
+	}
+	const attributionSecret = envSecret(
+		metaContact.attributionSecretEnv,
+		"metaContact.attributionSecretEnv",
+		environment,
+	);
+	if (Buffer.byteLength(attributionSecret, "utf8") < 32) {
+		throw new Error("metaContact.attributionSecretEnv must contain at least 32 bytes");
+	}
+	if (!Array.isArray(metaContact.campaignIds) || metaContact.campaignIds.length === 0) {
+		throw new Error("metaContact.campaignIds must contain at least one campaign");
+	}
+	const campaignIds = metaContact.campaignIds.map((value, index) => {
+		const campaignId = text(value, `metaContact.campaignIds[${index}]`);
+		if (!/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(campaignId)) {
+			throw new Error(`metaContact.campaignIds[${index}] is invalid`);
+		}
+		return campaignId;
+	});
+	if (new Set(campaignIds).size !== campaignIds.length) {
+		throw new Error("metaContact.campaignIds cannot repeat a campaign");
+	}
+	const testEventCode = metaContact.testEventCodeEnv === undefined
+		? undefined
+		: envSecret(metaContact.testEventCodeEnv, "metaContact.testEventCodeEnv", environment);
+	if (testEventCode && !/^[a-zA-Z0-9_-]{4,128}$/.test(testEventCode)) {
+		throw new Error("metaContact.testEventCodeEnv contains unsupported characters");
+	}
+	const apiBaseUrl = httpUrl(
+		metaContact.apiBaseUrl ?? "https://graph.facebook.com",
+		"metaContact.apiBaseUrl",
+	);
+	if (!apiBaseUrl.startsWith("https://")) {
+		throw new Error("metaContact.apiBaseUrl must use HTTPS");
+	}
+	const apiVersion = metaContact.apiVersion === undefined
+		? "v25.0"
+		: text(metaContact.apiVersion, "metaContact.apiVersion");
+	if (!/^v\d{1,2}\.\d{1,2}$/.test(apiVersion)) {
+		throw new Error("metaContact.apiVersion is invalid");
+	}
+	const retryBaseSeconds = integer(
+		metaContact.retryBaseSeconds,
+		30,
+		"metaContact.retryBaseSeconds",
+		1,
+		3600,
+	);
+	const retryMaximumSeconds = integer(
+		metaContact.retryMaximumSeconds,
+		3600,
+		"metaContact.retryMaximumSeconds",
+		retryBaseSeconds,
+		86_400,
+	);
+	return {
+		datasetId,
+		accessToken,
+		attributionSecret,
+		campaignIds,
+		testEventCode,
+		apiBaseUrl,
+		apiVersion,
+		pollIntervalSeconds: integer(
+			metaContact.pollIntervalSeconds,
+			5,
+			"metaContact.pollIntervalSeconds",
+			1,
+			60,
+		),
+		maximumAttempts: integer(
+			metaContact.maximumAttempts,
+			12,
+			"metaContact.maximumAttempts",
+			1,
+			50,
+		),
+		leaseSeconds: integer(
+			metaContact.leaseSeconds,
+			60,
+			"metaContact.leaseSeconds",
+			15,
+			600,
+		),
+		retryBaseSeconds,
+		retryMaximumSeconds,
+		requestTimeoutMs: integer(
+			metaContact.requestTimeoutMs,
+			15_000,
+			"metaContact.requestTimeoutMs",
+			1000,
+			60_000,
+		),
+		maximumAttributionAgeSeconds: integer(
+			metaContact.maximumAttributionAgeSeconds,
+			3600,
+			"metaContact.maximumAttributionAgeSeconds",
+			60,
+			86_400,
+		),
+		maximumFutureSkewSeconds: integer(
+			metaContact.maximumFutureSkewSeconds,
+			300,
+			"metaContact.maximumFutureSkewSeconds",
+			0,
+			900,
+		),
+	};
+}
+
 function webChatConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const webChat = object(raw, "webChat");
@@ -1104,6 +1228,7 @@ export async function loadConfig(path, environment = process.env) {
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
+	const metaContact = metaContactConfig(raw.metaContact, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
 	const webApp = webAppConfig(raw.webApp, environment, company.actor);
 	const mcp = mcpConfig(raw.mcp, environment);
@@ -1167,6 +1292,7 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
+	if (metaContact && !phone) throw new Error("metaContact requires phone configuration");
 	if (webChat && !zulip) throw new Error("webChat integration currently requires zulip");
 	if (!phone && knownPhonePrincipals.length > 0) {
 		throw new Error("routing.knownPhonePrincipals requires phone configuration");
@@ -1363,6 +1489,7 @@ export async function loadConfig(path, environment = process.env) {
 		rocketChat,
 		zulip,
 		phone,
+		metaContact,
 		webApp,
 		mcp,
 		workersAi,

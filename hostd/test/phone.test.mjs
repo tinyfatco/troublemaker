@@ -4,6 +4,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import {
+	createSignedAttributionMarker,
+	MetaContactExporter,
+} from "../src/meta-contact.mjs";
 import { PhoneGateway, verifySendlyWebhook } from "../src/phone.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { HostStore } from "../src/store.mjs";
@@ -200,6 +204,7 @@ test("atomically queues one minimized lifecycle event only with verified attribu
 	const state = subject(undefined, undefined, firstContact);
 	try {
 		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
+		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "duplicate");
 		const repeated = inbound({
 			id: "provider-message-follow-up",
 			text: "Here is unrelated follow-up content that must never enter the lifecycle outbox.",
@@ -280,6 +285,163 @@ test("a durable attribution claim cannot be replayed onto another relationship",
 		assert.equal(state.store.listRetryableEvents().length, 2);
 	} finally {
 		state.close();
+	}
+});
+
+test("an opt-out-created relationship cannot later be backfilled as an attributed first contact", async () => {
+	const state = subject(undefined, undefined, exampleFirstContact());
+	try {
+		const optOut = inbound({ text: "STOP", id: "provider-message-opt-out-first" });
+		optOut.id = "provider-event-opt-out-first";
+		optOut.type = "message.opt_out";
+		assert.equal(await state.gateway.acceptWebhook(optOut), "opted_out");
+		const marked = attributedInbound({ id: "provider-message-after-opt-out" });
+		marked.id = "provider-event-after-opt-out";
+		assert.equal(await state.gateway.acceptWebhook(marked), "queued");
+		assert.equal(state.store.listRelationshipEventOutbox().length, 0);
+		assert.equal(state.store.listRelationshipAttributions().length, 0);
+	} finally {
+		state.close();
+	}
+});
+
+test("persists and reconciles only the minimized Meta Contact payload for the first relationship text", async () => {
+	const requests = [];
+	const metaConfig = {
+		datasetId: "123456789012345",
+		accessToken: "synthetic-access-token-at-least-32-bytes",
+		attributionSecret: "synthetic-attribution-secret-at-least-32-bytes",
+		campaignIds: ["campaign-example"],
+		testEventCode: "TEST12345",
+		apiBaseUrl: "https://graph.facebook.com",
+		apiVersion: "v25.0",
+		pollIntervalSeconds: 60,
+		maximumAttempts: 4,
+		leaseSeconds: 30,
+		retryBaseSeconds: 60,
+		retryMaximumSeconds: 60,
+		requestTimeoutMs: 15_000,
+		maximumAttributionAgeSeconds: 3600,
+		maximumFutureSkewSeconds: 300,
+	};
+	const exporter = new MetaContactExporter(metaConfig, {
+		fetchImpl: async (url, init) => {
+			requests.push({ url: String(url), body: JSON.parse(init.body) });
+			return Response.json({ events_received: 1, fbtrace_id: "synthetic_trace_123" });
+		},
+	});
+	const state = subject(undefined, undefined, exporter);
+	try {
+		const observedAt = Date.parse("2026-08-19T12:35:00.000Z");
+		const marker = createSignedAttributionMarker({
+			secret: metaConfig.attributionSecret,
+			campaignId: "campaign-example",
+			issuedAt: observedAt - 1000,
+			nonce: "synthetic_nonce_123456789",
+		});
+		const first = inbound({
+			created_at: "2026-08-19T12:34:56.000Z",
+			text: `Could you help with an estimate? ${marker}`,
+			client_ip_address: "192.0.2.10",
+			client_user_agent: "private-user-agent",
+			conversation: "private conversation content",
+			form: { content: "private form content" },
+		});
+		assert.equal(await state.gateway.acceptWebhook(first, { observedAt }), "queued");
+		const followUp = inbound({
+			id: "provider-message-follow-up",
+			created_at: "2026-08-19T12:35:56.000Z",
+			text: "unrelated follow-up content",
+		});
+		followUp.id = "provider-event-follow-up";
+		assert.equal(await state.gateway.acceptWebhook(followUp), "queued");
+		const replay = inbound({
+			id: "provider-message-replayed-meta-marker",
+			from: "+15555550124",
+			created_at: "2026-08-19T12:36:56.000Z",
+			text: `Please contact me ${marker}`,
+		});
+		replay.id = "provider-event-replayed-meta-marker";
+		assert.equal(await state.gateway.acceptWebhook(replay, { observedAt: observedAt + 2000 }), "queued");
+
+		const outbox = state.store.listRelationshipEventOutbox();
+		assert.equal(outbox.length, 1);
+		assert.equal(outbox[0].status, "pending");
+		const payload = JSON.parse(outbox[0].payloadJson);
+		assert.deepEqual(Object.keys(payload).sort(), [
+			"action_source",
+			"event_id",
+			"event_name",
+			"event_time",
+			"user_data",
+		]);
+		assert.deepEqual(Object.keys(payload.user_data), ["ph"]);
+		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
+			source: claim.source,
+			campaignId: claim.campaignId,
+		})), [{ source: "meta", campaignId: "campaign-example" }]);
+		const stored = JSON.stringify(outbox);
+		for (const forbidden of [
+			CONTACT_NUMBER,
+			CONTACT_NUMBER.slice(1),
+			"Could you help",
+			"unrelated follow-up",
+			"192.0.2.10",
+			"private-user-agent",
+			"private conversation",
+			"private form",
+			marker,
+		]) assert.equal(stored.includes(forbidden), false, forbidden);
+		const phoneEvents = JSON.stringify(state.store.listRetryableEvents());
+		assert.equal(phoneEvents.includes(marker), false);
+
+		await state.gateway.flushFirstContacts();
+		assert.equal(requests.length, 1);
+		assert.equal(requests[0].url, "https://graph.facebook.com/v25.0/123456789012345/events");
+		assert.deepEqual(requests[0].body.data, [payload]);
+		assert.equal(state.store.listRelationshipEventOutbox()[0].status, "delivered");
+	} finally {
+		state.close();
+	}
+});
+
+test("unmarked and non-Meta first contacts never enter the Meta conversion outbox", async () => {
+	const observedAt = Date.parse("2026-08-19T12:35:00.000Z");
+	const metaConfig = {
+		datasetId: "123456789012345",
+		accessToken: "synthetic-access-token-at-least-32-bytes",
+		attributionSecret: "synthetic-attribution-secret-at-least-32-bytes",
+		campaignIds: ["campaign-example"],
+		apiBaseUrl: "https://graph.facebook.com",
+		apiVersion: "v25.0",
+		pollIntervalSeconds: 60,
+		maximumAttempts: 4,
+		leaseSeconds: 30,
+		retryBaseSeconds: 60,
+		retryMaximumSeconds: 60,
+		requestTimeoutMs: 15_000,
+		maximumAttributionAgeSeconds: 3600,
+		maximumFutureSkewSeconds: 300,
+	};
+	const nonMetaMarker = createSignedAttributionMarker({
+		secret: metaConfig.attributionSecret,
+		source: "another-source",
+		campaignId: "campaign-example",
+		issuedAt: observedAt,
+		nonce: "synthetic_nonce_123456789",
+	});
+	for (const [name, text] of [
+		["unmarked", "Manual text without attribution"],
+		["non-Meta", `Please contact me ${nonMetaMarker}`],
+	]) {
+		const state = subject(undefined, undefined, new MetaContactExporter(metaConfig));
+		try {
+			assert.equal(await state.gateway.acceptWebhook(inbound({ text }), { observedAt }), "queued", name);
+			assert.equal(state.store.listRelationshipEventOutbox().length, 0, name);
+			assert.equal(state.store.listRelationshipAttributions().length, 0, name);
+		} finally {
+			state.close();
+		}
 	}
 });
 

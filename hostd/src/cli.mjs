@@ -11,6 +11,7 @@ import { MattermostGateway } from "./mattermost-gateway.mjs";
 import { HostMcp } from "./mcp.mjs";
 import { createMcpEdgeServer } from "./mcp-edge-server.mjs";
 import { HostMcpOutboundProxy } from "./mcp-outbound.mjs";
+import { MetaContactExporter } from "./meta-contact.mjs";
 import { PhoneGateway } from "./phone.mjs";
 import { RocketChatGateway } from "./rocket-chat-gateway.mjs";
 import { RocketChatProvisioner } from "./rocket-chat.mjs";
@@ -159,6 +160,9 @@ async function components(configPath) {
 			webChatGateway,
 		})
 		: undefined;
+	const firstContact = config.metaContact
+		? new MetaContactExporter(config.metaContact)
+		: undefined;
 	const phoneGateway = config.phone
 		? new PhoneGateway({
 			config,
@@ -167,6 +171,7 @@ async function components(configPath) {
 			routingKey,
 			scheduler,
 			controlNotifier,
+			firstContact,
 		})
 		: undefined;
 	return {
@@ -190,6 +195,7 @@ async function components(configPath) {
 		rocketChatGateway,
 		zulipGateway,
 		webChatGateway,
+		firstContact,
 		phoneGateway,
 		daemon,
 	};
