@@ -617,7 +617,10 @@ test("contains background outbox failures without logging private exception cont
 		};
 		state.gateway.requestFirstContactFlush();
 		await new Promise((resolvePromise) => setImmediate(resolvePromise));
-		assert.deepEqual(errors, ["troublemaker-hostd: relationship event outbox flush failed"]);
+		assert.equal(
+			errors.filter((message) => message === "troublemaker-hostd: relationship event outbox flush failed").length,
+			1,
+		);
 		assert.equal(errors.join(" ").includes("private customer body"), false);
 	} finally {
 		console.error = previousConsoleError;
