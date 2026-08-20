@@ -77,6 +77,7 @@ import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
 import { formatBusyMessageSteer, formatLocalTimestamp, routeBusyMessageWithoutInterrupt } from "../../noninterrupting-steering.js";
+import { requiresFreshCanonicalTurnForTrustedOperatorIntent } from "../../tinyfat-operator-intent.js";
 import {
 	applyGoalContinuationIdentity,
 	createGoalContinuationEvent,
@@ -1460,6 +1461,21 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Pro
 	return steering ?? queued ?? Promise.resolve();
 }
 
+function queueTrustedOperatorIntentTurn(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
+	log.logInfo(`[trusted-operator-intent:${event.channel}] Queued a fresh canonical turn`);
+	const queued = withGlobalRunSlot(
+		`trusted-operator-intent:${adapter.name}:${event.channel}`,
+		() => runEventInSlot(event, adapter, false),
+	).then(() => undefined);
+	void queued.catch((err) => {
+		log.logWarning(
+			`[trusted-operator-intent:${event.channel}] Queued turn failed`,
+			err instanceof Error ? err.message : String(err),
+		);
+	});
+	return queued;
+}
+
 function steeringProjectionId(event: MomEvent, adapter: PlatformAdapter): string {
 	return createHash("sha256")
 		.update([adapter.name, event.channel, event.ts, event.user, event.sourceEventType || "", event.text].join("\0"))
@@ -1493,6 +1509,9 @@ const handler: MomHandler = {
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 		noteFollowUpActivity(workingDir, event, adapter.name);
+		if (requiresFreshCanonicalTurnForTrustedOperatorIntent(event.trustedOperatorIntent)) {
+			return queueTrustedOperatorIntentTurn(event, adapter);
+		}
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}

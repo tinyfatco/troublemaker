@@ -39,7 +39,7 @@ The protected Hostd configuration shape is:
     "attribution": {
       "enabled": true,
       "source": "meta",
-      "campaignId": "120246876291480773",
+      "campaignId": "111111111111111111",
       "exactPrefill": "Get me a TinyFat website!"
     },
     "testEventCodeEnv": "META_CAPI_TEST_EVENT_CODE"
@@ -55,6 +55,10 @@ Test Events acceptance. The access token remains host-owned and never belongs
 in the JSON file, browser, relay payload, or OCI runtime. This heuristic needs
 no attribution-signing key or generated marker. `exactPrefill` is configurable;
 when omitted in this protected build it defaults to `Get me a TinyFat website!`.
+The durable outbox kind is partitioned by a one-way digest of the Graph endpoint,
+API version, Dataset, and Test Events mode. Pending test rows therefore cannot
+be sent as live events after configuration changes. Confirm the test partition
+is fully delivered before removing its temporary test-event-code binding.
 
 Only the provider-derived claim fingerprint, normalized source, campaign
 identifier, observation time, and minimized conversion outbox are retained for attribution. The Meta
@@ -70,7 +74,9 @@ Operator a protected intent hint. The hint treats the prefill as an inquiry, not
 authority to build, deploy, publish, charge, or infer requirements or purchase
 intent. The Operator remains responsible for a concise, natural greeting, a
 brief explanation of the managed website service, and one useful question. No
-deterministic Hostd-authored reply is sent.
+deterministic Hostd-authored reply is sent. If the Operator is already busy,
+the attributed inquiry queues as a fresh canonical turn so its protected intent
+cannot be discarded by ordinary soft steering.
 
 A dedicated inbound number advertised only by one Meta campaign is the stronger
 future boundary because the signed Sendly destination itself becomes an

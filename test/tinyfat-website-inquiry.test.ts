@@ -8,6 +8,7 @@ import type { PhoneProviderRegistry } from "../src/adapters/phone-messaging/regi
 import type { MomEvent, MomHandler } from "../src/adapters/types.js";
 import {
 	formatTrustedOperatorIntentSystemContext,
+	requiresFreshCanonicalTurnForTrustedOperatorIntent,
 	TINYFAT_WEBSITE_INQUIRY_INTENT,
 } from "../src/tinyfat-operator-intent.js";
 
@@ -71,6 +72,12 @@ async function main(): Promise<void> {
 		assert.equal(event.text, PREFILL, "the Operator receives the exact customer message");
 		assert.equal(event.rawText, PREFILL, "the original customer message remains the raw history text");
 		assert.equal(event.trustedOperatorIntent, TINYFAT_WEBSITE_INQUIRY_INTENT);
+		assert.equal(
+			requiresFreshCanonicalTurnForTrustedOperatorIntent(event.trustedOperatorIntent),
+			true,
+			"a busy Operator must queue the inquiry as a fresh canonical turn",
+		);
+		assert.equal(requiresFreshCanonicalTurnForTrustedOperatorIntent(undefined), false);
 
 		const history = readFileSync(join(workingDir, "log.jsonl"), "utf8");
 		assert.equal(JSON.parse(history.trim()).text, PREFILL);

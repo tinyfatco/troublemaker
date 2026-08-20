@@ -312,7 +312,7 @@ function metaConfig(overrides = {}) {
 		attribution: {
 			enabled: true,
 			source: "meta",
-			campaignId: "120246876291480773",
+			campaignId: "111111111111111111",
 			exactPrefill: TINYFAT_CAMPAIGN_PREFILL,
 			...attributionOverrides,
 		},
@@ -378,7 +378,7 @@ test("persists the inquiry intent and reconciles only the minimized first-contac
 		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
 			source: claim.source,
 			campaignId: claim.campaignId,
-		})), [{ source: "meta", campaignId: "120246876291480773" }]);
+		})), [{ source: "meta", campaignId: "111111111111111111" }]);
 		const stored = JSON.stringify(outbox);
 		for (const forbidden of [
 			CONTACT_NUMBER,
@@ -440,6 +440,39 @@ test("an organic first contact permanently blocks later exact-prefill Meta attri
 		for (const event of state.store.listRetryableEvents()) {
 			assert.equal(JSON.parse(event.payloadJson).operatorIntent, undefined);
 		}
+	} finally {
+		state.close();
+	}
+});
+
+test("never replays a queued Test Events conversion under live delivery configuration", async () => {
+	const testExporter = new MetaContactExporter(metaConfig());
+	const state = subject(undefined, undefined, testExporter);
+	const liveRequests = [];
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({
+			text: TINYFAT_CAMPAIGN_PREFILL,
+		})), "queued");
+		const liveExporter = new MetaContactExporter(metaConfig({ testEventCode: undefined }), {
+			fetchImpl: async (...request) => {
+				liveRequests.push(request);
+				return Response.json({ events_received: 1 });
+			},
+		});
+		assert.notEqual(liveExporter.kind, testExporter.kind);
+		const restarted = new PhoneGateway({
+			config: state.config,
+			store: state.store,
+			router: state.gateway.router,
+			routingKey: state.routingKey,
+			firstContact: liveExporter,
+		});
+		await restarted.flushFirstContacts();
+		assert.equal(liveRequests.length, 0);
+		assert.deepEqual(state.store.listRelationshipEventOutbox().map((record) => ({
+			kind: record.kind,
+			status: record.status,
+		})), [{ kind: testExporter.kind, status: "pending" }]);
 	} finally {
 		state.close();
 	}

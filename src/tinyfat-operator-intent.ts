@@ -8,6 +8,10 @@ export function normalizeTrustedOperatorIntent(value: unknown): string | undefin
 	return value;
 }
 
+export function requiresFreshCanonicalTurnForTrustedOperatorIntent(value: string | undefined): boolean {
+	return value === TINYFAT_WEBSITE_INQUIRY_INTENT;
+}
+
 export function formatTrustedOperatorIntentSystemContext(value: string | undefined): string {
 	if (value !== TINYFAT_WEBSITE_INQUIRY_INTENT) return "";
 	return [

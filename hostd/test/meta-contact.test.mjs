@@ -64,6 +64,19 @@ test("accepts only the normalized exact prefill for the enabled Meta campaign", 
 	);
 });
 
+test("binds the durable outbox kind to the endpoint, Dataset, and Test Events mode", () => {
+	const testExporter = new MetaContactExporter(CONFIG);
+	const rotatedToken = new MetaContactExporter({ ...CONFIG, accessToken: "replacement-synthetic-token" });
+	const liveExporter = new MetaContactExporter({ ...CONFIG, testEventCode: undefined });
+	const otherDataset = new MetaContactExporter({ ...CONFIG, datasetId: "111111111111111" });
+	assert.match(testExporter.kind, /^meta_contact_[0-9a-f]{40}$/);
+	assert.equal(rotatedToken.kind, testExporter.kind, "credential rotation keeps the delivery partition");
+	assert.notEqual(liveExporter.kind, testExporter.kind);
+	assert.notEqual(otherDataset.kind, testExporter.kind);
+	assert.equal(testExporter.kind.includes(CONFIG.datasetId), false);
+	assert.equal(testExporter.kind.includes(CONFIG.testEventCode), false);
+});
+
 test("fails closed for unmarked, edited, malformed, disabled, and non-Meta contact text", () => {
 	const exporter = new MetaContactExporter(CONFIG);
 	const candidates = [

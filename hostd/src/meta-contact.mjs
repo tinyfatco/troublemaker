@@ -12,6 +12,17 @@ function sha256(value) {
 	return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
+function deliveryKind(config) {
+	const testPartition = config.testEventCode ? sha256(config.testEventCode) : "live";
+	const binding = [
+		config.apiBaseUrl,
+		config.apiVersion,
+		config.datasetId,
+		testPartition,
+	].join("\0");
+	return `meta_contact_${sha256(binding).slice(0, 40)}`;
+}
+
 function normalizedExactText(value) {
 	return typeof value === "string" ? value.normalize("NFC").trim() : "";
 }
@@ -81,7 +92,7 @@ export class MetaContactExporter {
 	constructor(config, { fetchImpl = fetch } = {}) {
 		this.config = config;
 		this.fetch = fetchImpl;
-		this.kind = "meta_contact";
+		this.kind = deliveryKind(config);
 		this.pollIntervalSeconds = config.pollIntervalSeconds;
 		this.maximumAttempts = config.maximumAttempts;
 		this.leaseSeconds = config.leaseSeconds;
