@@ -517,6 +517,27 @@ export class HostStore {
 				PRIMARY KEY (window_started_at, model, request_source, error_code)
 			);
 
+			CREATE TABLE IF NOT EXISTS relationship_event_outbox (
+				idempotency_key TEXT PRIMARY KEY,
+				kind TEXT NOT NULL,
+				relationship_key TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending'
+					CHECK(status IN ('pending', 'sending', 'retry', 'delivered', 'terminal')),
+				attempts INTEGER NOT NULL DEFAULT 0,
+				available_at TEXT NOT NULL,
+				lease_expires_at TEXT,
+				receipt_id TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				delivered_at TEXT,
+				UNIQUE(kind, relationship_key)
+			);
+
+			CREATE INDEX IF NOT EXISTS relationship_event_outbox_due
+				ON relationship_event_outbox(kind, status, available_at);
+
 			CREATE TABLE IF NOT EXISTS gmail_drafts (
 				provider_draft_id TEXT PRIMARY KEY,
 				target_id TEXT NOT NULL,
@@ -1457,6 +1478,102 @@ export class HostStore {
 		}
 	}
 
+	getRelationshipEventOutbox(idempotencyKey) {
+		return this.database.prepare(`
+			SELECT idempotency_key AS idempotencyKey, kind,
+				relationship_key AS relationshipKey, payload_json AS payloadJson,
+				status, attempts, available_at AS availableAt,
+				lease_expires_at AS leaseExpiresAt, receipt_id AS receiptId,
+				last_error AS lastError, created_at AS createdAt,
+				updated_at AS updatedAt, delivered_at AS deliveredAt
+			FROM relationship_event_outbox WHERE idempotency_key = ?
+		`).get(idempotencyKey);
+	}
+
+	listRelationshipEventOutbox() {
+		return this.database.prepare(`
+			SELECT idempotency_key AS idempotencyKey, kind,
+				relationship_key AS relationshipKey, payload_json AS payloadJson,
+				status, attempts, available_at AS availableAt,
+				lease_expires_at AS leaseExpiresAt, receipt_id AS receiptId,
+				last_error AS lastError, created_at AS createdAt,
+				updated_at AS updatedAt, delivered_at AS deliveredAt
+			FROM relationship_event_outbox ORDER BY created_at, idempotency_key
+		`).all();
+	}
+
+	insertRelationshipEventOutbox(record) {
+		if (
+			typeof record?.eventId !== "string"
+			|| !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,239}$/.test(record.eventId)
+		) throw new Error("relationship event ID is invalid");
+		if (
+			typeof record.kind !== "string"
+			|| !/^[a-z][a-z0-9._-]{0,63}$/.test(record.kind)
+		) throw new Error("relationship event kind is invalid");
+		if (
+			typeof record.relationshipKey !== "string"
+			|| !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,239}$/.test(record.relationshipKey)
+		) throw new Error("relationship event key is invalid");
+		const payloadJson = JSON.stringify(record.payload);
+		if (!payloadJson || Buffer.byteLength(payloadJson, "utf8") > 8 * 1024) {
+			throw new Error("relationship event payload exceeds its privacy-safe limit");
+		}
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO relationship_event_outbox(
+				idempotency_key, kind, relationship_key, payload_json,
+				status, attempts, available_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+			ON CONFLICT(kind, relationship_key) DO NOTHING
+		`).run(
+			record.eventId,
+			record.kind,
+			record.relationshipKey,
+			payloadJson,
+			timestamp,
+			timestamp,
+			timestamp,
+		);
+		return this.getRelationshipEventOutbox(record.eventId);
+	}
+
+	claimRelationshipEventOutbox({ kind, maximumAttempts = 12, leaseSeconds = 60 }) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE relationship_event_outbox
+				SET status = CASE WHEN attempts >= ? THEN 'terminal' ELSE 'retry' END,
+					available_at = ?, lease_expires_at = NULL,
+					last_error = COALESCE(last_error, 'delivery lease expired'), updated_at = ?
+				WHERE kind = ? AND status = 'sending' AND lease_expires_at <= ?
+			`).run(maximumAttempts, timestamp, timestamp, kind, timestamp);
+			const due = this.database.prepare(`
+				SELECT idempotency_key AS idempotencyKey
+				FROM relationship_event_outbox
+				WHERE kind = ? AND status IN ('pending', 'retry')
+					AND attempts < ? AND available_at <= ?
+				ORDER BY created_at, idempotency_key LIMIT 1
+			`).get(kind, maximumAttempts, timestamp);
+			if (!due) {
+				this.database.exec("COMMIT");
+				return undefined;
+			}
+			this.database.prepare(`
+				UPDATE relationship_event_outbox
+				SET status = 'sending', attempts = attempts + 1,
+					lease_expires_at = ?, last_error = NULL, updated_at = ?
+				WHERE idempotency_key = ?
+			`).run(future(leaseSeconds), timestamp, due.idempotencyKey);
+			this.database.exec("COMMIT");
+			return this.getRelationshipEventOutbox(due.idempotencyKey);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
 	completeWebChatOutbox(externalId) {
 		const timestamp = now();
 		this.database.prepare(`
@@ -1478,6 +1595,39 @@ export class HostStore {
 			WHERE external_id = ? AND status = 'sending'
 		`).run(status, future(delaySeconds), String(error).slice(0, 1000), now(), externalId);
 		return this.getWebChatOutbox(externalId);
+	}
+
+	completeRelationshipEventOutbox(idempotencyKey, receiptId) {
+		const timestamp = now();
+		this.database.prepare(`
+			UPDATE relationship_event_outbox
+			SET status = 'delivered', receipt_id = ?, lease_expires_at = NULL,
+				last_error = NULL, delivered_at = ?, updated_at = ?
+			WHERE idempotency_key = ? AND status = 'sending'
+		`).run(receiptId ? String(receiptId).slice(0, 240) : null, timestamp, timestamp, idempotencyKey);
+		return this.getRelationshipEventOutbox(idempotencyKey);
+	}
+
+	failRelationshipEventOutbox(idempotencyKey, error, {
+		maximumAttempts = 12,
+		retryDelaySeconds = 30,
+	} = {}) {
+		const current = this.getRelationshipEventOutbox(idempotencyKey);
+		if (!current || current.status !== "sending") return current;
+		const terminal = current.attempts >= maximumAttempts;
+		this.database.prepare(`
+			UPDATE relationship_event_outbox
+			SET status = ?, available_at = ?, lease_expires_at = NULL,
+				last_error = ?, updated_at = ?
+			WHERE idempotency_key = ? AND status = 'sending'
+		`).run(
+			terminal ? "terminal" : "retry",
+			future(terminal ? 0 : retryDelaySeconds),
+			String(error).slice(0, 1000),
+			now(),
+			idempotencyKey,
+		);
+		return this.getRelationshipEventOutbox(idempotencyKey);
 	}
 
 	getLatestContextEventPayload(contextId, source) {
@@ -3402,27 +3552,63 @@ export class HostStore {
 		return this.getEventByProviderMessage(event.source, event.providerMessageId);
 	}
 
+	insertControlNotification(event, stored) {
+		const timestamp = now();
+		this.database.prepare(`
+			INSERT INTO control_notifications(
+				id, event_id, context_id, sequence, status, available_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+			ON CONFLICT(event_id) DO NOTHING
+		`).run(
+			`${event.source}:${event.providerMessageId}`,
+			stored.id,
+			stored.contextId,
+			stored.awarenessSequence,
+			timestamp,
+			timestamp,
+			timestamp,
+		);
+	}
+
 	upsertEventWithControlNotification(event) {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const stored = this.upsertEvent(event);
-			const timestamp = now();
-			this.database.prepare(`
-				INSERT INTO control_notifications(
-					id, event_id, context_id, sequence, status, available_at, created_at, updated_at
-				) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
-				ON CONFLICT(event_id) DO NOTHING
-			`).run(
-				`${event.source}:${event.providerMessageId}`,
-				stored.id,
-				stored.contextId,
-				stored.awarenessSequence,
-				timestamp,
-				timestamp,
-				timestamp,
-			);
+			this.insertControlNotification(event, stored);
 			this.database.exec("COMMIT");
 			return stored;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	upsertPhoneInbound({ conversation, event, relationshipEvent }) {
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existingEvent = this.getEventByProviderMessage(event.source, event.providerMessageId);
+			const previousInbound = this.database.prepare(`
+				SELECT 1 FROM events
+				WHERE source = 'phone' AND provider_thread_id = ?
+				LIMIT 1
+			`).get(conversation.providerThreadId);
+			const storedConversation = this.upsertPhoneConversation(conversation);
+			const storedEvent = this.upsertEvent(event);
+			this.insertControlNotification(event, storedEvent);
+			let relationshipEventQueued = false;
+			if (relationshipEvent && !existingEvent && !previousInbound) {
+				const queued = this.insertRelationshipEventOutbox({
+					...relationshipEvent,
+					relationshipKey: `phone:${storedConversation.threadTarget}`,
+				});
+				relationshipEventQueued = queued?.idempotencyKey === relationshipEvent.eventId;
+			}
+			this.database.exec("COMMIT");
+			return {
+				conversation: storedConversation,
+				event: storedEvent,
+				relationshipEventQueued,
+			};
 		} catch (error) {
 			this.database.exec("ROLLBACK");
 			throw error;
