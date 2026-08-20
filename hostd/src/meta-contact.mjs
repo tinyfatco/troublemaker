@@ -1,80 +1,33 @@
-import {
-	createHash,
-	createHmac,
-	randomBytes,
-	timingSafeEqual,
-} from "node:crypto";
+import { createHash } from "node:crypto";
 
 const EVENT_NAME = "Contact";
 const ACTION_SOURCE = "chat";
 const EVENT_ID_PATTERN = /^meta-contact:[0-9a-f]{64}$/;
 const PHONE_HASH_PATTERN = /^[0-9a-f]{64}$/;
 const CLAIM_KEY_PATTERN = /^meta:[0-9a-f]{64}$/;
-const MARKER_CANDIDATE_PATTERN = /\[\[meta-contact:[^\]]{1,512}\]\]/g;
-const MARKER_PATTERN = /^\[\[meta-contact:(v1\.[a-zA-Z0-9_-]{1,384})\.([a-zA-Z0-9_-]{43})\]\]$/;
+
+export const TINYFAT_WEBSITE_INQUIRY_INTENT = "tinyfat_website_inquiry";
 
 function sha256(value) {
 	return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function hmac(secret, value) {
-	return createHmac("sha256", secret).update(value, "utf8").digest("base64url");
+function normalizedExactText(value) {
+	return typeof value === "string" ? value.normalize("NFC").trim() : "";
 }
 
-function equal(left, right) {
-	const actual = Buffer.from(left);
-	const expected = Buffer.from(right);
-	return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-function cleanMarkedMessage(messageText, markers) {
-	let cleaned = messageText;
-	for (const marker of markers) cleaned = cleaned.replace(marker, " ");
-	return cleaned.replace(/[ \t]{2,}/g, " ").trim();
-}
-
-export function createSignedAttributionMarker({
-	secret,
-	campaignId,
-	source = "meta",
-	issuedAt = Date.now(),
-	nonce = randomBytes(18).toString("base64url"),
-}) {
-	if (typeof secret !== "string" || Buffer.byteLength(secret, "utf8") < 32) {
-		throw new Error("attribution signing secret must contain at least 32 bytes");
-	}
-	if (!/^[a-z][a-z0-9._-]{0,63}$/.test(source)) {
-		throw new Error("attribution source is invalid");
-	}
-	if (!/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(campaignId)) {
-		throw new Error("attribution campaign is invalid");
-	}
-	if (!/^[a-zA-Z0-9_-]{16,64}$/.test(nonce)) {
-		throw new Error("attribution nonce is invalid");
-	}
-	const issuedAtSeconds = Math.floor(Number(issuedAt) / 1000);
-	if (!Number.isSafeInteger(issuedAtSeconds) || issuedAtSeconds <= 0) {
-		throw new Error("attribution issue time is invalid");
-	}
-	const encoded = Buffer.from(JSON.stringify({
-		v: 1,
-		source,
-		campaignId,
-		issuedAt: issuedAtSeconds,
-		nonce,
-	}), "utf8").toString("base64url");
-	const signed = `v1.${encoded}`;
-	return `[[meta-contact:${signed}.${hmac(secret, signed)}]]`;
-}
-
-function providerEventId(provider, providerMessageId) {
+function providerIdentity(provider, providerMessageId) {
 	if (typeof provider !== "string" || !provider.trim()) {
 		throw new Error("contact provider is required");
 	}
 	if (typeof providerMessageId !== "string" || !providerMessageId.trim()) {
 		throw new Error("contact provider message ID is required");
 	}
-	return `meta-contact:${sha256(`${provider.trim().toLowerCase()}\0${providerMessageId.trim()}`)}`;
+	return `${provider.trim().toLowerCase()}\0${providerMessageId.trim()}`;
+}
+
+function providerEventId(provider, providerMessageId) {
+	return `meta-contact:${sha256(providerIdentity(provider, providerMessageId))}`;
 }
 
 function hashedPhone(contactAddress) {
@@ -134,61 +87,42 @@ export class MetaContactExporter {
 		this.leaseSeconds = config.leaseSeconds;
 		this.retryBaseSeconds = config.retryBaseSeconds;
 		this.retryMaximumSeconds = config.retryMaximumSeconds;
-		this.allowedCampaignIds = new Set(config.campaignIds);
+		this.attribution = config.attribution;
 	}
 
-	resolveAttribution({ messageText, observedAt }) {
-		if (typeof messageText !== "string") return undefined;
-		const markers = messageText.match(MARKER_CANDIDATE_PATTERN) ?? [];
-		if (markers.length === 0) return undefined;
-		const cleaned = cleanMarkedMessage(messageText, markers);
-		if (markers.length !== 1 || !cleaned) return { messageText: cleaned };
-		const match = markers[0].match(MARKER_PATTERN);
-		if (!match || !equal(match[2], hmac(this.config.attributionSecret, match[1]))) {
-			return { messageText: cleaned };
-		}
-		let claim;
+	resolveAttribution({ messageText, provider, providerMessageId }) {
+		if (
+			this.attribution?.enabled !== true
+			|| this.attribution.source !== "meta"
+			|| normalizedExactText(messageText) !== normalizedExactText(this.attribution.exactPrefill)
+		) return undefined;
+		let identity;
 		try {
-			claim = JSON.parse(Buffer.from(match[1].slice(3), "base64url").toString("utf8"));
+			identity = providerIdentity(provider, providerMessageId);
 		} catch {
-			return { messageText: cleaned };
+			return undefined;
 		}
-		if (
-			!claim
-			|| typeof claim !== "object"
-			|| Array.isArray(claim)
-			|| Object.keys(claim).sort().join(",") !== "campaignId,issuedAt,nonce,source,v"
-			|| claim.v !== 1
-			|| claim.source !== "meta"
-			|| !this.allowedCampaignIds.has(claim.campaignId)
-			|| !Number.isSafeInteger(claim.issuedAt)
-			|| !/^[a-zA-Z0-9_-]{16,64}$/.test(claim.nonce)
-		) return { messageText: cleaned };
-		const observedAtSeconds = Math.floor(Number(observedAt) / 1000);
-		if (
-			!Number.isSafeInteger(observedAtSeconds)
-			|| claim.issuedAt > observedAtSeconds + this.config.maximumFutureSkewSeconds
-			|| observedAtSeconds - claim.issuedAt > this.config.maximumAttributionAgeSeconds
-		) return { messageText: cleaned };
 		return {
-			messageText: cleaned,
+			messageText,
 			claim: {
-				claimKey: `meta:${sha256(`meta\0${claim.campaignId}\0${claim.nonce}`)}`,
-				source: "meta",
-				campaignId: claim.campaignId,
+				claimKey: `meta:${sha256(`${this.attribution.source}\0${this.attribution.campaignId}\0${identity}`)}`,
+				source: this.attribution.source,
+				campaignId: this.attribution.campaignId,
 			},
 		};
 	}
 
 	createRecord({ contactAddress, provider, providerMessageId, occurredAt, attribution }) {
 		if (
-			attribution?.source !== "meta"
-			|| !this.allowedCampaignIds.has(attribution.campaignId)
+			this.attribution?.enabled !== true
+			|| attribution?.source !== this.attribution.source
+			|| attribution?.campaignId !== this.attribution.campaignId
 			|| !CLAIM_KEY_PATTERN.test(attribution.claimKey)
 		) throw new Error("verified Meta attribution is required");
 		const eventId = providerEventId(provider, providerMessageId);
 		return {
 			eventId,
+			operatorIntent: TINYFAT_WEBSITE_INQUIRY_INTENT,
 			payload: {
 				event_name: EVENT_NAME,
 				event_time: eventTime(occurredAt),

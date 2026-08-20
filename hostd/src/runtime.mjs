@@ -646,6 +646,7 @@ export class RuntimeManager {
 				from: input.sender,
 				sender: "hostd",
 				text: input.message?.body || "",
+				...(input.operatorIntent ? { operatorIntent: input.operatorIntent } : {}),
 				timestamp: input.message?.timestamp || event.receivedAt,
 				hostContextId: event.contextId,
 				deliveryId: event.id,

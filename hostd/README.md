@@ -13,20 +13,21 @@ reconstructed email transport is involved. A phone-and-Zulip business may omit
 ## Attributed phone Contact events
 
 The optional `metaContact` exporter is disabled unless it has an exact Dataset,
-host-owned access token, host-owned attribution-signing secret, and a non-empty
-campaign allowlist. It does not treat a business line, UTM parameter, referrer,
-or ordinary inbound text as attribution.
+host-owned access token, and an explicitly enabled exact source/campaign/prefill
+binding. It does not treat a business line, a UTM parameter or referrer that is
+not present in the SMS, or ordinary inbound text as attribution.
 
-The narrow bridge is a short-lived, non-sensitive signed marker appended to a
-prefilled SMS by a trusted campaign landing flow. The landing service must mint
-the marker server-side only after it has established the exact Meta campaign;
-the signing secret must never be shipped to browser code. Hostd strips marker
-candidates from the agent-visible message, verifies the HMAC, source, campaign,
-issue time, and one-time nonce, and atomically consumes a hash of that claim with
-the relationship's first direct inbound event. Missing, malformed, stale,
-future-dated, duplicate, replayed, non-Meta, and non-allowlisted claims fail
-closed. An unmarked first contact also prevents a later message from backfilling
-that relationship as campaign-acquired.
+The current narrow bridge is a natural exact-prefill heuristic. Only the exact
+draft Meta landing tuple
+`https://tinyfat.com/?utm_source=meta&utm_medium=paid_social&utm_campaign=text_a_bot_sales_aug_2026&utm_content=static_v1`
+(with Meta's optional single `fbclid`) changes the existing Text link to prefill
+`Get me a TinyFat website!`. Hostd normalizes only Unicode composition and outer
+whitespace, then requires an exact case-, spacing-, and punctuation-sensitive
+match plus the enabled `meta` / campaign-ID binding. It atomically binds a
+provider-message-derived claim to the relationship's first direct inbound event.
+Missing, edited, duplicate, replayed, non-Meta, and non-allowlisted inputs fail
+closed. An unmarked first contact also prevents a later exact-prefill message
+from backfilling that relationship as campaign-acquired.
 
 The protected Hostd configuration shape is:
 
@@ -35,24 +36,41 @@ The protected Hostd configuration shape is:
   "metaContact": {
     "datasetId": "<existing-dataset-id>",
     "accessTokenEnv": "META_CAPI_ACCESS_TOKEN",
-    "attributionSecretEnv": "META_CONTACT_ATTRIBUTION_SECRET",
-    "campaignIds": ["<exact-campaign-id>"],
+    "attribution": {
+      "enabled": true,
+      "source": "meta",
+      "campaignId": "120246876291480773",
+      "exactPrefill": "Get me a TinyFat website!"
+    },
     "testEventCodeEnv": "META_CAPI_TEST_EVENT_CODE"
   }
 }
 ```
 
-`testEventCodeEnv` is optional and should exist only during an intentional Meta
-Test Events acceptance. The access token and signing secret remain host-owned;
-neither belongs in the JSON file, browser, relay payload, or OCI runtime.
+The same activation-only fragment is kept in
+`hostd/meta-contact.config.example.json`; it is not loaded by default.
 
-Only the claim fingerprint, normalized source, campaign identifier, observation
-time, and minimized conversion outbox are retained for attribution. The Meta
+`testEventCodeEnv` is optional and should exist only during an intentional Meta
+Test Events acceptance. The access token remains host-owned and never belongs
+in the JSON file, browser, relay payload, or OCI runtime. This heuristic needs
+no attribution-signing key or generated marker. `exactPrefill` is configurable;
+when omitted in this protected build it defaults to `Get me a TinyFat website!`.
+
+Only the provider-derived claim fingerprint, normalized source, campaign
+identifier, observation time, and minimized conversion outbox are retained for attribution. The Meta
 request contains standard `Contact`, a stable provider-message-derived
 `event_id`, `action_source: "chat"`, event time, and SHA-256-normalized phone.
 It omits SMS and form content, IP address, user agent, click identifiers,
-referrer, and unrelated customer data. The raw marker is not written to the
-phone event or attribution tables.
+referrer, and unrelated customer data. The normal relationship event retains the
+original customer message for its authorized Operator path; the attribution
+table, Meta outbox, Meta request, delivery error, and receipt do not copy it.
+
+For the exact first attributed message, Hostd also gives only that relationship
+Operator a protected intent hint. The hint treats the prefill as an inquiry, not
+authority to build, deploy, publish, charge, or infer requirements or purchase
+intent. The Operator remains responsible for a concise, natural greeting, a
+brief explanation of the managed website service, and one useful question. No
+deterministic Hostd-authored reply is sent.
 
 A dedicated inbound number advertised only by one Meta campaign is the stronger
 future boundary because the signed Sendly destination itself becomes an

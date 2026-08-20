@@ -4,16 +4,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import {
-	createSignedAttributionMarker,
-	MetaContactExporter,
-} from "../src/meta-contact.mjs";
+import { MetaContactExporter } from "../src/meta-contact.mjs";
 import { PhoneGateway, verifySendlyWebhook } from "../src/phone.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { HostStore } from "../src/store.mjs";
 
 const BUSINESS_NUMBER = "+15555550100";
 const CONTACT_NUMBER = "+15555550123";
+const EXAMPLE_CAMPAIGN_PREFILL = "Example campaign inquiry";
+const TINYFAT_CAMPAIGN_PREFILL = "Get me a TinyFat website!";
 
 function subject(fetchImpl = async () => Response.json({
 	id: "provider-message-outbound",
@@ -80,13 +79,14 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 		leaseSeconds: 30,
 		retryBaseSeconds: 60,
 		retryMaximumSeconds: 60,
-		resolveAttribution({ messageText }) {
-			const marker = "[[example-attribution:claim-123]]";
-			if (!messageText.includes(marker)) return undefined;
+		resolveAttribution({ messageText, provider, providerMessageId }) {
+			if (messageText.normalize("NFC").trim() !== EXAMPLE_CAMPAIGN_PREFILL) return undefined;
 			return {
-				messageText: messageText.replace(marker, "").trim(),
+				messageText,
 				claim: {
-					claimKey: "example:claim-123",
+					claimKey: `example:${createHash("sha256")
+						.update(`${provider}\0${providerMessageId}`, "utf8")
+						.digest("hex")}`,
 					source: "example",
 					campaignId: "campaign-example",
 				},
@@ -109,7 +109,7 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 
 function attributedInbound(overrides = {}) {
 	return inbound({
-		text: "Could you help with an estimate? [[example-attribution:claim-123]]",
+		text: EXAMPLE_CAMPAIGN_PREFILL,
 		...overrides,
 	});
 }
@@ -222,17 +222,18 @@ test("atomically queues one minimized lifecycle event only with verified attribu
 		const serialized = JSON.stringify(outbox);
 		assert.equal(serialized.includes(CONTACT_NUMBER), false);
 		assert.equal(serialized.includes(CONTACT_NUMBER.slice(1)), false);
-		assert.equal(serialized.includes("Could you help"), false);
+		assert.equal(serialized.includes(EXAMPLE_CAMPAIGN_PREFILL), false);
 		assert.equal(serialized.includes("unrelated follow-up"), false);
 		assert.equal(serialized.includes("client_ip_address"), false);
 		assert.equal(serialized.includes("client_user_agent"), false);
-		assert.equal(serialized.includes("example-attribution"), false);
 		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
 			claimKey: claim.claimKey,
 			source: claim.source,
 			campaignId: claim.campaignId,
 		})), [{
-			claimKey: "example:claim-123",
+			claimKey: `example:${createHash("sha256")
+				.update("sendly\0provider-message-inbound", "utf8")
+				.digest("hex")}`,
 			source: "example",
 			campaignId: "campaign-example",
 		}]);
@@ -247,8 +248,7 @@ test("atomically queues one minimized lifecycle event only with verified attribu
 		]);
 		assert.equal(createInputs.length, 1);
 		const phonePayload = JSON.parse(state.store.listRetryableEvents()[0].payloadJson);
-		assert.equal(phonePayload.message.body, "Could you help with an estimate?");
-		assert.equal(phonePayload.message.body.includes("example-attribution"), false);
+		assert.equal(phonePayload.message.body, EXAMPLE_CAMPAIGN_PREFILL);
 	} finally {
 		state.close();
 	}
@@ -270,19 +270,18 @@ test("unmarked first contacts never enter the lifecycle outbox and block later a
 	}
 });
 
-test("a durable attribution claim cannot be replayed onto another relationship", async () => {
+test("a replayed provider message cannot create another relationship conversion", async () => {
 	const state = subject(undefined, undefined, exampleFirstContact());
 	try {
 		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
 		const replay = attributedInbound({
-			id: "provider-message-replayed-claim",
 			from: "+15555550124",
 		});
 		replay.id = "provider-event-replayed-claim";
 		assert.equal(await state.gateway.acceptWebhook(replay), "queued");
 		assert.equal(state.store.listRelationshipEventOutbox().length, 1);
 		assert.equal(state.store.listRelationshipAttributions().length, 1);
-		assert.equal(state.store.listRetryableEvents().length, 2);
+		assert.equal(state.store.listRetryableEvents().length, 1);
 	} finally {
 		state.close();
 	}
@@ -305,13 +304,18 @@ test("an opt-out-created relationship cannot later be backfilled as an attribute
 	}
 });
 
-test("persists and reconciles only the minimized Meta Contact payload for the first relationship text", async () => {
-	const requests = [];
-	const metaConfig = {
+function metaConfig(overrides = {}) {
+	const { attribution: attributionOverrides = {}, ...configOverrides } = overrides;
+	return {
 		datasetId: "123456789012345",
 		accessToken: "synthetic-access-token-at-least-32-bytes",
-		attributionSecret: "synthetic-attribution-secret-at-least-32-bytes",
-		campaignIds: ["campaign-example"],
+		attribution: {
+			enabled: true,
+			source: "meta",
+			campaignId: "120246876291480773",
+			exactPrefill: TINYFAT_CAMPAIGN_PREFILL,
+			...attributionOverrides,
+		},
 		testEventCode: "TEST12345",
 		apiBaseUrl: "https://graph.facebook.com",
 		apiVersion: "v25.0",
@@ -321,10 +325,13 @@ test("persists and reconciles only the minimized Meta Contact payload for the fi
 		retryBaseSeconds: 60,
 		retryMaximumSeconds: 60,
 		requestTimeoutMs: 15_000,
-		maximumAttributionAgeSeconds: 3600,
-		maximumFutureSkewSeconds: 300,
+		...configOverrides,
 	};
-	const exporter = new MetaContactExporter(metaConfig, {
+}
+
+test("persists the inquiry intent and reconciles only the minimized first-contact payload", async () => {
+	const requests = [];
+	const exporter = new MetaContactExporter(metaConfig(), {
 		fetchImpl: async (url, init) => {
 			requests.push({ url: String(url), body: JSON.parse(init.body) });
 			return Response.json({ events_received: 1, fbtrace_id: "synthetic_trace_123" });
@@ -332,37 +339,29 @@ test("persists and reconciles only the minimized Meta Contact payload for the fi
 	});
 	const state = subject(undefined, undefined, exporter);
 	try {
-		const observedAt = Date.parse("2026-08-19T12:35:00.000Z");
-		const marker = createSignedAttributionMarker({
-			secret: metaConfig.attributionSecret,
-			campaignId: "campaign-example",
-			issuedAt: observedAt - 1000,
-			nonce: "synthetic_nonce_123456789",
-		});
 		const first = inbound({
 			created_at: "2026-08-19T12:34:56.000Z",
-			text: `Could you help with an estimate? ${marker}`,
+			text: TINYFAT_CAMPAIGN_PREFILL,
 			client_ip_address: "192.0.2.10",
 			client_user_agent: "private-user-agent",
 			conversation: "private conversation content",
 			form: { content: "private form content" },
 		});
-		assert.equal(await state.gateway.acceptWebhook(first, { observedAt }), "queued");
+		assert.equal(await state.gateway.acceptWebhook(first), "queued");
 		const followUp = inbound({
 			id: "provider-message-follow-up",
 			created_at: "2026-08-19T12:35:56.000Z",
-			text: "unrelated follow-up content",
+			text: TINYFAT_CAMPAIGN_PREFILL,
 		});
 		followUp.id = "provider-event-follow-up";
 		assert.equal(await state.gateway.acceptWebhook(followUp), "queued");
 		const replay = inbound({
-			id: "provider-message-replayed-meta-marker",
 			from: "+15555550124",
 			created_at: "2026-08-19T12:36:56.000Z",
-			text: `Please contact me ${marker}`,
+			text: TINYFAT_CAMPAIGN_PREFILL,
 		});
-		replay.id = "provider-event-replayed-meta-marker";
-		assert.equal(await state.gateway.acceptWebhook(replay, { observedAt: observedAt + 2000 }), "queued");
+		replay.id = "provider-event-replayed-prefill";
+		assert.equal(await state.gateway.acceptWebhook(replay), "queued");
 
 		const outbox = state.store.listRelationshipEventOutbox();
 		assert.equal(outbox.length, 1);
@@ -379,21 +378,21 @@ test("persists and reconciles only the minimized Meta Contact payload for the fi
 		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
 			source: claim.source,
 			campaignId: claim.campaignId,
-		})), [{ source: "meta", campaignId: "campaign-example" }]);
+		})), [{ source: "meta", campaignId: "120246876291480773" }]);
 		const stored = JSON.stringify(outbox);
 		for (const forbidden of [
 			CONTACT_NUMBER,
 			CONTACT_NUMBER.slice(1),
-			"Could you help",
-			"unrelated follow-up",
+			TINYFAT_CAMPAIGN_PREFILL,
 			"192.0.2.10",
 			"private-user-agent",
 			"private conversation",
 			"private form",
-			marker,
 		]) assert.equal(stored.includes(forbidden), false, forbidden);
-		const phoneEvents = JSON.stringify(state.store.listRetryableEvents());
-		assert.equal(phoneEvents.includes(marker), false);
+		const phoneEvents = state.store.listRetryableEvents().map((event) => JSON.parse(event.payloadJson));
+		assert.equal(phoneEvents[0].message.body, TINYFAT_CAMPAIGN_PREFILL);
+		assert.equal(phoneEvents[0].operatorIntent, "tinyfat_website_inquiry");
+		assert.equal(phoneEvents[1].operatorIntent, undefined, "follow-ups never regain inquiry intent");
 
 		await state.gateway.flushFirstContacts();
 		assert.equal(requests.length, 1);
@@ -405,43 +404,44 @@ test("persists and reconciles only the minimized Meta Contact payload for the fi
 	}
 });
 
-test("unmarked and non-Meta first contacts never enter the Meta conversion outbox", async () => {
-	const observedAt = Date.parse("2026-08-19T12:35:00.000Z");
-	const metaConfig = {
-		datasetId: "123456789012345",
-		accessToken: "synthetic-access-token-at-least-32-bytes",
-		attributionSecret: "synthetic-attribution-secret-at-least-32-bytes",
-		campaignIds: ["campaign-example"],
-		apiBaseUrl: "https://graph.facebook.com",
-		apiVersion: "v25.0",
-		pollIntervalSeconds: 60,
-		maximumAttempts: 4,
-		leaseSeconds: 30,
-		retryBaseSeconds: 60,
-		retryMaximumSeconds: 60,
-		requestTimeoutMs: 15_000,
-		maximumAttributionAgeSeconds: 3600,
-		maximumFutureSkewSeconds: 300,
-	};
-	const nonMetaMarker = createSignedAttributionMarker({
-		secret: metaConfig.attributionSecret,
-		source: "another-source",
-		campaignId: "campaign-example",
-		issuedAt: observedAt,
-		nonce: "synthetic_nonce_123456789",
-	});
-	for (const [name, text] of [
-		["unmarked", "Manual text without attribution"],
-		["non-Meta", `Please contact me ${nonMetaMarker}`],
+test("unmarked, edited, disabled, and non-Meta first contacts never enter the conversion outbox", async () => {
+	for (const [name, text, overrides] of [
+		["unmarked organic", "Manual text without attribution", {}],
+		["edited punctuation", "Get me a TinyFat website", {}],
+		["edited suffix", "Get me a TinyFat website! Please", {}],
+		["disabled allowlist", TINYFAT_CAMPAIGN_PREFILL, { attribution: { enabled: false } }],
+		["non-Meta source", TINYFAT_CAMPAIGN_PREFILL, { attribution: { source: "organic" } }],
 	]) {
-		const state = subject(undefined, undefined, new MetaContactExporter(metaConfig));
+		const state = subject(undefined, undefined, new MetaContactExporter(metaConfig(overrides)));
 		try {
-			assert.equal(await state.gateway.acceptWebhook(inbound({ text }), { observedAt }), "queued", name);
+			assert.equal(await state.gateway.acceptWebhook(inbound({ text })), "queued", name);
 			assert.equal(state.store.listRelationshipEventOutbox().length, 0, name);
 			assert.equal(state.store.listRelationshipAttributions().length, 0, name);
+			const payload = JSON.parse(state.store.listRetryableEvents()[0].payloadJson);
+			assert.equal(payload.operatorIntent, undefined, name);
 		} finally {
 			state.close();
 		}
+	}
+});
+
+test("an organic first contact permanently blocks later exact-prefill Meta attribution", async () => {
+	const state = subject(undefined, undefined, new MetaContactExporter(metaConfig()));
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "An ordinary organic inquiry" })), "queued");
+		const later = inbound({
+			id: "provider-message-later-prefill",
+			text: TINYFAT_CAMPAIGN_PREFILL,
+		});
+		later.id = "provider-event-later-prefill";
+		assert.equal(await state.gateway.acceptWebhook(later), "queued");
+		assert.equal(state.store.listRelationshipEventOutbox().length, 0);
+		assert.equal(state.store.listRelationshipAttributions().length, 0);
+		for (const event of state.store.listRetryableEvents()) {
+			assert.equal(JSON.parse(event.payloadJson).operatorIntent, undefined);
+		}
+	} finally {
+		state.close();
 	}
 });
 

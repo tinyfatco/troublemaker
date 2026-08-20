@@ -1,0 +1,13 @@
+{
+  "metaContact": {
+    "datasetId": "<existing TinyFat Website Leads numeric Dataset ID>",
+    "accessTokenEnv": "META_CAPI_ACCESS_TOKEN",
+    "attribution": {
+      "enabled": true,
+      "source": "meta",
+      "campaignId": "120246876291480773",
+      "exactPrefill": "Get me a TinyFat website!"
+    },
+    "testEventCodeEnv": "META_CAPI_TEST_EVENT_CODE"
+  }
+}

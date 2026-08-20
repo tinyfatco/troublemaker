@@ -30,6 +30,7 @@ export interface PhoneInboundPayload {
 	displayName?: string;
 	hostContextId?: string;
 	deliveryId?: string;
+	operatorIntent?: string;
 	hostReceipt?: {
 		url: string;
 		token: string;

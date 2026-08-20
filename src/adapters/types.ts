@@ -37,6 +37,8 @@ export interface MomEvent {
 	replyTargetDescription?: string;
 	/** Host-authenticated relationship identity injected outside message text. */
 	hostRelationship?: HostRelationshipScope;
+	/** Host-authenticated protected product intent injected outside message text. */
+	trustedOperatorIntent?: string;
 	/** Present only on harness-generated idle follow-up checks. */
 	followUp?: FollowUpWakeMetadata;
 	files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
@@ -163,6 +165,7 @@ export interface MomContext {
 			replyTarget?: string;
 			replyTargetDescription?: string;
 			hostRelationship?: HostRelationshipScope;
+			trustedOperatorIntent?: string;
 			attachments: Array<{ local: string }>;
 	};
 	channelName?: string;

@@ -1,16 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
-import {
-	createSignedAttributionMarker,
-	MetaContactExporter,
-} from "../src/meta-contact.mjs";
+import { MetaContactExporter } from "../src/meta-contact.mjs";
 
 const CONFIG = {
 	datasetId: "123456789012345",
 	accessToken: "synthetic-access-token-at-least-32-bytes",
-	attributionSecret: "synthetic-attribution-secret-at-least-32-bytes",
-	campaignIds: ["campaign-example"],
+	attribution: {
+		enabled: true,
+		source: "meta",
+		campaignId: "campaign-example",
+		exactPrefill: "Get me a TinyFat website!",
+	},
 	testEventCode: "TEST12345",
 	apiBaseUrl: "https://graph.facebook.com",
 	apiVersion: "v25.0",
@@ -20,8 +21,6 @@ const CONFIG = {
 	retryBaseSeconds: 30,
 	retryMaximumSeconds: 3600,
 	requestTimeoutMs: 15_000,
-	maximumAttributionAgeSeconds: 3600,
-	maximumFutureSkewSeconds: 300,
 };
 
 const CONTACT = "+15555550123";
@@ -49,56 +48,61 @@ function record(exporter) {
 	});
 }
 
-test("accepts only one fresh signed marker for one allowlisted Meta campaign", () => {
+test("accepts only the normalized exact prefill for the enabled Meta campaign", () => {
 	const exporter = new MetaContactExporter(CONFIG);
-	const observedAt = Date.parse(OCCURRED_AT);
-	const marker = createSignedAttributionMarker({
-		secret: CONFIG.attributionSecret,
-		campaignId: "campaign-example",
-		issuedAt: observedAt - 1000,
-		nonce: "synthetic_nonce_123456789",
-	});
 	const resolved = exporter.resolveAttribution({
-		messageText: `Could you help with an estimate? ${marker}`,
-		observedAt,
+		messageText: " \r\nGet me a TinyFat website!\n",
+		provider: "Sendly",
+		providerMessageId: "provider-message-123",
 	});
-	assert.equal(resolved.messageText, "Could you help with an estimate?");
+	assert.equal(resolved.messageText, " \r\nGet me a TinyFat website!\n");
 	assert.equal(resolved.claim.source, "meta");
 	assert.equal(resolved.claim.campaignId, "campaign-example");
-	assert.match(resolved.claim.claimKey, /^meta:[0-9a-f]{64}$/);
-	assert.equal(JSON.stringify(resolved).includes(marker), false);
+	assert.equal(
+		resolved.claim.claimKey,
+		`meta:${digest("meta\0campaign-example\0sendly\0provider-message-123")}`,
+	);
 });
 
-test("fails closed for absent, malformed, stale, future, replay-shaped, and non-Meta markers", () => {
+test("fails closed for unmarked, edited, malformed, disabled, and non-Meta contact text", () => {
 	const exporter = new MetaContactExporter(CONFIG);
-	const observedAt = Date.parse(OCCURRED_AT);
-	const marker = (overrides = {}) => createSignedAttributionMarker({
-		secret: CONFIG.attributionSecret,
-		campaignId: "campaign-example",
-		issuedAt: observedAt,
-		nonce: "synthetic_nonce_123456789",
-		...overrides,
-	});
-	assert.equal(exporter.resolveAttribution({
-		messageText: "Manual text without attribution",
-		observedAt,
-	}), undefined);
 	const candidates = [
+		"Manual text without attribution",
+		"Get me a tinyfat website!",
+		"Get me a TinyFat website",
+		"Get me a TinyFat website!!",
+		"Please get me a TinyFat website!",
+		"Get  me a TinyFat website!",
+		"Get me a TinyFat website! Thanks",
 		"[[meta-contact:not-a-valid-marker]]",
-		marker({ issuedAt: observedAt - 3_601_000 }),
-		marker({ issuedAt: observedAt + 301_000 }),
-		marker({ source: "another-source" }),
-		marker({ campaignId: "another-campaign" }),
-		`${marker()} ${marker({ nonce: "another_nonce_1234567890" })}`,
 	];
 	for (const candidate of candidates) {
-		const resolved = exporter.resolveAttribution({
-			messageText: `Please contact me ${candidate}`,
-			observedAt,
-		});
-		assert.equal(resolved.claim, undefined);
-		assert.equal(resolved.messageText.includes("meta-contact"), false);
+		assert.equal(exporter.resolveAttribution({
+			messageText: candidate,
+			provider: "sendly",
+			providerMessageId: "provider-message-123",
+		}), undefined, candidate);
 	}
+	assert.equal(new MetaContactExporter({
+		...CONFIG,
+		attribution: { ...CONFIG.attribution, enabled: false },
+	}).resolveAttribution({
+		messageText: CONFIG.attribution.exactPrefill,
+		provider: "sendly",
+		providerMessageId: "provider-message-123",
+	}), undefined);
+	assert.equal(new MetaContactExporter({
+		...CONFIG,
+		attribution: { ...CONFIG.attribution, source: "organic" },
+	}).resolveAttribution({
+		messageText: CONFIG.attribution.exactPrefill,
+		provider: "sendly",
+		providerMessageId: "provider-message-123",
+	}), undefined);
+	assert.equal(exporter.resolveAttribution({
+		messageText: CONFIG.attribution.exactPrefill,
+		provider: "sendly",
+	}), undefined);
 });
 
 test("creates one standard Contact event from only provider identity, time, and hashed phone", () => {
@@ -121,6 +125,7 @@ test("creates one standard Contact event from only provider identity, time, and 
 	const eventId = `meta-contact:${digest("sendly\0provider-message-123")}`;
 	assert.deepEqual(record, {
 		eventId,
+		operatorIntent: "tinyfat_website_inquiry",
 		payload: {
 			event_name: "Contact",
 			event_time: Math.floor(Date.parse(OCCURRED_AT) / 1000),
@@ -139,6 +144,7 @@ test("creates one standard Contact event from only provider identity, time, and 
 		"192.0.2.10",
 		"15555550999",
 		"unused-event-wrapper-id",
+		CONFIG.attribution.exactPrefill,
 	]) assert.equal(serialized.includes(forbidden), false, forbidden);
 
 	const retry = exporter.createRecord({

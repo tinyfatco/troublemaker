@@ -21,6 +21,7 @@ import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import { formatHostRelationshipSystemContext } from "./host-relationship-scope.js";
+import { formatTrustedOperatorIntentSystemContext } from "./tinyfat-operator-intent.js";
 import {
 	buildSessionPreamble,
 	buildSystemPrompt,
@@ -1051,9 +1052,14 @@ async function createRunner(
 
 			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
 			const hostRelationshipContext = formatHostRelationshipSystemContext(ctx.message.hostRelationship);
-			currentSession.agent.state.systemPrompt = hostRelationshipContext
-				? `${systemPrompt}\n\n${hostRelationshipContext}`
-				: systemPrompt;
+			const trustedOperatorIntentContext = formatTrustedOperatorIntentSystemContext(
+				ctx.message.trustedOperatorIntent,
+			);
+			currentSession.agent.state.systemPrompt = [
+				systemPrompt,
+				hostRelationshipContext,
+				trustedOperatorIntentContext,
+			].filter(Boolean).join("\n\n");
 
 			// Build dynamic preamble (injected into user message below)
 			settingsManager.reload();

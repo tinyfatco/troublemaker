@@ -28,7 +28,6 @@ const ENVIRONMENT = {
 	ROCKETCHAT_HOSTD_ADMIN_TOKEN: "example-admin-token-at-least-32-bytes",
 	ROCKETCHAT_CREATE_TOKENS_FOR_USERS_SECRET: "example-create-token-secret-at-least-32-bytes",
 	META_CAPI_ACCESS_TOKEN: "synthetic-meta-access-token-at-least-32-bytes",
-	META_ATTRIBUTION_SECRET: "synthetic-meta-attribution-secret-at-least-32-bytes",
 	META_CAPI_TEST_EVENT_CODE: "TEST12345",
 };
 
@@ -277,8 +276,12 @@ test("loads an optional host-owned Meta Contact exporter without exposing author
 		raw.metaContact = {
 			datasetId: "123456789012345",
 			accessTokenEnv: "META_CAPI_ACCESS_TOKEN",
-			attributionSecretEnv: "META_ATTRIBUTION_SECRET",
-			campaignIds: ["campaign-example"],
+			attribution: {
+				enabled: true,
+				source: "meta",
+				campaignId: "campaign-example",
+				exactPrefill: "Get me a TinyFat website!",
+			},
 			testEventCodeEnv: "META_CAPI_TEST_EVENT_CODE",
 		};
 		await writeFile(path, JSON.stringify(raw));
@@ -286,8 +289,12 @@ test("loads an optional host-owned Meta Contact exporter without exposing author
 		assert.deepEqual(config.metaContact, {
 			datasetId: "123456789012345",
 			accessToken: ENVIRONMENT.META_CAPI_ACCESS_TOKEN,
-			attributionSecret: ENVIRONMENT.META_ATTRIBUTION_SECRET,
-			campaignIds: ["campaign-example"],
+			attribution: {
+				enabled: true,
+				source: "meta",
+				campaignId: "campaign-example",
+				exactPrefill: "Get me a TinyFat website!",
+			},
 			testEventCode: "TEST12345",
 			apiBaseUrl: "https://graph.facebook.com",
 			apiVersion: "v25.0",
@@ -297,16 +304,31 @@ test("loads an optional host-owned Meta Contact exporter without exposing author
 			retryBaseSeconds: 30,
 			retryMaximumSeconds: 3600,
 			requestTimeoutMs: 15_000,
-			maximumAttributionAgeSeconds: 3600,
-			maximumFutureSkewSeconds: 300,
 		});
 		assert.equal(config.targets[0].runtimeEnv.META_CAPI_ACCESS_TOKEN, undefined);
+		delete raw.metaContact.attribution.exactPrefill;
+		await writeFile(path, JSON.stringify(raw));
+		assert.equal(
+			(await loadConfig(path, ENVIRONMENT)).metaContact.attribution.exactPrefill,
+			"Get me a TinyFat website!",
+		);
+		raw.metaContact.attribution.exactPrefill = "Get me a TinyFat website!";
 
 		raw.metaContact.apiBaseUrl = "http://graph.example.com";
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /must use HTTPS/);
 
 		delete raw.metaContact.apiBaseUrl;
+		raw.metaContact.attribution.enabled = false;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /attribution\.enabled must be true/);
+
+		raw.metaContact.attribution.enabled = true;
+		raw.metaContact.attribution.source = "organic";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /attribution\.source must be meta/);
+
+		raw.metaContact.attribution.source = "meta";
 		delete raw.phone;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /requires phone configuration/);

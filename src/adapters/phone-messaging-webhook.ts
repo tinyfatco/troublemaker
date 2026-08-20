@@ -8,6 +8,10 @@ import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, Us
 import { withHostReceipt } from "./host-receipt.js";
 import { createPhoneProviderRegistryFromEnv, type PhoneProviderRegistry } from "./phone-messaging/registry.js";
 import type { PhoneChannelRecord, PhoneInboundPayload, PhoneOutboundAttachment, PhoneTransport } from "./phone-messaging/types.js";
+import {
+	normalizeTrustedOperatorIntent,
+	TINYFAT_WEBSITE_INQUIRY_INTENT,
+} from "../tinyfat-operator-intent.js";
 
 const MAXIMUM_WEBHOOK_BYTES = 1024 * 1024;
 
@@ -155,6 +159,9 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 			directlyAddressed: true,
 			replyTarget: record.channelId,
 			replyTargetDescription: `${(record.transport || "phone").toUpperCase()} ${recipientDescription}`,
+			trustedOperatorIntent: payload.hostManaged
+				? normalizeTrustedOperatorIntent(payload.operatorIntent)
+				: undefined,
 		};
 
 		this.logToFile({
@@ -332,6 +339,7 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 				threadTs: event.threadTs,
 				replyTarget: event.replyTarget,
 				replyTargetDescription: event.replyTargetDescription,
+				trustedOperatorIntent: event.trustedOperatorIntent,
 				attachments: [],
 			},
 			channelName: this.channels.get(event.channel)?.displayName,
@@ -514,6 +522,10 @@ function validatePayload(payload: PhoneInboundPayload): string | null {
 	if (!payload.messageId) return "messageId";
 	if (!payload.from) return "from";
 	if (payload.text == null) return "text";
+	if (
+		payload.operatorIntent !== undefined
+		&& (!payload.hostManaged || payload.operatorIntent !== TINYFAT_WEBSITE_INQUIRY_INTENT)
+	) return "operatorIntent";
 	return null;
 }
 

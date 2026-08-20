@@ -92,6 +92,7 @@
 		"test:email-messages-only-boundary": "npx tsx test/email-messages-only-boundary.test.ts",
 		"test:phone-messages-only-boundary": "npx tsx test/phone-messages-only-boundary.test.ts",
 		"test:phone-host-managed": "npx tsx test/phone-host-managed.test.ts",
+		"test:tinyfat-website-inquiry": "npx tsx test/tinyfat-website-inquiry.test.ts",
 		"test:form-webhook": "npx tsx test/form-webhook.test.ts",
 		"test:model-config-current-selection": "npx tsx test/model-config-current-selection.test.ts",
 		"test:model-config-list-models": "npx tsx test/model-config-list-models.test.ts",

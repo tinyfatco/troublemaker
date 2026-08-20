@@ -587,26 +587,28 @@ function metaContactConfig(raw, environment) {
 	if (Buffer.byteLength(accessToken, "utf8") < 32) {
 		throw new Error("metaContact.accessTokenEnv must contain at least 32 bytes");
 	}
-	const attributionSecret = envSecret(
-		metaContact.attributionSecretEnv,
-		"metaContact.attributionSecretEnv",
-		environment,
-	);
-	if (Buffer.byteLength(attributionSecret, "utf8") < 32) {
-		throw new Error("metaContact.attributionSecretEnv must contain at least 32 bytes");
+	const rawAttribution = object(metaContact.attribution, "metaContact.attribution");
+	if (rawAttribution.enabled !== true) {
+		throw new Error("metaContact.attribution.enabled must be true");
 	}
-	if (!Array.isArray(metaContact.campaignIds) || metaContact.campaignIds.length === 0) {
-		throw new Error("metaContact.campaignIds must contain at least one campaign");
+	const source = text(rawAttribution.source, "metaContact.attribution.source");
+	if (source !== "meta") {
+		throw new Error("metaContact.attribution.source must be meta");
 	}
-	const campaignIds = metaContact.campaignIds.map((value, index) => {
-		const campaignId = text(value, `metaContact.campaignIds[${index}]`);
-		if (!/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(campaignId)) {
-			throw new Error(`metaContact.campaignIds[${index}] is invalid`);
-		}
-		return campaignId;
-	});
-	if (new Set(campaignIds).size !== campaignIds.length) {
-		throw new Error("metaContact.campaignIds cannot repeat a campaign");
+	const campaignId = text(rawAttribution.campaignId, "metaContact.attribution.campaignId");
+	if (!/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(campaignId)) {
+		throw new Error("metaContact.attribution.campaignId is invalid");
+	}
+	const exactPrefill = text(
+		rawAttribution.exactPrefill ?? "Get me a TinyFat website!",
+		"metaContact.attribution.exactPrefill",
+	)
+		.normalize("NFC");
+	if (
+		Buffer.byteLength(exactPrefill, "utf8") > 320
+		|| /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(exactPrefill)
+	) {
+		throw new Error("metaContact.attribution.exactPrefill is invalid");
 	}
 	const testEventCode = metaContact.testEventCodeEnv === undefined
 		? undefined
@@ -644,8 +646,12 @@ function metaContactConfig(raw, environment) {
 	return {
 		datasetId,
 		accessToken,
-		attributionSecret,
-		campaignIds,
+		attribution: {
+			enabled: true,
+			source,
+			campaignId,
+			exactPrefill,
+		},
 		testEventCode,
 		apiBaseUrl,
 		apiVersion,
@@ -678,20 +684,6 @@ function metaContactConfig(raw, environment) {
 			"metaContact.requestTimeoutMs",
 			1000,
 			60_000,
-		),
-		maximumAttributionAgeSeconds: integer(
-			metaContact.maximumAttributionAgeSeconds,
-			3600,
-			"metaContact.maximumAttributionAgeSeconds",
-			60,
-			86_400,
-		),
-		maximumFutureSkewSeconds: integer(
-			metaContact.maximumFutureSkewSeconds,
-			300,
-			"metaContact.maximumFutureSkewSeconds",
-			0,
-			900,
 		),
 	};
 }

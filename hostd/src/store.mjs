@@ -3647,29 +3647,33 @@ export class HostStore {
 				LIMIT 1
 			`).get(conversation.providerThreadId);
 			const storedConversation = this.upsertPhoneConversation(conversation);
-			const storedEvent = this.upsertEvent(event);
-			this.insertControlNotification(event, storedEvent);
-			let relationshipEventQueued = false;
-			if (
+			const firstAttributedContact = Boolean(
 				relationshipEvent
 				&& attributionClaim
 				&& !existingEvent
 				&& !previousRelationship
 				&& !previousInbound
-			) {
-				const relationshipKey = `phone:${storedConversation.threadTarget}`;
-				const attributionAccepted = this.insertRelationshipAttribution({
+				&& this.insertRelationshipAttribution({
 					...attributionClaim,
-					relationshipKey,
-				});
-				if (!attributionAccepted) {
-					this.database.exec("COMMIT");
-					return {
-						conversation: storedConversation,
-						event: storedEvent,
-						relationshipEventQueued: false,
-					};
-				}
+					relationshipKey: `phone:${storedConversation.threadTarget}`,
+				}),
+			);
+			let storedEventInput = event;
+			if (firstAttributedContact && relationshipEvent.operatorIntent !== undefined) {
+				if (
+					typeof relationshipEvent.operatorIntent !== "string"
+					|| !/^[a-z][a-z0-9_]{0,63}$/.test(relationshipEvent.operatorIntent)
+				) throw new Error("relationship operator intent is invalid");
+				storedEventInput = {
+					...event,
+					payload: { ...event.payload, operatorIntent: relationshipEvent.operatorIntent },
+				};
+			}
+			const storedEvent = this.upsertEvent(storedEventInput);
+			this.insertControlNotification(event, storedEvent);
+			let relationshipEventQueued = false;
+			if (firstAttributedContact) {
+				const relationshipKey = `phone:${storedConversation.threadTarget}`;
 				const queued = this.insertRelationshipEventOutbox({
 					...relationshipEvent,
 					relationshipKey,
