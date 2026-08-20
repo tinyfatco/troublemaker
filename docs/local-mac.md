@@ -74,7 +74,7 @@ Workspace: ~/Library/Application Support/Troublemaker/Workspace
 Model:     fireworks/accounts/fireworks/models/glm-5p2
 ```
 
-`npm run local:mac` loads `FIREWORKS_API_KEY` from macOS Keychain service
+`pnpm local:mac` loads `FIREWORKS_API_KEY` from macOS Keychain service
 `com.tinyfatco.troublemaker.local` when it is not already present in the
 environment.
 
@@ -90,8 +90,8 @@ COMPUTER_USE_MCP_COMMAND="/absolute/path/to/SkyComputerUseClient" ./run-dev.sh
 ## Doctor
 
 ```bash
-npm run doctor:local-mac
-npm run smoke:mac-app
+pnpm doctor:local-mac
+pnpm smoke:mac-app
 ```
 
 ## Compaction cue

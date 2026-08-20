@@ -94,10 +94,10 @@ handle_unexpected_install_failure() {
 }
 
 echo "Building Troublemaker server..."
-(cd "$PROJECT_ROOT" && npm run build)
+(cd "$PROJECT_ROOT" && pnpm build)
 
 echo "Building Troublemaker web UI..."
-(cd "$PROJECT_ROOT/ui" && npm run build)
+(cd "$PROJECT_ROOT/ui" && pnpm build)
 
 echo "Building Troublemaker.app bundle..."
 TROUBLEMAKER_SKIP_INSTALL=1 "$SCRIPT_DIR/build-mac-app.sh"
@@ -199,4 +199,4 @@ echo "  System Settings -> Privacy & Security -> Microphone"
 echo "  System Settings -> Privacy & Security -> Accessibility"
 echo "  System Settings -> Privacy & Security -> Screen & System Audio Recording"
 echo ""
-echo "Run npm run doctor:local-mac to verify runtime and Computer Use health."
+echo "Run pnpm doctor:local-mac to verify runtime and Computer Use health."

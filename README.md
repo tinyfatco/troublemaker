@@ -47,9 +47,10 @@ For always-on deployments (VPS, Docker), Slack Socket Mode, Mattermost WebSocket
 # Clone and build
 git clone https://github.com/tinyfatco/troublemaker.git
 cd troublemaker
-npm install
-npm run build
-npm link
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
+pnpm link --global
 
 # Set platform tokens
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -308,9 +309,10 @@ troublemaker --sandbox=host ./data
 ## Development
 
 ```bash
-npm install
-npm run dev        # Watch mode
-npm run build      # Production build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev        # Watch mode
+pnpm build      # Production build
 ```
 
 ### Code Structure

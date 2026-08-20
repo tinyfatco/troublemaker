@@ -2243,7 +2243,7 @@ container. Bind servers to localhost only.
 Start the server separately, for example:
 
 \`\`\`bash
-npm run dev -- --port 4321
+pnpm dev -- --port 4321
 \`\`\`
 
 Use an app port such as \`4321\` or \`5173\`. Do not use TinyFat reserved ports:

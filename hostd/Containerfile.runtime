@@ -2,14 +2,19 @@ FROM docker.io/library/node:22-bookworm
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
-	&& rm -rf /var/lib/apt/lists/*
+	&& rm -rf /var/lib/apt/lists/* \
+	&& corepack enable \
+	&& corepack prepare pnpm@10.15.1 --activate
 
 WORKDIR /opt/troublemaker
 
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts \
-	&& npm rebuild node-pty \
-	&& npm cache clean --force
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY agent/package.json agent/package.json
+COPY hostd/package.json hostd/package.json
+COPY ui/package.json ui/package.json
+RUN pnpm install --filter @tinyfatco/troublemaker --prod --frozen-lockfile --ignore-scripts \
+	&& pnpm rebuild node-pty \
+	&& rm -rf /root/.local/share/pnpm/store
 
 COPY dist ./dist
 

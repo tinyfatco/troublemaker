@@ -1,0 +1,13 @@
+packages:
+  - .
+  - agent
+  - hostd
+  - ui
+
+onlyBuiltDependencies:
+  - esbuild
+  - node-pty
+
+ignoredBuiltDependencies:
+  - "@google/genai"
+  - protobufjs

@@ -26,7 +26,7 @@ for (const file of files) {
 		errors.push(`${file}: private/runtime path must not be tracked`);
 		continue;
 	}
-	if (file === "scripts/check-public-safety.mjs" || file.endsWith("package-lock.json")) continue;
+	if (file === "scripts/check-public-safety.mjs" || file.endsWith("package-lock.json") || file.endsWith("pnpm-lock.yaml")) continue;
 
 	let text;
 	try {

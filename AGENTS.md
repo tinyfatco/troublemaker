@@ -30,8 +30,24 @@ Tests and examples must use unmistakably synthetic fixtures:
 - repeated or sequential fake UUIDs and platform IDs
 - generic names such as Example Customer, Casey, or Operator
 
-Run `npm run check:public-safety` before every commit. Commit messages must
+Run `pnpm check:public-safety` before every commit. Commit messages must
 describe code behavior only, never a live deployment or interaction.
+
+## Local development workflow
+
+- Use the repository-pinned PNPM version through Corepack. Run `pnpm install
+  --frozen-lockfile`, `pnpm <script>`, and `pnpm exec <tool>` rather than
+  creating independent npm dependency trees. Keep the PNPM store shared across
+  local checkouts.
+- Default to the canonical checkout on a clean `main`. Make small, executable,
+  quickly verified changes there, then commit and push or open the required
+  protected-branch review.
+- Do not create a worktree merely for ordinary analysis, planning, testing, or
+  a short refactor. Use one only when concurrent work or risky isolation truly
+  requires it, record why, reuse the shared PNPM store, and remove the worktree
+  and its dependencies as soon as the work is integrated or abandoned.
+- Never leave a fan-out of stale worktrees or duplicate `node_modules`
+  directories behind.
 
 ## Client preview addresses
 

@@ -1,15 +1,19 @@
 FROM node:22-bookworm
 
-# Install git
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# Install git and the repository-pinned package manager.
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/* \
+    && corepack enable \
+    && corepack prepare pnpm@10.15.1 --activate
+ENV PNPM_HOME=/usr/local/share/pnpm
+ENV PATH=$PNPM_HOME:$PATH
 
-# Clone troublemaker, install deps, build, link globally
+# Clone troublemaker, install deps, build, link globally.
 ARG TROUBLEMAKER_VERSION=1
 RUN git clone --depth 1 https://github.com/tinyfatco/troublemaker.git /opt/troublemaker && \
     cd /opt/troublemaker && \
-    npm install --ignore-scripts && \
-    npm run build && \
-    npm link
+    pnpm install --frozen-lockfile --ignore-scripts && \
+    pnpm build && \
+    pnpm link --global
 
 # Install Chromium system deps + Puppeteer's bundled Chrome
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -18,13 +22,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 libcairo2 libasound2 libxshmfence1 libxfixes3 \
     fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
-RUN npx puppeteer browsers install chrome && \
+RUN PUPPETEER_SKIP_DOWNLOAD=true pnpm dlx puppeteer@25.8.0 browsers install chrome && \
     ln -s /root/.cache/puppeteer/chrome/*/chrome-linux64/chrome /usr/bin/chromium
 
-# Pre-install browser-tools npm deps so agents don't need to npm install at runtime
-# NODE_PATH makes these available to any script regardless of working directory
-RUN npm install -g puppeteer-core@23 puppeteer-extra puppeteer-extra-plugin-stealth
-ENV NODE_PATH=/usr/local/lib/node_modules
+# Pre-install browser-tools dependencies so agents do not install them at runtime.
+# NODE_PATH makes these available to any script regardless of working directory.
+RUN pnpm add --global puppeteer-core@23 puppeteer-extra puppeteer-extra-plugin-stealth
+ENV NODE_PATH=$PNPM_HOME/global/5/node_modules
 
 # Install GitHub CLI (gh) so agents can interact with GitHub
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -39,7 +43,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 ARG FAT_SKILLS_VERSION=1
 RUN git clone --depth 1 https://github.com/tinyfatco/fat-skills.git /opt/fat-skills && \
     cd /opt/fat-skills/browser-tools && \
-    npm install && \
+    pnpm install --no-frozen-lockfile && \
     for f in browser-*.js; do ln -sf /opt/fat-skills/browser-tools/$f /usr/local/bin/$f; done
 
 # Data directory — bind-mount from host (rclone FUSE → R2)
