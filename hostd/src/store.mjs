@@ -517,6 +517,15 @@ export class HostStore {
 				PRIMARY KEY (window_started_at, model, request_source, error_code)
 			);
 
+			CREATE TABLE IF NOT EXISTS relationship_attributions (
+				claim_key TEXT PRIMARY KEY,
+				source TEXT NOT NULL,
+				campaign_id TEXT NOT NULL,
+				relationship_key TEXT NOT NULL,
+				observed_at TEXT NOT NULL,
+				UNIQUE(source, campaign_id, relationship_key)
+			);
+
 			CREATE TABLE IF NOT EXISTS relationship_event_outbox (
 				idempotency_key TEXT PRIMARY KEY,
 				kind TEXT NOT NULL,
@@ -1500,6 +1509,50 @@ export class HostStore {
 				updated_at AS updatedAt, delivered_at AS deliveredAt
 			FROM relationship_event_outbox ORDER BY created_at, idempotency_key
 		`).all();
+	}
+
+	listRelationshipAttributions() {
+		return this.database.prepare(`
+			SELECT claim_key AS claimKey, source, campaign_id AS campaignId,
+				relationship_key AS relationshipKey, observed_at AS observedAt
+			FROM relationship_attributions ORDER BY observed_at, claim_key
+		`).all();
+	}
+
+	insertRelationshipAttribution(record) {
+		if (
+			typeof record?.claimKey !== "string"
+			|| !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,239}$/.test(record.claimKey)
+		) throw new Error("relationship attribution claim key is invalid");
+		if (
+			typeof record.source !== "string"
+			|| !/^[a-z][a-z0-9._-]{0,63}$/.test(record.source)
+		) throw new Error("relationship attribution source is invalid");
+		if (
+			typeof record.campaignId !== "string"
+			|| !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,127}$/.test(record.campaignId)
+		) throw new Error("relationship attribution campaign is invalid");
+		if (
+			typeof record.relationshipKey !== "string"
+			|| !/^[a-zA-Z0-9][a-zA-Z0-9:._-]{0,239}$/.test(record.relationshipKey)
+		) throw new Error("relationship attribution key is invalid");
+		if (
+			typeof record.observedAt !== "string"
+			|| !Number.isFinite(Date.parse(record.observedAt))
+		) throw new Error("relationship attribution observation time is invalid");
+		const result = this.database.prepare(`
+			INSERT INTO relationship_attributions(
+				claim_key, source, campaign_id, relationship_key, observed_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT DO NOTHING
+		`).run(
+			record.claimKey,
+			record.source,
+			record.campaignId,
+			record.relationshipKey,
+			record.observedAt,
+		);
+		return result.changes === 1;
 	}
 
 	insertRelationshipEventOutbox(record) {
@@ -3583,7 +3636,7 @@ export class HostStore {
 		}
 	}
 
-	upsertPhoneInbound({ conversation, event, relationshipEvent }) {
+	upsertPhoneInbound({ conversation, event, attributionClaim, relationshipEvent }) {
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const existingEvent = this.getEventByProviderMessage(event.source, event.providerMessageId);
@@ -3596,11 +3649,25 @@ export class HostStore {
 			const storedEvent = this.upsertEvent(event);
 			this.insertControlNotification(event, storedEvent);
 			let relationshipEventQueued = false;
-			if (relationshipEvent && !existingEvent && !previousInbound) {
+			if (relationshipEvent && attributionClaim && !existingEvent && !previousInbound) {
+				const relationshipKey = `phone:${storedConversation.threadTarget}`;
+				const attributionAccepted = this.insertRelationshipAttribution({
+					...attributionClaim,
+					relationshipKey,
+				});
+				if (!attributionAccepted) {
+					this.database.exec("COMMIT");
+					return {
+						conversation: storedConversation,
+						event: storedEvent,
+						relationshipEventQueued: false,
+					};
+				}
 				const queued = this.insertRelationshipEventOutbox({
 					...relationshipEvent,
-					relationshipKey: `phone:${storedConversation.threadTarget}`,
+					relationshipKey,
 				});
+				if (!queued) throw new Error("relationship event could not be queued");
 				relationshipEventQueued = queued?.idempotencyKey === relationshipEvent.eventId;
 			}
 			this.database.exec("COMMIT");

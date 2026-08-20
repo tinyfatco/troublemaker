@@ -76,6 +76,18 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 		leaseSeconds: 30,
 		retryBaseSeconds: 60,
 		retryMaximumSeconds: 60,
+		resolveAttribution({ messageText }) {
+			const marker = "[[example-attribution:claim-123]]";
+			if (!messageText.includes(marker)) return undefined;
+			return {
+				messageText: messageText.replace(marker, "").trim(),
+				claim: {
+					claimKey: "example:claim-123",
+					source: "example",
+					campaignId: "campaign-example",
+				},
+			};
+		},
 		createRecord({ contactAddress, providerMessageId, occurredAt }) {
 			return {
 				eventId: `phone-contact:${providerMessageId}`,
@@ -89,6 +101,13 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 		},
 		deliver,
 	};
+}
+
+function attributedInbound(overrides = {}) {
+	return inbound({
+		text: "Could you help with an estimate? [[example-attribution:claim-123]]",
+		...overrides,
+	});
 }
 
 function encryptedRelayEvent(payload, secret, encryptionKey, receivedAt) {
@@ -170,7 +189,7 @@ test("routes one direct text into an isolated context without exposing phone num
 	}
 });
 
-test("atomically queues one minimized lifecycle event for the first direct contact", async () => {
+test("atomically queues one minimized lifecycle event only with verified attribution", async () => {
 	const createInputs = [];
 	const firstContact = exampleFirstContact();
 	const originalCreate = firstContact.createRecord;
@@ -180,7 +199,7 @@ test("atomically queues one minimized lifecycle event for the first direct conta
 	};
 	const state = subject(undefined, undefined, firstContact);
 	try {
-		assert.equal(await state.gateway.acceptWebhook(inbound()), "queued");
+		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
 		const repeated = inbound({
 			id: "provider-message-follow-up",
 			text: "Here is unrelated follow-up content that must never enter the lifecycle outbox.",
@@ -202,7 +221,18 @@ test("atomically queues one minimized lifecycle event for the first direct conta
 		assert.equal(serialized.includes("unrelated follow-up"), false);
 		assert.equal(serialized.includes("client_ip_address"), false);
 		assert.equal(serialized.includes("client_user_agent"), false);
+		assert.equal(serialized.includes("example-attribution"), false);
+		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
+			claimKey: claim.claimKey,
+			source: claim.source,
+			campaignId: claim.campaignId,
+		})), [{
+			claimKey: "example:claim-123",
+			source: "example",
+			campaignId: "campaign-example",
+		}]);
 		assert.deepEqual(Object.keys(createInputs[0]).sort(), [
+			"attribution",
 			"contactAddress",
 			"occurredAt",
 			"provider",
@@ -210,7 +240,44 @@ test("atomically queues one minimized lifecycle event for the first direct conta
 			"providerMessageId",
 			"threadTarget",
 		]);
-		assert.equal(createInputs.length, 2, "adapter preparation is harmless; the durable uniqueness decision is transactional");
+		assert.equal(createInputs.length, 1);
+		const phonePayload = JSON.parse(state.store.listRetryableEvents()[0].payloadJson);
+		assert.equal(phonePayload.message.body, "Could you help with an estimate?");
+		assert.equal(phonePayload.message.body.includes("example-attribution"), false);
+	} finally {
+		state.close();
+	}
+});
+
+test("unmarked first contacts never enter the lifecycle outbox and block later attribution", async () => {
+	const state = subject(undefined, undefined, exampleFirstContact());
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound()), "queued");
+		assert.equal(state.store.listRelationshipEventOutbox().length, 0);
+		assert.equal(state.store.listRelationshipAttributions().length, 0);
+		const markedFollowUp = attributedInbound({ id: "provider-message-marked-follow-up" });
+		markedFollowUp.id = "provider-event-marked-follow-up";
+		assert.equal(await state.gateway.acceptWebhook(markedFollowUp), "queued");
+		assert.equal(state.store.listRelationshipEventOutbox().length, 0);
+		assert.equal(state.store.listRelationshipAttributions().length, 0);
+	} finally {
+		state.close();
+	}
+});
+
+test("a durable attribution claim cannot be replayed onto another relationship", async () => {
+	const state = subject(undefined, undefined, exampleFirstContact());
+	try {
+		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
+		const replay = attributedInbound({
+			id: "provider-message-replayed-claim",
+			from: "+15555550124",
+		});
+		replay.id = "provider-event-replayed-claim";
+		assert.equal(await state.gateway.acceptWebhook(replay), "queued");
+		assert.equal(state.store.listRelationshipEventOutbox().length, 1);
+		assert.equal(state.store.listRelationshipAttributions().length, 1);
+		assert.equal(state.store.listRetryableEvents().length, 2);
 	} finally {
 		state.close();
 	}
@@ -227,7 +294,7 @@ test("rolls relationship, inbound event, and first-contact outbox back together 
 			END;
 		`);
 		await assert.rejects(
-			state.gateway.acceptWebhook(inbound()),
+			state.gateway.acceptWebhook(attributedInbound()),
 			/simulated first-contact crash/,
 		);
 		assert.equal(state.store.listRetryableEvents().length, 0);
@@ -235,7 +302,7 @@ test("rolls relationship, inbound event, and first-contact outbox back together 
 		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_conversations").get().count, 0);
 
 		state.store.database.exec("DROP TRIGGER example_first_contact_crash");
-		assert.equal(await state.gateway.acceptWebhook(inbound()), "queued");
+		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
 		assert.equal(state.store.listRetryableEvents().length, 1);
 		assert.equal(state.store.listRelationshipEventOutbox().length, 1);
 		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_conversations").get().count, 1);
@@ -252,7 +319,7 @@ test("reconciles a provider failure after restart with the original event ID", a
 	}));
 	let reopened;
 	try {
-		await state.gateway.acceptWebhook(inbound());
+		await state.gateway.acceptWebhook(attributedInbound());
 		await state.gateway.flushFirstContacts();
 		assert.deepEqual(attempted, ["phone-contact:provider-message-inbound"]);
 		assert.equal(state.store.listRelationshipEventOutbox()[0].status, "retry");
@@ -296,7 +363,7 @@ test("replays an expired delivery lease with the same event ID after an ambiguou
 	});
 	const state = subject(undefined, undefined, firstContact);
 	try {
-		await state.gateway.acceptWebhook(inbound());
+		await state.gateway.acceptWebhook(attributedInbound());
 		const claimed = state.store.claimRelationshipEventOutbox({
 			kind: firstContact.kind,
 			maximumAttempts: firstContact.maximumAttempts,

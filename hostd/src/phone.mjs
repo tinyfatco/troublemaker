@@ -337,7 +337,7 @@ export class PhoneGateway {
 			error.code = "invalid_phone_signature";
 			throw error;
 		}
-		return this.acceptWebhook(object(JSON.parse(rawBody)));
+		return this.acceptWebhook(object(JSON.parse(rawBody)), { observedAt });
 	}
 
 	async pollOnce() {
@@ -446,7 +446,7 @@ export class PhoneGateway {
 		}
 	}
 
-	async acceptWebhook(payload) {
+	async acceptWebhook(payload, { observedAt = Date.now() } = {}) {
 		const message = sendlyObject(payload);
 		const type = eventType(payload, message);
 		const providerMessageId = messageId(payload, message);
@@ -504,9 +504,35 @@ export class PhoneGateway {
 			return "quarantined:empty";
 		}
 
+		let attributionResolution;
+		if (this.firstContact?.resolveAttribution) {
+			try {
+				attributionResolution = this.firstContact.resolveAttribution({
+					messageText: text,
+					observedAt,
+					provider: this.config.phone.provider,
+					providerEventId,
+					providerMessageId,
+				});
+			} catch {
+				// Attribution is an optional conversion gate. Any verifier failure fails closed.
+				attributionResolution = undefined;
+			}
+		}
+		const attributedText = typeof attributionResolution?.messageText === "string"
+			? attributionResolution.messageText
+			: text;
+		const attributionClaim = attributionResolution?.claim
+			? {
+				claimKey: attributionResolution.claim.claimKey,
+				source: attributionResolution.claim.source,
+				campaignId: attributionResolution.claim.campaignId,
+				observedAt: new Date(observedAt).toISOString(),
+			}
+			: undefined;
 		const conversation = this.prepareConversation(from);
 		const occurredAt = sendlyTimestamp(payload, message);
-		const relationshipEvent = this.firstContact
+		const relationshipEvent = this.firstContact && attributionClaim
 			? {
 				kind: this.firstContact.kind,
 				...this.firstContact.createRecord({
@@ -516,11 +542,13 @@ export class PhoneGateway {
 					providerMessageId,
 					occurredAt,
 					threadTarget: conversation.threadTarget,
+					attribution: attributionClaim,
 				}),
 			}
 			: undefined;
 		const committed = this.store.upsertPhoneInbound({
 			conversation,
+			attributionClaim,
 			relationshipEvent,
 			event: {
 				id: `phone:${providerMessageId}`,
@@ -536,7 +564,7 @@ export class PhoneGateway {
 					recipient: "Business SMS",
 					message: {
 						id: providerMessageId,
-						body: text,
+						body: attributedText,
 						timestamp: occurredAt,
 					},
 					phone: {
