@@ -200,6 +200,7 @@ export class PhoneGateway {
 		routingKey,
 		scheduler,
 		controlNotifier,
+		firstContact,
 		fetchImpl = fetch,
 	}) {
 		this.config = config;
@@ -208,11 +209,14 @@ export class PhoneGateway {
 		this.routingKey = routingKey;
 		this.scheduler = scheduler;
 		this.controlNotifier = controlNotifier;
+		this.firstContact = firstContact;
 		this.fetch = fetchImpl;
 		this.provider = new SendlyDirectProvider(config.phone, { fetchImpl });
 		this.server = null;
 		this.pollTimer = null;
 		this.currentPoll = null;
+		this.firstContactTimer = null;
+		this.currentFirstContactFlush = null;
 		this.stopped = true;
 	}
 
@@ -246,6 +250,14 @@ export class PhoneGateway {
 			this.pollTimer.unref();
 			console.log("troublemaker-hostd: phone relay polling active");
 		}
+		if (this.firstContact) {
+			await this.flushFirstContacts();
+			this.firstContactTimer = setInterval(
+				() => void this.flushFirstContacts(),
+				(this.firstContact.pollIntervalSeconds ?? 5) * 1000,
+			);
+			this.firstContactTimer.unref();
+		}
 	}
 
 	async stop() {
@@ -253,7 +265,10 @@ export class PhoneGateway {
 		this.stopped = true;
 		if (this.pollTimer) clearInterval(this.pollTimer);
 		this.pollTimer = null;
+		if (this.firstContactTimer) clearInterval(this.firstContactTimer);
+		this.firstContactTimer = null;
 		await this.currentPoll;
+		await this.currentFirstContactFlush;
 		if (this.server) {
 			const server = this.server;
 			this.server = null;
@@ -384,6 +399,53 @@ export class PhoneGateway {
 		if (!ack.ok) throw new Error(`phone relay ack returned HTTP ${ack.status}`);
 	}
 
+	async flushFirstContacts() {
+		if (!this.firstContact) return;
+		if (this.currentFirstContactFlush) return this.currentFirstContactFlush;
+		this.currentFirstContactFlush = this.deliverFirstContacts();
+		try {
+			await this.currentFirstContactFlush;
+		} finally {
+			this.currentFirstContactFlush = null;
+		}
+	}
+
+	async deliverFirstContacts() {
+		const maximumAttempts = this.firstContact.maximumAttempts ?? 12;
+		const leaseSeconds = this.firstContact.leaseSeconds ?? 60;
+		for (let delivered = 0; delivered < 25; delivered++) {
+			const record = this.store.claimRelationshipEventOutbox({
+				kind: this.firstContact.kind,
+				maximumAttempts,
+				leaseSeconds,
+			});
+			if (!record) return;
+			try {
+				const receipt = await this.firstContact.deliver({
+					eventId: record.idempotencyKey,
+					payload: JSON.parse(record.payloadJson),
+					attempt: record.attempts,
+				});
+				this.store.completeRelationshipEventOutbox(
+					record.idempotencyKey,
+					receipt?.receiptId,
+				);
+			} catch (error) {
+				const baseDelay = this.firstContact.retryBaseSeconds ?? 30;
+				const maximumDelay = this.firstContact.retryMaximumSeconds ?? 3600;
+				const retryDelaySeconds = Math.min(
+					maximumDelay,
+					baseDelay * (2 ** Math.max(0, record.attempts - 1)),
+				);
+				this.store.failRelationshipEventOutbox(
+					record.idempotencyKey,
+					error instanceof Error ? error.message : String(error),
+					{ maximumAttempts, retryDelaySeconds },
+				);
+			}
+		}
+	}
+
 	async acceptWebhook(payload) {
 		const message = sendlyObject(payload);
 		const type = eventType(payload, message);
@@ -419,15 +481,16 @@ export class PhoneGateway {
 			return "ignored_event";
 		}
 
-		const conversation = this.ensureConversation(from);
 		const text = firstString(message.text, message.body, message.message) || "";
 		const keyword = text.trim().toLowerCase();
 		if (type === "message.opt_out" || OPT_OUT_WORDS.has(keyword)) {
+			const conversation = this.store.upsertPhoneConversation(this.prepareConversation(from));
 			this.store.setPhoneOptOut(conversation.principalHash, true);
 			this.store.markSeen("phone-webhook", providerEventId, "opted_out");
 			return "opted_out";
 		}
 		if (type === "message.opt_in" || OPT_IN_WORDS.has(keyword)) {
+			const conversation = this.store.upsertPhoneConversation(this.prepareConversation(from));
 			this.store.setPhoneOptOut(conversation.principalHash, false);
 			this.store.markSeen("phone-webhook", providerEventId, "opted_in");
 			return "opted_in";
@@ -441,37 +504,57 @@ export class PhoneGateway {
 			return "quarantined:empty";
 		}
 
-		this.store.upsertEventWithControlNotification({
-			id: `phone:${providerMessageId}`,
-			source: "phone",
-			providerMessageId,
-			providerThreadId: conversation.providerThreadId,
-			principalHash: conversation.principalHash,
-			targetId: conversation.targetId,
-			contextId: conversation.contextId,
-			payload: {
-				direction: "inbound",
-				sender: `Phone ending ${conversation.contactLastFour}`,
-				recipient: "Business SMS",
-				message: {
-					id: providerMessageId,
-					body: text,
-					timestamp: sendlyTimestamp(payload, message),
-				},
-				phone: {
+		const conversation = this.prepareConversation(from);
+		const occurredAt = sendlyTimestamp(payload, message);
+		const relationshipEvent = this.firstContact
+			? {
+				kind: this.firstContact.kind,
+				...this.firstContact.createRecord({
+					contactAddress: from,
+					provider: this.config.phone.provider,
+					providerEventId,
+					providerMessageId,
+					occurredAt,
 					threadTarget: conversation.threadTarget,
-					displayName: `SMS •••• ${conversation.contactLastFour}`,
+				}),
+			}
+			: undefined;
+		const committed = this.store.upsertPhoneInbound({
+			conversation,
+			relationshipEvent,
+			event: {
+				id: `phone:${providerMessageId}`,
+				source: "phone",
+				providerMessageId,
+				providerThreadId: conversation.providerThreadId,
+				principalHash: conversation.principalHash,
+				targetId: conversation.targetId,
+				contextId: conversation.contextId,
+				payload: {
+					direction: "inbound",
+					sender: `Phone ending ${conversation.contactLastFour}`,
+					recipient: "Business SMS",
+					message: {
+						id: providerMessageId,
+						body: text,
+						timestamp: occurredAt,
+					},
+					phone: {
+						threadTarget: conversation.threadTarget,
+						displayName: `SMS •••• ${conversation.contactLastFour}`,
+					},
+					route: { projectSlug: "intake" },
 				},
-				route: { projectSlug: "intake" },
 			},
 		});
 		this.store.markSeen("phone-webhook", providerEventId, "queued");
 		this.controlNotifier?.wake();
 		this.scheduler?.pump();
+		if (committed.relationshipEventQueued && !this.stopped) void this.flushFirstContacts();
 		return "queued";
 	}
 
-	ensureConversation(contactAddress) {
+	prepareConversation(contactAddress) {
 		const providerThreadId = stablePrivateKey(
 			this.routingKey,
 			"phone-provider-thread",
@@ -489,7 +572,7 @@ export class PhoneGateway {
 			contactAddress,
 			label: `Phone •••• ${contactLastFour}`,
 		});
-		return this.store.upsertPhoneConversation({
+		return {
 			threadTarget,
 			provider: this.config.phone.provider,
 			providerThreadId,
@@ -502,7 +585,7 @@ export class PhoneGateway {
 				contactAddress,
 			),
 			contactLastFour,
-		});
+		};
 	}
 
 	async sendDirect(conversation, text) {
