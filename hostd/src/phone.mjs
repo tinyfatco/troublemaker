@@ -250,10 +250,10 @@ export class PhoneGateway {
 			this.pollTimer.unref();
 			console.log("troublemaker-hostd: phone relay polling active");
 		}
-		if (this.firstContact) {
-			await this.flushFirstContacts();
-			this.firstContactTimer = setInterval(
-				() => void this.flushFirstContacts(),
+			if (this.firstContact) {
+				await this.flushFirstContacts();
+				this.firstContactTimer = setInterval(
+					() => this.requestFirstContactFlush(),
 				(this.firstContact.pollIntervalSeconds ?? 5) * 1000,
 			);
 			this.firstContactTimer.unref();
@@ -408,6 +408,12 @@ export class PhoneGateway {
 		} finally {
 			this.currentFirstContactFlush = null;
 		}
+	}
+
+	requestFirstContactFlush() {
+		void this.flushFirstContacts().catch(() => {
+			console.error("troublemaker-hostd: relationship event outbox flush failed");
+		});
 	}
 
 	async deliverFirstContacts() {
@@ -578,7 +584,7 @@ export class PhoneGateway {
 		this.store.markSeen("phone-webhook", providerEventId, "queued");
 		this.controlNotifier?.wake();
 		this.scheduler?.pump();
-		if (committed.relationshipEventQueued && !this.stopped) void this.flushFirstContacts();
+		if (committed.relationshipEventQueued && !this.stopped) this.requestFirstContactFlush();
 		return "queued";
 	}
 

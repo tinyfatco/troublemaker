@@ -430,6 +430,25 @@ test("classifies retry rows when a restart lowers the delivery-attempt limit", a
 	}
 });
 
+test("contains background outbox failures without logging private exception content", async () => {
+	const state = subject(undefined, undefined, exampleFirstContact());
+	const previousConsoleError = console.error;
+	const errors = [];
+	console.error = (...parts) => errors.push(parts.join(" "));
+	try {
+		state.gateway.flushFirstContacts = async () => {
+			throw new Error("private customer body from provider response");
+		};
+		state.gateway.requestFirstContactFlush();
+		await new Promise((resolvePromise) => setImmediate(resolvePromise));
+		assert.deepEqual(errors, ["troublemaker-hostd: relationship event outbox flush failed"]);
+		assert.equal(errors.join(" ").includes("private customer body"), false);
+	} finally {
+		console.error = previousConsoleError;
+		state.close();
+	}
+});
+
 test("quarantines group and media evidence before creating a route", async () => {
 	const state = subject();
 	try {
