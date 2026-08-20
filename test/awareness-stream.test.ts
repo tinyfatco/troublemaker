@@ -5,7 +5,7 @@
  * verifies /awareness/backlog returns recent entries, then verifies
  * /awareness/stream emits only new live updates.
  *
- * Run: npx tsx test/awareness-stream.test.ts
+ * Run: pnpm exec tsx test/awareness-stream.test.ts
  */
 
 import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "fs";

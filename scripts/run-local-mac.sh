@@ -137,10 +137,10 @@ load_keychain_secret MOM_ELEVENLABS_MODEL_ID MOM_ELEVENLABS_MODEL_ID ELEVENLABS_
 
 if [ "$BUILD" -eq 1 ]; then
 	echo "Building Troublemaker server..."
-	(cd "$PROJECT_ROOT" && npm run build)
+	(cd "$PROJECT_ROOT" && pnpm build)
 
 	echo "Building Troublemaker web UI..."
-	(cd "$PROJECT_ROOT/ui" && npm run build)
+	(cd "$PROJECT_ROOT/ui" && pnpm build)
 fi
 
 echo "Configuring local MCP providers..."

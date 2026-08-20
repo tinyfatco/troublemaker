@@ -7,6 +7,11 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 LOG_DIR="$HOME/Library/Logs"
 GUI_DOMAIN="gui/$(id -u)"
 PATH_VALUE="${PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+PNPM_BIN="$(command -v pnpm || true)"
+if [ -z "$PNPM_BIN" ]; then
+	echo "pnpm is required; run corepack enable" >&2
+	exit 1
+fi
 
 mkdir -p "$PLIST_DIR" "$LOG_DIR"
 
@@ -38,7 +43,7 @@ plist_set_base "$troublemaker_plist" "com.tinyfatco.troublemaker-local"
 /usr/libexec/PlistBuddy -c "Add :StandardErrorPath string $LOG_DIR/troublemaker-local.log" "$troublemaker_plist"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments:0 string /bin/bash" "$troublemaker_plist"
 /usr/libexec/PlistBuddy -c "Add :ProgramArguments:1 string -lc" "$troublemaker_plist"
-/usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string exec npm run local:mac -- --no-build" "$troublemaker_plist"
+/usr/libexec/PlistBuddy -c "Add :ProgramArguments:2 string exec '$PNPM_BIN' run local:mac -- --no-build" "$troublemaker_plist"
 chmod 644 "$troublemaker_plist"
 
 install_plist "$troublemaker_plist" "com.tinyfatco.troublemaker-local"

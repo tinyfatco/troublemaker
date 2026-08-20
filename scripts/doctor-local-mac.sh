@@ -20,10 +20,10 @@ else
 	fail "node is not installed"
 fi
 
-if command -v npm >/dev/null 2>&1; then
-	ok "npm $(npm --version)"
+if command -v pnpm >/dev/null 2>&1; then
+	ok "pnpm $(pnpm --version)"
 else
-	fail "npm is not installed"
+	fail "pnpm is not installed; run corepack enable"
 fi
 
 if [ -x "$COMPUTER_USE_MCP_COMMAND" ] && [ -d "$COMPUTER_USE_PLUGIN_DIR" ]; then

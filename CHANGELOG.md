@@ -303,7 +303,7 @@
 ### Breaking Changes
 
 - Timestamps now use Slack format (seconds.microseconds) and messages are sorted by `ts` field
-  - **Migration required**: Run `npx tsx scripts/migrate-timestamps.ts ./data` to fix existing logs
+  - **Migration required**: Run `pnpm exec tsx scripts/migrate-timestamps.ts ./data` to fix existing logs
   - Without migration, message context will be incorrectly ordered
 
 ### Added
