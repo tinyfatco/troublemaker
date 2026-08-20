@@ -10,6 +10,7 @@ import { HostStore } from "../src/store.mjs";
 
 const BUSINESS_NUMBER = "+15555550100";
 const CONTACT_NUMBER = "+15555550123";
+const EXAMPLE_CAMPAIGN_PREFILL = "Example campaign inquiry";
 
 function subject(fetchImpl = async () => Response.json({
 	id: "provider-message-outbound",
@@ -76,13 +77,14 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 		leaseSeconds: 30,
 		retryBaseSeconds: 60,
 		retryMaximumSeconds: 60,
-		resolveAttribution({ messageText }) {
-			const marker = "[[example-attribution:claim-123]]";
-			if (!messageText.includes(marker)) return undefined;
+		resolveAttribution({ messageText, provider, providerMessageId }) {
+			if (messageText.normalize("NFC").trim() !== EXAMPLE_CAMPAIGN_PREFILL) return undefined;
 			return {
-				messageText: messageText.replace(marker, "").trim(),
+				messageText,
 				claim: {
-					claimKey: "example:claim-123",
+					claimKey: `example:${createHash("sha256")
+						.update(`${provider}\0${providerMessageId}`, "utf8")
+						.digest("hex")}`,
 					source: "example",
 					campaignId: "campaign-example",
 				},
@@ -105,7 +107,7 @@ function exampleFirstContact(deliver = async ({ eventId }) => ({ receiptId: `rec
 
 function attributedInbound(overrides = {}) {
 	return inbound({
-		text: "Could you help with an estimate? [[example-attribution:claim-123]]",
+		text: EXAMPLE_CAMPAIGN_PREFILL,
 		...overrides,
 	});
 }
@@ -218,17 +220,18 @@ test("atomically queues one minimized lifecycle event only with verified attribu
 		const serialized = JSON.stringify(outbox);
 		assert.equal(serialized.includes(CONTACT_NUMBER), false);
 		assert.equal(serialized.includes(CONTACT_NUMBER.slice(1)), false);
-		assert.equal(serialized.includes("Could you help"), false);
+		assert.equal(serialized.includes(EXAMPLE_CAMPAIGN_PREFILL), false);
 		assert.equal(serialized.includes("unrelated follow-up"), false);
 		assert.equal(serialized.includes("client_ip_address"), false);
 		assert.equal(serialized.includes("client_user_agent"), false);
-		assert.equal(serialized.includes("example-attribution"), false);
 		assert.deepEqual(state.store.listRelationshipAttributions().map((claim) => ({
 			claimKey: claim.claimKey,
 			source: claim.source,
 			campaignId: claim.campaignId,
 		})), [{
-			claimKey: "example:claim-123",
+			claimKey: `example:${createHash("sha256")
+				.update("sendly\0provider-message-inbound", "utf8")
+				.digest("hex")}`,
 			source: "example",
 			campaignId: "campaign-example",
 		}]);
@@ -243,8 +246,7 @@ test("atomically queues one minimized lifecycle event only with verified attribu
 		]);
 		assert.equal(createInputs.length, 1);
 		const phonePayload = JSON.parse(state.store.listRetryableEvents()[0].payloadJson);
-		assert.equal(phonePayload.message.body, "Could you help with an estimate?");
-		assert.equal(phonePayload.message.body.includes("example-attribution"), false);
+		assert.equal(phonePayload.message.body, EXAMPLE_CAMPAIGN_PREFILL);
 	} finally {
 		state.close();
 	}
@@ -266,19 +268,18 @@ test("unmarked first contacts never enter the lifecycle outbox and block later a
 	}
 });
 
-test("a durable attribution claim cannot be replayed onto another relationship", async () => {
+test("a replayed provider message cannot create another relationship conversion", async () => {
 	const state = subject(undefined, undefined, exampleFirstContact());
 	try {
 		assert.equal(await state.gateway.acceptWebhook(attributedInbound()), "queued");
 		const replay = attributedInbound({
-			id: "provider-message-replayed-claim",
 			from: "+15555550124",
 		});
 		replay.id = "provider-event-replayed-claim";
 		assert.equal(await state.gateway.acceptWebhook(replay), "queued");
 		assert.equal(state.store.listRelationshipEventOutbox().length, 1);
 		assert.equal(state.store.listRelationshipAttributions().length, 1);
-		assert.equal(state.store.listRetryableEvents().length, 2);
+		assert.equal(state.store.listRetryableEvents().length, 1);
 	} finally {
 		state.close();
 	}
