@@ -546,6 +546,33 @@ test("replays an expired delivery lease with the same event ID after an ambiguou
 	}
 });
 
+test("classifies retry rows when a restart lowers the delivery-attempt limit", async () => {
+	const firstContact = exampleFirstContact();
+	const state = subject(undefined, undefined, firstContact);
+	try {
+		await state.gateway.acceptWebhook(attributedInbound());
+		const claimed = state.store.claimRelationshipEventOutbox({
+			kind: firstContact.kind,
+			maximumAttempts: 4,
+			leaseSeconds: firstContact.leaseSeconds,
+		});
+		state.store.failRelationshipEventOutbox(claimed.idempotencyKey, "provider unavailable", {
+			maximumAttempts: 4,
+			retryDelaySeconds: 0,
+		});
+		assert.equal(state.store.listRelationshipEventOutbox()[0].status, "retry");
+
+		assert.equal(state.store.claimRelationshipEventOutbox({
+			kind: firstContact.kind,
+			maximumAttempts: 1,
+			leaseSeconds: firstContact.leaseSeconds,
+		}), undefined);
+		assert.equal(state.store.listRelationshipEventOutbox()[0].status, "terminal");
+	} finally {
+		state.close();
+	}
+});
+
 test("quarantines group and media evidence before creating a route", async () => {
 	const state = subject();
 	try {

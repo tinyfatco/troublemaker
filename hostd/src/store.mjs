@@ -1601,8 +1601,15 @@ export class HostStore {
 					available_at = ?, lease_expires_at = NULL,
 					last_error = COALESCE(last_error, 'delivery lease expired'), updated_at = ?
 				WHERE kind = ? AND status = 'sending' AND lease_expires_at <= ?
-			`).run(maximumAttempts, timestamp, timestamp, kind, timestamp);
-			const due = this.database.prepare(`
+				`).run(maximumAttempts, timestamp, timestamp, kind, timestamp);
+				this.database.prepare(`
+					UPDATE relationship_event_outbox
+					SET status = 'terminal', available_at = ?, lease_expires_at = NULL,
+						last_error = COALESCE(last_error, 'maximum delivery attempts exhausted'),
+						updated_at = ?
+					WHERE kind = ? AND status IN ('pending', 'retry') AND attempts >= ?
+				`).run(timestamp, timestamp, kind, maximumAttempts);
+				const due = this.database.prepare(`
 				SELECT idempotency_key AS idempotencyKey
 				FROM relationship_event_outbox
 				WHERE kind = ? AND status IN ('pending', 'retry')
