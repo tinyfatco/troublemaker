@@ -8,6 +8,7 @@ import test from "node:test";
 import { gunzipSync } from "node:zlib";
 import { ContextRouter } from "../src/router.mjs";
 import { resolveSiteFactory } from "../src/site-deployment-binding.mjs";
+import { siteActorRefForContext } from "../src/site-actor.mjs";
 import { siteDeploymentBinding, siteDeploymentBindings } from "../src/runtime.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability, stablePrivateKey } from "../src/security.mjs";
@@ -1255,4 +1256,158 @@ test("only the exact configured phone intake context receives its site deploy ca
 	assert.equal(siteDeploymentBinding(config, store, target, "wrong-phone", routingKey), null);
 	assert.equal(siteDeploymentBinding(config, store, target, "wrong-project", routingKey), null);
 	assert.equal(siteDeploymentBinding(config, store, target, "bound"), null);
+});
+
+test("context rehome preserves the actor identity of every existing site binding", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-sites-rehome-actor-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const { privateKey } = generateKeyPairSync("ed25519");
+	const target = {
+		id: "operator",
+		driver: "oci",
+		contextsDirectory: join(directory, "contexts"),
+	};
+	const bindingIdentity = {
+		siteSlug: "example-business",
+		displayName: "Example Business",
+		siteId: "11111111-1111-4111-8111-111111111111",
+		grantId: "22222222-2222-4222-8222-222222222222",
+		customerId: "33333333-3333-4333-8333-333333333333",
+		userId: "44444444-4444-4444-8444-444444444444",
+		projectId: "55555555-5555-4555-8555-555555555555",
+		previewHostname: "example-business.tinyfat.dev",
+		artifactKinds: ["static"],
+		allowedBranches: ["*"],
+	};
+	const config = {
+		sites: {
+			publishUrl: "https://publish.example.com",
+			previewApex: "tinyfat.dev",
+			previewNamespace: "example-sites-preview",
+			productionNamespace: "example-sites-production",
+			capabilityPrivateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+			capabilityKeyId: "hostd-example-1",
+			capabilityIssuer: "troublemaker-hostd",
+			capabilityAudience: "tinyfat-sites-publish",
+			capabilityTtlSeconds: 60,
+			...LIMITS,
+		},
+		routing: {
+			actorTarget: target.id,
+			knownPrincipals: [{
+				email: "owner@example.com",
+				projects: [{
+					slug: "website",
+					name: "Example website",
+					siteDeployments: [],
+					siteFactory: {
+						customerId: bindingIdentity.customerId,
+						userId: bindingIdentity.userId,
+						projectId: bindingIdentity.projectId,
+						grantId: bindingIdentity.grantId,
+						maximumSites: 1,
+						artifactKinds: ["static"],
+						allowedBranches: ["*"],
+					},
+				}],
+			}],
+		},
+		targetsById: new Map([[target.id, target]]),
+	};
+	const router = new ContextRouter(config, store, Buffer.alloc(32, 6));
+	const owner = router.resolve({ source: "gmail", threadId: "thread-owner", sender: "owner@example.com" });
+	store.ensureProject(owner.principalHash, "website", "Example website");
+	const legacyContextId = `${target.id}:${owner.principalHash}:website`;
+	const currentContextId = `${target.id}:${owner.principalHash}:relationship`;
+	store.createContext({
+		id: legacyContextId,
+		targetId: target.id,
+		driver: "oci",
+		runtimeName: "legacy-runtime",
+		port: 32001,
+	});
+	store.bindRoute({
+		source: "gmail",
+		providerThreadId: "thread-website",
+		principalHash: owner.principalHash,
+		projectSlug: "website",
+		targetId: target.id,
+		contextId: legacyContextId,
+	});
+	store.beginSiteDeploymentBinding({
+		contextId: legacyContextId,
+		...bindingIdentity,
+		maximumSites: 1,
+	});
+	store.activateSiteDeploymentBinding(legacyContextId, bindingIdentity.siteSlug);
+	const originalActorRef = siteActorRefForContext(legacyContextId);
+	assert.equal(
+		store.getSiteDeploymentBinding(legacyContextId, bindingIdentity.siteSlug).actorRef,
+		originalActorRef,
+	);
+
+	store.rehomeContext({
+		fromContextId: legacyContextId,
+		toContextId: currentContextId,
+		targetId: target.id,
+		runtimeName: "relationship-runtime",
+		relationshipId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	});
+	const rehomed = store.getSiteDeploymentBinding(currentContextId, bindingIdentity.siteSlug);
+	assert.equal(rehomed.actorRef, originalActorRef);
+	assert.notEqual(rehomed.actorRef, siteActorRefForContext(currentContextId));
+
+	const workspace = join(
+		target.contextsDirectory,
+		currentContextId.replace(/[^a-z0-9_.-]/gi, "_"),
+		"workspace",
+	);
+	await mkdir(join(workspace, "dist"), { recursive: true });
+	await writeFile(join(workspace, "dist", "index.html"), "<!doctype html><title>Rehomed</title>\n");
+	const sourceSha = commitWorkspace(workspace, "main");
+	let signed;
+	const service = new HostSites({
+		config,
+		store,
+		now: () => 1_800_000_000_000,
+		fetch: async (_url, init) => {
+			signed = decodeCapability(new Headers(init.headers).get("authorization").replace(/^Bearer\s+/, ""));
+			return new Response(JSON.stringify({
+				ok: true,
+				site: bindingIdentity.siteSlug,
+				site_id: bindingIdentity.siteId,
+				deployment_grant_id: bindingIdentity.grantId,
+				customer_id: bindingIdentity.customerId,
+				project_id: bindingIdentity.projectId,
+				environment: "preview",
+				preview_slot: "branch:main",
+				git_branch: "main",
+				git_sha: sourceSha,
+				branch_label: "main",
+				hostname: bindingIdentity.previewHostname,
+				namespace: "example-sites-preview",
+				artifact_kind: "static",
+				artifact_sha256: signed.payload.artifact_sha256,
+				idempotency_key: signed.payload.idempotency_key,
+				url: `https://${bindingIdentity.previewHostname}/`,
+				scriptName: scopedScriptName(bindingIdentity.siteId, "main"),
+				deploymentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		},
+	});
+	try {
+		const result = await service.deploy(target, currentContextId, {
+			site_slug: bindingIdentity.siteSlug,
+			branch: "main",
+			directory: "dist",
+			artifact_kind: "static",
+			idempotency_key: `site_deploy:${"a".repeat(64)}`,
+			message: "Rehome identity regression",
+		});
+		assert.equal(result.ok, true);
+		assert.equal(signed.payload.actor_ref, originalActorRef);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
 });

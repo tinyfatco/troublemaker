@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { siteActorRefForContext } from "./site-actor.mjs";
 
 function now() {
 	return new Date().toISOString();
@@ -301,6 +302,7 @@ export class HostStore {
 
 			CREATE TABLE IF NOT EXISTS site_deployment_bindings (
 				context_id TEXT NOT NULL,
+				actor_ref TEXT NOT NULL,
 				site_slug TEXT NOT NULL UNIQUE,
 				display_name TEXT NOT NULL,
 				site_id TEXT NOT NULL UNIQUE,
@@ -663,6 +665,34 @@ export class HostStore {
 		add("mcp_outbound_connections", "relationship_id TEXT");
 		add("mcp_outbound_connections", "generation INTEGER NOT NULL DEFAULT 1");
 		add("mcp_outbound_connections", "credential_name TEXT");
+		add("site_deployment_bindings", "actor_ref TEXT");
+		const legacySiteBindings = this.database.prepare(`
+			SELECT rowid AS rowId, context_id AS contextId, created_at AS createdAt
+			FROM site_deployment_bindings
+			WHERE actor_ref IS NULL OR actor_ref = ''
+		`).all();
+		const priorRehome = this.database.prepare(`
+			SELECT from_context_id AS fromContextId, created_at AS createdAt
+			FROM context_rehomes
+			WHERE to_context_id = ? AND created_at >= ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT 1
+		`);
+		const bindSiteActor = this.database.prepare(`
+			UPDATE site_deployment_bindings SET actor_ref = ? WHERE rowid = ?
+		`);
+		for (const binding of legacySiteBindings) {
+			let actorContextId = binding.contextId;
+			const visited = new Set();
+			while (true) {
+				if (visited.has(actorContextId)) throw new Error("site_binding_actor_rehome_cycle");
+				visited.add(actorContextId);
+				const rehome = priorRehome.get(actorContextId, binding.createdAt);
+				if (!rehome) break;
+				actorContextId = rehome.fromContextId;
+			}
+			bindSiteActor.run(siteActorRefForContext(actorContextId), binding.rowId);
+		}
 		const handoffSchema = this.database.prepare(`
 			SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'mcp_handoffs'
 		`).get()?.sql || "";
@@ -1887,7 +1917,8 @@ export class HostStore {
 
 	getSiteDeploymentBinding(contextId, siteSlug) {
 		const row = this.database.prepare(`
-			SELECT context_id AS contextId, site_slug AS siteSlug, display_name AS displayName, site_id AS siteId,
+			SELECT context_id AS contextId, actor_ref AS actorRef,
+				site_slug AS siteSlug, display_name AS displayName, site_id AS siteId,
 				grant_id AS grantId, customer_id AS customerId, user_id AS userId,
 				project_id AS projectId, preview_hostname AS previewHostname,
 				artifact_kinds_json AS artifactKindsJson,
@@ -1971,12 +2002,13 @@ export class HostStore {
 			const timestamp = now();
 			this.database.prepare(`
 				INSERT INTO site_deployment_bindings(
-					context_id, site_slug, display_name, site_id, grant_id, customer_id, user_id,
+					context_id, actor_ref, site_slug, display_name, site_id, grant_id, customer_id, user_id,
 					project_id, preview_hostname, artifact_kinds_json,
 					allowed_branches_json, status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'creating', ?, ?)
 			`).run(
 				contextId,
+				siteActorRefForContext(contextId),
 				siteSlug,
 				displayName,
 				siteId,

@@ -17,6 +17,7 @@ import {
 	resolveSiteFactory,
 	resolveSiteRelationshipScope,
 } from "./site-deployment-binding.mjs";
+import { siteActorRefForContext } from "./site-actor.mjs";
 
 const execFileAsync = promisify(execFile);
 const BRANCH_FORBIDDEN = /[\u0000-\u0020\u007f~^:?*[\\]/;
@@ -30,6 +31,14 @@ export class HostSitesError extends Error {
 		this.status = status;
 		this.code = code;
 	}
+}
+
+function siteBindingActorRef(binding, contextId) {
+	if (typeof binding.actorRef === "string" && binding.actorRef.length > 0) {
+		return binding.actorRef;
+	}
+	if (binding.contextId) throw new HostSitesError(500, "site_binding_actor_missing");
+	return siteActorRefForContext(contextId);
 }
 
 function base64urlJson(value) {
@@ -454,7 +463,7 @@ export class HostSites {
 		if (factory.status === "active") {
 			return resolveSiteFactory(this.config, this.store, target, contextId, this.routingKey);
 		}
-		const contextReference = createHash("sha256").update(contextId).digest("hex");
+		const actorRef = siteActorRefForContext(contextId);
 		const principalReference = createHash("sha256")
 			.update(target.id)
 			.update("\0")
@@ -478,7 +487,7 @@ export class HostSites {
 			allowed_branches: factory.allowedBranches,
 			hostname_mode: factory.hostnameMode,
 			preview_apex: this.config.sites.previewApex,
-			actor_ref: `hostd-context:${contextReference}`,
+			actor_ref: actorRef,
 		}, Math.floor(this.now() / 1000));
 		try {
 			const response = await this.request(`${this.config.sites.publishUrl}/v1/scoped-relationships`, {
@@ -507,7 +516,7 @@ export class HostSites {
 				project_id: factory.projectId,
 				factory_grant_id: factory.grantId,
 				principal_ref: principalReference,
-				actor_ref: `hostd-context:${contextReference}`,
+				actor_ref: actorRef,
 				maximum_sites: factory.maximumSites,
 				hostname_mode: factory.hostnameMode,
 				preview_apex: this.config.sites.previewApex,
@@ -622,7 +631,7 @@ export class HostSites {
 				hostname: binding.previewHostname,
 			};
 		}
-		const contextReference = createHash("sha256").update(contextId).digest("hex");
+		const actorRef = siteBindingActorRef(binding, contextId);
 		const capability = signDeployCapability(this.config.sites, {
 			sub: `user:${binding.userId}`,
 			jti: createHash("sha256")
@@ -640,7 +649,7 @@ export class HostSites {
 			hostname: binding.previewHostname,
 			hostname_mode: "site-root-preview",
 			preview_apex: this.config.sites.previewApex,
-			actor_ref: `hostd-context:${contextReference}`,
+			actor_ref: actorRef,
 		}, Math.floor(this.now() / 1000));
 		try {
 			const response = await this.request(`${this.config.sites.publishUrl}/v1/scoped-sites`, {
@@ -747,7 +756,7 @@ export class HostSites {
 			.update("\0")
 			.update(binding.siteId)
 			.digest("hex");
-		const contextReference = createHash("sha256").update(contextId).digest("hex");
+		const actorRef = siteBindingActorRef(binding, contextId);
 		const capability = signDeployCapability(this.config.sites, {
 			sub: `site:${binding.siteId}`,
 			jti,
@@ -769,7 +778,7 @@ export class HostSites {
 			artifact_kind: artifactKind,
 			artifact_sha256: artifact.sha256,
 			idempotency_key: idempotencyKey,
-			actor_ref: `hostd-context:${contextReference}`,
+			actor_ref: actorRef,
 		}, nowSeconds);
 
 		const response = await this.request(`${this.config.sites.publishUrl}/v1/scoped-deploy`, {
