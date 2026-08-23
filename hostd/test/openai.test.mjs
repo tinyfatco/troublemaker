@@ -166,11 +166,13 @@ test("OpenAI runtime selection overrides dormant Workers AI with context-only pr
 			provider: environment.MOM_MODEL_PROVIDER,
 			model: environment.MOM_MODEL_ID,
 			thinking: environment.MOM_THINKING,
+			maximumOutputTokens: environment.MOM_MAX_OUTPUT_TOKENS,
 			migrated: environment.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED,
 		}, {
 			provider: "openai",
 			model: "gpt-5.6-sol",
 			thinking: "xhigh",
+			maximumOutputTokens: "32768",
 			migrated: "1",
 		});
 		assert.equal(

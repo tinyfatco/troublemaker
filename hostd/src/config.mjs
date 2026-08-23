@@ -1230,7 +1230,10 @@ function targetConfig(raw, index, environment) {
 				) {
 					throw new Error(`${label} is owned by Hostd and cannot be overridden`);
 				}
-				if (/(?:API_KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/.test(key)) {
+				if (
+					key !== "MOM_MAX_OUTPUT_TOKENS"
+					&& /(?:API_KEY|AUTH|COOKIE|CREDENTIAL|PASSWORD|PRIVATE_KEY|SECRET|TOKEN)/.test(key)
+				) {
 					throw new Error(`${label} appears to contain host authority; use a Hostd-scoped capability instead`);
 				}
 				const value = text(rawValue, label);
@@ -1292,6 +1295,7 @@ export async function loadConfig(path, environment = process.env) {
 			"MOM_MODEL_PROVIDER",
 			"MOM_MODEL_ID",
 			"MOM_THINKING",
+			"MOM_MAX_OUTPUT_TOKENS",
 			"OPENAI_BASE_URL",
 			"OPENAI_CODEX_BASE_URL",
 		]);

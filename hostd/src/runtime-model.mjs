@@ -65,6 +65,7 @@ export function runtimeModelEnvironment(config, target, contextId, model) {
 			MOM_MODEL_PROVIDER: HOSTD_OPENAI_PROVIDER,
 			MOM_MODEL_ID: HOSTD_OPENAI_MODEL,
 			MOM_THINKING: HOSTD_OPENAI_THINKING,
+			MOM_MAX_OUTPUT_TOKENS: String(config.openAi.maximumOutputTokens),
 			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
 			OPENAI_API_KEY: contextCapability(target.outboundToken, "openai", contextId),
 			OPENAI_BASE_URL:

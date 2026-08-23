@@ -7,6 +7,7 @@
 - Add a Hostd-owned, context-scoped OpenAI Responses proxy pinned to GPT-5.6
   Sol with xhigh thinking, bounded output, durable worst-case monthly spend
   reservations, fail-closed ambiguity handling, and staged canary scope.
+- Clamp migrated runtime requests to Hostd's exact reserved output ceiling.
 
 ## [0.52.10] - 2026-02-12
 

@@ -258,7 +258,7 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 	}
 
 	log.logInfo(`Model: ${model.provider}/${model.id} (api: ${model.api})`);
-	return applyBaseUrlOverride(model, model.provider);
+	return applyMigratedHostdOutputBound(applyBaseUrlOverride(model, model.provider));
 }
 
 export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
@@ -504,6 +504,28 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
 		return { ...model, baseUrl: override };
 	}
 	return model;
+}
+
+/**
+ * Hostd reserves spend against this exact ceiling before proxying a request.
+ * Mirror that owner-controlled bound into pi's model metadata so every real
+ * Responses request stays within the reservation policy instead of relying on
+ * individual callers to remember a lower maxTokens option.
+ */
+function applyMigratedHostdOutputBound(model: Model<Api>): Model<Api> {
+	if (!isMigratedHostdOpenAi()) return model;
+	if (model.provider !== HOSTD_OPENAI_PROVIDER || model.id !== HOSTD_OPENAI_MODEL_ID) {
+		throw new Error(`Migrated Hostd contexts require ${HOSTD_OPENAI_PROVIDER}/${HOSTD_OPENAI_MODEL_ID}`);
+	}
+	const configured = process.env.MOM_MAX_OUTPUT_TOKENS?.trim();
+	if (!configured || !/^[1-9]\d*$/.test(configured)) {
+		throw new Error("Migrated Hostd contexts require a valid MOM_MAX_OUTPUT_TOKENS bound");
+	}
+	const maxTokens = Number(configured);
+	if (!Number.isSafeInteger(maxTokens) || maxTokens < 16 || maxTokens > model.maxTokens) {
+		throw new Error("Migrated Hostd MOM_MAX_OUTPUT_TOKENS is outside the pinned model limits");
+	}
+	return { ...model, maxTokens };
 }
 
 export class ModelCredentialUnavailableError extends Error {

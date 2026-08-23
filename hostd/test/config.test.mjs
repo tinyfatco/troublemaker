@@ -226,6 +226,7 @@ test("prevents target runtime defaults from overriding scoped Hostd authority", 
 			["OPENAI_API_KEY", "host-provider-secret", /host authority/],
 			["MOM_MODEL_PROVIDER", "openai-codex", /owned by Hostd OpenAI policy/],
 			["MOM_THINKING", "high", /owned by Hostd OpenAI policy/],
+			["MOM_MAX_OUTPUT_TOKENS", "128000", /owned by Hostd OpenAI policy/],
 			["BAD\nMOM_WEB_INPUT_TOKEN", "injected", /invalid environment variable name/],
 			["MOM_MODEL_ID", "valid\rINJECTED=value", /control characters/],
 		]) {

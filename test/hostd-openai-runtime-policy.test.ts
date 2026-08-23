@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getModel } from "@earendil-works/pi-ai/compat";
+import { getModel, streamSimpleOpenAIResponses } from "@earendil-works/pi-ai/compat";
 import { handleSlashCommand } from "../src/commands.js";
 import { resolveThinkingLevel } from "../src/core/prompt.js";
 import { MomSettingsManager } from "../src/context.js";
@@ -22,6 +22,7 @@ const keys = [
 	"MOM_MODEL_PROVIDER",
 	"MOM_MODEL_ID",
 	"MOM_THINKING",
+	"MOM_MAX_OUTPUT_TOKENS",
 	"OPENAI_API_KEY",
 	"OPENAI_BASE_URL",
 	"TROUBLEMAKER_HOSTD_OPENAI_MIGRATED",
@@ -33,6 +34,7 @@ try {
 	process.env.MOM_MODEL_PROVIDER = "openai";
 	process.env.MOM_MODEL_ID = "gpt-5.6-sol";
 	process.env.MOM_THINKING = "xhigh";
+	process.env.MOM_MAX_OUTPUT_TOKENS = "32768";
 	process.env.OPENAI_BASE_URL = "http://host.containers.internal:3099/v1/openai/synthetic-context";
 	process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = "1";
 
@@ -50,6 +52,7 @@ try {
 	const proxiedSol = resolveModelWithAuth(workingDir, unavailableRegistry as any);
 	assert.equal(proxiedSol.provider, "openai");
 	assert.equal(proxiedSol.id, "gpt-5.6-sol");
+	assert.equal(proxiedSol.maxTokens, 32_768);
 	assert.equal(
 		proxiedSol.baseUrl,
 		process.env.OPENAI_BASE_URL,
@@ -62,6 +65,43 @@ try {
 		"synthetic-context-capability",
 		"migrated requests use only the injected context capability",
 	);
+	let requestPayload: Record<string, unknown> | undefined;
+	const request = streamSimpleOpenAIResponses(
+		proxiedSol as any,
+		{
+			messages: [{ role: "user", content: "Synthetic request", timestamp: 1 }],
+		},
+		{
+			apiKey: "synthetic-context-capability",
+			maxTokens: proxiedSol.maxTokens,
+			reasoning: "xhigh",
+			maxRetries: 0,
+			onPayload: (payload) => {
+				requestPayload = payload as Record<string, unknown>;
+			},
+			fetch: async () => { throw new Error("synthetic fetch stop"); },
+		},
+	);
+	await request.result();
+	assert.equal(requestPayload?.model, "gpt-5.6-sol");
+	assert.equal(requestPayload?.max_output_tokens, 32_768);
+	assert.deepEqual(requestPayload?.reasoning, { effort: "xhigh", summary: "auto" });
+	assert.equal(requestPayload?.store, false);
+	assert.equal(requestPayload?.stream, true);
+
+	delete process.env.MOM_MAX_OUTPUT_TOKENS;
+	assert.throws(
+		() => resolveModel(workingDir, unavailableRegistry as any),
+		/require a valid MOM_MAX_OUTPUT_TOKENS bound/,
+		"a missing Hostd output bound fails closed",
+	);
+	process.env.MOM_MAX_OUTPUT_TOKENS = "128001";
+	assert.throws(
+		() => resolveModel(workingDir, unavailableRegistry as any),
+		/outside the pinned model limits/,
+		"a Hostd output bound above the model limit fails closed",
+	);
+	process.env.MOM_MAX_OUTPUT_TOKENS = "32768";
 	const loginMessages: string[] = [];
 	const loginResult = await handleSlashCommand(
 		"/login openai-codex",
