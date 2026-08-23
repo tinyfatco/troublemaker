@@ -35,7 +35,8 @@ import {
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { cancelFollowUpSchedules, clearAllFollowUpSchedules, getFollowUpRuntimeStatus } from "../follow-ups.js";
-import { findModel } from "../model-config.js";
+import { findModel, getCurrentModelSelection, getEnvironmentModelOverride } from "../model-config.js";
+import { MODEL_THINKING_LEVELS } from "../model-thinking.js";
 import {
 	DEFAULT_REALTIME_VOICE,
 	normalizeRealtimeVoiceName,
@@ -43,8 +44,6 @@ import {
 } from "../realtime-voices.js";
 import * as log from "../log.js";
 import { normalizeVoiceWakeAliases } from "../voice-contract.js";
-
-const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 const SELF_CONFIGURE_SETTINGS = new Set([
 	"model",
@@ -196,6 +195,10 @@ function parseString(value: unknown, setting: string): string {
 }
 
 function configureModel(workingDir: string, value: unknown): SelfConfigureResult {
+	if (getEnvironmentModelOverride()) {
+		const current = getCurrentModelSelection(workingDir);
+		throw new Error(`model is locked by the service environment at ${current.provider}/${current.id}.`);
+	}
 	const query = parseString(value, "model").trim();
 	if (!query) throw new Error("model must be a non-empty string.");
 	const match = findModel(query, workingDir);
@@ -221,9 +224,12 @@ function configureModel(workingDir: string, value: unknown): SelfConfigureResult
 }
 
 function configureThinkingLevel(workingDir: string, value: unknown): SelfConfigureResult {
+	if (process.env.MOM_THINKING) {
+		throw new Error(`thinking_level is locked by the service environment at ${process.env.MOM_THINKING}.`);
+	}
 	const level = parseString(value, "thinking_level").trim().toLowerCase();
-	if (!(THINKING_LEVEL_VALUES as readonly string[]).includes(level)) {
-		throw new Error(`thinking_level must be one of: ${THINKING_LEVEL_VALUES.join(", ")}`);
+	if (!(MODEL_THINKING_LEVELS as readonly string[]).includes(level)) {
+		throw new Error(`thinking_level must be one of: ${MODEL_THINKING_LEVELS.join(", ")}`);
 	}
 
 	const settings = loadSettingsRaw(workingDir);

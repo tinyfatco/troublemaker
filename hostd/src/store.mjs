@@ -33,6 +33,7 @@ export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"web_chat_conversations",
 	"web_chat_outbox",
 	"workers_ai_requests",
+	"openai_requests",
 	"gmail_drafts",
 	"gmail_tool_requests",
 	"control_notifications",
@@ -505,6 +506,36 @@ export class HostStore {
 
 			CREATE INDEX IF NOT EXISTS workers_ai_requests_active
 				ON workers_ai_requests(status, expires_at);
+
+			CREATE TABLE IF NOT EXISTS openai_requests (
+				id TEXT PRIMARY KEY,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				model TEXT NOT NULL,
+				month_started_at TEXT NOT NULL,
+				status TEXT NOT NULL
+					CHECK(status IN ('reserved', 'settled', 'uncertain', 'rejected')),
+				rejection_count INTEGER NOT NULL DEFAULT 0,
+				reserved_microdollars INTEGER NOT NULL,
+				charged_microdollars INTEGER NOT NULL DEFAULT 0,
+				upstream_status INTEGER,
+				input_tokens INTEGER NOT NULL DEFAULT 0,
+				cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+				cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+				output_tokens INTEGER NOT NULL DEFAULT 0,
+				total_tokens INTEGER NOT NULL DEFAULT 0,
+				started_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				completed_at TEXT,
+				last_error TEXT,
+				FOREIGN KEY (context_id) REFERENCES contexts(id) ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS openai_requests_month
+				ON openai_requests(month_started_at, context_id, status);
+
+			CREATE INDEX IF NOT EXISTS openai_requests_active
+				ON openai_requests(status, expires_at);
 
 			CREATE TABLE IF NOT EXISTS workers_ai_provider_usage (
 				window_started_at TEXT NOT NULL,
@@ -993,6 +1024,186 @@ export class HostStore {
 			error ? String(error).slice(0, 200) : null,
 			id,
 		);
+	}
+
+	reserveOpenAiRequest({
+		id,
+		targetId,
+		contextId,
+		model,
+		monthStartedAt,
+		observedAt,
+		expiresAt,
+		reservedMicrodollars,
+		monthlySpendCapCents,
+		maximumConcurrentPerContext,
+		maximumConcurrentGlobal,
+	}) {
+		const capMicrodollars = monthlySpendCapCents * 10_000;
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE openai_requests
+				SET status = 'uncertain', charged_microdollars = reserved_microdollars,
+					completed_at = ?, last_error = 'request_lease_expired'
+				WHERE status = 'reserved' AND expires_at <= ?
+			`).run(observedAt, observedAt);
+			const active = this.database.prepare(`
+				SELECT COUNT(*) AS globalCount,
+					COALESCE(SUM(CASE WHEN context_id = ? THEN 1 ELSE 0 END), 0) AS contextCount
+				FROM openai_requests
+				WHERE status = 'reserved' AND expires_at > ?
+			`).get(contextId, observedAt);
+			const committed = this.database.prepare(`
+				SELECT COALESCE(SUM(
+					CASE
+						WHEN status = 'reserved' THEN reserved_microdollars
+						WHEN status IN ('settled', 'uncertain') THEN charged_microdollars
+						ELSE 0
+					END
+				), 0) AS microdollars
+				FROM openai_requests WHERE month_started_at = ?
+			`).get(monthStartedAt).microdollars;
+			let rejection;
+			if (active.contextCount >= maximumConcurrentPerContext) {
+				rejection = { code: "openai_context_concurrency_limited", retryAfterSeconds: 1 };
+			} else if (active.globalCount >= maximumConcurrentGlobal) {
+				rejection = { code: "openai_global_concurrency_limited", retryAfterSeconds: 1 };
+			} else if (committed + reservedMicrodollars > capMicrodollars) {
+				rejection = { code: "openai_monthly_spend_cap_exhausted" };
+			}
+			if (rejection) {
+				this.database.prepare(`
+					INSERT INTO openai_requests(
+						id, target_id, context_id, model, month_started_at, status,
+						rejection_count, reserved_microdollars, started_at, expires_at,
+						completed_at, last_error
+					) VALUES (?, ?, ?, ?, ?, 'rejected', 1, ?, ?, ?, ?, ?)
+				`).run(
+					id,
+					targetId,
+					contextId,
+					model,
+					monthStartedAt,
+					reservedMicrodollars,
+					observedAt,
+					expiresAt,
+					observedAt,
+					rejection.code,
+				);
+			} else {
+				this.database.prepare(`
+					INSERT INTO openai_requests(
+						id, target_id, context_id, model, month_started_at, status,
+						reserved_microdollars, started_at, expires_at
+					) VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, ?)
+				`).run(
+					id,
+					targetId,
+					contextId,
+					model,
+					monthStartedAt,
+					reservedMicrodollars,
+					observedAt,
+					expiresAt,
+				);
+			}
+			this.database.exec("COMMIT");
+			return rejection
+				? { allowed: false, ...rejection, committedMicrodollars: committed, capMicrodollars }
+				: { allowed: true, committedMicrodollars: committed + reservedMicrodollars, capMicrodollars };
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	finishOpenAiRequest(id, {
+		status,
+		chargedMicrodollars,
+		upstreamStatus,
+		inputTokens = 0,
+		cachedInputTokens = 0,
+		cacheWriteTokens = 0,
+		outputTokens = 0,
+		totalTokens = 0,
+		completedAt = now(),
+		error,
+	}) {
+		if (!["settled", "uncertain"].includes(status)) {
+			throw new Error("OpenAI request completion status is invalid");
+		}
+		this.database.prepare(`
+			UPDATE openai_requests SET status = ?, charged_microdollars = ?,
+				upstream_status = ?, input_tokens = ?, cached_input_tokens = ?,
+				cache_write_tokens = ?, output_tokens = ?, total_tokens = ?,
+				completed_at = ?, last_error = ?
+			WHERE id = ? AND status = 'reserved'
+		`).run(
+			status,
+			chargedMicrodollars,
+			upstreamStatus ?? null,
+			inputTokens,
+			cachedInputTokens,
+			cacheWriteTokens,
+			outputTokens,
+			totalTokens,
+			completedAt,
+			error ? String(error).slice(0, 200) : null,
+			id,
+		);
+	}
+
+	getOpenAiRequest(id) {
+		return this.database.prepare(`
+			SELECT id, target_id AS targetId, context_id AS contextId, model,
+				month_started_at AS monthStartedAt, status, rejection_count AS rejectionCount,
+				reserved_microdollars AS reservedMicrodollars,
+				charged_microdollars AS chargedMicrodollars,
+				upstream_status AS upstreamStatus, input_tokens AS inputTokens,
+				cached_input_tokens AS cachedInputTokens,
+				cache_write_tokens AS cacheWriteTokens, output_tokens AS outputTokens,
+				total_tokens AS totalTokens, started_at AS startedAt,
+				expires_at AS expiresAt, completed_at AS completedAt, last_error AS lastError
+			FROM openai_requests WHERE id = ?
+		`).get(id) ?? null;
+	}
+
+	openAiStatus(config, observedAt = now()) {
+		const monthStartedAt = `${observedAt.slice(0, 7)}-01T00:00:00.000Z`;
+		const totals = this.database.prepare(`
+			SELECT
+				COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars ELSE 0 END), 0)
+					AS reservedMicrodollars,
+				COALESCE(SUM(CASE WHEN status IN ('settled', 'uncertain') THEN charged_microdollars ELSE 0 END), 0)
+					AS chargedMicrodollars,
+				COALESCE(SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END), 0) AS active,
+				COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0) AS settled,
+				COALESCE(SUM(CASE WHEN status = 'uncertain' THEN 1 ELSE 0 END), 0) AS uncertain,
+				COALESCE(SUM(CASE WHEN status = 'rejected' THEN rejection_count ELSE 0 END), 0) AS rejected
+			FROM openai_requests WHERE month_started_at = ?
+		`).get(monthStartedAt);
+		const capMicrodollars = config.monthlySpendCapCents * 10_000;
+		const committedMicrodollars = totals.reservedMicrodollars + totals.chargedMicrodollars;
+		return {
+			model: "gpt-5.6-luna",
+			thinking: "max",
+			scope: {
+				mode: config.scope.mode,
+				contextCount: config.scope.contextIds.length,
+			},
+			monthStartedAt,
+			monthlySpendCapCents: config.monthlySpendCapCents,
+			maximumOutputTokens: config.maximumOutputTokens,
+			reservedMicrodollars: totals.reservedMicrodollars,
+			chargedMicrodollars: totals.chargedMicrodollars,
+			committedMicrodollars,
+			remainingMicrodollars: Math.max(0, capMicrodollars - committedMicrodollars),
+			active: totals.active,
+			settled: totals.settled,
+			uncertain: totals.uncertain,
+			rejected: totals.rejected,
+		};
 	}
 
 	upsertWorkersAiProviderUsage(rows, observedAt = now()) {
@@ -4032,6 +4243,8 @@ export class HostStore {
 					WHERE context_id = ? AND status = 'sending')
 				+ (SELECT COUNT(*) FROM workers_ai_requests
 					WHERE context_id = ? AND status = 'in_progress')
+				+ (SELECT COUNT(*) FROM openai_requests
+					WHERE context_id = ? AND status = 'reserved')
 				+ (SELECT COUNT(*) FROM gmail_tool_requests
 					WHERE context_id = ? AND status = 'running')
 				+ (SELECT COUNT(*) FROM gmail_drafts
@@ -4045,7 +4258,7 @@ export class HostStore {
 				+ (SELECT COUNT(*) FROM site_deployment_bindings
 					WHERE context_id = ? AND status = 'creating')
 				AS count
-		`).get(...Array(10).fill(contextId));
+		`).get(...Array(11).fill(contextId));
 		return row.count > 0;
 	}
 
@@ -4505,7 +4718,7 @@ export class HostStore {
 		return this.getGmailDraft(providerDraftId);
 	}
 
-	status(maxConcurrent = 6, workersAiConfig) {
+	status(maxConcurrent = 6, workersAiConfig, openAiConfig) {
 		const activeEvents = this.countActiveEvents();
 		const activeContexts = this.countActiveContexts();
 		const queue = this.database.prepare(`
@@ -4517,6 +4730,7 @@ export class HostStore {
 			lastPollError: this.getMeta("gmail:last_poll_error") || null,
 			lastWebChatPollError: this.getMeta("web-chat:last_poll_error") || null,
 			workersAi: workersAiConfig ? this.workersAiStatus(workersAiConfig) : undefined,
+			openAi: openAiConfig ? this.openAiStatus(openAiConfig) : undefined,
 			principals: this.database.prepare("SELECT COUNT(*) AS count FROM principals").get().count,
 			projects: this.database.prepare("SELECT COUNT(*) AS count FROM projects").get().count,
 			routes: this.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count,

@@ -571,10 +571,22 @@ async function handleLoginCommand(
 	workingDir: string,
 	platform: PlatformAdapter,
 ): Promise<SlashCommandResult> {
+	const migratedHostdOpenAi = process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1";
+	const requestedProvider = args[0]?.toLowerCase();
+	if (migratedHostdOpenAi && requestedProvider === "openai-codex") {
+		await platform.postMessage(
+			channelId,
+			"OpenAI subscription login is disabled for this organization-billed relationship.",
+		);
+		return handled();
+	}
 	const authPath = join(getAgentDir(), "auth.json");
 	const modelRuntime = await ModelRuntime.create({ authPath, allowModelNetwork: false });
 	const providers = modelRuntime.getProviders()
-		.filter((provider) => provider.auth.oauth !== undefined)
+		.filter((provider) => (
+			provider.auth.oauth !== undefined
+			&& (!migratedHostdOpenAi || provider.id !== "openai-codex")
+		))
 		.map((provider) => ({
 			id: provider.id,
 			name: provider.auth.oauth?.name || provider.name,
@@ -594,7 +606,9 @@ async function handleLoginCommand(
 			response += `  \`${p.id}\` — ${p.name} (${status})\n`;
 		}
 		response += await googleLoginProviderLine();
-		response += `\nUse \`/login <provider>\` to log in. Examples: \`/login openai-codex\`, \`/login google you@example.com\``;
+		response += migratedHostdOpenAi
+			? `\nUse \`/login <provider>\` to log in. Example: \`/login google you@example.com\``
+			: `\nUse \`/login <provider>\` to log in. Examples: \`/login openai-codex\`, \`/login google you@example.com\``;
 		await platform.postMessage(channelId, response);
 		return handled();
 	}

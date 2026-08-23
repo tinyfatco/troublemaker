@@ -19,6 +19,7 @@ const ENVIRONMENT = {
 	PHONE_API_KEY: "test-phone-api-key",
 	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
 	CLOUDFLARE_ACCOUNT_ANALYTICS_TOKEN: "test-cloudflare-account-analytics-token",
+	OPENAI_ORGANIZATION_API_KEY: "test-openai-organization-api-key",
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
@@ -99,6 +100,16 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 			maximumConcurrentPerContext: 1,
 			maximumConcurrentGlobal: 4,
 		},
+	});
+	assert.deepEqual(config.openAi, {
+		apiKey: "test-openai-organization-api-key",
+		scope: { mode: "all", contextIds: [] },
+		monthlySpendCapCents: 1000,
+		maximumOutputTokens: 32768,
+		maximumConcurrentPerContext: 1,
+		maximumConcurrentGlobal: 6,
+		requestTimeoutMs: 600_000,
+		maximumRequestBytes: 16 * 1024 * 1024,
 	});
 	assert.deepEqual(config.webApp, {
 		host: "127.0.0.1",
@@ -205,12 +216,7 @@ test("prevents target runtime defaults from overriding scoped Hostd authority", 
 	const path = join(directory, "config.json");
 	try {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
-		raw.targets[0].runtimeEnv = {
-			MOM_EMAIL_LOG_MODE: "none",
-			MOM_MODEL_PROVIDER: "openai-codex",
-			MOM_MODEL_ID: "gpt-5.6-sol",
-			MOM_THINKING: "high",
-		};
+		raw.targets[0].runtimeEnv = { MOM_EMAIL_LOG_MODE: "none" };
 		await writeFile(path, JSON.stringify(raw));
 		const valid = await loadConfig(path, ENVIRONMENT);
 		assert.deepEqual(valid.targets[0].runtimeEnv, raw.targets[0].runtimeEnv);
@@ -218,6 +224,8 @@ test("prevents target runtime defaults from overriding scoped Hostd authority", 
 		for (const [key, value, pattern] of [
 			["MOM_EMAIL_TOOLS_TOKEN", "shared-token", /owned by Hostd/],
 			["OPENAI_API_KEY", "host-provider-secret", /host authority/],
+			["MOM_MODEL_PROVIDER", "openai-codex", /owned by Hostd OpenAI policy/],
+			["MOM_THINKING", "high", /owned by Hostd OpenAI policy/],
 			["BAD\nMOM_WEB_INPUT_TOKEN", "injected", /invalid environment variable name/],
 			["MOM_MODEL_ID", "valid\rINJECTED=value", /control characters/],
 		]) {
@@ -225,6 +233,62 @@ test("prevents target runtime defaults from overriding scoped Hostd authority", 
 			await writeFile(path, JSON.stringify(raw));
 			await assert.rejects(loadConfig(path, ENVIRONMENT), pattern);
 		}
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("requires an explicit organization credential, spend cap, and output bound for OpenAI", async () => {
+	const examplePath = fileURLToPath(new URL("../config.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-openai-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, { ...ENVIRONMENT, OPENAI_ORGANIZATION_API_KEY: undefined }),
+			/openAi\.apiKeyEnv references unavailable environment variable/,
+		);
+
+		delete raw.openAi.monthlySpendCapCents;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/openAi\.monthlySpendCapCents must be an integer/,
+		);
+
+		raw.openAi.monthlySpendCapCents = 1000;
+		delete raw.openAi.maximumOutputTokens;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/openAi\.maximumOutputTokens must be an integer/,
+		);
+
+		raw.openAi.maximumOutputTokens = 32768;
+		raw.openAi.scope = { mode: "contexts", contextIds: [] };
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/openAi contexts scope requires at least one exact contextId/,
+		);
+
+		raw.openAi.scope = { mode: "all", contextIds: ["front-desk:synthetic-canary"] };
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/openAi all scope cannot include contextIds/,
+		);
+
+		raw.openAi.scope = { mode: "contexts", contextIds: ["front-desk:synthetic-canary"] };
+		raw.targets[0].runtimeEnv = {
+			MOM_MODEL_PROVIDER: "openai-codex",
+			MOM_MODEL_ID: "gpt-5.6-luna",
+			MOM_THINKING: "high",
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const canary = await loadConfig(path, ENVIRONMENT);
+		assert.equal(canary.openAi.scope.mode, "contexts");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

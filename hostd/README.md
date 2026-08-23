@@ -108,6 +108,62 @@ When this setting is enabled, generic email adapter delivery fails closed; the
 runtime must save a draft and may then send that exact draft autonomously within
 the verified context.
 
+## Host-owned OpenAI Luna
+
+Top-level `openAi` moves selected OCI runtimes onto one Hostd-owned Responses
+API path. The organization API key stays in Hostd. Each runtime receives only a
+capability derived for its own context and a Hostd proxy URL, and cannot reuse
+that capability for another relationship.
+
+```json
+{
+  "openAi": {
+    "apiKeyEnv": "OPENAI_ORGANIZATION_API_KEY",
+    "scope": {
+      "mode": "all",
+      "contextIds": []
+    },
+    "monthlySpendCapCents": 1000,
+    "maximumOutputTokens": 32768,
+    "maximumConcurrentPerContext": 1,
+    "maximumConcurrentGlobal": 6
+  }
+}
+```
+
+This path accepts only `openai/gpt-5.6-luna` Responses requests with `max`
+thinking, streaming enabled, response storage disabled, the default service
+tier, and an output limit at or below `maximumOutputTokens`. It rejects
+`openai-codex`, hosted OpenAI tools, model changes, lower thinking, and stateful
+response fields before contacting OpenAI. The runtime also disables provider
+retries. Workspace model settings cannot override the Hostd selection. Existing
+Workers AI configuration may remain in place, but it is not selected while
+`openAi` is configured.
+
+The monthly cap is a hard UTC-calendar-month reservation ledger in SQLite. Before
+each call, Hostd atomically reserves the published worst-case Luna cost for the
+full supported input envelope and configured output bound, using the highest
+applicable pricing tier. A completed response with verified usage settles to its
+measured cost. A timeout, disconnect, missing terminal usage, model mismatch, or
+other ambiguous result keeps the full reservation charged and is never retried
+by the proxy. The operator status endpoint and CLI show the cap, remaining
+reservation envelope, active calls, settled calls, uncertain calls, and rejects;
+they do not store prompts or completions in the accounting table.
+
+For a guarded cutover, first use `scope.mode: "contexts"` with one exact isolated
+synthetic context. This mode may temporarily coexist with the old target model
+defaults for contexts outside the list; selected contexts still receive only the
+pinned API path. Stop normal delivery, preserve the database and workspaces,
+restart the selected runtime, and run a no-customer-send canary. Confirm the
+request reached the organization API project, used the exact Luna model with max
+thinking, stayed within the output bound, and settled in Hostd's ledger. Then
+remove the target's old model defaults, change the scope to `all` with an empty
+context list, and replace the remaining idle runtimes. All-scope configuration
+rejects legacy target model defaults so a personal subscription cannot remain as
+a hidden fallback. Roll back by restoring the sealed configuration and build;
+the same SQLite database, queues, histories, and runtime workspaces remain in
+place.
+
 ## Per-principal Cloudflare Workers AI
 
 Hostd can pin one exact, known phone principal to an allowlisted Cloudflare

@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import type { SettingsStore } from "./storage/settings.js";
+import type { RuntimeThinkingLevel } from "./model-thinking.js";
 
 // ============================================================================
 // MomSettingsManager - Simple settings for mom
@@ -155,7 +156,7 @@ export interface MomVoiceSettings {
 export interface MomSettings {
 	defaultProvider?: string;
 	defaultModel?: string;
-	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high";
+	defaultThinkingLevel?: RuntimeThinkingLevel;
 	realtimeVoice?: string;
 	voice?: MomVoiceSettings;
 	verbose?: VerbosityLevel | MomVerboseSettings;
@@ -328,6 +329,9 @@ export class MomSettingsManager {
 	}
 
 	getRetrySettings(): MomRetrySettings {
+		if (process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1") {
+			return { enabled: false, maxRetries: 0, baseDelayMs: DEFAULT_RETRY.baseDelayMs };
+		}
 		return {
 			...DEFAULT_RETRY,
 			...this.settings.retry,
@@ -335,6 +339,7 @@ export class MomSettingsManager {
 	}
 
 	getRetryEnabled(): boolean {
+		if (process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1") return false;
 		return this.settings.retry?.enabled ?? DEFAULT_RETRY.enabled;
 	}
 

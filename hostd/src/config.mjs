@@ -325,6 +325,87 @@ function workersAiConfig(raw, environment) {
 	};
 }
 
+function openAiConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const openAi = object(raw, "openAi");
+	const rawScope = object(openAi.scope, "openAi.scope");
+	const scopeMode = text(rawScope.mode, "openAi.scope.mode").toLowerCase();
+	if (!["contexts", "all"].includes(scopeMode)) {
+		throw new Error("openAi.scope.mode must be contexts or all");
+	}
+	const rawContextIds = rawScope.contextIds ?? [];
+	if (!Array.isArray(rawContextIds)) throw new Error("openAi.scope.contextIds must be an array");
+	const contextIds = rawContextIds.map((value, index) => {
+		const contextId = text(value, `openAi.scope.contextIds[${index}]`);
+		if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId)) {
+			throw new Error(`openAi.scope.contextIds[${index}] is invalid`);
+		}
+		return contextId;
+	});
+	if (new Set(contextIds).size !== contextIds.length) {
+		throw new Error("openAi.scope.contextIds cannot repeat a context");
+	}
+	if (contextIds.length > 64) throw new Error("openAi.scope.contextIds cannot exceed 64 contexts");
+	if (scopeMode === "contexts" && contextIds.length === 0) {
+		throw new Error("openAi contexts scope requires at least one exact contextId");
+	}
+	if (scopeMode === "all" && contextIds.length > 0) {
+		throw new Error("openAi all scope cannot include contextIds");
+	}
+	const limits = {
+		monthlySpendCapCents: integer(
+			openAi.monthlySpendCapCents,
+			undefined,
+			"openAi.monthlySpendCapCents",
+			1,
+			100_000_000,
+		),
+		maximumOutputTokens: integer(
+			openAi.maximumOutputTokens,
+			undefined,
+			"openAi.maximumOutputTokens",
+			16,
+			128_000,
+		),
+		maximumConcurrentPerContext: integer(
+			openAi.maximumConcurrentPerContext,
+			1,
+			"openAi.maximumConcurrentPerContext",
+			1,
+			100,
+		),
+		maximumConcurrentGlobal: integer(
+			openAi.maximumConcurrentGlobal,
+			6,
+			"openAi.maximumConcurrentGlobal",
+			1,
+			1000,
+		),
+	};
+	if (limits.maximumConcurrentGlobal < limits.maximumConcurrentPerContext) {
+		throw new Error("openAi.maximumConcurrentGlobal must cover one context limit");
+	}
+	return {
+		apiKey: envSecret(openAi.apiKeyEnv, "openAi.apiKeyEnv", environment),
+		scope: { mode: scopeMode, contextIds },
+		...limits,
+		requestTimeoutMs: integer(
+			openAi.requestTimeoutMs,
+			600_000,
+			"openAi.requestTimeoutMs",
+			1_000,
+			900_000,
+		),
+		maximumRequestBytes: integer(
+			openAi.maximumRequestBytes,
+			16 * 1024 * 1024,
+			"openAi.maximumRequestBytes",
+			1024,
+			32 * 1024 * 1024,
+		),
+	};
+}
+
 function principalModelConfig(raw, label, workersAi) {
 	if (raw === undefined) return undefined;
 	const model = object(raw, label);
@@ -1201,10 +1282,27 @@ export async function loadConfig(path, environment = process.env) {
 	const scheduler = object(raw.scheduler ?? {}, "scheduler");
 	const scheduledWakes = scheduledWakesConfig(raw.scheduledWakes);
 	const workersAi = workersAiConfig(raw.workersAi, environment);
+	const openAi = openAiConfig(raw.openAi, environment);
 	if (!Array.isArray(raw.targets) || raw.targets.length === 0) {
 		throw new Error("targets must contain at least one target");
 	}
 	const targets = raw.targets.map((target, index) => targetConfig(target, index, environment));
+	if (openAi?.scope.mode === "all") {
+		const hostOwnedModelKeys = new Set([
+			"MOM_MODEL_PROVIDER",
+			"MOM_MODEL_ID",
+			"MOM_THINKING",
+			"OPENAI_BASE_URL",
+			"OPENAI_CODEX_BASE_URL",
+		]);
+		for (const [index, target] of targets.entries()) {
+			for (const key of Object.keys(target.runtimeEnv)) {
+				if (hostOwnedModelKeys.has(key)) {
+					throw new Error(`targets[${index}].runtimeEnv.${key} is owned by Hostd OpenAI policy`);
+				}
+			}
+		}
+	}
 	const targetIds = new Set(targets.map((target) => target.id));
 	const actorTarget = text(routing.actorTarget, "routing.actorTarget");
 	if (!targetIds.has(actorTarget)) throw new Error(`routing.actorTarget references unknown target ${actorTarget}`);
@@ -1484,6 +1582,7 @@ export async function loadConfig(path, environment = process.env) {
 		metaContact,
 		webApp,
 		mcp,
+		openAi,
 		workersAi,
 		webChat,
 		sites,

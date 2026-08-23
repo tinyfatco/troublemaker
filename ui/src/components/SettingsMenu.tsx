@@ -26,7 +26,7 @@ interface SettingsMenuProps {
   onVoiceModeChange?: (mode: VoiceModeSetting) => void;
 }
 
-const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const SPONTANEITY_LEVELS = [1, 2, 3, 4, 5];
 
 export function SettingsMenu({

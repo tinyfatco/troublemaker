@@ -8,7 +8,7 @@ import {
 	resolveContextRuntimeModel,
 	runtimeModelEnvironment,
 	runtimeModelVersionSuffix,
-} from "./workers-ai.mjs";
+} from "./runtime-model.mjs";
 import {
 	resolveSiteDeploymentBinding,
 	resolveSiteDeploymentBindings,

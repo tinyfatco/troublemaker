@@ -1,10 +1,10 @@
 import type { ModelThinkingLevel, SimpleStreamOptions } from "@earendil-works/pi-ai";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const COMPACTION_SYSTEM_PROMPT_PREFIX = "You are a context summarization assistant.";
 export const COMPACTION_MAX_OUTPUT_TOKENS = 8192;
 
-export type RuntimeThinkingLevel = (typeof THINKING_LEVELS)[number];
+export type RuntimeThinkingLevel = (typeof MODEL_THINKING_LEVELS)[number];
 
 type RuntimeModel = {
 	id?: string;
@@ -12,8 +12,12 @@ type RuntimeModel = {
 	reasoning?: boolean;
 };
 
+function supportsMaximumThinking(model: RuntimeModel): boolean {
+	return model.provider === "openai" && model.id === "gpt-5.6-luna";
+}
+
 export function normalizeThinkingLevel(value: unknown): RuntimeThinkingLevel {
-	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value)
+	return typeof value === "string" && (MODEL_THINKING_LEVELS as readonly string[]).includes(value)
 		? (value as RuntimeThinkingLevel)
 		: "off";
 }
@@ -23,9 +27,11 @@ export function requiresEnabledThinking(model: RuntimeModel): boolean {
 }
 
 export function normalizeThinkingLevelForModel(model: RuntimeModel, requested: unknown): ModelThinkingLevel {
-	const level = normalizeThinkingLevel(requested);
+	let level = normalizeThinkingLevel(requested);
 	if (!model.reasoning && !requiresEnabledThinking(model)) return "off";
+	if (level === "max" && !supportsMaximumThinking(model)) level = "xhigh";
 	if (!requiresEnabledThinking(model)) return level;
+	if (level === "max") return "max";
 	if (level === "medium" || level === "high") return level;
 	if (level === "xhigh") return "high";
 	return "low";
@@ -44,6 +50,14 @@ export function normalizeSimpleStreamOptionsForModel(
 	return { ...options, reasoning: effective };
 }
 
+export function applyMigratedHostdStreamPolicy(
+	options: SimpleStreamOptions | undefined,
+): SimpleStreamOptions | undefined {
+	return process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1"
+		? { ...options, maxRetries: 0 }
+		: options;
+}
+
 /**
  * Pi uses compaction reserveTokens both as the trigger headroom and as the
  * summary output budget. Percentage-based triggers can therefore inflate a
@@ -58,6 +72,6 @@ export function boundCompactionStreamOptions(
 	return {
 		...options,
 		maxTokens: Math.min(options?.maxTokens ?? COMPACTION_MAX_OUTPUT_TOKENS, COMPACTION_MAX_OUTPUT_TOKENS),
-		reasoning: "low",
+		reasoning: process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1" ? "max" : "low",
 	};
 }

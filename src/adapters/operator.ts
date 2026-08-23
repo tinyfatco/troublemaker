@@ -57,7 +57,8 @@ import {
 	normalizeHostRelationshipScope,
 	type HostRelationshipScope,
 } from "../host-relationship-scope.js";
-import { findModel, listModels } from "../model-config.js";
+import { findModel, getCurrentModelSelection, getEnvironmentModelOverride, listModels } from "../model-config.js";
+import { MODEL_THINKING_LEVELS } from "../model-thinking.js";
 import {
 	DEFAULT_REALTIME_VOICE,
 	REALTIME_VOICE_OPTIONS,
@@ -77,9 +78,6 @@ const MAXIMUM_OPERATOR_BODY_BYTES = 1024 * 1024;
  * thinking_level also get dedicated branches for validation/canonical keys.)
  */
 const SIMPLE_SETTINGS_TARGETS = new Set<string>(["mcpServers"]);
-
-/** Accepted thinking_level values. Matches agent.ts resolveThinkingLevel. */
-const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /** Spontaneity leaf targets accepted via `configure`. */
 const SPONTANEITY_LEAF_TARGETS = new Set([
@@ -794,6 +792,16 @@ Replies to the operator happen through whatever channel you were already using w
 		value: unknown,
 		res: ServerResponse,
 	): void {
+		if (getEnvironmentModelOverride()) {
+			const current = getCurrentModelSelection(this.workingDir);
+			sendError(
+				res,
+				409,
+				"model_locked",
+				`Model selection is locked by the service environment at ${current.provider}/${current.id}.`,
+			);
+			return;
+		}
 		if (typeof value !== "string" || !value.trim()) {
 			return sendError(res, 400, "invalid_value", "model must be a non-empty string");
 		}
@@ -849,12 +857,21 @@ Replies to the operator happen through whatever channel you were already using w
 		value: unknown,
 		res: ServerResponse,
 	): void {
-		if (typeof value !== "string" || !(THINKING_LEVEL_VALUES as readonly string[]).includes(value)) {
+		if (process.env.MOM_THINKING) {
+			sendError(
+				res,
+				409,
+				"thinking_locked",
+				`Thinking is locked by the service environment at ${process.env.MOM_THINKING}.`,
+			);
+			return;
+		}
+		if (typeof value !== "string" || !(MODEL_THINKING_LEVELS as readonly string[]).includes(value)) {
 			return sendError(
 				res,
 				400,
 				"invalid_value",
-				`thinking_level must be one of: ${THINKING_LEVEL_VALUES.join(", ")}`,
+				`thinking_level must be one of: ${MODEL_THINKING_LEVELS.join(", ")}`,
 			);
 		}
 
@@ -878,7 +895,7 @@ Replies to the operator happen through whatever channel you were already using w
 			tier: "container",
 			previous_value: previousValue,
 			new_value: value,
-			accepted_values: [...THINKING_LEVEL_VALUES],
+			accepted_values: [...MODEL_THINKING_LEVELS],
 			applied_at: nowIso(),
 			note: "Takes effect on next wake.",
 		});
@@ -1274,7 +1291,7 @@ Replies to the operator happen through whatever channel you were already using w
 			provider: raw.defaultProvider ?? null,
 			models,
 			thinking_level: thinkingLevel,
-			thinking_level_accepted: [...THINKING_LEVEL_VALUES],
+			thinking_level_accepted: [...MODEL_THINKING_LEVELS],
 			voice: realtimeVoice,
 			voice_accepted: REALTIME_VOICE_OPTIONS.map((option) => option.name),
 			heartbeat: {

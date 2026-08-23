@@ -1,7 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
-import { contextCapability, stablePrivateKey } from "./security.mjs";
+import { randomUUID } from "node:crypto";
+import {
+	CLOUDFLARE_WORKERS_AI_PROVIDER,
+	resolveContextRuntimeModel,
+} from "./runtime-model.mjs";
 
-export const CLOUDFLARE_WORKERS_AI_PROVIDER = "cloudflare-workers-ai";
 const CLOUDFLARE_ANALYTICS_URL = "https://api.cloudflare.com/client/v4/graphql";
 const MAXIMUM_USAGE_PARSE_BYTES = 2 * 1024 * 1024;
 const PROVIDER_USAGE_QUERY = `
@@ -156,47 +158,6 @@ class WorkersAiUsageCollector {
 function usageWindowStart(timestamp, windowSeconds) {
 	const windowMilliseconds = windowSeconds * 1000;
 	return new Date(Math.floor(timestamp / windowMilliseconds) * windowMilliseconds).toISOString();
-}
-
-export function resolveContextRuntimeModel(config, store, routingKey, target, contextId) {
-	if (!config.workersAi || !routingKey || !target) return undefined;
-	const routes = store.listRoutesForContext(contextId, target.id);
-	if (routes.length === 0 || routes.some((route) => route.source !== "phone")) return undefined;
-	const principalHashes = new Set(routes.map((route) => route.principalHash));
-	if (principalHashes.size !== 1) return undefined;
-	const [principalHash] = principalHashes;
-	const principal = config.routing.knownPhonePrincipals.find((candidate) => (
-		candidate.model
-		&& stablePrivateKey(routingKey, "phone-principal", candidate.phone) === principalHash
-	));
-	return principal?.model;
-}
-
-export function runtimeModelVersionSuffix(model) {
-	if (!model) return "";
-	const digest = createHash("sha256")
-		.update(`${model.provider}\0${model.id}`)
-		.digest("hex")
-		.slice(0, 12);
-	return `:model-${digest}`;
-}
-
-export function runtimeModelEnvironment(config, target, contextId, model) {
-	if (!model) return {};
-	if (model.provider !== CLOUDFLARE_WORKERS_AI_PROVIDER || !config.workersAi) {
-		throw new Error(`unsupported context runtime model ${model.provider}/${model.id}`);
-	}
-	return {
-		MOM_MODEL_PROVIDER: model.provider,
-		MOM_MODEL_ID: model.id,
-		CLOUDFLARE_API_KEY: contextCapability(target.outboundToken, "workers-ai", contextId),
-		// The model registry requires the account identifier before it considers
-		// Workers AI authentication configured. The scoped API key still points at
-		// Hostd's per-context proxy, so no Cloudflare credential enters the runtime.
-		CLOUDFLARE_ACCOUNT_ID: config.workersAi.accountId,
-		CLOUDFLARE_WORKERS_AI_BASE_URL:
-			`http://${target.hostGateway}:${config.server.port}/v1/workers-ai/${encodeURIComponent(contextId)}`,
-	};
 }
 
 export class HostWorkersAi {

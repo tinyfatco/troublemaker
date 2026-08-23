@@ -12,6 +12,7 @@ import { HostMcp } from "./mcp.mjs";
 import { createMcpEdgeServer } from "./mcp-edge-server.mjs";
 import { HostMcpOutboundProxy } from "./mcp-outbound.mjs";
 import { MetaContactExporter } from "./meta-contact.mjs";
+import { HostOpenAi } from "./openai.mjs";
 import { PhoneGateway } from "./phone.mjs";
 import { RocketChatGateway } from "./rocket-chat-gateway.mjs";
 import { RocketChatProvisioner } from "./rocket-chat.mjs";
@@ -96,6 +97,9 @@ async function components(configPath) {
 	const sites = config.sites ? new HostSites({ config, store, routingKey }) : undefined;
 	const workersAiGateway = config.workersAi
 		? new HostWorkersAi({ config, store, routingKey })
+		: undefined;
+	const openAiGateway = config.openAi
+		? new HostOpenAi({ config, store })
 		: undefined;
 	const runtime = new RuntimeManager(config, store, {
 		mattermost,
@@ -191,6 +195,7 @@ async function components(configPath) {
 		scheduledWakes,
 		sitesGateway: sites,
 		workersAiGateway,
+		openAiGateway,
 		mattermostGateway,
 		rocketChatGateway,
 		zulipGateway,
@@ -414,7 +419,11 @@ async function main() {
 		}
 		if (command === "status") {
 			console.log(JSON.stringify({
-				...state.store.status(state.config.scheduler.maxConcurrent, state.config.workersAi),
+				...state.store.status(
+					state.config.scheduler.maxConcurrent,
+					state.config.workersAi,
+					state.config.openAi,
+				),
 				scheduledWakeMode: state.config.scheduledWakes.mode,
 				scheduledWakeContextCount: state.config.scheduledWakes.contextIds.length,
 			}, null, 2));

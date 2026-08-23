@@ -35,6 +35,7 @@ import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { runWithModelCredentialGate } from "./model-auth-gate.js";
 import {
+	applyMigratedHostdStreamPolicy,
 	boundCompactionStreamOptions,
 	normalizeSimpleStreamOptionsForModel,
 	normalizeThinkingLevelForModel,
@@ -444,9 +445,10 @@ async function createRunner(
 	const streamFn: StreamFn = (streamModel, context, options) => {
 		const boundedOptions = boundCompactionStreamOptions(context, options);
 		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
+		const effectiveOptions = applyMigratedHostdStreamPolicy(normalizedOptions);
 		return isClaudeCliProvider(streamModel.provider)
-			? claudeCliStream(streamModel, context, normalizedOptions)
-			: streamSimple(streamModel, context, normalizedOptions);
+			? claudeCliStream(streamModel, context, effectiveOptions)
+			: streamSimple(streamModel, context, effectiveOptions);
 	};
 
 	// Create agent

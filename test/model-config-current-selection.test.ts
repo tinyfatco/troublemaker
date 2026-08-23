@@ -47,6 +47,41 @@ try {
 		assert(selected.id === "gpt-5.5", "settings model is used without env override");
 	});
 
+	withEnv({
+		MOM_MODEL_PROVIDER: "openai",
+		MOM_MODEL_ID: "gpt-5.6-luna",
+		OPENAI_BASE_URL: "http://host.containers.internal:3099/v1/openai/synthetic-context",
+		TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
+	}, () => {
+		const selected = getCurrentModelSelection(workingDir);
+		assert(selected.provider === "openai", "migrated Hostd selects the API provider");
+		assert(selected.id === "gpt-5.6-luna", "migrated Hostd selects only Luna");
+	});
+
+	for (const env of [
+		{
+			MOM_MODEL_PROVIDER: "openai-codex",
+			MOM_MODEL_ID: "gpt-5.6-luna",
+			OPENAI_BASE_URL: "http://host.containers.internal:3099/v1/openai/synthetic-context",
+			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
+		},
+		{
+			MOM_MODEL_PROVIDER: "openai",
+			MOM_MODEL_ID: "gpt-5.6-luna",
+			OPENAI_BASE_URL: undefined,
+			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
+		},
+	]) {
+		withEnv(env, () => {
+			try {
+				getCurrentModelSelection(workingDir);
+				assert(false, "migrated Hostd rejects personal OAuth or a missing proxy");
+			} catch {
+				assert(true, "migrated Hostd rejects personal OAuth or a missing proxy");
+			}
+		});
+	}
+
 	withEnv({ MOM_MODEL_PROVIDER: "anthropic", MOM_MODEL_ID: "claude-opus-4-6" }, () => {
 		const selected = getCurrentModelSelection(workingDir);
 		assert(selected.provider === "anthropic", "env provider overrides settings");

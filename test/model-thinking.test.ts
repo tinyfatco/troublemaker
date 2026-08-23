@@ -12,13 +12,16 @@ import { getFireworksModel } from "../src/fireworks-models.js";
 
 const minimax = getModel("fireworks" as any, "accounts/fireworks/models/minimax-m2p7" as any);
 const glm = getFireworksModel("accounts/fireworks/models/glm-5p1");
+const luna = getModel("openai" as any, "gpt-5.6-luna" as any);
 
 assert(minimax, "MiniMax M2.7 model exists");
 assert(glm, "GLM Fireworks model exists");
+assert(luna, "GPT-5.6 Luna model exists");
 assert.equal(requiresEnabledThinking(minimax), true);
 assert.equal(requiresEnabledThinking(glm), false);
 
 assert.equal(normalizeThinkingLevel("minimal"), "minimal");
+assert.equal(normalizeThinkingLevel("max"), "max");
 assert.equal(normalizeThinkingLevel("bogus"), "off");
 assert.equal(normalizeThinkingLevel(undefined), "off");
 
@@ -29,6 +32,7 @@ assert.equal(normalizeThinkingLevelForModel(minimax, "low"), "low");
 assert.equal(normalizeThinkingLevelForModel(minimax, "medium"), "medium");
 assert.equal(normalizeThinkingLevelForModel(minimax, "high"), "high");
 assert.equal(normalizeThinkingLevelForModel(minimax, "xhigh"), "high");
+assert.equal(normalizeThinkingLevelForModel(minimax, "max"), "high");
 assert.equal(normalizeThinkingLevelForModel(minimax, "bogus"), "low");
 assert.equal(normalizeSimpleStreamOptionsForModel(minimax, undefined)?.reasoning, "low");
 assert.equal(normalizeSimpleStreamOptionsForModel(minimax, { maxTokens: 10 })?.reasoning, "low");
@@ -39,6 +43,8 @@ assert.equal(normalizeThinkingLevelForModel(glm, "off"), "off");
 assert.equal(normalizeThinkingLevelForModel(glm, "minimal"), "minimal");
 assert.equal(normalizeThinkingLevelForModel(glm, "xhigh"), "xhigh");
 assert.equal(normalizeSimpleStreamOptionsForModel(glm, { reasoning: "high" })?.reasoning, "high");
+assert.equal(normalizeThinkingLevelForModel(luna, "max"), "max");
+assert.equal(normalizeSimpleStreamOptionsForModel(luna, { reasoning: "max" })?.reasoning, "max");
 
 assert.equal(
 	normalizeThinkingLevelForModel({ provider: "test", id: "test-model", reasoning: false }, "high"),
@@ -61,6 +67,18 @@ const compactOptions = boundCompactionStreamOptions(
 );
 assert.equal(compactOptions?.maxTokens, COMPACTION_MAX_OUTPUT_TOKENS, "compaction output is capped independently of trigger headroom");
 assert.equal(compactOptions?.reasoning, "low", "compaction does not inherit pathological xhigh reasoning");
+const previousMigrated = process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
+process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = "1";
+assert.equal(
+	boundCompactionStreamOptions(
+		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
+		ordinaryOptions,
+	)?.reasoning,
+	"max",
+	"migrated Luna compaction preserves the locked max-thinking policy",
+);
+if (previousMigrated === undefined) delete process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
+else process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = previousMigrated;
 assert.equal(
 	boundCompactionStreamOptions(
 		{ systemPrompt: "You are a context summarization assistant. Only summarize." },

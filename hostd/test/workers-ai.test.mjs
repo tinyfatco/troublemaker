@@ -8,11 +8,11 @@ import { contextCapability } from "../src/security.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { HostStore } from "../src/store.mjs";
 import {
-	HostWorkersAi,
 	resolveContextRuntimeModel,
 	runtimeModelEnvironment,
 	runtimeModelVersionSuffix,
-} from "../src/workers-ai.mjs";
+} from "../src/runtime-model.mjs";
+import { HostWorkersAi } from "../src/workers-ai.mjs";
 
 const MODEL = {
 	provider: "cloudflare-workers-ai",

@@ -26,6 +26,22 @@ import * as log from "./log.js";
 
 const DEFAULT_PROVIDER = "fireworks";
 const DEFAULT_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
+export const HOSTD_OPENAI_PROVIDER = "openai";
+export const HOSTD_OPENAI_MODEL_ID = "gpt-5.6-luna";
+
+export function isMigratedHostdOpenAi(): boolean {
+	return process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1";
+}
+
+export function getEnvironmentModelOverride(): { provider: string; id: string } | undefined {
+	const provider = process.env.MOM_MODEL_PROVIDER?.trim();
+	const id = process.env.MOM_MODEL_ID?.trim();
+	if (!provider && !id) return undefined;
+	if (!provider || !id) {
+		throw new Error("MOM_MODEL_PROVIDER and MOM_MODEL_ID must be configured together");
+	}
+	return { provider, id };
+}
 
 /**
  * Friendly aliases for Anthropic models.
@@ -224,6 +240,9 @@ export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry)
 	}
 
 	if (!model) {
+		if (isMigratedHostdOpenAi()) {
+			throw new Error(`Required migrated Hostd model not found: ${provider}/${modelId}`);
+		}
 		log.logWarning(
 			`Model not found: ${provider}/${modelId}`,
 			`Falling back to ${DEFAULT_PROVIDER}/${DEFAULT_MODEL_ID}`,
@@ -247,6 +266,12 @@ export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelR
 	// Claude CLI owns its login state. Invocation reports an actionable CLI
 	// auth error rather than silently falling back to an unrelated API model.
 	if (isClaudeCliProvider(model.provider)) return model;
+	if (isMigratedHostdOpenAi()) {
+		if (!process.env.OPENAI_API_KEY?.trim()) {
+			throw new ModelCredentialUnavailableError(HOSTD_OPENAI_PROVIDER);
+		}
+		return model;
+	}
 	if (!modelRegistry || modelRegistry.hasConfiguredAuth(model)) return model;
 
 	log.logWarning(
@@ -271,8 +296,20 @@ export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelR
 }
 
 export function getCurrentModelSelection(workingDir?: string): { provider: string; id: string } {
-	let provider = process.env.MOM_MODEL_PROVIDER;
-	let modelId = process.env.MOM_MODEL_ID;
+	const environmentOverride = getEnvironmentModelOverride();
+	let provider = environmentOverride?.provider;
+	let modelId = environmentOverride?.id;
+
+	if (isMigratedHostdOpenAi()) {
+		if (provider !== HOSTD_OPENAI_PROVIDER || modelId !== HOSTD_OPENAI_MODEL_ID) {
+			throw new Error(
+				`Migrated Hostd contexts require ${HOSTD_OPENAI_PROVIDER}/${HOSTD_OPENAI_MODEL_ID}`,
+			);
+		}
+		if (!process.env.OPENAI_BASE_URL?.trim()) {
+			throw new Error("Migrated Hostd contexts require an OpenAI proxy base URL");
+		}
+	}
 
 	if ((!provider || !modelId) && workingDir) {
 		const settings = readSettings(workingDir);
@@ -497,6 +534,14 @@ export function isModelCredentialUnavailableError(error: unknown): error is Mode
  * provider-specific ambient credentials without exposing stored secrets.
  */
 export async function resolveApiKey(modelRegistry: ModelRegistry, provider: string): Promise<string> {
+	if (isMigratedHostdOpenAi()) {
+		if (provider !== HOSTD_OPENAI_PROVIDER) {
+			throw new ModelCredentialUnavailableError(provider);
+		}
+		const capability = process.env.OPENAI_API_KEY?.trim();
+		if (!capability) throw new ModelCredentialUnavailableError(provider);
+		return capability;
+	}
 	await modelRegistry.refresh();
 	const key = await modelRegistry.getApiKeyForProvider(provider);
 	if (!key) throw new ModelCredentialUnavailableError(provider);

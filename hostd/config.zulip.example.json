@@ -57,6 +57,17 @@
     "mode": "off",
     "contextIds": []
   },
+  "openAi": {
+    "apiKeyEnv": "OPENAI_ORGANIZATION_API_KEY",
+    "scope": {
+      "mode": "all",
+      "contextIds": []
+    },
+    "monthlySpendCapCents": 1000,
+    "maximumOutputTokens": 32768,
+    "maximumConcurrentPerContext": 1,
+    "maximumConcurrentGlobal": 6
+  },
   "workersAi": {
     "accountId": "0123456789abcdef0123456789abcdef",
     "apiTokenEnv": "CLOUDFLARE_WORKERS_AI_API_TOKEN",
@@ -155,12 +166,7 @@
       "gmailToolsOnly": true,
       "hostGateway": "10.0.2.2",
       "inboundTokenEnv": "FRONT_DESK_RUNTIME_INBOUND_TOKEN",
-      "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN",
-      "runtimeEnv": {
-        "MOM_MODEL_PROVIDER": "openai-codex",
-        "MOM_MODEL_ID": "gpt-5.6-sol",
-        "MOM_THINKING": "high"
-      }
+      "outboundTokenEnv": "FRONT_DESK_RUNTIME_OUTBOUND_TOKEN"
     }
   ]
 }

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { HostMcpError } from "./mcp.mjs";
+import { OpenAiError } from "./openai.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
@@ -40,7 +41,7 @@ async function writeChunk(response, chunk) {
 		};
 		const onClose = () => {
 			cleanup();
-			reject(new Error("Workers AI client disconnected"));
+			reject(new Error("provider client disconnected"));
 		};
 		const onError = (error) => {
 			cleanup();
@@ -103,6 +104,7 @@ export function createHostServer({
 	phoneGateway,
 	sitesGateway,
 	workersAiGateway,
+	openAiGateway,
 	mcp,
 	mcpOutbound,
 	routingKey,
@@ -128,7 +130,11 @@ export function createHostServer({
 					ok: true,
 					polling: daemon.polling,
 					draining: store.getMeta("scheduler:draining") === "true",
-					...store.status(config.scheduler?.maxConcurrent ?? 6, config.workersAi),
+					...store.status(
+						config.scheduler?.maxConcurrent ?? 6,
+						config.workersAi,
+						config.openAi,
+					),
 					contextDetails: store.listContexts(),
 				});
 				return;
@@ -238,6 +244,51 @@ export function createHostServer({
 						for await (const chunk of upstream.body) {
 							await writeChunk(response, chunk);
 						}
+					}
+					response.end();
+				} finally {
+					request.off("aborted", abort);
+					response.off("close", abortIfIncomplete);
+				}
+				return;
+			}
+			const openAiMatch = url.pathname.match(/^\/v1\/openai\/([^/]+)\/responses$/);
+			if (request.method === "POST" && openAiMatch) {
+				if (!openAiGateway || !config.openAi) {
+					json(response, 503, { error: "openai_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const contextId = decodeURIComponent(openAiMatch[1]);
+				const target = authenticateContext(request, config, contextId, "openai");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				const body = await readJson(request, config.openAi.maximumRequestBytes);
+				const controller = new AbortController();
+				const abort = () => controller.abort();
+				const abortIfIncomplete = () => {
+					if (!response.writableEnded) controller.abort();
+				};
+				request.once("aborted", abort);
+				response.once("close", abortIfIncomplete);
+				try {
+					const upstream = await openAiGateway.complete(
+						target,
+						contextId,
+						body,
+						controller.signal,
+					);
+					response.writeHead(upstream.status, {
+						"content-type": upstream.headers.get("content-type") || "application/json",
+						"cache-control": "no-store",
+					});
+					if (upstream.body) {
+						for await (const chunk of upstream.body) await writeChunk(response, chunk);
 					}
 					response.end();
 				} finally {
@@ -636,6 +687,17 @@ export function createHostServer({
 				return;
 			}
 			if (error instanceof WorkersAiError) {
+				json(
+					response,
+					error.status,
+					{ error: error.code },
+					error.retryAfterSeconds
+						? { "retry-after": String(error.retryAfterSeconds) }
+						: {},
+				);
+				return;
+			}
+			if (error instanceof OpenAiError) {
 				json(
 					response,
 					error.status,
