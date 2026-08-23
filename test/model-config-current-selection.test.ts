@@ -55,7 +55,18 @@ try {
 	}, () => {
 		const selected = getCurrentModelSelection(workingDir);
 		assert(selected.provider === "openai", "migrated Hostd selects the API provider");
-		assert(selected.id === "gpt-5.6-sol", "migrated Hostd selects only Sol");
+		assert(selected.id === "gpt-5.6-sol", "migrated Hostd accepts the Sol assignment");
+	});
+
+	withEnv({
+		MOM_MODEL_PROVIDER: "openai",
+		MOM_MODEL_ID: "gpt-5.6-luna",
+		OPENAI_BASE_URL: "http://host.containers.internal:3099/v1/openai/synthetic-context",
+		TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
+	}, () => {
+		const selected = getCurrentModelSelection(workingDir);
+		assert(selected.provider === "openai", "Luna remains on the organization API provider");
+		assert(selected.id === "gpt-5.6-luna", "migrated Hostd accepts the Luna assignment");
 	});
 
 	for (const env of [
@@ -69,6 +80,12 @@ try {
 			MOM_MODEL_PROVIDER: "openai",
 			MOM_MODEL_ID: "gpt-5.6-sol",
 			OPENAI_BASE_URL: undefined,
+			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
+		},
+		{
+			MOM_MODEL_PROVIDER: "openai",
+			MOM_MODEL_ID: "gpt-5.6-unknown",
+			OPENAI_BASE_URL: "http://host.containers.internal:3099/v1/openai/synthetic-context",
 			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
 		},
 	]) {

@@ -108,7 +108,7 @@ When this setting is enabled, generic email adapter delivery fails closed; the
 runtime must save a draft and may then send that exact draft autonomously within
 the verified context.
 
-## Host-owned OpenAI Sol
+## Host-owned OpenAI models
 
 Top-level `openAi` moves selected OCI runtimes onto one Hostd-owned Responses
 API path. The organization API key stays in Hostd. Each runtime receives only a
@@ -123,6 +123,10 @@ that capability for another relationship.
       "mode": "all",
       "contextIds": []
     },
+    "defaultModel": "gpt-5.6-sol",
+    "contextModels": {
+      "front-desk:synthetic-operator": "gpt-5.6-luna"
+    },
     "monthlySpendCapCents": 2500,
     "maximumOutputTokens": 32768,
     "maximumConcurrentPerContext": 1,
@@ -131,42 +135,49 @@ that capability for another relationship.
 }
 ```
 
-This path accepts only `openai/gpt-5.6-sol` Responses requests with `xhigh`
-thinking, streaming enabled, response storage disabled, the default service
-tier, and an output limit at or below `maximumOutputTokens`. It rejects
-`openai-codex`, hosted OpenAI tools, model changes, other thinking levels, and
-stateful response fields before contacting OpenAI. The runtime also disables
-provider retries. Workspace model settings cannot override the Hostd selection.
-Existing Workers AI configuration may remain in place, but it is not selected
-while `openAi` is configured.
+`defaultModel` applies to every OpenAI-scoped context without an exact
+`contextModels` entry. Hostd currently approves `gpt-5.6-sol` with `xhigh`
+thinking and `gpt-5.6-luna` with `max` thinking. Each proxy request must use the
+model and thinking assigned to its authenticated context, stream its response,
+disable response storage, use the default service tier, and stay at or below
+`maximumOutputTokens`. Hostd rejects `openai-codex`, hosted OpenAI tools, model
+substitution, thinking changes, and stateful response fields before contacting
+OpenAI. The runtime also disables provider retries. Workspace model settings
+cannot override the Hostd selection. Existing Workers AI configuration may
+remain in place, but it is not selected while `openAi` is configured.
 
 The monthly cap is a hard UTC-calendar-month reservation ledger in SQLite. Before
-each call, Hostd atomically reserves the published worst-case Sol cost for the
-full supported input envelope and configured output bound, using the highest
-applicable pricing tier. At the documented promotional rates available through
-at least November 21, 2026, the 32,768-token output bound reserves $11.48304;
-the configured $25 cap can therefore cover at most two concurrent worst-case
-requests. Recheck these rates before the promotion ends. A completed response
-with verified usage settles to its measured cost. A timeout, disconnect, missing
-terminal usage, model mismatch, or other ambiguous result keeps the full
+each call, Hostd atomically reserves the selected model's published worst-case
+cost for the full supported input envelope and configured output bound, using
+the highest applicable pricing tier. At the documented rates, the 32,768-token
+output bound reserves $11.48304 for Sol and $0.583983 for Luna. Recheck Sol's
+promotional pricing before November 21, 2026. A completed response with verified
+usage settles to its measured model-specific cost. A timeout, disconnect,
+missing terminal usage, model mismatch, or other ambiguous result keeps the full
 reservation charged and is never retried by the proxy. The operator status
-endpoint and CLI show the cap, remaining reservation envelope, active calls,
-settled calls, uncertain calls, and rejects; they do not store prompts or
-completions in the accounting table.
+endpoint and CLI show the shared cap, remaining reservation envelope, and usage
+broken down by model; they do not store prompts or completions in the accounting
+table.
 
 For a guarded cutover, first use `scope.mode: "contexts"` with one exact isolated
 synthetic context. This mode may temporarily coexist with the old target model
 defaults for contexts outside the list; selected contexts still receive only the
 pinned API path. Stop normal delivery, preserve the database and workspaces,
 restart the selected runtime, and run a no-customer-send canary. Confirm the
-request reached the organization API project, used the exact Sol model with xhigh
-thinking, stayed within the output bound, and settled in Hostd's ledger. Then
+request reached the organization API project, used the exact configured model
+and thinking, stayed within the output bound, and settled in Hostd's ledger. Then
 remove the target's old model defaults, change the scope to `all` with an empty
 context list, and replace the remaining idle runtimes. All-scope configuration
 rejects legacy target model defaults so a personal subscription cannot remain as
 a hidden fallback. Roll back by restoring the sealed configuration and build;
 the same SQLite database, queues, histories, and runtime workspaces remain in
 place.
+
+To change one existing private Operator, add only its exact durable context ID
+to `contextModels`, drain new work, stop that idle context, and run a
+no-customer-send canary before resuming it. Unknown contexts and assignments
+outside a limited canary scope fail at startup instead of silently using the
+default model.
 
 ## Per-principal Cloudflare Workers AI
 

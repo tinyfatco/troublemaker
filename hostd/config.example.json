@@ -84,6 +84,8 @@
       "mode": "all",
       "contextIds": []
     },
+    "defaultModel": "gpt-5.6-sol",
+    "contextModels": {},
     "monthlySpendCapCents": 2500,
     "maximumOutputTokens": 32768,
     "maximumConcurrentPerContext": 1,

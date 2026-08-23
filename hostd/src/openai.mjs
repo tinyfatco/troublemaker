@@ -1,33 +1,17 @@
 import { randomUUID } from "node:crypto";
 import {
-	HOSTD_OPENAI_MODEL,
+	OPENAI_MODEL_ACCOUNTING,
+	requireHostdOpenAiModel,
+} from "./openai-models.mjs";
+import {
 	HOSTD_OPENAI_PROVIDER,
-	HOSTD_OPENAI_THINKING,
 	resolveContextRuntimeModel,
 } from "./runtime-model.mjs";
 import { contextCapability } from "./security.mjs";
 
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
-const MODEL_CONTEXT_TOKENS = 1_050_000;
-const LONG_CONTEXT_THRESHOLD = 272_000;
 const MAXIMUM_USAGE_PARSE_BYTES = 2 * 1024 * 1024;
-const MICROS_PER_DOLLAR = 1_000_000;
 const TOKENS_PER_MILLION = 1_000_000;
-// GPT-5.6 Sol promotional prices are available at least through 2026-11-21.
-// Values are microdollars per million tokens; cache-write and long-context
-// rates apply the documented 1.25x, 2x input, and 1.5x output multipliers.
-const STANDARD_RATES = Object.freeze({
-	input: 4_000_000,
-	cachedInput: 400_000,
-	cacheWrite: 5_000_000,
-	output: 20_000_000,
-});
-const LONG_CONTEXT_RATES = Object.freeze({
-	input: 8_000_000,
-	cachedInput: 800_000,
-	cacheWrite: 10_000_000,
-	output: 30_000_000,
-});
 const ALLOWED_BODY_FIELDS = new Set([
 	"model",
 	"input",
@@ -65,12 +49,14 @@ function pricedTokens(tokens, rateMicrodollarsPerMillion) {
 	return Math.ceil(tokens * rateMicrodollarsPerMillion / TOKENS_PER_MILLION);
 }
 
-export function worstCaseOpenAiReservationMicrodollars(maximumOutputTokens) {
-	return pricedTokens(MODEL_CONTEXT_TOKENS, LONG_CONTEXT_RATES.cacheWrite)
-		+ pricedTokens(maximumOutputTokens, LONG_CONTEXT_RATES.output);
+export function worstCaseOpenAiReservationMicrodollars(modelId, maximumOutputTokens) {
+	const model = requireHostdOpenAiModel(modelId);
+	return pricedTokens(model.contextTokens, model.longContextRates.cacheWrite)
+		+ pricedTokens(maximumOutputTokens, model.longContextRates.output);
 }
 
-export function openAiUsageMicrodollars(usage) {
+export function openAiUsageMicrodollars(modelId, usage) {
+	const model = requireHostdOpenAiModel(modelId);
 	const inputTokens = nonNegativeInteger(usage.inputTokens);
 	const cachedInputTokens = Math.min(inputTokens, nonNegativeInteger(usage.cachedInputTokens));
 	const cacheWriteTokens = Math.min(
@@ -79,7 +65,9 @@ export function openAiUsageMicrodollars(usage) {
 	);
 	const uncachedInputTokens = Math.max(0, inputTokens - cachedInputTokens - cacheWriteTokens);
 	const outputTokens = nonNegativeInteger(usage.outputTokens);
-	const rates = inputTokens > LONG_CONTEXT_THRESHOLD ? LONG_CONTEXT_RATES : STANDARD_RATES;
+	const rates = inputTokens > model.longContextThreshold
+		? model.longContextRates
+		: model.standardRates;
 	return pricedTokens(uncachedInputTokens, rates.input)
 		+ pricedTokens(cachedInputTokens, rates.cachedInput)
 		+ pricedTokens(cacheWriteTokens, rates.cacheWrite)
@@ -200,7 +188,7 @@ function validateToolChoice(toolChoice) {
 	}
 }
 
-function validateAndPinBody(body, maximumOutputTokens) {
+function validateAndPinBody(body, model) {
 	if (!body || typeof body !== "object" || Array.isArray(body)) {
 		throw new OpenAiError(400, "openai_body_invalid");
 	}
@@ -209,7 +197,7 @@ function validateAndPinBody(body, maximumOutputTokens) {
 			throw new OpenAiError(400, "openai_field_denied");
 		}
 	}
-	if (body.model !== HOSTD_OPENAI_MODEL) {
+	if (body.model !== model.id) {
 		throw new OpenAiError(403, "openai_model_denied");
 	}
 	if (body.stream !== true) throw new OpenAiError(400, "openai_stream_required");
@@ -218,9 +206,9 @@ function validateAndPinBody(body, maximumOutputTokens) {
 		!body.reasoning
 		|| typeof body.reasoning !== "object"
 		|| Array.isArray(body.reasoning)
-		|| body.reasoning.effort !== HOSTD_OPENAI_THINKING
+		|| body.reasoning.effort !== model.thinking
 	) {
-		throw new OpenAiError(403, "openai_xhigh_thinking_required");
+		throw new OpenAiError(403, "openai_thinking_denied");
 	}
 	if (body.service_tier !== undefined && body.service_tier !== "default") {
 		throw new OpenAiError(403, "openai_service_tier_denied");
@@ -234,19 +222,19 @@ function validateAndPinBody(body, maximumOutputTokens) {
 	validateTools(body.tools);
 	validateToolChoice(body.tool_choice);
 	const requestedMaximum = body.max_output_tokens === undefined
-		? maximumOutputTokens
+		? model.maximumOutputTokens
 		: body.max_output_tokens;
 	if (
 		!Number.isInteger(requestedMaximum)
 		|| requestedMaximum < 16
-		|| requestedMaximum > maximumOutputTokens
+		|| requestedMaximum > model.maximumOutputTokens
 	) {
 		throw new OpenAiError(400, "openai_output_bound_invalid");
 	}
 	return {
 		...body,
-		model: HOSTD_OPENAI_MODEL,
-		reasoning: { ...body.reasoning, effort: HOSTD_OPENAI_THINKING },
+		model: model.id,
+		reasoning: { ...body.reasoning, effort: model.thinking },
 		max_output_tokens: requestedMaximum,
 		stream: true,
 		store: false,
@@ -274,14 +262,17 @@ export class HostOpenAi {
 			target,
 			contextId,
 		);
-		if (
-			selected?.provider !== HOSTD_OPENAI_PROVIDER
-			|| selected.id !== HOSTD_OPENAI_MODEL
-			|| selected.thinking !== HOSTD_OPENAI_THINKING
-		) {
+		const model = selected?.provider === HOSTD_OPENAI_PROVIDER
+			? requireHostdOpenAiModel(selected.id)
+			: undefined;
+		if (!model || selected.thinking !== model.thinking) {
 			throw new OpenAiError(403, "openai_context_denied");
 		}
-		const input = validateAndPinBody(body, this.config.openAi.maximumOutputTokens);
+		const requestModel = {
+			...model,
+			maximumOutputTokens: selected.maximumOutputTokens,
+		};
+		const input = validateAndPinBody(body, requestModel);
 		if (typeof input.prompt_cache_key === "string" && input.prompt_cache_key) {
 			input.prompt_cache_key = contextCapability(
 				target.outboundToken,
@@ -293,13 +284,14 @@ export class HostOpenAi {
 		const startedMilliseconds = this.now();
 		const startedAt = new Date(startedMilliseconds).toISOString();
 		const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(
-			this.config.openAi.maximumOutputTokens,
+			model.id,
+			requestModel.maximumOutputTokens,
 		);
 		const reservation = this.store.reserveOpenAiRequest({
 			id: requestId,
 			targetId: target.id,
 			contextId,
-			model: HOSTD_OPENAI_MODEL,
+			model: model.id,
 			monthStartedAt: monthStart(startedMilliseconds),
 			observedAt: startedAt,
 			expiresAt: new Date(
@@ -329,7 +321,7 @@ export class HostOpenAi {
 				body: JSON.stringify(input),
 				signal: upstreamSignal,
 			});
-			return this.trackResponse(requestId, reservedMicrodollars, upstream);
+			return this.trackResponse(requestId, reservedMicrodollars, model, upstream);
 		} catch (error) {
 			this.store.finishOpenAiRequest(requestId, {
 				status: "uncertain",
@@ -345,7 +337,7 @@ export class HostOpenAi {
 		}
 	}
 
-	trackResponse(requestId, reservedMicrodollars, upstream) {
+	trackResponse(requestId, reservedMicrodollars, model, upstream) {
 		const contentType = upstream.headers.get("content-type") || "";
 		const collector = new OpenAiUsageCollector();
 		let settled = false;
@@ -358,12 +350,12 @@ export class HostOpenAi {
 				&& contentType.toLowerCase().includes("text/event-stream")
 				&& collected.terminal
 				&& collected.usage
-				&& collected.model === HOSTD_OPENAI_MODEL
+				&& collected.model === model.id
 				&& !cancelled;
 			this.store.finishOpenAiRequest(requestId, {
 				status: exactResponse ? "settled" : "uncertain",
 				chargedMicrodollars: exactResponse
-					? openAiUsageMicrodollars(collected.usage)
+					? openAiUsageMicrodollars(model.id, collected.usage)
 					: reservedMicrodollars,
 				upstreamStatus: upstream.status,
 				...(collected.usage ?? {}),
@@ -409,10 +401,4 @@ export class HostOpenAi {
 	}
 }
 
-export const OPENAI_COST_ACCOUNTING = Object.freeze({
-	microdollarsPerDollar: MICROS_PER_DOLLAR,
-	modelContextTokens: MODEL_CONTEXT_TOKENS,
-	longContextThreshold: LONG_CONTEXT_THRESHOLD,
-	standardRates: STANDARD_RATES,
-	longContextRates: LONG_CONTEXT_RATES,
-});
+export const OPENAI_COST_ACCOUNTING = OPENAI_MODEL_ACCOUNTING;

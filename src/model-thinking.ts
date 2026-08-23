@@ -1,4 +1,8 @@
 import type { ModelThinkingLevel, SimpleStreamOptions } from "@earendil-works/pi-ai";
+import {
+	getHostdOpenAiModelPolicy,
+	HOSTD_OPENAI_PROVIDER,
+} from "./hostd-openai-models.js";
 
 export const MODEL_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const COMPACTION_SYSTEM_PROMPT_PREFIX = "You are a context summarization assistant.";
@@ -13,7 +17,18 @@ type RuntimeModel = {
 };
 
 function supportsMaximumThinking(model: RuntimeModel): boolean {
-	return model.provider === "openai" && model.id === "gpt-5.6-sol";
+	return model.provider === "openai"
+		&& ["gpt-5.6-sol", "gpt-5.6-luna"].includes(model.id ?? "");
+}
+
+function migratedHostdThinkingLevel(): "xhigh" | "max" {
+	const policy = process.env.MOM_MODEL_PROVIDER === HOSTD_OPENAI_PROVIDER
+		? getHostdOpenAiModelPolicy(process.env.MOM_MODEL_ID)
+		: undefined;
+	if (!policy || process.env.MOM_THINKING !== policy.thinking) {
+		throw new Error("Migrated Hostd context has an invalid model/thinking policy");
+	}
+	return policy.thinking;
 }
 
 export function normalizeThinkingLevel(value: unknown): RuntimeThinkingLevel {
@@ -72,6 +87,8 @@ export function boundCompactionStreamOptions(
 	return {
 		...options,
 		maxTokens: Math.min(options?.maxTokens ?? COMPACTION_MAX_OUTPUT_TOKENS, COMPACTION_MAX_OUTPUT_TOKENS),
-		reasoning: process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1" ? "xhigh" : "low",
+		reasoning: process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1"
+			? migratedHostdThinkingLevel()
+			: "low",
 	};
 }

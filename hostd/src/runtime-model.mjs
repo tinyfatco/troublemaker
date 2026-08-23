@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
+import {
+	HOSTD_OPENAI_DEFAULT_MODEL,
+	requireHostdOpenAiModel,
+} from "./openai-models.mjs";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
 
 export const CLOUDFLARE_WORKERS_AI_PROVIDER = "cloudflare-workers-ai";
 export const HOSTD_OPENAI_PROVIDER = "openai";
-export const HOSTD_OPENAI_MODEL = "gpt-5.6-sol";
-export const HOSTD_OPENAI_THINKING = "xhigh";
+export const HOSTD_OPENAI_MODEL = HOSTD_OPENAI_DEFAULT_MODEL;
+export const HOSTD_OPENAI_THINKING = requireHostdOpenAiModel(HOSTD_OPENAI_MODEL).thinking;
 
 export function openAiScopeIncludesContext(openAi, contextId) {
 	return openAi?.scope?.mode === "all"
@@ -13,14 +17,19 @@ export function openAiScopeIncludesContext(openAi, contextId) {
 
 export function resolveContextRuntimeModel(config, store, routingKey, target, contextId) {
 	if (config.openAi) {
-		return openAiScopeIncludesContext(config.openAi, contextId)
-			? {
-				provider: HOSTD_OPENAI_PROVIDER,
-				id: HOSTD_OPENAI_MODEL,
-				thinking: HOSTD_OPENAI_THINKING,
-				maximumOutputTokens: config.openAi.maximumOutputTokens,
-			}
-			: undefined;
+		if (!openAiScopeIncludesContext(config.openAi, contextId)) return undefined;
+		const model = requireHostdOpenAiModel(
+			Object.hasOwn(config.openAi.contextModels, contextId)
+				? config.openAi.contextModels[contextId]
+				: config.openAi.defaultModel,
+			`OpenAI model for context ${contextId}`,
+		);
+		return {
+			provider: model.provider,
+			id: model.id,
+			thinking: model.thinking,
+			maximumOutputTokens: config.openAi.maximumOutputTokens,
+		};
 	}
 	if (!config.workersAi || !routingKey || !target) return undefined;
 	const routes = store.listRoutesForContext(contextId, target.id);
@@ -33,6 +42,18 @@ export function resolveContextRuntimeModel(config, store, routingKey, target, co
 		&& stablePrivateKey(routingKey, "phone-principal", candidate.phone) === principalHash
 	));
 	return principal?.model;
+}
+
+export function validateOpenAiContextModels(config, store) {
+	if (!config.openAi) return;
+	for (const contextId of Object.keys(config.openAi.contextModels)) {
+		if (!openAiScopeIncludesContext(config.openAi, contextId)) {
+			throw new Error(`OpenAI context model ${contextId} is outside the configured scope`);
+		}
+		if (!store.getContext(contextId)) {
+			throw new Error(`OpenAI context model ${contextId} references an unknown context`);
+		}
+	}
 }
 
 export function runtimeModelVersionSuffix(model) {
@@ -54,17 +75,17 @@ export function runtimeModelVersionSuffix(model) {
 export function runtimeModelEnvironment(config, target, contextId, model) {
 	if (!model) return {};
 	if (model.provider === HOSTD_OPENAI_PROVIDER && config.openAi) {
+		const selected = requireHostdOpenAiModel(model.id, "Hostd OpenAI runtime model");
 		if (
-			model.id !== HOSTD_OPENAI_MODEL
-			|| model.thinking !== HOSTD_OPENAI_THINKING
+			model.thinking !== selected.thinking
 			|| model.maximumOutputTokens !== config.openAi.maximumOutputTokens
 		) {
 			throw new Error("Hostd OpenAI runtime model policy is inconsistent");
 		}
 		return {
 			MOM_MODEL_PROVIDER: HOSTD_OPENAI_PROVIDER,
-			MOM_MODEL_ID: HOSTD_OPENAI_MODEL,
-			MOM_THINKING: HOSTD_OPENAI_THINKING,
+			MOM_MODEL_ID: selected.id,
+			MOM_THINKING: selected.thinking,
 			MOM_MAX_OUTPUT_TOKENS: String(config.openAi.maximumOutputTokens),
 			TROUBLEMAKER_HOSTD_OPENAI_MIGRATED: "1",
 			OPENAI_API_KEY: contextCapability(target.outboundToken, "openai", contextId),

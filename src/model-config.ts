@@ -22,12 +22,15 @@ import {
 	listClaudeCliModels,
 } from "./claude-cli.js";
 import { DEFAULT_FIREWORKS_MODEL_ID, getFireworksModel, GLM_5P2_MODEL_ID, listBuiltinFireworksModels } from "./fireworks-models.js";
+import {
+	getHostdOpenAiModelPolicy,
+	HOSTD_OPENAI_PROVIDER,
+} from "./hostd-openai-models.js";
 import * as log from "./log.js";
 
 const DEFAULT_PROVIDER = "fireworks";
 const DEFAULT_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
-export const HOSTD_OPENAI_PROVIDER = "openai";
-export const HOSTD_OPENAI_MODEL_ID = "gpt-5.6-sol";
+export { HOSTD_OPENAI_PROVIDER } from "./hostd-openai-models.js";
 
 export function isMigratedHostdOpenAi(): boolean {
 	return process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1";
@@ -301,9 +304,9 @@ export function getCurrentModelSelection(workingDir?: string): { provider: strin
 	let modelId = environmentOverride?.id;
 
 	if (isMigratedHostdOpenAi()) {
-		if (provider !== HOSTD_OPENAI_PROVIDER || modelId !== HOSTD_OPENAI_MODEL_ID) {
+		if (provider !== HOSTD_OPENAI_PROVIDER || !getHostdOpenAiModelPolicy(modelId)) {
 			throw new Error(
-				`Migrated Hostd contexts require ${HOSTD_OPENAI_PROVIDER}/${HOSTD_OPENAI_MODEL_ID}`,
+				"Migrated Hostd contexts require an approved organization OpenAI model",
 			);
 		}
 		if (!process.env.OPENAI_BASE_URL?.trim()) {
@@ -514,8 +517,8 @@ function applyBaseUrlOverride(model: Model<Api>, provider: string): Model<Api> {
  */
 function applyMigratedHostdOutputBound(model: Model<Api>): Model<Api> {
 	if (!isMigratedHostdOpenAi()) return model;
-	if (model.provider !== HOSTD_OPENAI_PROVIDER || model.id !== HOSTD_OPENAI_MODEL_ID) {
-		throw new Error(`Migrated Hostd contexts require ${HOSTD_OPENAI_PROVIDER}/${HOSTD_OPENAI_MODEL_ID}`);
+	if (model.provider !== HOSTD_OPENAI_PROVIDER || !getHostdOpenAiModelPolicy(model.id)) {
+		throw new Error("Migrated Hostd contexts require an approved organization OpenAI model");
 	}
 	const configured = process.env.MOM_MAX_OUTPUT_TOKENS?.trim();
 	if (!configured || !/^[1-9]\d*$/.test(configured)) {

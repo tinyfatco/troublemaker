@@ -1,6 +1,10 @@
 import { createPrivateKey } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import {
+	HOSTD_OPENAI_DEFAULT_MODEL,
+	requireHostdOpenAiModel,
+} from "./openai-models.mjs";
 
 function object(value, label) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -325,6 +329,14 @@ function workersAiConfig(raw, environment) {
 	};
 }
 
+function openAiContextId(value, label) {
+	const contextId = text(value, label);
+	if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId)) {
+		throw new Error(`${label} is invalid`);
+	}
+	return contextId;
+}
+
 function openAiConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const openAi = object(raw, "openAi");
@@ -335,13 +347,9 @@ function openAiConfig(raw, environment) {
 	}
 	const rawContextIds = rawScope.contextIds ?? [];
 	if (!Array.isArray(rawContextIds)) throw new Error("openAi.scope.contextIds must be an array");
-	const contextIds = rawContextIds.map((value, index) => {
-		const contextId = text(value, `openAi.scope.contextIds[${index}]`);
-		if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId)) {
-			throw new Error(`openAi.scope.contextIds[${index}] is invalid`);
-		}
-		return contextId;
-	});
+	const contextIds = rawContextIds.map((value, index) => (
+		openAiContextId(value, `openAi.scope.contextIds[${index}]`)
+	));
 	if (new Set(contextIds).size !== contextIds.length) {
 		throw new Error("openAi.scope.contextIds cannot repeat a context");
 	}
@@ -352,6 +360,26 @@ function openAiConfig(raw, environment) {
 	if (scopeMode === "all" && contextIds.length > 0) {
 		throw new Error("openAi all scope cannot include contextIds");
 	}
+	const defaultModel = openAi.defaultModel === undefined
+		? HOSTD_OPENAI_DEFAULT_MODEL
+		: text(openAi.defaultModel, "openAi.defaultModel");
+	requireHostdOpenAiModel(defaultModel, "openAi.defaultModel");
+	const rawContextModels = openAi.contextModels === undefined
+		? {}
+		: object(openAi.contextModels, "openAi.contextModels");
+	const contextModelEntries = Object.entries(rawContextModels);
+	if (contextModelEntries.length > 256) {
+		throw new Error("openAi.contextModels cannot exceed 256 contexts");
+	}
+	const contextModels = Object.fromEntries(contextModelEntries.map(([rawContextId, rawModelId]) => {
+		const contextId = openAiContextId(rawContextId, `openAi.contextModels.${rawContextId}`);
+		const modelId = text(rawModelId, `openAi.contextModels.${contextId}`);
+		requireHostdOpenAiModel(modelId, `openAi.contextModels.${contextId}`);
+		if (scopeMode === "contexts" && !contextIds.includes(contextId)) {
+			throw new Error(`openAi.contextModels.${contextId} is outside openAi.scope`);
+		}
+		return [contextId, modelId];
+	}));
 	const limits = {
 		monthlySpendCapCents: integer(
 			openAi.monthlySpendCapCents,
@@ -388,6 +416,8 @@ function openAiConfig(raw, environment) {
 	return {
 		apiKey: envSecret(openAi.apiKeyEnv, "openAi.apiKeyEnv", environment),
 		scope: { mode: scopeMode, contextIds },
+		defaultModel,
+		contextModels,
 		...limits,
 		requestTimeoutMs: integer(
 			openAi.requestTimeoutMs,

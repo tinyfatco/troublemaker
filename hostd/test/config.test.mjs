@@ -104,6 +104,8 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	assert.deepEqual(config.openAi, {
 		apiKey: "test-openai-organization-api-key",
 		scope: { mode: "all", contextIds: [] },
+		defaultModel: "gpt-5.6-sol",
+		contextModels: {},
 		monthlySpendCapCents: 2500,
 		maximumOutputTokens: 32768,
 		maximumConcurrentPerContext: 1,
@@ -282,6 +284,10 @@ test("requires an explicit organization credential, spend cap, and output bound 
 		);
 
 		raw.openAi.scope = { mode: "contexts", contextIds: ["front-desk:synthetic-canary"] };
+		raw.openAi.defaultModel = "gpt-5.6-sol";
+		raw.openAi.contextModels = {
+			"front-desk:synthetic-canary": "gpt-5.6-luna",
+		};
 		raw.targets[0].runtimeEnv = {
 			MOM_MODEL_PROVIDER: "openai-codex",
 			MOM_MODEL_ID: "gpt-5.6-sol",
@@ -290,6 +296,17 @@ test("requires an explicit organization credential, spend cap, and output bound 
 		await writeFile(path, JSON.stringify(raw));
 		const canary = await loadConfig(path, ENVIRONMENT);
 		assert.equal(canary.openAi.scope.mode, "contexts");
+		assert.equal(canary.openAi.defaultModel, "gpt-5.6-sol");
+		assert.equal(canary.openAi.contextModels["front-desk:synthetic-canary"], "gpt-5.6-luna");
+
+		raw.openAi.contextModels["front-desk:outside-scope"] = "gpt-5.6-luna";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /outside openAi\.scope/);
+
+		delete raw.openAi.contextModels["front-desk:outside-scope"];
+		raw.openAi.contextModels["front-desk:synthetic-canary"] = "gpt-5.6-unknown";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /not an approved Hostd OpenAI model/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

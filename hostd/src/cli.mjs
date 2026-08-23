@@ -20,6 +20,7 @@ import { ZulipGateway } from "./zulip-gateway.mjs";
 import { ZulipProvisioner } from "./zulip.mjs";
 import { ContextRouter } from "./router.mjs";
 import { RuntimeManager } from "./runtime.mjs";
+import { validateOpenAiContextModels } from "./runtime-model.mjs";
 import { readRoutingKey, stablePrivateKey } from "./security.mjs";
 import { EventScheduler } from "./scheduler.mjs";
 import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
@@ -56,6 +57,12 @@ function option(name) {
 async function components(configPath) {
 	const config = await loadConfig(configPath);
 	const store = new HostStore(config.state.database);
+	try {
+		validateOpenAiContextModels(config, store);
+	} catch (error) {
+		store.close();
+		throw error;
+	}
 	const routingKey = await readRoutingKey(config.state.routingKeyFile);
 	const gmail = config.gmail ? new GogGmail(config.gmail) : undefined;
 	const router = new ContextRouter(config, store, routingKey);

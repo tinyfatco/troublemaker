@@ -16,7 +16,9 @@ import { applyMigratedHostdStreamPolicy } from "../src/model-thinking.js";
 import { applySelfConfiguration } from "../src/tools/self-configure.js";
 
 const sol = getModel("openai" as any, "gpt-5.6-sol" as any);
+const luna = getModel("openai" as any, "gpt-5.6-luna" as any);
 assert(sol, "the pinned pi runtime must include OpenAI Sol");
+assert(luna, "the pinned pi runtime must include OpenAI Luna");
 
 const keys = [
 	"MOM_MODEL_PROVIDER",
@@ -39,7 +41,7 @@ try {
 	process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = "1";
 
 	const unavailableRegistry = {
-		getAll: () => [sol],
+		getAll: () => [sol, luna],
 		hasConfiguredAuth: () => false,
 	};
 	assert.throws(
@@ -143,11 +145,38 @@ try {
 		/thinking_level is locked by the service environment/,
 	);
 
+	process.env.MOM_MODEL_ID = "gpt-5.6-luna";
 	process.env.MOM_THINKING = "max";
+	const proxiedLuna = resolveModelWithAuth(workingDir, unavailableRegistry as any);
+	assert.equal(proxiedLuna.id, "gpt-5.6-luna");
+	assert.equal(proxiedLuna.maxTokens, 32_768);
+	assert.equal(
+		resolveThinkingLevel({ readText: () => '{"thinking_level":"low"}' } as any),
+		"max",
+		"the Hostd Luna max lock overrides workspace settings",
+	);
+	let lunaRequestPayload: Record<string, unknown> | undefined;
+	const lunaRequest = streamSimpleOpenAIResponses(
+		proxiedLuna as any,
+		{ messages: [{ role: "user", content: "Synthetic Luna request", timestamp: 2 }] },
+		{
+			apiKey: "synthetic-context-capability",
+			maxTokens: proxiedLuna.maxTokens,
+			reasoning: "max",
+			maxRetries: 0,
+			onPayload: (payload) => { lunaRequestPayload = payload as Record<string, unknown>; },
+			fetch: async () => { throw new Error("synthetic fetch stop"); },
+		},
+	);
+	await lunaRequest.result();
+	assert.equal(lunaRequestPayload?.model, "gpt-5.6-luna");
+	assert.deepEqual(lunaRequestPayload?.reasoning, { effort: "max", summary: "auto" });
+
+	process.env.MOM_THINKING = "xhigh";
 	assert.throws(
 		() => resolveThinkingLevel({ readText: () => undefined } as any),
-		/require MOM_THINKING=xhigh/,
-		"a migrated context rejects max and every other thinking level",
+		/invalid model\/thinking policy/,
+		"a migrated Luna context rejects a mismatched thinking level",
 	);
 } finally {
 	for (const [key, value] of prior) {

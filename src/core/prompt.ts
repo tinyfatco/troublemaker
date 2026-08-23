@@ -1,5 +1,9 @@
 import type { ChannelInfo, UserInfo } from "../adapters/types.js";
 import type { VerbosityLevel } from "../context.js";
+import {
+	getHostdOpenAiModelPolicy,
+	HOSTD_OPENAI_PROVIDER,
+} from "../hostd-openai-models.js";
 import * as log from "../log.js";
 import { normalizeThinkingLevel } from "../model-thinking.js";
 import { resolveOpenAIOverlay } from "../openai-overlay.js";
@@ -117,10 +121,15 @@ function getRecentDailyMemory(workspace: WorkspaceStore): string {
 export function resolveThinkingLevel(workspace: WorkspaceStore): any {
 	const environmentLevel = process.env.MOM_THINKING;
 	if (process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1") {
-		if (environmentLevel !== "xhigh") {
-			throw new Error("Migrated Hostd contexts require MOM_THINKING=xhigh");
+		const policy = process.env.MOM_MODEL_PROVIDER === HOSTD_OPENAI_PROVIDER
+			? getHostdOpenAiModelPolicy(process.env.MOM_MODEL_ID)
+			: undefined;
+		if (!policy || environmentLevel !== policy.thinking) {
+			throw new Error(
+				`Migrated Hostd context has an invalid model/thinking policy`,
+			);
 		}
-		return "xhigh";
+		return policy.thinking;
 	}
 	if (environmentLevel) return normalizeThinkingLevel(environmentLevel);
 	try {

@@ -13,10 +13,12 @@ import { getFireworksModel } from "../src/fireworks-models.js";
 const minimax = getModel("fireworks" as any, "accounts/fireworks/models/minimax-m2p7" as any);
 const glm = getFireworksModel("accounts/fireworks/models/glm-5p1");
 const sol = getModel("openai" as any, "gpt-5.6-sol" as any);
+const luna = getModel("openai" as any, "gpt-5.6-luna" as any);
 
 assert(minimax, "MiniMax M2.7 model exists");
 assert(glm, "GLM Fireworks model exists");
 assert(sol, "GPT-5.6 Sol model exists");
+assert(luna, "GPT-5.6 Luna model exists");
 assert.equal(requiresEnabledThinking(minimax), true);
 assert.equal(requiresEnabledThinking(glm), false);
 
@@ -45,6 +47,8 @@ assert.equal(normalizeThinkingLevelForModel(glm, "xhigh"), "xhigh");
 assert.equal(normalizeSimpleStreamOptionsForModel(glm, { reasoning: "high" })?.reasoning, "high");
 assert.equal(normalizeThinkingLevelForModel(sol, "max"), "max");
 assert.equal(normalizeSimpleStreamOptionsForModel(sol, { reasoning: "max" })?.reasoning, "max");
+assert.equal(normalizeThinkingLevelForModel(luna, "max"), "max");
+assert.equal(normalizeSimpleStreamOptionsForModel(luna, { reasoning: "max" })?.reasoning, "max");
 
 assert.equal(
 	normalizeThinkingLevelForModel({ provider: "test", id: "test-model", reasoning: false }, "high"),
@@ -68,7 +72,13 @@ const compactOptions = boundCompactionStreamOptions(
 assert.equal(compactOptions?.maxTokens, COMPACTION_MAX_OUTPUT_TOKENS, "compaction output is capped independently of trigger headroom");
 assert.equal(compactOptions?.reasoning, "low", "compaction does not inherit pathological xhigh reasoning");
 const previousMigrated = process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
+const previousProvider = process.env.MOM_MODEL_PROVIDER;
+const previousModel = process.env.MOM_MODEL_ID;
+const previousThinking = process.env.MOM_THINKING;
 process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = "1";
+process.env.MOM_MODEL_PROVIDER = "openai";
+process.env.MOM_MODEL_ID = "gpt-5.6-sol";
+process.env.MOM_THINKING = "xhigh";
 assert.equal(
 	boundCompactionStreamOptions(
 		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
@@ -77,8 +87,24 @@ assert.equal(
 	"xhigh",
 	"migrated Sol compaction preserves the locked xhigh-thinking policy",
 );
+process.env.MOM_MODEL_ID = "gpt-5.6-luna";
+process.env.MOM_THINKING = "max";
+assert.equal(
+	boundCompactionStreamOptions(
+		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
+		ordinaryOptions,
+	)?.reasoning,
+	"max",
+	"migrated Luna compaction preserves the locked max-thinking policy",
+);
 if (previousMigrated === undefined) delete process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
 else process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = previousMigrated;
+if (previousProvider === undefined) delete process.env.MOM_MODEL_PROVIDER;
+else process.env.MOM_MODEL_PROVIDER = previousProvider;
+if (previousModel === undefined) delete process.env.MOM_MODEL_ID;
+else process.env.MOM_MODEL_ID = previousModel;
+if (previousThinking === undefined) delete process.env.MOM_THINKING;
+else process.env.MOM_THINKING = previousThinking;
 assert.equal(
 	boundCompactionStreamOptions(
 		{ systemPrompt: "You are a context summarization assistant. Only summarize." },

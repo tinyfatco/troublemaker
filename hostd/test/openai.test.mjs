@@ -13,6 +13,7 @@ import {
 	resolveContextRuntimeModel,
 	runtimeModelEnvironment,
 	runtimeModelVersionSuffix,
+	validateOpenAiContextModels,
 } from "../src/runtime-model.mjs";
 import { contextCapability } from "../src/security.mjs";
 import { createHostServer } from "../src/server.mjs";
@@ -20,6 +21,8 @@ import { HostStore } from "../src/store.mjs";
 
 const CONTEXT_A = "front-desk:relationship-a";
 const CONTEXT_B = "front-desk:relationship-b";
+const SOL_MODEL = "gpt-5.6-sol";
+const LUNA_MODEL = "gpt-5.6-luna";
 
 function fixture(overrides = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-openai-"));
@@ -39,6 +42,8 @@ function fixture(overrides = {}) {
 		openAi: {
 			apiKey: "synthetic-organization-openai-key",
 			scope: { mode: "all", contextIds: [] },
+			defaultModel: SOL_MODEL,
+			contextModels: {},
 			monthlySpendCapCents: 2500,
 			maximumOutputTokens: 32_768,
 			maximumConcurrentPerContext: 1,
@@ -66,12 +71,16 @@ function fixture(overrides = {}) {
 }
 
 function requestBody(overrides = {}) {
+	const model = overrides.model ?? SOL_MODEL;
 	return {
-		model: HOSTD_OPENAI_MODEL,
+		model,
 		input: [{ role: "user", content: [{ type: "input_text", text: "Synthetic canary" }] }],
 		stream: true,
 		store: false,
-		reasoning: { effort: "xhigh", summary: "auto" },
+		reasoning: {
+			effort: model === LUNA_MODEL ? "max" : "xhigh",
+			summary: "auto",
+		},
 		prompt_cache_key: "synthetic-session",
 		include: ["reasoning.encrypted_content"],
 		tools: [{ type: "function", name: "synthetic_check", parameters: { type: "object" } }],
@@ -79,10 +88,10 @@ function requestBody(overrides = {}) {
 	};
 }
 
-function successfulResponse() {
+function successfulResponse(model = SOL_MODEL) {
 	return new Response(
 		'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
-		+ 'data: {"type":"response.completed","response":{"model":"gpt-5.6-sol","usage":'
+		+ `data: {"type":"response.completed","response":{"model":"${model}","usage":`
 		+ '{"input_tokens":100,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},'
 		+ '"output_tokens":25,"total_tokens":125}}}\n\n',
 		{ status: 200, headers: { "content-type": "text/event-stream" } },
@@ -95,15 +104,15 @@ function closeFixture(state) {
 }
 
 test("Sol accounting reserves the published high-context worst case", () => {
-	assert.equal(worstCaseOpenAiReservationMicrodollars(32_768), 11_483_040);
-	assert.equal(worstCaseOpenAiReservationMicrodollars(128_000), 14_340_000);
-	assert.equal(openAiUsageMicrodollars({
+	assert.equal(worstCaseOpenAiReservationMicrodollars(SOL_MODEL, 32_768), 11_483_040);
+	assert.equal(worstCaseOpenAiReservationMicrodollars(SOL_MODEL, 128_000), 14_340_000);
+	assert.equal(openAiUsageMicrodollars(SOL_MODEL, {
 		inputTokens: 100,
 		cachedInputTokens: 20,
 		cacheWriteTokens: 10,
 		outputTokens: 25,
 	}), 838);
-	assert.equal(openAiUsageMicrodollars({
+	assert.equal(openAiUsageMicrodollars(SOL_MODEL, {
 		inputTokens: 300_000,
 		cachedInputTokens: 0,
 		cacheWriteTokens: 0,
@@ -111,9 +120,26 @@ test("Sol accounting reserves the published high-context worst case", () => {
 	}), 2_430_000);
 });
 
+test("Luna accounting reserves the published high-context worst case", () => {
+	assert.equal(worstCaseOpenAiReservationMicrodollars(LUNA_MODEL, 32_768), 583_983);
+	assert.equal(worstCaseOpenAiReservationMicrodollars(LUNA_MODEL, 128_000), 755_400);
+	assert.equal(openAiUsageMicrodollars(LUNA_MODEL, {
+		inputTokens: 100,
+		cachedInputTokens: 20,
+		cacheWriteTokens: 10,
+		outputTokens: 25,
+	}), 48);
+	assert.equal(openAiUsageMicrodollars(LUNA_MODEL, {
+		inputTokens: 300_000,
+		cachedInputTokens: 0,
+		cacheWriteTokens: 0,
+		outputTokens: 1000,
+	}), 121_800);
+});
+
 test("the hard $25 monthly cap admits only two worst-case Sol reservations", () => {
 	const state = fixture();
-	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(32_768);
+	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(SOL_MODEL, 32_768);
 	const reserve = (id) => state.store.reserveOpenAiRequest({
 		id,
 		targetId: state.target.id,
@@ -140,9 +166,40 @@ test("the hard $25 monthly cap admits only two worst-case Sol reservations", () 
 	}
 });
 
-test("OpenAI runtime selection overrides dormant Workers AI with context-only proxy authority", () => {
+test("Sol and Luna reservations share one durable monthly cap", () => {
 	const state = fixture();
+	const reserve = (id, model) => state.store.reserveOpenAiRequest({
+		id,
+		targetId: state.target.id,
+		contextId: CONTEXT_A,
+		model,
+		monthStartedAt: "2026-08-01T00:00:00.000Z",
+		observedAt: "2026-08-15T12:00:00.000Z",
+		expiresAt: "2026-08-15T12:10:00.000Z",
+		reservedMicrodollars: worstCaseOpenAiReservationMicrodollars(model, 32_768),
+		monthlySpendCapCents: 2500,
+		maximumConcurrentPerContext: 10,
+		maximumConcurrentGlobal: 10,
+	});
 	try {
+		assert.equal(reserve("00000000-0000-4000-8000-000000000021", SOL_MODEL).allowed, true);
+		assert.equal(reserve("00000000-0000-4000-8000-000000000022", SOL_MODEL).allowed, true);
+		assert.equal(reserve("00000000-0000-4000-8000-000000000023", LUNA_MODEL).allowed, true);
+		assert.equal(reserve("00000000-0000-4000-8000-000000000024", LUNA_MODEL).allowed, true);
+		assert.equal(reserve("00000000-0000-4000-8000-000000000025", LUNA_MODEL).allowed, true);
+		const rejected = reserve("00000000-0000-4000-8000-000000000026", LUNA_MODEL);
+		assert.equal(rejected.allowed, false);
+		assert.equal(rejected.code, "openai_monthly_spend_cap_exhausted");
+		assert.equal(rejected.committedMicrodollars, 24_718_029);
+	} finally {
+		closeFixture(state);
+	}
+});
+
+test("OpenAI runtime selection overrides dormant Workers AI with context-only proxy authority", () => {
+	const state = fixture({ contextModels: { [CONTEXT_B]: LUNA_MODEL } });
+	try {
+		validateOpenAiContextModels(state.config, state.store);
 		const selected = resolveContextRuntimeModel(
 			state.config,
 			state.store,
@@ -191,6 +248,35 @@ test("OpenAI runtime selection overrides dormant Workers AI with context-only pr
 		assert.equal("OPENAI_CODEX_BASE_URL" in environment, false);
 		assert.equal("CLOUDFLARE_API_KEY" in environment, false);
 		assert.match(runtimeModelVersionSuffix(selected), /^:model-[0-9a-f]{12}$/);
+		const luna = resolveContextRuntimeModel(
+			state.config,
+			state.store,
+			Buffer.alloc(32, 7),
+			state.target,
+			CONTEXT_B,
+		);
+		assert.deepEqual(luna, {
+			provider: "openai",
+			id: LUNA_MODEL,
+			thinking: "max",
+			maximumOutputTokens: 32_768,
+		});
+		const lunaEnvironment = runtimeModelEnvironment(
+			state.config,
+			state.target,
+			CONTEXT_B,
+			luna,
+		);
+		assert.equal(lunaEnvironment.MOM_MODEL_ID, LUNA_MODEL);
+		assert.equal(lunaEnvironment.MOM_THINKING, "max");
+		assert.notEqual(runtimeModelVersionSuffix(luna), runtimeModelVersionSuffix(selected));
+
+		state.config.openAi.contextModels["front-desk:missing"] = LUNA_MODEL;
+		assert.throws(
+			() => validateOpenAiContextModels(state.config, state.store),
+			/references an unknown context/,
+		);
+		delete state.config.openAi.contextModels["front-desk:missing"];
 		state.config.openAi.scope = { mode: "contexts", contextIds: [CONTEXT_A] };
 		assert.equal(
 			resolveContextRuntimeModel(
@@ -288,6 +374,64 @@ test("synthetic no-customer-send canary enforces isolation, exact model, xhigh t
 	}
 });
 
+test("one exact context can use Luna max without changing its Sol neighbor", async () => {
+	const state = fixture({ contextModels: { [CONTEXT_B]: LUNA_MODEL } });
+	const upstreamRequests = [];
+	const gateway = new HostOpenAi({
+		config: state.config,
+		store: state.store,
+		fetchImpl: async (_input, init) => {
+			const body = JSON.parse(String(init.body));
+			upstreamRequests.push(body);
+			return successfulResponse(body.model);
+		},
+	});
+	try {
+		await assert.rejects(
+			gateway.complete(state.target, CONTEXT_B, requestBody({ model: SOL_MODEL })),
+			(error) => error?.code === "openai_model_denied",
+		);
+		await assert.rejects(
+			gateway.complete(state.target, CONTEXT_B, requestBody({
+				model: LUNA_MODEL,
+				reasoning: { effort: "xhigh", summary: "auto" },
+			})),
+			(error) => error?.code === "openai_thinking_denied",
+		);
+		assert.equal(upstreamRequests.length, 0);
+
+		const response = await gateway.complete(
+			state.target,
+			CONTEXT_B,
+			requestBody({ model: LUNA_MODEL }),
+		);
+		assert.match(await response.text(), /response\.completed/);
+		assert.equal(upstreamRequests.length, 1);
+		assert.equal(upstreamRequests[0].model, LUNA_MODEL);
+		assert.equal(upstreamRequests[0].reasoning.effort, "max");
+		assert.equal(upstreamRequests[0].max_output_tokens, 32_768);
+
+		const sol = resolveContextRuntimeModel(
+			state.config,
+			state.store,
+			undefined,
+			state.target,
+			CONTEXT_A,
+		);
+		assert.equal(sol.id, SOL_MODEL);
+		assert.equal(sol.thinking, "xhigh");
+		const status = state.store.openAiStatus(state.config.openAi);
+		assert.equal(status.chargedMicrodollars, 48);
+		assert.deepEqual(status.usageByModel.map((row) => ({
+			model: row.model,
+			settled: row.settled,
+			chargedMicrodollars: row.chargedMicrodollars,
+		})), [{ model: LUNA_MODEL, settled: 1, chargedMicrodollars: 48 }]);
+	} finally {
+		closeFixture(state);
+	}
+});
+
 test("OpenAI reservation cap and context/global concurrency fail closed before provider calls", async () => {
 	const state = fixture({ monthlySpendCapCents: 1500, maximumConcurrentGlobal: 1 });
 	const controllers = [];
@@ -331,7 +475,7 @@ test("OpenAI reservation cap and context/global concurrency fail closed before p
 
 test("OpenAI reservations survive restart and expired work keeps its worst-case charge", () => {
 	const state = fixture({ monthlySpendCapCents: 1500 });
-	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(32_768);
+	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(SOL_MODEL, 32_768);
 	const firstAt = "2026-08-15T12:00:00.000Z";
 	state.store.reserveOpenAiRequest({
 		id: "00000000-0000-4000-8000-000000000001",
@@ -393,7 +537,7 @@ test("an ambiguous OpenAI failure is attempted once and permanently reserves wor
 		assert.equal(status.uncertain, 1);
 		assert.equal(
 			status.chargedMicrodollars,
-			worstCaseOpenAiReservationMicrodollars(state.config.openAi.maximumOutputTokens),
+			worstCaseOpenAiReservationMicrodollars(SOL_MODEL, state.config.openAi.maximumOutputTokens),
 		);
 	} finally {
 		closeFixture(state);

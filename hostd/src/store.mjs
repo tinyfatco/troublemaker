@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import {
-	HOSTD_OPENAI_MODEL,
-	HOSTD_OPENAI_THINKING,
-} from "./runtime-model.mjs";
+import { requireHostdOpenAiModel } from "./openai-models.mjs";
 import { siteActorRefForContext } from "./site-actor.mjs";
 
 function now() {
@@ -1187,11 +1184,29 @@ export class HostStore {
 				COALESCE(SUM(CASE WHEN status = 'rejected' THEN rejection_count ELSE 0 END), 0) AS rejected
 			FROM openai_requests WHERE month_started_at = ?
 		`).get(monthStartedAt);
+		const usageByModel = this.database.prepare(`
+			SELECT model,
+				COALESCE(SUM(CASE WHEN status = 'reserved' THEN reserved_microdollars ELSE 0 END), 0)
+					AS reservedMicrodollars,
+				COALESCE(SUM(CASE WHEN status IN ('settled', 'uncertain') THEN charged_microdollars ELSE 0 END), 0)
+					AS chargedMicrodollars,
+				COALESCE(SUM(input_tokens), 0) AS inputTokens,
+				COALESCE(SUM(output_tokens), 0) AS outputTokens,
+				COALESCE(SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END), 0) AS active,
+				COALESCE(SUM(CASE WHEN status = 'settled' THEN 1 ELSE 0 END), 0) AS settled,
+				COALESCE(SUM(CASE WHEN status = 'uncertain' THEN 1 ELSE 0 END), 0) AS uncertain,
+				COALESCE(SUM(CASE WHEN status = 'rejected' THEN rejection_count ELSE 0 END), 0) AS rejected
+			FROM openai_requests WHERE month_started_at = ?
+			GROUP BY model ORDER BY model
+		`).all(monthStartedAt);
+		const defaultModel = requireHostdOpenAiModel(config.defaultModel);
 		const capMicrodollars = config.monthlySpendCapCents * 10_000;
 		const committedMicrodollars = totals.reservedMicrodollars + totals.chargedMicrodollars;
 		return {
-			model: HOSTD_OPENAI_MODEL,
-			thinking: HOSTD_OPENAI_THINKING,
+			model: defaultModel.id,
+			thinking: defaultModel.thinking,
+			contextModelOverrides: Object.keys(config.contextModels).length,
+			usageByModel,
 			scope: {
 				mode: config.scope.mode,
 				contextCount: config.scope.contextIds.length,

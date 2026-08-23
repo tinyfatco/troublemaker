@@ -8,6 +8,8 @@
   Sol with xhigh thinking, bounded output, durable worst-case monthly spend
   reservations, fail-closed ambiguity handling, and staged canary scope.
 - Clamp migrated runtime requests to Hostd's exact reserved output ceiling.
+- Allow Hostd to assign approved OpenAI models per private context while
+  preserving context-only authority and one fail-closed monthly spend cap.
 
 ## [0.52.10] - 2026-02-12
 
