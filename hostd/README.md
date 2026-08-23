@@ -123,9 +123,9 @@ that capability for another relationship.
       "mode": "all",
       "contextIds": []
     },
-    "defaultModel": "gpt-5.6-sol",
+    "defaultModel": "gpt-5.6-luna",
     "contextModels": {
-      "front-desk:synthetic-operator": "gpt-5.6-luna"
+      "front-desk:synthetic-quality-critical": "gpt-5.6-sol"
     },
     "monthlySpendCapCents": 2500,
     "maximumOutputTokens": 32768,
@@ -136,8 +136,9 @@ that capability for another relationship.
 ```
 
 `defaultModel` applies to every OpenAI-scoped context without an exact
-`contextModels` entry. Hostd currently approves `gpt-5.6-sol` with `xhigh`
-thinking and `gpt-5.6-luna` with `max` thinking. Each proxy request must use the
+`contextModels` entry. Hostd defaults existing and future contexts to
+`gpt-5.6-luna` with `max` thinking, while still allowing an exact context to be
+assigned `gpt-5.6-sol` with `xhigh` thinking. Each proxy request must use the
 model and thinking assigned to its authenticated context, stream its response,
 disable response storage, use the default service tier, and stay at or below
 `maximumOutputTokens`. Hostd rejects `openai-codex`, hosted OpenAI tools, model
@@ -173,11 +174,11 @@ a hidden fallback. Roll back by restoring the sealed configuration and build;
 the same SQLite database, queues, histories, and runtime workspaces remain in
 place.
 
-To change one existing private Operator, add only its exact durable context ID
-to `contextModels`, drain new work, stop that idle context, and run a
-no-customer-send canary before resuming it. Unknown contexts and assignments
-outside a limited canary scope fail at startup instead of silently using the
-default model.
+To give one existing private Operator a quality-first Sol exception, add only
+its exact durable context ID to `contextModels`, drain new work, stop that idle
+context, and run a no-customer-send canary before resuming it. Unknown contexts
+and assignments outside a limited canary scope fail at startup instead of
+silently using the default model.
 
 ## Per-principal Cloudflare Workers AI
 

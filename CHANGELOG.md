@@ -11,6 +11,11 @@
 - Allow Hostd to assign approved OpenAI models per private context while
   preserving context-only authority and one fail-closed monthly spend cap.
 
+### Changed
+
+- Default all existing and future Hostd OpenAI contexts to GPT-5.6 Luna with
+  max thinking while retaining exact per-context Sol/xhigh assignments.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08

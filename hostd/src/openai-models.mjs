@@ -26,7 +26,7 @@ function policy({ id, thinking, input, cachedInput, output }) {
 	});
 }
 
-export const HOSTD_OPENAI_DEFAULT_MODEL = "gpt-5.6-sol";
+export const HOSTD_OPENAI_DEFAULT_MODEL = "gpt-5.6-luna";
 
 // Pricing is expressed in dollars per million tokens. GPT-5.6 cache writes
 // cost 1.25x uncached input, while requests over 272K input tokens cost 2x
