@@ -13,17 +13,20 @@ const LONG_CONTEXT_THRESHOLD = 272_000;
 const MAXIMUM_USAGE_PARSE_BYTES = 2 * 1024 * 1024;
 const MICROS_PER_DOLLAR = 1_000_000;
 const TOKENS_PER_MILLION = 1_000_000;
+// GPT-5.6 Sol promotional prices are available at least through 2026-11-21.
+// Values are microdollars per million tokens; cache-write and long-context
+// rates apply the documented 1.25x, 2x input, and 1.5x output multipliers.
 const STANDARD_RATES = Object.freeze({
-	input: 200_000,
-	cachedInput: 20_000,
-	cacheWrite: 250_000,
-	output: 1_200_000,
+	input: 4_000_000,
+	cachedInput: 400_000,
+	cacheWrite: 5_000_000,
+	output: 20_000_000,
 });
 const LONG_CONTEXT_RATES = Object.freeze({
-	input: 400_000,
-	cachedInput: 40_000,
-	cacheWrite: 500_000,
-	output: 1_800_000,
+	input: 8_000_000,
+	cachedInput: 800_000,
+	cacheWrite: 10_000_000,
+	output: 30_000_000,
 });
 const ALLOWED_BODY_FIELDS = new Set([
 	"model",
@@ -217,7 +220,7 @@ function validateAndPinBody(body, maximumOutputTokens) {
 		|| Array.isArray(body.reasoning)
 		|| body.reasoning.effort !== HOSTD_OPENAI_THINKING
 	) {
-		throw new OpenAiError(403, "openai_max_thinking_required");
+		throw new OpenAiError(403, "openai_xhigh_thinking_required");
 	}
 	if (body.service_tier !== undefined && body.service_tier !== "default") {
 		throw new OpenAiError(403, "openai_service_tier_denied");

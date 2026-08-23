@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+	HOSTD_OPENAI_MODEL,
+	HOSTD_OPENAI_THINKING,
+} from "./runtime-model.mjs";
 import { siteActorRefForContext } from "./site-actor.mjs";
 
 function now() {
@@ -1186,8 +1190,8 @@ export class HostStore {
 		const capMicrodollars = config.monthlySpendCapCents * 10_000;
 		const committedMicrodollars = totals.reservedMicrodollars + totals.chargedMicrodollars;
 		return {
-			model: "gpt-5.6-luna",
-			thinking: "max",
+			model: HOSTD_OPENAI_MODEL,
+			thinking: HOSTD_OPENAI_THINKING,
 			scope: {
 				mode: config.scope.mode,
 				contextCount: config.scope.contextIds.length,

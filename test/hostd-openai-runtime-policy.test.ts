@@ -15,8 +15,8 @@ import {
 import { applyMigratedHostdStreamPolicy } from "../src/model-thinking.js";
 import { applySelfConfiguration } from "../src/tools/self-configure.js";
 
-const luna = getModel("openai" as any, "gpt-5.6-luna" as any);
-assert(luna, "the pinned pi runtime must include OpenAI Luna");
+const sol = getModel("openai" as any, "gpt-5.6-sol" as any);
+assert(sol, "the pinned pi runtime must include OpenAI Sol");
 
 const keys = [
 	"MOM_MODEL_PROVIDER",
@@ -31,13 +31,13 @@ const workingDir = mkdtempSync(join(tmpdir(), "hostd-openai-runtime-policy-"));
 
 try {
 	process.env.MOM_MODEL_PROVIDER = "openai";
-	process.env.MOM_MODEL_ID = "gpt-5.6-luna";
-	process.env.MOM_THINKING = "max";
+	process.env.MOM_MODEL_ID = "gpt-5.6-sol";
+	process.env.MOM_THINKING = "xhigh";
 	process.env.OPENAI_BASE_URL = "http://host.containers.internal:3099/v1/openai/synthetic-context";
 	process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = "1";
 
 	const unavailableRegistry = {
-		getAll: () => [luna],
+		getAll: () => [sol],
 		hasConfiguredAuth: () => false,
 	};
 	assert.throws(
@@ -47,11 +47,11 @@ try {
 		"a missing proxy capability must not fall back to another provider",
 	);
 	process.env.OPENAI_API_KEY = "synthetic-context-capability";
-	const proxiedLuna = resolveModelWithAuth(workingDir, unavailableRegistry as any);
-	assert.equal(proxiedLuna.provider, "openai");
-	assert.equal(proxiedLuna.id, "gpt-5.6-luna");
+	const proxiedSol = resolveModelWithAuth(workingDir, unavailableRegistry as any);
+	assert.equal(proxiedSol.provider, "openai");
+	assert.equal(proxiedSol.id, "gpt-5.6-sol");
 	assert.equal(
-		proxiedLuna.baseUrl,
+		proxiedSol.baseUrl,
 		process.env.OPENAI_BASE_URL,
 		"the injected context capability satisfies migrated authentication through the proxy",
 	);
@@ -80,8 +80,8 @@ try {
 		"a missing pinned model must not fall back to another model",
 	);
 	assert.deepEqual(
-		applyMigratedHostdStreamPolicy({ reasoning: "max", maxTokens: 1024 }),
-		{ reasoning: "max", maxTokens: 1024, maxRetries: 0 },
+		applyMigratedHostdStreamPolicy({ reasoning: "xhigh", maxTokens: 1024 }),
+		{ reasoning: "xhigh", maxTokens: 1024, maxRetries: 0 },
 		"migrated calls disable provider retries",
 	);
 	assert.deepEqual(
@@ -91,8 +91,8 @@ try {
 	);
 	assert.equal(
 		resolveThinkingLevel({ readText: () => '{"thinking_level":"low"}' } as any),
-		"max",
-		"the Hostd max lock overrides workspace settings",
+		"xhigh",
+		"the Hostd xhigh lock overrides workspace settings",
 	);
 	assert.throws(
 		() => applySelfConfiguration(workingDir, "model", "fireworks/glm"),
@@ -103,11 +103,11 @@ try {
 		/thinking_level is locked by the service environment/,
 	);
 
-	process.env.MOM_THINKING = "high";
+	process.env.MOM_THINKING = "max";
 	assert.throws(
 		() => resolveThinkingLevel({ readText: () => undefined } as any),
-		/require MOM_THINKING=max/,
-		"a migrated context cannot lower the max-thinking lock",
+		/require MOM_THINKING=xhigh/,
+		"a migrated context rejects max and every other thinking level",
 	);
 } finally {
 	for (const [key, value] of prior) {

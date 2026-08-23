@@ -104,7 +104,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	assert.deepEqual(config.openAi, {
 		apiKey: "test-openai-organization-api-key",
 		scope: { mode: "all", contextIds: [] },
-		monthlySpendCapCents: 1000,
+		monthlySpendCapCents: 2500,
 		maximumOutputTokens: 32768,
 		maximumConcurrentPerContext: 1,
 		maximumConcurrentGlobal: 6,
@@ -257,7 +257,7 @@ test("requires an explicit organization credential, spend cap, and output bound 
 			/openAi\.monthlySpendCapCents must be an integer/,
 		);
 
-		raw.openAi.monthlySpendCapCents = 1000;
+		raw.openAi.monthlySpendCapCents = 2500;
 		delete raw.openAi.maximumOutputTokens;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(
@@ -283,7 +283,7 @@ test("requires an explicit organization credential, spend cap, and output bound 
 		raw.openAi.scope = { mode: "contexts", contextIds: ["front-desk:synthetic-canary"] };
 		raw.targets[0].runtimeEnv = {
 			MOM_MODEL_PROVIDER: "openai-codex",
-			MOM_MODEL_ID: "gpt-5.6-luna",
+			MOM_MODEL_ID: "gpt-5.6-sol",
 			MOM_THINKING: "high",
 		};
 		await writeFile(path, JSON.stringify(raw));

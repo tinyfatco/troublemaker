@@ -13,7 +13,7 @@ type RuntimeModel = {
 };
 
 function supportsMaximumThinking(model: RuntimeModel): boolean {
-	return model.provider === "openai" && model.id === "gpt-5.6-luna";
+	return model.provider === "openai" && model.id === "gpt-5.6-sol";
 }
 
 export function normalizeThinkingLevel(value: unknown): RuntimeThinkingLevel {
@@ -72,6 +72,6 @@ export function boundCompactionStreamOptions(
 	return {
 		...options,
 		maxTokens: Math.min(options?.maxTokens ?? COMPACTION_MAX_OUTPUT_TOKENS, COMPACTION_MAX_OUTPUT_TOKENS),
-		reasoning: process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1" ? "max" : "low",
+		reasoning: process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1" ? "xhigh" : "low",
 	};
 }

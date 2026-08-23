@@ -108,7 +108,7 @@ When this setting is enabled, generic email adapter delivery fails closed; the
 runtime must save a draft and may then send that exact draft autonomously within
 the verified context.
 
-## Host-owned OpenAI Luna
+## Host-owned OpenAI Sol
 
 Top-level `openAi` moves selected OCI runtimes onto one Hostd-owned Responses
 API path. The organization API key stays in Hostd. Each runtime receives only a
@@ -123,7 +123,7 @@ that capability for another relationship.
       "mode": "all",
       "contextIds": []
     },
-    "monthlySpendCapCents": 1000,
+    "monthlySpendCapCents": 2500,
     "maximumOutputTokens": 32768,
     "maximumConcurrentPerContext": 1,
     "maximumConcurrentGlobal": 6
@@ -131,31 +131,35 @@ that capability for another relationship.
 }
 ```
 
-This path accepts only `openai/gpt-5.6-luna` Responses requests with `max`
+This path accepts only `openai/gpt-5.6-sol` Responses requests with `xhigh`
 thinking, streaming enabled, response storage disabled, the default service
 tier, and an output limit at or below `maximumOutputTokens`. It rejects
-`openai-codex`, hosted OpenAI tools, model changes, lower thinking, and stateful
-response fields before contacting OpenAI. The runtime also disables provider
-retries. Workspace model settings cannot override the Hostd selection. Existing
-Workers AI configuration may remain in place, but it is not selected while
-`openAi` is configured.
+`openai-codex`, hosted OpenAI tools, model changes, other thinking levels, and
+stateful response fields before contacting OpenAI. The runtime also disables
+provider retries. Workspace model settings cannot override the Hostd selection.
+Existing Workers AI configuration may remain in place, but it is not selected
+while `openAi` is configured.
 
 The monthly cap is a hard UTC-calendar-month reservation ledger in SQLite. Before
-each call, Hostd atomically reserves the published worst-case Luna cost for the
+each call, Hostd atomically reserves the published worst-case Sol cost for the
 full supported input envelope and configured output bound, using the highest
-applicable pricing tier. A completed response with verified usage settles to its
-measured cost. A timeout, disconnect, missing terminal usage, model mismatch, or
-other ambiguous result keeps the full reservation charged and is never retried
-by the proxy. The operator status endpoint and CLI show the cap, remaining
-reservation envelope, active calls, settled calls, uncertain calls, and rejects;
-they do not store prompts or completions in the accounting table.
+applicable pricing tier. At the documented promotional rates available through
+at least November 21, 2026, the 32,768-token output bound reserves $11.48304;
+the configured $25 cap can therefore cover at most two concurrent worst-case
+requests. Recheck these rates before the promotion ends. A completed response
+with verified usage settles to its measured cost. A timeout, disconnect, missing
+terminal usage, model mismatch, or other ambiguous result keeps the full
+reservation charged and is never retried by the proxy. The operator status
+endpoint and CLI show the cap, remaining reservation envelope, active calls,
+settled calls, uncertain calls, and rejects; they do not store prompts or
+completions in the accounting table.
 
 For a guarded cutover, first use `scope.mode: "contexts"` with one exact isolated
 synthetic context. This mode may temporarily coexist with the old target model
 defaults for contexts outside the list; selected contexts still receive only the
 pinned API path. Stop normal delivery, preserve the database and workspaces,
 restart the selected runtime, and run a no-customer-send canary. Confirm the
-request reached the organization API project, used the exact Luna model with max
+request reached the organization API project, used the exact Sol model with xhigh
 thinking, stayed within the output bound, and settled in Hostd's ledger. Then
 remove the target's old model defaults, change the scope to `all` with an empty
 context list, and replace the remaining idle runtimes. All-scope configuration

@@ -84,7 +84,7 @@
       "mode": "all",
       "contextIds": []
     },
-    "monthlySpendCapCents": 1000,
+    "monthlySpendCapCents": 2500,
     "maximumOutputTokens": 32768,
     "maximumConcurrentPerContext": 1,
     "maximumConcurrentGlobal": 6

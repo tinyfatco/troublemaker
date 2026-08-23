@@ -5,7 +5,7 @@
 ### Added
 
 - Add a Hostd-owned, context-scoped OpenAI Responses proxy pinned to GPT-5.6
-  Luna with max thinking, bounded output, durable worst-case monthly spend
+  Sol with xhigh thinking, bounded output, durable worst-case monthly spend
   reservations, fail-closed ambiguity handling, and staged canary scope.
 
 ## [0.52.10] - 2026-02-12

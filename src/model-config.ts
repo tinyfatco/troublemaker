@@ -27,7 +27,7 @@ import * as log from "./log.js";
 const DEFAULT_PROVIDER = "fireworks";
 const DEFAULT_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
 export const HOSTD_OPENAI_PROVIDER = "openai";
-export const HOSTD_OPENAI_MODEL_ID = "gpt-5.6-luna";
+export const HOSTD_OPENAI_MODEL_ID = "gpt-5.6-sol";
 
 export function isMigratedHostdOpenAi(): boolean {
 	return process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1";

@@ -39,7 +39,7 @@ function fixture(overrides = {}) {
 		openAi: {
 			apiKey: "synthetic-organization-openai-key",
 			scope: { mode: "all", contextIds: [] },
-			monthlySpendCapCents: 1000,
+			monthlySpendCapCents: 2500,
 			maximumOutputTokens: 32_768,
 			maximumConcurrentPerContext: 1,
 			maximumConcurrentGlobal: 2,
@@ -71,7 +71,7 @@ function requestBody(overrides = {}) {
 		input: [{ role: "user", content: [{ type: "input_text", text: "Synthetic canary" }] }],
 		stream: true,
 		store: false,
-		reasoning: { effort: "max", summary: "auto" },
+		reasoning: { effort: "xhigh", summary: "auto" },
 		prompt_cache_key: "synthetic-session",
 		include: ["reasoning.encrypted_content"],
 		tools: [{ type: "function", name: "synthetic_check", parameters: { type: "object" } }],
@@ -82,7 +82,7 @@ function requestBody(overrides = {}) {
 function successfulResponse() {
 	return new Response(
 		'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
-		+ 'data: {"type":"response.completed","response":{"model":"gpt-5.6-luna","usage":'
+		+ 'data: {"type":"response.completed","response":{"model":"gpt-5.6-sol","usage":'
 		+ '{"input_tokens":100,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":10},'
 		+ '"output_tokens":25,"total_tokens":125}}}\n\n',
 		{ status: 200, headers: { "content-type": "text/event-stream" } },
@@ -94,20 +94,50 @@ function closeFixture(state) {
 	rmSync(state.directory, { recursive: true, force: true });
 }
 
-test("Luna accounting reserves the published high-context worst case", () => {
-	assert.equal(worstCaseOpenAiReservationMicrodollars(128_000), 755_400);
+test("Sol accounting reserves the published high-context worst case", () => {
+	assert.equal(worstCaseOpenAiReservationMicrodollars(32_768), 11_483_040);
+	assert.equal(worstCaseOpenAiReservationMicrodollars(128_000), 14_340_000);
 	assert.equal(openAiUsageMicrodollars({
 		inputTokens: 100,
 		cachedInputTokens: 20,
 		cacheWriteTokens: 10,
 		outputTokens: 25,
-	}), 48);
+	}), 838);
 	assert.equal(openAiUsageMicrodollars({
 		inputTokens: 300_000,
 		cachedInputTokens: 0,
 		cacheWriteTokens: 0,
 		outputTokens: 1000,
-	}), 121_800);
+	}), 2_430_000);
+});
+
+test("the hard $25 monthly cap admits only two worst-case Sol reservations", () => {
+	const state = fixture();
+	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(32_768);
+	const reserve = (id) => state.store.reserveOpenAiRequest({
+		id,
+		targetId: state.target.id,
+		contextId: CONTEXT_A,
+		model: HOSTD_OPENAI_MODEL,
+		monthStartedAt: "2026-08-01T00:00:00.000Z",
+		observedAt: "2026-08-15T12:00:00.000Z",
+		expiresAt: "2026-08-15T12:10:00.000Z",
+		reservedMicrodollars,
+		monthlySpendCapCents: 2500,
+		maximumConcurrentPerContext: 3,
+		maximumConcurrentGlobal: 3,
+	});
+	try {
+		assert.equal(reserve("00000000-0000-4000-8000-000000000011").allowed, true);
+		assert.equal(reserve("00000000-0000-4000-8000-000000000012").allowed, true);
+		const third = reserve("00000000-0000-4000-8000-000000000013");
+		assert.equal(third.allowed, false);
+		assert.equal(third.code, "openai_monthly_spend_cap_exhausted");
+		assert.equal(third.committedMicrodollars, 22_966_080);
+		assert.equal(third.capMicrodollars, 25_000_000);
+	} finally {
+		closeFixture(state);
+	}
 });
 
 test("OpenAI runtime selection overrides dormant Workers AI with context-only proxy authority", () => {
@@ -122,8 +152,8 @@ test("OpenAI runtime selection overrides dormant Workers AI with context-only pr
 		);
 		assert.deepEqual(selected, {
 			provider: "openai",
-			id: "gpt-5.6-luna",
-			thinking: "max",
+			id: "gpt-5.6-sol",
+			thinking: "xhigh",
 			maximumOutputTokens: 32_768,
 		});
 		const environment = runtimeModelEnvironment(
@@ -139,8 +169,8 @@ test("OpenAI runtime selection overrides dormant Workers AI with context-only pr
 			migrated: environment.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED,
 		}, {
 			provider: "openai",
-			model: "gpt-5.6-luna",
-			thinking: "max",
+			model: "gpt-5.6-sol",
+			thinking: "xhigh",
 			migrated: "1",
 		});
 		assert.equal(
@@ -176,7 +206,7 @@ test("OpenAI runtime selection overrides dormant Workers AI with context-only pr
 	}
 });
 
-test("synthetic no-customer-send canary enforces isolation, exact model, max thinking, and output bounds", async () => {
+test("synthetic no-customer-send canary enforces isolation, exact model, xhigh thinking, and output bounds", async () => {
 	const state = fixture({ scope: { mode: "contexts", contextIds: [CONTEXT_A] } });
 	const upstreamRequests = [];
 	let customerSends = 0;
@@ -217,8 +247,9 @@ test("synthetic no-customer-send canary enforces isolation, exact model, max thi
 		assert.equal((await request(CONTEXT_B, tokenA, requestBody())).status, 401);
 		assert.equal((await request(CONTEXT_B, tokenB, requestBody())).status, 403);
 		for (const body of [
-			requestBody({ model: "gpt-5.6-sol" }),
+			requestBody({ model: "gpt-5.6-luna" }),
 			requestBody({ reasoning: { effort: "high" } }),
+			requestBody({ reasoning: { effort: "max" } }),
 			requestBody({ max_output_tokens: 32_769 }),
 			requestBody({ tools: [{ type: "web_search" }] }),
 			requestBody({ tool_choice: { type: "web_search" } }),
@@ -236,8 +267,8 @@ test("synthetic no-customer-send canary enforces isolation, exact model, max thi
 		assert.equal(upstream.url, "https://api.openai.com/v1/responses");
 		assert.equal(upstream.headers.get("authorization"), `Bearer ${state.config.openAi.apiKey}`);
 		assert.notEqual(upstream.headers.get("authorization"), `Bearer ${tokenA}`);
-		assert.equal(upstream.body.model, "gpt-5.6-luna");
-		assert.equal(upstream.body.reasoning.effort, "max");
+		assert.equal(upstream.body.model, "gpt-5.6-sol");
+		assert.equal(upstream.body.reasoning.effort, "xhigh");
 		assert.equal(upstream.body.max_output_tokens, 32_768);
 		assert.equal(upstream.body.stream, true);
 		assert.equal(upstream.body.store, false);
@@ -248,7 +279,7 @@ test("synthetic no-customer-send canary enforces isolation, exact model, max thi
 		const status = state.store.openAiStatus(state.config.openAi);
 		assert.equal(status.settled, 1);
 		assert.equal(status.uncertain, 0);
-		assert.equal(status.chargedMicrodollars, 48);
+		assert.equal(status.chargedMicrodollars, 838);
 	} finally {
 		await new Promise((resolvePromise) => server.close(resolvePromise));
 		closeFixture(state);
@@ -256,7 +287,7 @@ test("synthetic no-customer-send canary enforces isolation, exact model, max thi
 });
 
 test("OpenAI reservation cap and context/global concurrency fail closed before provider calls", async () => {
-	const state = fixture({ monthlySpendCapCents: 100, maximumConcurrentGlobal: 1 });
+	const state = fixture({ monthlySpendCapCents: 1500, maximumConcurrentGlobal: 1 });
 	const controllers = [];
 	let upstreamCalls = 0;
 	const gateway = new HostOpenAi({
@@ -297,7 +328,7 @@ test("OpenAI reservation cap and context/global concurrency fail closed before p
 });
 
 test("OpenAI reservations survive restart and expired work keeps its worst-case charge", () => {
-	const state = fixture({ monthlySpendCapCents: 100 });
+	const state = fixture({ monthlySpendCapCents: 1500 });
 	const reservedMicrodollars = worstCaseOpenAiReservationMicrodollars(32_768);
 	const firstAt = "2026-08-15T12:00:00.000Z";
 	state.store.reserveOpenAiRequest({
@@ -309,7 +340,7 @@ test("OpenAI reservations survive restart and expired work keeps its worst-case 
 		observedAt: firstAt,
 		expiresAt: "2026-08-15T12:00:01.000Z",
 		reservedMicrodollars,
-		monthlySpendCapCents: 100,
+		monthlySpendCapCents: 1500,
 		maximumConcurrentPerContext: 1,
 		maximumConcurrentGlobal: 2,
 	});
@@ -325,7 +356,7 @@ test("OpenAI reservations survive restart and expired work keeps its worst-case 
 			observedAt: "2026-08-15T12:00:02.000Z",
 			expiresAt: "2026-08-15T12:00:03.000Z",
 			reservedMicrodollars,
-			monthlySpendCapCents: 100,
+			monthlySpendCapCents: 1500,
 			maximumConcurrentPerContext: 1,
 			maximumConcurrentGlobal: 2,
 		});

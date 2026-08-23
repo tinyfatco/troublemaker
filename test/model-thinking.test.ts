@@ -12,11 +12,11 @@ import { getFireworksModel } from "../src/fireworks-models.js";
 
 const minimax = getModel("fireworks" as any, "accounts/fireworks/models/minimax-m2p7" as any);
 const glm = getFireworksModel("accounts/fireworks/models/glm-5p1");
-const luna = getModel("openai" as any, "gpt-5.6-luna" as any);
+const sol = getModel("openai" as any, "gpt-5.6-sol" as any);
 
 assert(minimax, "MiniMax M2.7 model exists");
 assert(glm, "GLM Fireworks model exists");
-assert(luna, "GPT-5.6 Luna model exists");
+assert(sol, "GPT-5.6 Sol model exists");
 assert.equal(requiresEnabledThinking(minimax), true);
 assert.equal(requiresEnabledThinking(glm), false);
 
@@ -43,8 +43,8 @@ assert.equal(normalizeThinkingLevelForModel(glm, "off"), "off");
 assert.equal(normalizeThinkingLevelForModel(glm, "minimal"), "minimal");
 assert.equal(normalizeThinkingLevelForModel(glm, "xhigh"), "xhigh");
 assert.equal(normalizeSimpleStreamOptionsForModel(glm, { reasoning: "high" })?.reasoning, "high");
-assert.equal(normalizeThinkingLevelForModel(luna, "max"), "max");
-assert.equal(normalizeSimpleStreamOptionsForModel(luna, { reasoning: "max" })?.reasoning, "max");
+assert.equal(normalizeThinkingLevelForModel(sol, "max"), "max");
+assert.equal(normalizeSimpleStreamOptionsForModel(sol, { reasoning: "max" })?.reasoning, "max");
 
 assert.equal(
 	normalizeThinkingLevelForModel({ provider: "test", id: "test-model", reasoning: false }, "high"),
@@ -74,8 +74,8 @@ assert.equal(
 		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
 		ordinaryOptions,
 	)?.reasoning,
-	"max",
-	"migrated Luna compaction preserves the locked max-thinking policy",
+	"xhigh",
+	"migrated Sol compaction preserves the locked xhigh-thinking policy",
 );
 if (previousMigrated === undefined) delete process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
 else process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = previousMigrated;

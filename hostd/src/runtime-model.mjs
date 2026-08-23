@@ -3,8 +3,8 @@ import { contextCapability, stablePrivateKey } from "./security.mjs";
 
 export const CLOUDFLARE_WORKERS_AI_PROVIDER = "cloudflare-workers-ai";
 export const HOSTD_OPENAI_PROVIDER = "openai";
-export const HOSTD_OPENAI_MODEL = "gpt-5.6-luna";
-export const HOSTD_OPENAI_THINKING = "max";
+export const HOSTD_OPENAI_MODEL = "gpt-5.6-sol";
+export const HOSTD_OPENAI_THINKING = "xhigh";
 
 export function openAiScopeIncludesContext(openAi, contextId) {
 	return openAi?.scope?.mode === "all"

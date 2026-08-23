@@ -117,10 +117,10 @@ function getRecentDailyMemory(workspace: WorkspaceStore): string {
 export function resolveThinkingLevel(workspace: WorkspaceStore): any {
 	const environmentLevel = process.env.MOM_THINKING;
 	if (process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED === "1") {
-		if (environmentLevel !== "max") {
-			throw new Error("Migrated Hostd contexts require MOM_THINKING=max");
+		if (environmentLevel !== "xhigh") {
+			throw new Error("Migrated Hostd contexts require MOM_THINKING=xhigh");
 		}
-		return "max";
+		return "xhigh";
 	}
 	if (environmentLevel) return normalizeThinkingLevel(environmentLevel);
 	try {
