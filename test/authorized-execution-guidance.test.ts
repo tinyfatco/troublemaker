@@ -11,8 +11,11 @@ for (const [name, text] of [
 ] as const) {
 	assert.match(text, /When a clear instruction or standing authorization exists, act with the capabilities you have\./, `${name} executes clear authorized work`);
 	assert.match(text, /execute, verify, and report without asking for approval again/, `${name} avoids repeated approval gates`);
+	assert.match(text, /missing presentation or business details are not blockers/, `${name} defers optional review-preview details`);
+	assert.match(text, /omitted, represented with unmistakably generic placeholders, or safely deferred/, `${name} gives safe preview fallback choices`);
+	assert.match(text, /misrepresentation, unsafe routing, a wrong recipient, a production change, billing, credential handling, or another consequential action/, `${name} preserves consequential fact checks`);
 	assert.match(text, /required capability is absent/, `${name} names genuine capability blockers`);
-	assert.match(text, /target or scope is materially ambiguous/, `${name} preserves material ambiguity checks`);
+	assert.match(text, /target or scope is materially ambiguous in one of those consequential ways/, `${name} preserves consequential ambiguity checks`);
 	assert.match(text, /unapproved hard safety boundary blocks execution/, `${name} preserves hard safety boundaries`);
 	assert.doesNotMatch(text, /When in doubt, ask\./, `${name} removes vague approval seeking`);
 	assert.doesNotMatch(text, /Anything you're uncertain about/, `${name} removes uncertainty-only approval seeking`);

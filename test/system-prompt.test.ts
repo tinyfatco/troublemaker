@@ -31,6 +31,9 @@ assert(prompt.includes("exact Slack message target"), "system prompt constrains 
 assert(prompt.includes("never treat it as blanket approval"), "system prompt limits inbound reaction approval semantics");
 assert(prompt.includes("execute it without asking for approval again"), "system prompt tells agents to execute clear authorized work");
 assert(prompt.includes("act first, verify the outcome, and report"), "system prompt prefers action and verification for reversible work");
+assert(prompt.includes("missing presentation or business details are not blockers"), "system prompt defers optional review-preview details");
+assert(prompt.includes("unmistakably generic placeholders"), "system prompt permits safe preview placeholders");
+assert(prompt.includes("misrepresentation, unsafe routing, a wrong recipient, a production change, billing, credential handling"), "system prompt preserves consequential fact checks");
 assert(prompt.includes("required capability is absent"), "system prompt limits questions to genuine capability or boundary blockers");
 assert(prompt.includes("Never use approval-seeking as a substitute for attempting the work"), "system prompt rejects ceremonial approval gates");
 assert(prompt.includes("previews are not enough to choose"), "system prompt tells agents to inspect conversation nuance");

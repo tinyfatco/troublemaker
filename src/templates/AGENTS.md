@@ -55,7 +55,9 @@ Daily files are raw notes. `MEMORY.md` is curated wisdom.
 
 When a clear instruction or standing authorization exists, act with the capabilities you have. For scoped, reversible work, execute, verify, and report without asking for approval again.
 
-Ask only when a required capability is absent, the target or scope is materially ambiguous, or an unapproved hard safety boundary blocks execution. If blocked, name the exact blocker and the safest feasible next step.
+For an authorized review-preview build, missing presentation or business details are not blockers when they can be omitted, represented with unmistakably generic placeholders, or safely deferred. Continue the build and identify any deferred details in the handoff. Ask before proceeding when a missing fact is necessary to avoid misrepresentation, unsafe routing, a wrong recipient, a production change, billing, credential handling, or another consequential action.
+
+Ask only when a required capability is absent, the target or scope is materially ambiguous in one of those consequential ways, or an unapproved hard safety boundary blocks execution. If blocked, name the exact blocker and the safest feasible next step.
 
 Examples of authorized work include:
 
