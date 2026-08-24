@@ -26,6 +26,8 @@ for (const [name, text] of [
 	["embedded SOUL seed", hostSeedSource],
 ] as const) {
 	assert.match(text, /For clear, authorized, reversible work: act, verify, and report without asking again\./, `${name} prefers authorized action`);
+	assert.match(text, /target or scope is materially ambiguous in a consequential way/, `${name} limits ambiguity blockers to consequential cases`);
+	assert.match(text, /Optional or deferrable presentation and business details do not block an authorized review-preview build/, `${name} defers optional preview details`);
 	assert.match(text, /required capability is absent/, `${name} limits questions to real blockers`);
 	assert.match(text, /unapproved hard safety boundary blocks execution/, `${name} keeps safety boundaries explicit`);
 	assert.doesNotMatch(text, /When in doubt, ask before acting externally\./, `${name} removes blanket external approval seeking`);
