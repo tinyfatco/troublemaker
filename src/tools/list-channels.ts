@@ -189,7 +189,9 @@ export function collectChannelsFromLog(workingDir: string): ChannelListing[] {
 /** Merge channels currently advertised by connected adapters with durable log history. */
 export function collectChannels(workingDir: string, adapters: PlatformAdapter[] = []): ChannelListing[] {
 	const byTarget = new Map<string, ChannelListing>();
+	const teams = adapters.find((adapter) => adapter.name === "teams");
 	for (const channel of collectChannelsFromLog(workingDir)) {
+		if (channel.adapter === "teams" && (!teams || !teams.getChannel(channel.id))) continue;
 		byTarget.set(`${channel.adapter}:${channel.id}`, channel);
 	}
 	for (const adapter of adapters) {
@@ -296,62 +298,28 @@ export async function collectSlackThreads(
 }
 
 export async function collectTeamsThreads(
-	workingDir: string,
+	_workingDir: string,
 	adapters: PlatformAdapter[] = [],
 	limit = 20,
 ): Promise<TeamsThreadListing[]> {
 	const bounded = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
 	const byTarget = new Map<string, TeamsThreadListing & { participantSet?: Set<string> }>();
 	const teams = adapters.find((adapter) => adapter.name === "teams" && typeof adapter.listThreads === "function");
-	if (teams?.listThreads) {
-		for (const thread of await teams.listThreads(bounded)) {
-			byTarget.set(thread.sendTarget, {
-				adapter: "teams",
-				channelId: thread.channelId,
-				channelName: preview(thread.channelName, 40) || thread.channelId,
-				threadTs: thread.threadTs,
-				sendTarget: thread.sendTarget,
-				rootPreview: preview(thread.rootPreview) || "(no text captured)",
-				lastPreview: preview(thread.lastPreview || thread.rootPreview) || "(no text captured)",
-				participants: (thread.participants || []).map((participant) => preview(participant, 40)).filter(Boolean).slice(0, 4),
-				messageCount: Math.max(1, Number(thread.messageCount) || 1),
-				lastSeen: thread.lastSeen || "",
-				source: "log",
-			});
-		}
-	}
-	if (byTarget.size === 0) {
-		for (const entry of readLogEntries(workingDir)) {
-			if (!entry.channel?.startsWith("teams:") || !entry.channelId || !entry.ts) continue;
-			const threadTs = entry.threadTs || entry.ts;
-			const sendTarget = formatTeamsTarget(entry.channelId, threadTs);
-			const existing = byTarget.get(sendTarget);
-			const participant = displayNameForEntry(entry);
-			if (!existing) {
-				byTarget.set(sendTarget, {
-					adapter: "teams",
-					channelId: entry.channelId,
-					channelName: entry.channel.slice("teams:".length) || entry.channelId,
-					threadTs,
-					sendTarget,
-					rootPreview: preview(entry.text) || "(no text captured)",
-					lastPreview: preview(entry.text) || "(no text captured)",
-					participants: [],
-					participantSet: new Set([participant]),
-					messageCount: 1,
-					lastSeen: entry.date || "",
-					source: "log",
-				});
-				continue;
-			}
-			existing.participantSet?.add(participant);
-			existing.messageCount += 1;
-			if (entry.ts === threadTs) existing.rootPreview = preview(entry.text) || existing.rootPreview;
-			if ((entry.date || "") >= existing.lastSeen) {
-				existing.lastSeen = entry.date || existing.lastSeen;
-				existing.lastPreview = preview(entry.text) || existing.lastPreview;
-			}
-		}
+	if (!teams?.listThreads) return [];
+	for (const thread of await teams.listThreads(bounded)) {
+		byTarget.set(thread.sendTarget, {
+			adapter: "teams",
+			channelId: thread.channelId,
+			channelName: preview(thread.channelName, 40) || thread.channelId,
+			threadTs: thread.threadTs,
+			sendTarget: thread.sendTarget,
+			rootPreview: preview(thread.rootPreview) || "(no text captured)",
+			lastPreview: preview(thread.lastPreview || thread.rootPreview) || "(no text captured)",
+			participants: (thread.participants || []).map((participant) => preview(participant, 40)).filter(Boolean).slice(0, 4),
+			messageCount: Math.max(1, Number(thread.messageCount) || 1),
+			lastSeen: thread.lastSeen || "",
+			source: "log",
+		});
 	}
 	return Array.from(byTarget.values())
 		.sort((a, b) => b.lastSeen.localeCompare(a.lastSeen))

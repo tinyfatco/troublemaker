@@ -125,6 +125,12 @@ export interface SlackThreadTargetInfo {
 	source?: "slack-api" | "log";
 }
 
+export interface AdapterReadiness {
+	ready: boolean;
+	reason: string;
+	checks: Record<string, boolean>;
+}
+
 export type SlashCommandResult = boolean | {
 	handled: boolean;
 	/** Resolves when an interactive command has finished sending follow-up output. */
@@ -256,6 +262,9 @@ export interface PlatformAdapter {
 
 	/** Stop the adapter */
 	stop(): Promise<void>;
+
+	/** Provider-specific live readiness; distinct from gateway liveness. */
+	getReadiness?(): AdapterReadiness;
 
 	/** Handle an inbound HTTP request (webhook adapters only — called by Gateway) */
 	dispatch?(req: IncomingMessage, res: ServerResponse): void;

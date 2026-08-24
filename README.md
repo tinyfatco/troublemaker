@@ -136,7 +136,7 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_TEAMS_ALLOWED_TENANTS` | teams:webhook | Optional comma-separated tenant allowlist |
 | `MOM_TEAMS_ALLOWED_TEAMS` | teams:webhook | Optional comma-separated team allowlist |
 | `MOM_TEAMS_ALLOWED_CONVERSATIONS` | teams:webhook | Optional comma-separated durable conversation allowlist |
-| `MOM_TEAMS_ALLOWED_DM_USERS` | teams:webhook | Optional comma-separated Teams or Entra user IDs allowed in personal/group chats |
+| `MOM_TEAMS_ALLOWED_DM_USERS` | teams:webhook | Optional comma-separated durable Teams or Entra user IDs allowed in personal/group chats |
 | `MOM_TEAMS_CHANNEL_MESSAGES_DIRECT` | teams:webhook | When `true`, every allowed channel post directly wakes the agent; otherwise unmentioned traffic is ambient |
 | `MOM_MATTERMOST_URL` | mattermost:* | Mattermost base URL, for example `https://mattermost.example.com` |
 | `MOM_MATTERMOST_BOT_TOKEN` | mattermost:* | Mattermost bot personal access token |

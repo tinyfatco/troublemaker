@@ -29,6 +29,7 @@ import { markdownToTeams } from "./teams-format.js";
 import { formatTeamsTarget } from "./teams-target.js";
 import type {
 	ChannelInfo,
+	AdapterReadiness,
 	MomContext,
 	MomEvent,
 	MomHandler,
@@ -118,11 +119,27 @@ interface TeamsConversationRecord {
 	id: string;
 	type: TeamsConversationType;
 	name: string;
-	serviceUrl?: string;
+	serviceUrl: string;
+	verifiedAt: string;
 	teamId?: string;
-	tenantId?: string;
+	tenantId: string;
 	channelId?: string;
 }
+
+type TeamsScopeOperation = "inbound" | "lifecycle" | "reaction" | "list" | "read" | "history" | "file" | "outbound";
+
+interface TeamsScopeRequest {
+	operation: TeamsScopeOperation;
+	conversationId?: string;
+	activity?: TeamsActivity;
+	requireKnown?: boolean;
+	refreshIdentity?: boolean;
+	requireDirectActor?: boolean;
+}
+
+type TeamsScopeDecision =
+	| { allowed: true; record: TeamsConversationRecord }
+	| { allowed: false; reason: string };
 
 interface PendingUpload {
 	id: string;
@@ -150,9 +167,14 @@ export interface TeamsWebhookConfig {
 	allowedDmUsers?: Iterable<string>;
 	directChannelMessages?: boolean;
 	onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	/** Test seams for deterministic identity-expiry coverage. */
+	now?: () => number;
+	identityMaxAgeMs?: number;
 	/** Test seam; production always constructs the authenticated Microsoft app. */
 	app?: TeamsAppLike;
 }
+
+const DEFAULT_IDENTITY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
 
 export class TeamsWebhookAdapter implements PlatformAdapter {
 	readonly name = "teams";
@@ -171,16 +193,22 @@ Mention people only when their exact Teams mention identity is available.`;
 	private readonly allowedDmUsers?: ReadonlySet<string>;
 	private readonly directChannelMessages: boolean;
 	private readonly onAmbientMessage?: (channelId: string, event: MomEvent, adapter: PlatformAdapter) => void;
+	private readonly now: () => number;
+	private readonly identityMaxAgeMs: number;
 	private readonly queues = new Map<string, WorkspaceChannelQueue>();
 	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	private readonly conversations = new Map<string, TeamsConversationRecord>();
 	private readonly users = new Map<string, UserInfo>();
+	private readonly userConversations = new Map<string, Set<string>>();
 	private readonly sentMessages = new Map<string, { text: string; threadTs?: string }>();
 	private readonly pendingUploads = new Map<string, PendingUpload>();
 	private readonly conversationsPath: string;
 	private readonly uploadsPath: string;
 	private handler!: MomHandler;
 	private botUserId: string | null = null;
+	private initialized = false;
+	private signedInboundProof?: { conversationId: string; observedAt: number };
+	private outboundProof?: { conversationId: string; observedAt: number };
 
 	constructor(config: TeamsWebhookConfig) {
 		this.workingDir = config.workingDir;
@@ -189,9 +217,14 @@ Mention people only when their exact Teams mention identity is available.`;
 		this.allowedTenantIds = normalizedSet(config.allowedTenantIds);
 		this.allowedTeamIds = normalizedSet(config.allowedTeamIds);
 		this.allowedConversationIds = normalizedSet(config.allowedConversationIds);
-		this.allowedDmUsers = normalizedSet(config.allowedDmUsers, true);
+		this.allowedDmUsers = normalizedSet(config.allowedDmUsers);
 		this.directChannelMessages = config.directChannelMessages ?? false;
 		this.onAmbientMessage = config.onAmbientMessage;
+		this.now = config.now ?? Date.now;
+		this.identityMaxAgeMs = config.identityMaxAgeMs ?? DEFAULT_IDENTITY_MAX_AGE_MS;
+		if (!Number.isFinite(this.identityMaxAgeMs) || this.identityMaxAgeMs <= 0) {
+			throw new Error("Teams identity maximum age must be positive");
+		}
 		this.conversationsPath = join(this.workingDir, "teams-conversations.json");
 		this.uploadsPath = join(this.workingDir, "teams-pending-uploads.json");
 		this.deliveryLedger = new WorkspaceDeliveryLedger(
@@ -227,11 +260,43 @@ Mention people only when their exact Teams mention identity is available.`;
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("TeamsWebhookAdapter: handler not set");
 		await this.app.initialize();
+		this.initialized = true;
 		log.logConnected();
 	}
 
 	async stop(): Promise<void> {
+		this.initialized = false;
 		await this.app.stop();
+	}
+
+	getReadiness(): AdapterReadiness {
+		const signedInbound = Boolean(this.signedInboundProof);
+		const successfulOutbound = Boolean(
+			this.signedInboundProof
+			&& this.outboundProof
+			&& this.signedInboundProof.conversationId === this.outboundProof.conversationId
+			&& this.outboundProof.observedAt >= this.signedInboundProof.observedAt,
+		);
+		const currentIdentity = this.signedInboundProof
+			? this.evaluateScope({ operation: "read", conversationId: this.signedInboundProof.conversationId }).allowed
+			: false;
+		const ready = this.initialized && signedInbound && successfulOutbound && currentIdentity;
+		return {
+			ready,
+			reason: !this.initialized
+				? "adapter_not_initialized"
+				: !signedInbound
+					? "awaiting_signed_inbound"
+					: !currentIdentity
+						? "conversation_identity_stale"
+						: !successfulOutbound ? "awaiting_successful_outbound" : "ready",
+			checks: {
+				initialized: this.initialized,
+				signedInbound,
+				successfulOutbound,
+				currentIdentity,
+			},
+		};
 	}
 
 	dispatch(req: IncomingMessage, res: ServerResponse): void {
@@ -282,9 +347,10 @@ Mention people only when their exact Teams mention identity is available.`;
 		text: string,
 		attachments: Array<{ filePath: string; filename: string }> = [],
 	): Promise<string> {
-		this.requireAllowedConversation(channel);
+		this.requireScope({ operation: "outbound", conversationId: channel });
 		const sent = await this.apiForConversation(channel).conversations.createActivity(channel, messageActivity(text));
 		this.rememberSentMessage(channel, sent.id, text);
+		this.noteOutboundSuccess(channel);
 		for (const attachment of attachments) await this.uploadFile(channel, attachment.filePath, attachment.filename);
 		return sent.id;
 	}
@@ -295,39 +361,38 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	async updateMessage(channel: string, id: string, text: string): Promise<void> {
-		this.requireAllowedConversation(channel);
+		this.requireScope({ operation: "outbound", conversationId: channel });
 		await this.apiForConversation(channel).conversations.updateActivity(channel, id, messageActivity(text));
 		this.rememberSentMessage(channel, id, text, this.sentMessages.get(`${channel}:${id}`)?.threadTs);
 	}
 
 	async deleteMessage(channel: string, id: string): Promise<void> {
-		this.requireAllowedConversation(channel);
+		this.requireScope({ operation: "outbound", conversationId: channel });
 		await this.apiForConversation(channel).conversations.deleteActivity(channel, id);
 		this.sentMessages.delete(`${channel}:${id}`);
 	}
 
 	async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
-		this.requireAllowedConversation(channel);
-		const conversation = this.conversations.get(channel);
+		const conversation = this.requireScope({ operation: "outbound", conversationId: channel });
 		const api = this.apiForConversation(channel);
-		const sent = conversation?.type === "channel"
+		const sent = conversation.type === "channel"
 			? await api.conversations.replyToActivity(channel, threadTs, messageActivity(text))
 			: await api.conversations.createActivity(channel, messageActivity(text));
-		this.rememberSentMessage(channel, sent.id, text, conversation?.type === "channel" ? threadTs : undefined);
+		this.rememberSentMessage(channel, sent.id, text, conversation.type === "channel" ? threadTs : undefined);
+		this.noteOutboundSuccess(channel);
 		return sent.id;
 	}
 
 	async addReaction(channel: string, messageTs: string, emoji: string): Promise<void> {
-		this.requireAllowedConversation(channel);
+		this.requireScope({ operation: "outbound", conversationId: channel });
 		await this.apiForConversation(channel).conversations.addReaction(channel, messageTs, normalizeTeamsReaction(emoji));
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string, threadTs?: string): Promise<void> {
-		this.requireAllowedConversation(channel);
+		const conversation = this.requireScope({ operation: "file", conversationId: channel });
 		const filename = title || basename(filePath);
 		const size = statSync(filePath).size;
-		const conversation = this.conversations.get(channel);
-		if (conversation?.type === "personal") {
+		if (conversation.type === "personal") {
 			const upload: PendingUpload = {
 				id: randomUUID(),
 				conversationId: channel,
@@ -371,27 +436,29 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	async setTyping(channel: string): Promise<void> {
-		this.requireAllowedConversation(channel);
+		this.requireScope({ operation: "outbound", conversationId: channel });
 		await this.apiForConversation(channel).conversations.createActivity(channel, new TypingActivityInput());
 	}
 
 	getUser(userId: string): UserInfo | undefined {
+		const conversations = this.userConversations.get(userId);
+		if (!conversations || !Array.from(conversations).some((conversationId) =>
+			this.evaluateScope({ operation: "list", conversationId }).allowed)) return undefined;
 		return this.users.get(userId);
 	}
 
 	getChannel(channelId: string): ChannelInfo | undefined {
-		if (!this.acceptsConversation(channelId)) return undefined;
-		const conversation = this.conversations.get(channelId);
-		return conversation ? { id: conversation.id, name: conversation.name } : undefined;
+		const decision = this.evaluateScope({ operation: "list", conversationId: channelId });
+		return decision.allowed ? { id: decision.record.id, name: decision.record.name } : undefined;
 	}
 
 	getAllUsers(): UserInfo[] {
-		return Array.from(this.users.values());
+		return Array.from(this.users.values()).filter((user) => Boolean(this.getUser(user.id)));
 	}
 
 	getAllChannels(): ChannelInfo[] {
 		return Array.from(this.conversations.values())
-			.filter((conversation) => this.acceptsConversation(conversation.id))
+			.filter((conversation) => this.evaluateScope({ operation: "list", conversationId: conversation.id }).allowed)
 			.map((conversation) => ({ id: conversation.id, name: conversation.name }));
 	}
 
@@ -400,13 +467,14 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	logBotResponse(channel: string, text: string, ts: string, metadata: { threadTs?: string } = {}): void {
+		const conversation = this.requireScope({ operation: "history", conversationId: channel });
 		this.rememberSentMessage(channel, ts, text, metadata.threadTs);
-		const conversation = this.conversations.get(channel);
+		const historyRoot = this.historyRoot(conversation, metadata.threadTs || ts);
 		void this.store.logMessage({
 			date: new Date().toISOString(),
 			ts,
-			threadTs: metadata.threadTs || ts,
-			channel: `teams:${conversation?.name || channel}`,
+			threadTs: historyRoot,
+			channel: `teams:${conversation.name}`,
 			channelId: channel,
 			user: "bot",
 			text,
@@ -419,7 +487,7 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	enqueueEvent(event: MomEvent): boolean {
-		if (!event.channel || !this.acceptsConversation(event.channel)) return false;
+		if (!event.channel || !this.evaluateScope({ operation: "inbound", conversationId: event.channel }).allowed) return false;
 		const queue = this.getQueue(event.channel);
 		if (queue.size() >= 5) {
 			log.logWarning("Teams event queue full", event.text.substring(0, 80));
@@ -437,7 +505,7 @@ Mention people only when their exact Teams mention identity is available.`;
 		if (target.platform !== "teams" || !target.channelId) {
 			throw new Error("Teams working output requires a valid conversation ID.");
 		}
-		this.requireAllowedConversation(target.channelId);
+		this.requireScope({ operation: "outbound", conversationId: target.channelId });
 		const event: MomEvent = {
 			type: this.conversations.get(target.channelId)?.type === "personal" ? "dm" : "mention",
 			channel: target.channelId,
@@ -459,6 +527,7 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	createContext(event: MomEvent, _store: ChannelStore, isEvent?: boolean): MomContext {
+		this.requireScope({ operation: "read", conversationId: event.channel });
 		const settings = new MomSettingsManager(this.workingDir);
 		const ambiguousAmbient = event.sourceEventType === "ambient_evaluation" && !event.threadTs;
 		return this.twoMessageContext(event, isEvent, {
@@ -470,21 +539,26 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	async readThread(channel: string, threadTs: string, limit = 40): Promise<ThreadTranscriptMessage[]> {
-		this.requireAllowedConversation(channel);
+		const conversation = this.requireScope({ operation: "read", conversationId: channel });
 		const bounded = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
+		const historyRoot = this.historyRoot(conversation, threadTs);
 		return this.readLogMessages()
-			.filter((entry) => entry.channelId === channel && (entry.threadTs || entry.ts) === threadTs)
+			.filter((entry) => entry.channelId === channel && (
+				conversation.type === "personal" || conversation.type === "groupChat"
+					? true
+					: (entry.threadTs || entry.ts) === historyRoot
+			))
 			.sort((a, b) => a.date.localeCompare(b.date))
 			.slice(-bounded)
 			.map((entry) => ({
 				date: entry.date,
 				ts: entry.ts,
-				threadTs,
+				threadTs: historyRoot,
 				channelId: channel,
-				channelName: this.conversations.get(channel)?.name,
+				channelName: conversation.name,
 				sender: entry.displayName || entry.userName || (entry.isBot ? "Agent" : entry.user),
 				text: entry.text,
-				isRoot: entry.ts === threadTs,
+				isRoot: conversation.type === "channel" ? entry.ts === historyRoot : false,
 				isBot: entry.isBot,
 				directlyAddressed: entry.directlyAddressed,
 				sourceEventType: entry.sourceEventType || "teams_log",
@@ -495,14 +569,20 @@ Mention people only when their exact Teams mention identity is available.`;
 		const bounded = Math.max(1, Math.min(Math.floor(limit) || 20, 50));
 		const threads = new Map<string, SlackThreadTargetInfo & { participantSet: Set<string> }>();
 		for (const entry of this.readLogMessages()) {
-			const threadTs = entry.threadTs || entry.ts;
-			const target = formatTeamsTarget(entry.channelId, threadTs);
+			const decision = this.evaluateScope({ operation: "list", conversationId: entry.channelId });
+			if (!decision.allowed) continue;
+			const conversation = decision.record;
+			const directConversation = conversation.type === "personal" || conversation.type === "groupChat";
+			const threadTs = this.historyRoot(conversation, entry.threadTs || entry.ts);
+			const target = directConversation
+				? formatTeamsTarget(entry.channelId)
+				: formatTeamsTarget(entry.channelId, threadTs);
 			const sender = entry.displayName || entry.userName || (entry.isBot ? "Agent" : entry.user);
 			const existing = threads.get(target);
 			if (!existing) {
 				threads.set(target, {
 					channelId: entry.channelId,
-					channelName: this.conversations.get(entry.channelId)?.name || entry.channelId,
+					channelName: conversation.name,
 					threadTs,
 					sendTarget: target,
 					rootPreview: entry.text.slice(0, 180) || "(no text captured)",
@@ -517,7 +597,7 @@ Mention people only when their exact Teams mention identity is available.`;
 			}
 			existing.participantSet.add(sender);
 			existing.messageCount += 1;
-			if (entry.ts === threadTs) existing.rootPreview = entry.text.slice(0, 180) || existing.rootPreview;
+			if (!directConversation && entry.ts === threadTs) existing.rootPreview = entry.text.slice(0, 180) || existing.rootPreview;
 			if (entry.date >= existing.lastSeen) {
 				existing.lastSeen = entry.date;
 				existing.lastPreview = entry.text.slice(0, 180) || existing.lastPreview;
@@ -596,16 +676,23 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	private async handleMessage(activity: TeamsActivity): Promise<void> {
-		if (!validInboundActivity(activity) || !this.acceptsActivity(activity)) return;
+		if (!validInboundActivity(activity)) return;
+		const scope = this.evaluateScope({
+			operation: "inbound",
+			activity,
+			refreshIdentity: true,
+			requireDirectActor: true,
+		});
+		if (!scope.allowed) return;
+		const conversation = scope.record;
 		this.botUserId = activity.recipient.id || this.botUserId;
 		if (this.botUserId) this.pulse?.setSelfId(this.botUserId);
-		this.rememberConversation(activity);
-		this.rememberUser(activity.from);
 		if (activity.from.id === this.botUserId) return;
+		this.rememberUser(activity.from, conversation.id);
+		this.noteSignedInbound(conversation.id);
 
-		const type = activity.conversation.conversationType || "channel";
+		const type = conversation.type;
 		const directConversation = type === "personal" || type === "groupChat";
-		if (directConversation && !this.acceptsDmFrom(activity.from)) return;
 		const deliveryId = `message:${activity.conversation.id}:${activity.id}`;
 		if (!this.deliveryLedger.claim(deliveryId)) return;
 		const mentioned = activity.entities?.some((entity) =>
@@ -614,6 +701,7 @@ Mention people only when their exact Teams mention identity is available.`;
 		const directlyAddressed = directConversation || mentioned || this.directChannelMessages;
 		const text = stripTeamsMentions(activity.text || "", activity.entities || []);
 		const rootId = activity.replyToId || activity.id;
+		const historyRoot = this.historyRoot(conversation, rootId);
 		const threadTs = type === "channel" ? rootId : undefined;
 		const replyTarget = formatTeamsTarget(activity.conversation.id, threadTs);
 		const attachments = await this.processAttachments(activity);
@@ -629,8 +717,8 @@ Mention people only when their exact Teams mention identity is available.`;
 		await this.store.logMessage({
 			date: activityDate(activity),
 			ts: activity.id,
-			threadTs: rootId,
-			channel: `teams:${this.conversations.get(activity.conversation.id)?.name || activity.conversation.id}`,
+			threadTs: historyRoot,
+			channel: `teams:${conversation.name}`,
 			channelId: activity.conversation.id,
 			user: activity.from.id,
 			userName: user?.userName,
@@ -684,7 +772,16 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	private async handleReaction(activity: TeamsActivity): Promise<void> {
-		if (!validInboundActivity(activity) || !this.acceptsActivity(activity) || activity.from.id === activity.recipient.id) return;
+		if (!validInboundActivity(activity) || activity.from.id === activity.recipient.id) return;
+		const scope = this.evaluateScope({
+			operation: "reaction",
+			activity,
+			requireKnown: true,
+			refreshIdentity: true,
+			requireDirectActor: true,
+		});
+		if (!scope.allowed) return;
+		const conversation = scope.record;
 		const messageId = activity.replyToId;
 		const reaction = activity.reactionsAdded?.[0]?.type;
 		if (!messageId || !reaction) return;
@@ -693,15 +790,15 @@ Mention people only when their exact Teams mention identity is available.`;
 		if (!sent) return;
 		const deliveryId = `reaction:${activity.conversation.id}:${activity.id}:${messageId}:${activity.from.id}:${reaction}`;
 		if (!this.deliveryLedger.claim(deliveryId)) return;
-		this.rememberConversation(activity);
-		this.rememberUser(activity.from);
-		const conversation = this.conversations.get(activity.conversation.id);
-		const threadTs = sent.threadTs || messageId;
+		this.rememberUser(activity.from, conversation.id);
+		const threadTs = this.historyRoot(conversation, sent.threadTs || messageId);
 		const target = formatTeamsTarget(activity.conversation.id, messageId);
-		const replyTarget = formatTeamsTarget(activity.conversation.id, threadTs);
+		const replyTarget = conversation.type === "channel"
+			? formatTeamsTarget(activity.conversation.id, threadTs)
+			: formatTeamsTarget(activity.conversation.id);
 		const reactor = this.users.get(activity.from.id)?.displayName || activity.from.name || activity.from.id;
 		const event: MomEvent = {
-			type: conversation?.type === "personal" || conversation?.type === "groupChat" ? "dm" : "mention",
+			type: conversation.type === "personal" || conversation.type === "groupChat" ? "dm" : "mention",
 			channel: activity.conversation.id,
 			ts: activity.id,
 			user: activity.from.id,
@@ -714,7 +811,7 @@ Mention people only when their exact Teams mention identity is available.`;
 			rawText: reaction,
 			sourceEventType: "teams_reaction_added",
 			directlyAddressed: true,
-			threadTs: conversation?.type === "channel" ? threadTs : undefined,
+			threadTs: conversation.type === "channel" ? threadTs : undefined,
 			replyTarget,
 			replyTargetDescription: "Microsoft Teams conversation containing the agent message that received this reaction",
 			attachments: [],
@@ -723,7 +820,7 @@ Mention people only when their exact Teams mention identity is available.`;
 			date: activityDate(activity),
 			ts: activity.id,
 			threadTs,
-			channel: `teams:${conversation?.name || activity.conversation.id}`,
+			channel: `teams:${conversation.name}`,
 			channelId: activity.conversation.id,
 			user: activity.from.id,
 			displayName: reactor,
@@ -743,20 +840,38 @@ Mention people only when their exact Teams mention identity is available.`;
 	}
 
 	private async handleConversationLifecycle(activity: TeamsActivity): Promise<void> {
-		if (!validInboundActivity(activity) || !this.acceptsActivity(activity)) return;
+		if (!validInboundActivity(activity)) return;
+		const removing = activity.type === "installationUpdate" && activity.action === "remove";
+		const scope = this.evaluateScope({
+			operation: "lifecycle",
+			activity,
+			requireKnown: removing,
+			refreshIdentity: !removing,
+		});
+		if (!scope.allowed) return;
 		this.botUserId = activity.recipient.id || this.botUserId;
 		if (this.botUserId) this.pulse?.setSelfId(this.botUserId);
-		if (activity.type === "installationUpdate" && activity.action === "remove") {
+		if (removing) {
 			this.conversations.delete(activity.conversation.id);
 			this.persistConversations();
 			return;
 		}
-		this.rememberConversation(activity);
-		for (const account of activity.membersAdded || []) this.rememberUser(account);
+		for (const account of activity.membersAdded || []) {
+			if (this.acceptsActor(scope.record, account)) this.rememberUser(account, scope.record.id);
+		}
 		void this.refreshMembers(activity.conversation.id);
 	}
 
 	private async handleFileConsent(context: TeamsActivityContext, accepted: boolean): Promise<Record<string, unknown>> {
+		if (!validInboundActivity(context.activity)) return { status: 403 };
+		const scope = this.evaluateScope({
+			operation: "file",
+			activity: context.activity,
+			requireKnown: true,
+			refreshIdentity: true,
+			requireDirectActor: true,
+		});
+		if (!scope.allowed) return { status: 403 };
 		const value = context.activity.value || {};
 		const contextValue = value.context as { uploadId?: unknown } | undefined;
 		const uploadId = typeof contextValue?.uploadId === "string" ? contextValue.uploadId : undefined;
@@ -838,52 +953,121 @@ Mention people only when their exact Teams mention identity is available.`;
 		return attachments;
 	}
 
-	private acceptsActivity(activity: TeamsActivity): boolean {
-		const tenantId = activity.channelData?.tenant?.id || activity.conversation.tenantId;
-		const teamId = activity.channelData?.team?.id;
-		return (!this.allowedTenantIds || Boolean(tenantId && this.allowedTenantIds.has(tenantId)))
-			&& (!this.allowedTeamIds || !teamId || this.allowedTeamIds.has(teamId))
-			&& this.acceptsConversation(activity.conversation.id);
+	private evaluateScope(request: TeamsScopeRequest): TeamsScopeDecision {
+		const conversationId = request.activity?.conversation?.id || request.conversationId;
+		if (!conversationId || (request.conversationId && request.activity && request.conversationId !== conversationId)) {
+			return { allowed: false, reason: "conversation_identity_missing" };
+		}
+
+		const existing = this.conversations.get(conversationId);
+		let record = existing;
+		if (request.activity) {
+			const candidate = this.authoritativeRecord(request.activity);
+			if (!candidate) return { allowed: false, reason: "authoritative_identity_missing" };
+			if (request.requireKnown && !existing) return { allowed: false, reason: "conversation_identity_unknown" };
+			if (existing && !sameConversationIdentity(existing, candidate)) {
+				return { allowed: false, reason: "conversation_identity_conflict" };
+			}
+			record = candidate;
+		}
+
+		if (!record || !completeConversationIdentity(record)) {
+			return { allowed: false, reason: "conversation_identity_missing" };
+		}
+		if (!request.activity && !this.isIdentityFresh(record)) {
+			return { allowed: false, reason: "conversation_identity_stale" };
+		}
+		if (this.allowedTenantIds && !this.allowedTenantIds.has(record.tenantId)) {
+			return { allowed: false, reason: "tenant_out_of_scope" };
+		}
+		if (record.type === "channel" && this.allowedTeamIds && !this.allowedTeamIds.has(record.teamId!)) {
+			return { allowed: false, reason: "team_out_of_scope" };
+		}
+		if (this.allowedConversationIds && !this.allowedConversationIds.has(record.id)) {
+			return { allowed: false, reason: "conversation_out_of_scope" };
+		}
+		if (request.requireDirectActor && (record.type === "personal" || record.type === "groupChat")) {
+			const actor = request.activity?.from;
+			if (!actor || !this.acceptsActor(record, actor)) {
+				return { allowed: false, reason: "direct_actor_out_of_scope" };
+			}
+		}
+		if (request.refreshIdentity && request.activity) this.rememberConversation(record);
+		return { allowed: true, record };
 	}
 
-	private acceptsConversation(conversationId: string): boolean {
-		return !this.allowedConversationIds || this.allowedConversationIds.has(conversationId);
+	private requireScope(request: TeamsScopeRequest): TeamsConversationRecord {
+		const decision = this.evaluateScope(request);
+		if (!decision.allowed) {
+			throw new Error(`Microsoft Teams ${request.operation} rejected: ${decision.reason}`);
+		}
+		return decision.record;
 	}
 
-	private requireAllowedConversation(conversationId: string): void {
-		if (!this.acceptsConversation(conversationId)) throw new Error("Microsoft Teams conversation is outside this agent's allowed scope");
-	}
-
-	private acceptsDmFrom(account: TeamsAccount): boolean {
-		if (!this.allowedDmUsers) return true;
-		return [account.id, account.aadObjectId, account.name]
-			.filter((value): value is string => Boolean(value))
-			.some((value) => this.allowedDmUsers!.has(value.toLowerCase()));
-	}
-
-	private rememberConversation(activity: TeamsActivity): void {
-		const record: TeamsConversationRecord = {
-			id: activity.conversation.id,
-			type: activity.conversation.conversationType || "channel",
-			name: activity.channelData?.channel?.name || activity.conversation.name || activity.conversation.id,
-			serviceUrl: activity.serviceUrl,
-			teamId: activity.channelData?.team?.id,
-			tenantId: activity.channelData?.tenant?.id || activity.conversation.tenantId,
-			channelId: activity.channelData?.channel?.id,
+	private authoritativeRecord(activity: TeamsActivity): TeamsConversationRecord | undefined {
+		const type = activity.conversation?.conversationType;
+		if (type !== "personal" && type !== "groupChat" && type !== "channel") return undefined;
+		const conversationId = activity.conversation.id?.trim();
+		const channelTenantId = activity.channelData?.tenant?.id?.trim();
+		const conversationTenantId = activity.conversation.tenantId?.trim();
+		const tenantIds = new Set([channelTenantId, conversationTenantId].filter((value): value is string => Boolean(value)));
+		if (!conversationId || tenantIds.size !== 1) return undefined;
+		const tenantId = Array.from(tenantIds)[0];
+		const teamId = activity.channelData?.team?.id?.trim();
+		const channelId = activity.channelData?.channel?.id?.trim();
+		if (type === "channel" && (!teamId || !channelId)) return undefined;
+		const serviceUrl = normalizeHttpsServiceUrl(activity.serviceUrl);
+		if (!serviceUrl) return undefined;
+		return {
+			id: conversationId,
+			type,
+			name: activity.channelData?.channel?.name || activity.conversation.name || conversationId,
+			serviceUrl,
+			verifiedAt: new Date(this.now()).toISOString(),
+			tenantId,
+			...(type === "channel" ? { teamId, channelId } : {}),
 		};
+	}
+
+	private isIdentityFresh(record: TeamsConversationRecord): boolean {
+		const verifiedAt = Date.parse(record.verifiedAt);
+		return Number.isFinite(verifiedAt)
+			&& verifiedAt <= this.now() + 5 * 60_000
+			&& this.now() - verifiedAt <= this.identityMaxAgeMs;
+	}
+
+	private acceptsActor(record: TeamsConversationRecord, account: TeamsAccount): boolean {
+		if (record.type !== "personal" && record.type !== "groupChat") return true;
+		if (!this.allowedDmUsers) return true;
+		return [account.id, account.aadObjectId]
+			.filter((value): value is string => Boolean(value))
+			.some((value) => this.allowedDmUsers!.has(value));
+	}
+
+	private rememberConversation(record: TeamsConversationRecord): void {
 		this.conversations.set(record.id, record);
 		this.persistConversations();
 	}
 
-	private rememberUser(account: TeamsAccount): void {
+	private rememberUser(account: TeamsAccount, conversationId: string): void {
 		const displayName = account.name || account.id;
 		this.users.set(account.id, { id: account.id, userName: displayName, displayName });
+		let conversations = this.userConversations.get(account.id);
+		if (!conversations) {
+			conversations = new Set();
+			this.userConversations.set(account.id, conversations);
+		}
+		conversations.add(conversationId);
 	}
 
 	private async refreshMembers(conversationId: string): Promise<void> {
+		const scope = this.evaluateScope({ operation: "list", conversationId });
+		if (!scope.allowed) return;
 		try {
 			const members = await this.apiForConversation(conversationId).conversations.getMembers(conversationId);
-			for (const member of members) this.rememberUser(member);
+			for (const member of members) {
+				if (this.acceptsActor(scope.record, member)) this.rememberUser(member, conversationId);
+			}
 		} catch (error) {
 			log.logWarning("Teams member refresh failed", error instanceof Error ? error.message : String(error));
 		}
@@ -894,6 +1078,30 @@ Mention people only when their exact Teams mention identity is available.`;
 		const defaultUrl = (this.app.api as { serviceUrl?: string }).serviceUrl?.replace(/\/+$/, "");
 		if (!serviceUrl || !this.app.api.http || serviceUrl === defaultUrl) return this.app.api;
 		return new TeamsApiClient(serviceUrl, this.app.api.http) as unknown as TeamsAppLike["api"];
+	}
+
+	private historyRoot(conversation: TeamsConversationRecord, messageRoot: string): string {
+		return conversation.type === "personal" || conversation.type === "groupChat"
+			? conversation.id
+			: messageRoot;
+	}
+
+	private noteOutboundSuccess(conversationId: string): void {
+		if (this.signedInboundProof?.conversationId !== conversationId) return;
+		this.outboundProof = { conversationId, observedAt: this.now() };
+	}
+
+	private noteSignedInbound(conversationId: string): void {
+		const existingProofIsReady = Boolean(
+			this.signedInboundProof
+			&& this.outboundProof
+			&& this.signedInboundProof.conversationId === this.outboundProof.conversationId
+			&& this.outboundProof.observedAt >= this.signedInboundProof.observedAt
+			&& this.evaluateScope({ operation: "read", conversationId: this.signedInboundProof.conversationId }).allowed,
+		);
+		if (existingProofIsReady) return;
+		this.signedInboundProof = { conversationId, observedAt: this.now() };
+		this.outboundProof = undefined;
 	}
 
 	private rememberSentMessage(channel: string, id: string, text: string, threadTs?: string): void {
@@ -982,6 +1190,31 @@ function messageActivity(text: string): MessageActivityInput {
 function normalizedSet(values: Iterable<string> | undefined, lowerCase = false): ReadonlySet<string> | undefined {
 	if (values === undefined) return undefined;
 	return new Set(Array.from(values, (value) => lowerCase ? value.trim().toLowerCase() : value.trim()).filter(Boolean));
+}
+
+function completeConversationIdentity(record: TeamsConversationRecord): boolean {
+	if (!record.id || !record.tenantId || !record.serviceUrl || !record.verifiedAt) return false;
+	if (record.type !== "personal" && record.type !== "groupChat" && record.type !== "channel") return false;
+	return record.type !== "channel" || Boolean(record.teamId && record.channelId);
+}
+
+function sameConversationIdentity(left: TeamsConversationRecord, right: TeamsConversationRecord): boolean {
+	return left.id === right.id
+		&& left.type === right.type
+		&& left.tenantId === right.tenantId
+		&& left.teamId === right.teamId
+		&& left.channelId === right.channelId;
+}
+
+function normalizeHttpsServiceUrl(value: string | undefined): string | undefined {
+	if (!value) return undefined;
+	try {
+		const url = new URL(value);
+		if (url.protocol !== "https:" || url.username || url.password) return undefined;
+		return url.toString().replace(/\/+$/, "");
+	} catch {
+		return undefined;
+	}
 }
 
 function validInboundActivity(activity: TeamsActivity): boolean {

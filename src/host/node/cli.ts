@@ -21,12 +21,13 @@ import { McpAdapter } from "../../adapters/mcp.js";
 import { MattermostSocketAdapter } from "../../adapters/mattermost-socket.js";
 import { RocketChatWebhookAdapter } from "../../adapters/rocket-chat-webhook.js";
 import { ZulipWebhookAdapter } from "../../adapters/zulip-webhook.js";
+import { hasTeamsEnvironment, readTeamsEnvironment } from "../../adapters/teams-config.js";
 import { TeamsWebhookAdapter } from "../../adapters/teams-webhook.js";
-import { cloudFromName } from "@microsoft/teams.api";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
 import { ScheduledPromptWebhookIngress } from "../../adapters/scheduled-prompt-webhook.js";
 import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
 import { dispatchPathForAdapter, indexAdaptersByIdentity } from "./adapter-route-identity.js";
+import { instantiateConfiguredAdapters } from "./configured-adapters.js";
 import { handleRealtimeVoiceUpgrade } from "../../adapters/realtime-voice.js";
 import { WebVoiceBridgeAdapter, handleWebVoiceSession } from "../../adapters/web-voice.js";
 import { handleTerminalUpgrade } from "../../terminal.js";
@@ -229,7 +230,7 @@ function parseArgs(): ParsedArgs {
 			// signing secret or scoped host-proxy capability is still required.
 			adapters.push("slack:webhook");
 		}
-		if (process.env.MOM_TEAMS_CLIENT_ID && (process.env.MOM_TEAMS_CLIENT_SECRET || process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID)) {
+		if (hasTeamsEnvironment(process.env)) {
 			adapters.push("teams:webhook");
 		}
 		if (process.env.MOM_MATTERMOST_URL && process.env.MOM_MATTERMOST_BOT_TOKEN) {
@@ -509,13 +510,6 @@ function createAdapter(name: string): AdapterWithHandler {
 	const allowedMattermostDmUsers = process.env.MOM_MATTERMOST_ALLOWED_DM_USERS === undefined
 		? undefined
 		: process.env.MOM_MATTERMOST_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
-	const teamsList = (key: string): string[] | undefined => process.env[key] === undefined
-		? undefined
-		: process.env[key]!.split(",").map((id) => id.trim()).filter(Boolean);
-	const teamsChannelMessagesDirect = process.env.MOM_TEAMS_CHANNEL_MESSAGES_DIRECT;
-	if (teamsChannelMessagesDirect !== undefined && teamsChannelMessagesDirect !== "true" && teamsChannelMessagesDirect !== "false") {
-		throw new Error("MOM_TEAMS_CHANNEL_MESSAGES_DIRECT must be true or false");
-	}
 	const allowedMattermostChannelIds = process.env.MOM_MATTERMOST_ALLOWED_CHANNELS === undefined
 		? undefined
 		: process.env.MOM_MATTERMOST_ALLOWED_CHANNELS.split(",").map((id) => id.trim()).filter(Boolean);
@@ -572,33 +566,27 @@ function createAdapter(name: string): AdapterWithHandler {
 			const store = new ChannelStore({ workingDir, botToken });
 				return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
 			}
-			case "teams":
-			case "teams:webhook": {
-				const clientId = process.env.MOM_TEAMS_CLIENT_ID;
-				const clientSecret = process.env.MOM_TEAMS_CLIENT_SECRET;
-				if (!clientId || (!clientSecret && !process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID)) {
-					console.error("Missing env: MOM_TEAMS_CLIENT_ID and MOM_TEAMS_CLIENT_SECRET (or managed identity)");
-					process.exit(1);
-				}
-				const cloudName = process.env.MOM_TEAMS_CLOUD;
-				const cloud = cloudName ? cloudFromName(cloudName) : undefined;
-				if (cloudName && !cloud) throw new Error("MOM_TEAMS_CLOUD must be Public, USGov, USGovDoD, or China");
+		case "teams":
+		case "teams:webhook": {
+				const result = readTeamsEnvironment(process.env);
+				if (!result.enabled) throw new Error(result.reason);
+				const config = result.config;
 				const store = new ChannelStore({ workingDir, botToken: "" });
 				return new TeamsWebhookAdapter({
-					clientId,
-					clientSecret,
-					managedIdentityClientId: process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID,
-					tenantId: process.env.MOM_TEAMS_TENANT_ID,
-					serviceUrl: process.env.MOM_TEAMS_SERVICE_URL,
-					cloud,
+					clientId: config.clientId,
+					clientSecret: config.clientSecret,
+					managedIdentityClientId: config.managedIdentityClientId,
+					tenantId: config.tenantId,
+					serviceUrl: config.serviceUrl,
+					cloud: config.cloud,
 					workingDir,
 					store,
 					pulse,
-					allowedTenantIds: teamsList("MOM_TEAMS_ALLOWED_TENANTS"),
-					allowedTeamIds: teamsList("MOM_TEAMS_ALLOWED_TEAMS"),
-					allowedConversationIds: teamsList("MOM_TEAMS_ALLOWED_CONVERSATIONS"),
-					allowedDmUsers: teamsList("MOM_TEAMS_ALLOWED_DM_USERS"),
-					directChannelMessages: teamsChannelMessagesDirect === "true",
+					allowedTenantIds: config.allowedTenantIds,
+					allowedTeamIds: config.allowedTeamIds,
+					allowedConversationIds: config.allowedConversationIds,
+					allowedDmUsers: config.allowedDmUsers,
+					directChannelMessages: config.directChannelMessages,
 					onAmbientMessage: handleAmbientMessage,
 				});
 			}
@@ -865,8 +853,16 @@ function createAdapter(name: string): AdapterWithHandler {
 	}
 }
 
-const adapters: AdapterWithHandler[] = parsedArgs.adapters.map(createAdapter);
-const adapterIdentityByInstance = indexAdaptersByIdentity(parsedArgs.adapters, adapters);
+const configuredAdapters = instantiateConfiguredAdapters(
+	parsedArgs.adapters,
+	createAdapter,
+	(identity) => identity === "teams" || identity === "teams:webhook",
+	(_identity, error) => {
+		log.logWarning("[teams] adapter disabled", error instanceof Error ? error.message : String(error));
+	},
+);
+const adapters: AdapterWithHandler[] = configuredAdapters.adapters;
+const adapterIdentityByInstance = indexAdaptersByIdentity(configuredAdapters.identities, adapters);
 
 // Follow-up events must be claimed by a dedicated headless adapter before any
 // external adapter sees them. Deliberate send_message calls still route through
@@ -1865,6 +1861,16 @@ for (const adapter of adapters) {
 
 	if (path && adapter.dispatch) {
 		gateway.register(path, (req, res) => adapter.dispatch!(req, res));
+		if ((adapterName === "teams" || adapterName === "teams:webhook") && adapter.getReadiness) {
+			gateway.registerGet("/readiness/teams", (_req, res) => {
+				const readiness = adapter.getReadiness!();
+				res.writeHead(readiness.ready ? 200 : 503, {
+					"Content-Type": "application/json",
+					"Cache-Control": "no-store",
+				});
+				res.end(JSON.stringify(readiness));
+			});
+		}
 		if (adapterName === "web" && "dispatchStop" in adapter && typeof (adapter as any).dispatchStop === "function") {
 			gateway.register("/web/stop", (req, res) => (adapter as any).dispatchStop(req, res));
 		}

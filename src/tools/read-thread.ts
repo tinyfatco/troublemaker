@@ -259,33 +259,15 @@ export async function collectTeamsThreadMessages(
 	limit = 40,
 ): Promise<ConversationThreadReadResult | null> {
 	const parsed = parseTeamsTarget(target);
-	if (!parsed?.messageId) return null;
+	if (!parsed) return null;
 	const boundedLimit = Math.max(1, Math.min(Math.floor(limit) || 40, 100));
 	const teams = adapters.find((adapter) => adapter.name === "teams" && typeof adapter.readThread === "function");
-	let rawMessages: ThreadTranscriptMessage[];
-	if (teams?.readThread) {
-		rawMessages = await teams.readThread(parsed.conversationId, parsed.messageId, boundedLimit);
-	} else {
-		rawMessages = readLogEntries(workingDir)
-			.filter((entry) => entry.channel?.startsWith("teams:")
-				&& entry.channelId === parsed.conversationId
-				&& entry.ts
-				&& logEntryThreadTs(entry) === parsed.messageId)
-			.sort((a, b) => (a.date || a.ts || "").localeCompare(b.date || b.ts || ""))
-			.slice(-boundedLimit)
-			.map((entry) => ({
-				date: entry.date || "",
-				ts: entry.ts || "",
-				threadTs: parsed.messageId!,
-				channelId: parsed.conversationId,
-				sender: displayNameForEntry(entry),
-				text: entry.text || "",
-				isRoot: entry.ts === parsed.messageId,
-				isBot: Boolean(entry.isBot),
-				directlyAddressed: entry.directlyAddressed,
-				sourceEventType: entry.sourceEventType,
-			}));
-	}
+	if (!teams?.readThread) return null;
+	const rawMessages = await teams.readThread(
+		parsed.conversationId,
+		parsed.messageId || parsed.conversationId,
+		boundedLimit,
+	);
 	return {
 		target: {
 			platform: "teams",
@@ -668,7 +650,7 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 	const schema = Type.Object({
 		label: Type.String({ description: "Brief description of the conversation you're reading and why (shown to user)" }),
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
-			target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. teams:<encoded conversation>:<encoded message>, rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-..." }),
+			target: Type.String({ description: "Conversation target from list_channels or delivery context, e.g. teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-..." }),
 		limit: Type.Optional(Type.Number({ description: "Maximum messages to return, newest window, default 40, max 100" })),
 	});
 
@@ -676,17 +658,17 @@ export function createReadThreadTool(workingDir: string, adapters: PlatformAdapt
 		name: "read_thread",
 		label: "read_thread",
 		description:
-				"Read the transcript for a conversation target such as teams:<encoded conversation>:<encoded message>, rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-..., with API/log/ledger fallback. " +
+				"Read the transcript for a conversation target such as teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-..., with API/log/ledger fallback. " +
 			"Use this after list_channels when several conversations are active and you need the nuance/context before choosing a send_message target.",
 		parameters: schema,
 		execute: async (_toolCallId: string, params: unknown) => {
 			const { target, limit } = params as { target?: string; limit?: number };
 			if (typeof target !== "string" || !target.trim()) {
-					throw new Error("read_thread requires a conversation target like teams:<encoded conversation>:<encoded message>, rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
+					throw new Error("read_thread requires a conversation target like teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:C0123456789:1700000002.000100, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:0123abcd..., or phone-.... Use list_channels to discover targets.");
 			}
 			const result = await collectThreadMessages(workingDir, target, adapters, limit);
 			if (!result) {
-					throw new Error(`Invalid conversation target "${target}". Expected teams:<encoded conversation>:<encoded message>, rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-....`);
+					throw new Error(`Invalid conversation target "${target}". Expected teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, email-thread:<id>, or phone-....`);
 			}
 			return {
 				content: [{ type: "text" as const, text: formatThreadTranscript(result) }],

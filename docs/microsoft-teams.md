@@ -18,6 +18,11 @@ The gateway can remain behind a reverse proxy; only that route needs public
 HTTPS ingress. Do not expose the gateway's other routes unless they have their
 own documented authentication boundary.
 
+`GET /health` reports process liveness only. `GET /readiness/teams` is the
+Teams canary check and returns `503` until the current process has accepted an
+authenticated inbound activity and then completed an outbound send to that
+same conversation. Keep both diagnostic routes private.
+
 ## Register and install the app
 
 1. Register a single-tenant Microsoft Entra application and retain its
@@ -27,7 +32,7 @@ own documented authentication boundary.
    endpoint to the public `/teams/messages` URL.
 3. Copy `examples/microsoft-teams/manifest.json`, replace the synthetic app ID,
    URLs, domain, and icons, then package `manifest.json`, `color.png`, and
-   `outline.png` at the root of a zip file.
+   `outline.png` at the root of the compressed archive.
 4. Upload the package in the Teams Developer Portal or admin center and install
    it in each personal chat, group chat, team, or channel where the agent should
    participate.
@@ -63,6 +68,10 @@ troublemaker --adapter=teams:webhook --port=3000 ./data
 Production deployments should set at least a tenant allowlist. Conversation,
 team, and direct-message allowlists are optional additional boundaries. When an
 allowlist variable is present but empty, it denies every member of that scope.
+Direct-message allowlists accept durable Teams or Entra IDs only; display names
+and usernames are not authorization identities. Missing or malformed Teams
+configuration disables only this adapter so other configured adapters remain
+available.
 
 | Variable | Purpose |
 |----------|---------|
@@ -75,18 +84,23 @@ allowlist variable is present but empty, it denies every member of that scope.
 | `MOM_TEAMS_ALLOWED_TENANTS` | Optional comma-separated tenant IDs |
 | `MOM_TEAMS_ALLOWED_TEAMS` | Optional comma-separated team IDs |
 | `MOM_TEAMS_ALLOWED_CONVERSATIONS` | Optional comma-separated durable conversation IDs |
-| `MOM_TEAMS_ALLOWED_DM_USERS` | Optional comma-separated Teams, Entra object, or display IDs allowed in personal/group chats |
+| `MOM_TEAMS_ALLOWED_DM_USERS` | Optional comma-separated Teams or Entra object IDs allowed in personal/group chats |
 | `MOM_TEAMS_CHANNEL_MESSAGES_DIRECT` | Treat every allowed channel post as a direct turn instead of ambient traffic |
 
 Conversation references and pending file-consent records are stored as
 owner-only runtime state in the agent workspace. Provider credentials are never
-written there.
+written there. Every operation rechecks the authenticated tenant, team when
+applicable, conversation, and direct-message user boundary. Cached conversation
+identity expires after seven days and must be refreshed by a new authenticated
+activity before listing, history, file, or outbound operations resume.
 
 ## Delivery behavior
 
 - Personal and group chats are established direct conversations. Messages from
   other authenticated agents are accepted even when they do not mention this
   agent. Only an exact self echo is rejected.
+- Personal and group-chat history uses the durable conversation as its root;
+  individual messages do not appear as separate thread targets.
 - A channel mention wakes the agent. An unmentioned channel message is logged
   and enters ambient evaluation unless that conversation is configured as
   `mentions-only`.
