@@ -1,0 +1,74 @@
+{
+  "schema_version": "tinyfat.design-review/v1",
+  "reviewer": {
+    "kind": "independent",
+    "name": "replace-with-reviewer-identity",
+    "reviewed_at": "2026-08-24T20:10:00.000Z"
+  },
+  "screenshots": [
+    {
+      "path": "qa/desktop.png",
+      "viewport": {
+        "width": 1440,
+        "height": 1000
+      },
+      "sha256": "replace-with-exact-sha256"
+    },
+    {
+      "path": "qa/mobile.png",
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "sha256": "replace-with-exact-sha256"
+    },
+    {
+      "path": "qa/mobile-320.png",
+      "viewport": {
+        "width": 320,
+        "height": 700
+      },
+      "sha256": "replace-with-exact-sha256"
+    }
+  ],
+  "checks": {
+    "accessibility": false,
+    "responsive": false,
+    "content_fidelity": false,
+    "privacy": false,
+    "forms": false,
+    "assets": false,
+    "no_overflow": false,
+    "no_console_errors": false,
+    "no_unexpected_requests": false
+  },
+  "novelty": {
+    "maximum_similarity": 0.72,
+    "comparisons": [
+      {
+        "label": "recent-output-one",
+        "fingerprint": {
+          "tokens": [],
+          "sections": [],
+          "headings": {},
+          "landmarks": {},
+          "digest": "replace-with-exact-digest"
+        }
+      },
+      {
+        "label": "recent-output-two",
+        "fingerprint": {
+          "tokens": [],
+          "sections": [],
+          "headings": {},
+          "landmarks": {},
+          "digest": "replace-with-exact-digest"
+        }
+      }
+    ]
+  },
+  "existing_site_comparison": {
+    "evaluated": false,
+    "not_applicable_reason": "Replace with the source-backed reason that no live existing-site comparison applies."
+  }
+}

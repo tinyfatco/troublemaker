@@ -9,6 +9,7 @@ import {
 	fingerprintSimilarity,
 	loadGrammarLibrary,
 	planInterview,
+	readJson,
 	recordIteration,
 	scaffoldSite,
 	selectDirection,
@@ -73,6 +74,15 @@ test("library exposes six materially different executable grammars", () => {
 		assert.ok(grammar.required_sections.length >= 5);
 		assert.ok(grammar.prohibited_defaults.includes("centered-hero"));
 	}
+});
+
+test("committed contract examples are complete and intentionally fail closed", () => {
+	const exampleBrief = readJson(join(process.cwd(), "skills/tinyfat-design-direction/examples/design-brief.json"));
+	assert.equal(validateDesignBrief(exampleBrief).business.shape, "local-trade");
+	const reviewTemplate = readJson(join(process.cwd(), "skills/tinyfat-design-direction/examples/design-review.template.json"));
+	assert.equal(reviewTemplate.schema_version, DESIGN_REVIEW_SCHEMA);
+	assert.equal(Object.values(reviewTemplate.checks).every((value) => value === false), true);
+	assert.equal(reviewTemplate.screenshots.length, 3);
 });
 
 test("synthetic briefs select, scaffold, and validate materially distinct structures", () => {

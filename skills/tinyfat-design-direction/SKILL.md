@@ -53,7 +53,9 @@ Use local evidence labels that point to the current relationship's private
 source notes.
 
 The brief and direction schemas are enforced by `lib/design-direction.mjs`.
-The executable grammar library is `grammars/v1.json`.
+Start from `examples/design-brief.json` and
+`examples/design-review.template.json`; do not guess omitted fields. The
+executable grammar library is `grammars/v1.json`.
 
 ## Workflow
 
