@@ -7,6 +7,7 @@ import {
 
 const expectedWebhookRoutes: Record<string, string> = {
 	"slack:webhook": "/slack/events",
+	"teams:webhook": "/teams/messages",
 	"telegram:webhook": "/telegram/webhook",
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",

@@ -11,6 +11,7 @@ import {
 } from "fs";
 import { join } from "path";
 import type { FollowUpWakeMetadata, MomEvent } from "./adapters/types.js";
+import { formatTeamsTarget } from "./adapters/teams-target.js";
 import { attentionQueueDir } from "./attention/paths.js";
 import { MomSettingsManager, type MomFollowUpSettings } from "./context.js";
 import * as log from "./log.js";
@@ -106,6 +107,7 @@ function deriveReplyTarget(event: MomEvent, adapter: string): string | null {
 	if (adapter === "slack") return event.threadTs
 		? `slack:${event.channel}:${event.threadTs}`
 		: `slack:${event.channel}`;
+	if (adapter === "teams") return formatTeamsTarget(event.channel, event.threadTs);
 	if (adapter === "mattermost") return `mattermost:${event.channel}`;
 	if (adapter === "rocket-chat") return `rocket-chat:${event.channel}`;
 	if (adapter === "zulip") return `zulip:${event.channel}`;

@@ -61,12 +61,13 @@ export interface MomVerboseSettings {
 }
 
 export type SlackResponsePlacement = "thread" | "channel";
+export type TeamsResponsePlacement = SlackResponsePlacement;
 export type ToolStreamingMode = "off" | "important" | "all";
 export type WorkingStreamPresentation = "split" | "condensed";
 export type WorkingOutputMode = "off" | "follow" | "fixed";
 
 export interface WorkingOutputTarget {
-	platform: "slack" | "mattermost" | "rocket-chat" | "zulip";
+	platform: "slack" | "teams" | "mattermost" | "rocket-chat" | "zulip";
 	channelId: string;
 }
 
@@ -76,6 +77,7 @@ export interface MomWorkingOutputSettings {
 }
 
 export type SlackToolStreamPresentation = WorkingStreamPresentation;
+export type TeamsToolStreamPresentation = WorkingStreamPresentation;
 export type DiscordToolStreamPresentation = WorkingStreamPresentation;
 export type VoiceWebhookInputMode = "interrupt" | "steer";
 export const DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES = 1;
@@ -105,6 +107,19 @@ export interface MomDiscordSettings {
 	toolStreamPresentation?: DiscordToolStreamPresentation;
 	/** Rolling minutes per edited working message in split presentation. */
 	toolStreamWindowMinutes?: number;
+}
+
+export interface MomTeamsSettings {
+	/** Place channel responses in the originating thread or at channel top level. */
+	responsePlacement?: TeamsResponsePlacement;
+	/** Surface safe tool labels while ordinary harness output remains quiet. */
+	toolStreaming?: ToolStreamingMode;
+	/** Keep one edited working message or split it at event-driven time boundaries. */
+	toolStreamPresentation?: TeamsToolStreamPresentation;
+	/** Rolling minutes per edited working message in split presentation. */
+	toolStreamWindowMinutes?: number;
+	/** Channels that remain available but do not schedule ambient evaluation. */
+	mentionsOnlyConversationIds?: string[];
 }
 
 export interface MomMattermostSettings {
@@ -162,6 +177,7 @@ export interface MomSettings {
 	/** Route sanitized working/tool labels independently from user-visible delivery. */
 	workingOutput?: MomWorkingOutputSettings;
 	slack?: MomSlackSettings;
+	teams?: MomTeamsSettings;
 	mattermost?: MomMattermostSettings;
 	discord?: MomDiscordSettings;
 	compaction?: Partial<MomCompactionSettings>;
@@ -223,7 +239,7 @@ export function normalizeFollowUpIntervals(value: unknown): number[] {
 	return normalized.length > 0 ? normalized : [...DEFAULT_FOLLOW_UP_INTERVALS_MINUTES];
 }
 
-const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "mattermost", "telegram", "discord", "email", "phone"]);
+const SEND_MESSAGE_ONLY_PLATFORMS = new Set(["slack", "teams", "mattermost", "telegram", "discord", "email", "phone"]);
 
 export function inferPlatformFromChannelId(channelId: string): string | undefined {
 	if (/^[a-z0-9]{26}$/.test(channelId)) return "mattermost";
@@ -250,6 +266,7 @@ export function isWorkingOutputTarget(value: unknown): value is WorkingOutputTar
 	const candidate = value as { platform?: unknown; channelId?: unknown };
 	if (typeof candidate.channelId !== "string") return false;
 	if (candidate.platform === "slack") return /^[CDG][A-Z0-9]+$/i.test(candidate.channelId);
+	if (candidate.platform === "teams") return candidate.channelId.length > 0 && candidate.channelId.length <= 2048 && !/[\u0000-\u001f]/.test(candidate.channelId);
 	if (candidate.platform === "mattermost") return /^[a-z0-9]{26}$/.test(candidate.channelId);
 	if (candidate.platform === "rocket-chat") return /^[a-zA-Z0-9_-]{8,128}$/.test(candidate.channelId);
 	if (candidate.platform === "zulip") {
@@ -595,7 +612,7 @@ export class MomSettingsManager {
 		} else if (value.mode === "fixed" && isWorkingOutputTarget(value.target)) {
 			normalized = { mode: "fixed", target: { ...value.target } };
 		} else {
-			throw new Error('working output must use mode "off", "follow", or "fixed" with a valid Slack or Mattermost target.');
+			throw new Error('working output must use mode "off", "follow", or "fixed" with a valid collaboration target.');
 		}
 
 		if (slackPatch.toolStreaming !== undefined && !["off", "important", "all"].includes(slackPatch.toolStreaming)) {
@@ -698,6 +715,81 @@ export class MomSettingsManager {
 			throw new Error(`Slack tool stream window must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
 		}
 		this.settings.slack = { ...this.settings.slack, toolStreamWindowMinutes: value };
+		this.save();
+	}
+
+	getTeamsMentionsOnlyConversationIds(): string[] {
+		const configured = this.settings.teams?.mentionsOnlyConversationIds;
+		if (!Array.isArray(configured)) return [];
+		return [...new Set(configured.filter((conversationId): conversationId is string =>
+			typeof conversationId === "string" && conversationId.length > 0 && conversationId.length <= 2048,
+		))];
+	}
+
+	getTeamsChannelAttention(conversationId: string): "ambient" | "mentions-only" {
+		return this.getTeamsMentionsOnlyConversationIds().includes(conversationId) ? "mentions-only" : "ambient";
+	}
+
+	setTeamsChannelAttention(
+		conversationId: string,
+		mode: "ambient" | "mentions-only",
+	): "ambient" | "mentions-only" {
+		if (!conversationId || conversationId.length > 2048) {
+			throw new Error("Microsoft Teams attention requires a valid conversation ID.");
+		}
+		const mentionsOnly = new Set(this.getTeamsMentionsOnlyConversationIds());
+		if (mode === "mentions-only") mentionsOnly.add(conversationId);
+		else mentionsOnly.delete(conversationId);
+		this.settings.teams = {
+			...this.settings.teams,
+			mentionsOnlyConversationIds: [...mentionsOnly].sort(),
+		};
+		this.save();
+		return this.getTeamsChannelAttention(conversationId);
+	}
+
+	getTeamsResponsePlacement(): TeamsResponsePlacement {
+		return this.settings.teams?.responsePlacement ?? "thread";
+	}
+
+	setTeamsResponsePlacement(value: TeamsResponsePlacement): void {
+		this.settings.teams = { ...this.settings.teams, responsePlacement: value };
+		this.save();
+	}
+
+	getTeamsToolStreaming(): ToolStreamingMode {
+		return this.settings.teams?.toolStreaming ?? "all";
+	}
+
+	setTeamsToolStreaming(value: ToolStreamingMode): void {
+		this.settings.teams = { ...this.settings.teams, toolStreaming: value };
+		this.save();
+	}
+
+	getTeamsToolStreamPresentation(): TeamsToolStreamPresentation {
+		return this.settings.teams?.toolStreamPresentation === "condensed" ? "condensed" : "split";
+	}
+
+	setTeamsToolStreamPresentation(value: TeamsToolStreamPresentation): void {
+		this.settings.teams = { ...this.settings.teams, toolStreamPresentation: value };
+		this.save();
+	}
+
+	getTeamsToolStreamWindowMinutes(): number {
+		const value = this.settings.teams?.toolStreamWindowMinutes;
+		return typeof value === "number"
+			&& Number.isInteger(value)
+			&& value >= MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES
+			&& value <= MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES
+			? value
+			: DEFAULT_SLACK_TOOL_STREAM_WINDOW_MINUTES;
+	}
+
+	setTeamsToolStreamWindowMinutes(value: number): void {
+		if (!Number.isInteger(value) || value < MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES || value > MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES) {
+			throw new Error(`Microsoft Teams tool stream window must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES} minutes.`);
+		}
+		this.settings.teams = { ...this.settings.teams, toolStreamWindowMinutes: value };
 		this.save();
 	}
 

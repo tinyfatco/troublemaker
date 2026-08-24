@@ -11,6 +11,7 @@
  *   numeric (positive or negative)  -> Telegram
  *   C/D/G prefix                    -> Slack channel/DM/group
  *   slack:<channel>:<thread_ts>     -> Slack thread
+ *   teams:<encoded conversation>[:<encoded message>] -> Microsoft Teams conversation/thread
  *   mattermost:<channel>[:<root>]   -> Mattermost channel or thread
  *   rocket-chat:<room>[:<root>]     -> Rocket.Chat room or thread
  *   zulip:<channel>                 -> Zulip channel
@@ -26,6 +27,7 @@ import { Type } from "typebox";
 import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import { parseZulipTarget } from "../adapters/zulip-target.js";
+import { parseTeamsTarget } from "../adapters/teams-target.js";
 import * as log from "../log.js";
 import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
 
@@ -66,6 +68,16 @@ export function resolveAdapter(target: string, adapters: PlatformAdapter[]): Pla
 
 /** Resolve the target adapter and native channel/thread destination. */
 export function resolveMessageTarget(target: string, adapters: PlatformAdapter[]): ResolvedMessageTarget | undefined {
+	const teamsTarget = parseTeamsTarget(target);
+	if (teamsTarget) {
+		const adapter = adapters.find((candidate) => candidate.name === "teams");
+		if (adapter) return {
+			adapter,
+			channel: teamsTarget.conversationId,
+			...(teamsTarget.messageId ? { threadTs: teamsTarget.messageId } : {}),
+			inputTarget: teamsTarget.target,
+		};
+	}
 	const mattermostTarget = target.match(MATTERMOST_TARGET_RE);
 	if (mattermostTarget) {
 		const adapter = adapters.find((candidate) => candidate.name === "mattermost");
@@ -135,10 +147,10 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		label: Type.String({ description: "Brief description of what you're sending (shown in logs)" }),
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		target: Type.String({
-			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, mattermost:<channel>[:<root>], rocket-chat:<room>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<channel id>, email-thread:<id>, email-user@example.com, phone-...",
+			description: "Required destination. Examples: Telegram chat ID, Slack channel ID, slack:<channel>:<thread_ts>, teams:<encoded conversation>[:<encoded message>], mattermost:<channel>[:<root>], rocket-chat:<room>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<channel id>, email-thread:<id>, email-user@example.com, phone-...",
 		}),
 		text: Type.String({ description: "Message text to send" }),
-		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email or Mattermost root message). Each path should be an absolute path to a file on disk." })),
+		attachments: Type.Optional(Type.Array(Type.String(), { description: "Absolute file paths to attach on providers that support uploads, including Microsoft Teams, Slack, Mattermost, email, and phone messaging." })),
 		subject: Type.Optional(Type.String({ description: "Subject line (email only - ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
 		recipients: Type.Optional(Type.Array(Type.String(), { description: "Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group." })),
 	});
@@ -147,9 +159,9 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		name: "send_message",
 		label: "send_message",
 		description:
-			"Send a user-visible message. This is the only normal way to deliver text to people on Telegram, Slack, Discord, Email, or SMS/iMessage. " +
+			"Send a user-visible message. This is the only normal way to deliver text to people on Microsoft Teams, Telegram, Slack, Discord, Email, or SMS/iMessage. " +
 			"`target` is required; never omit it. If you do not know where to send, use list_channels or ask for clarification. " +
-			"Target formats: discord:<17-20 digit ID> or raw 17-20 digit snowflake -> Discord, shorter numeric IDs -> Telegram, C/D/G-prefixed -> Slack, slack:<channel>:<thread_ts> -> Slack thread, mattermost:<channel>[:<root>] -> Mattermost channel/thread, rocket-chat:<room>[:<root>] -> Rocket.Chat room/thread, zulip:<channel>[:topic:<encoded>] -> Zulip channel/topic, zulip:dm:<user IDs> -> Zulip DM, email-thread:<id> -> existing Email thread, email-{address} -> Email address, phone-{hash} -> SMS/iMessage conversation. " +
+			"Target formats: teams:<encoded conversation>[:<encoded message>] -> Microsoft Teams conversation/thread, discord:<17-20 digit ID> or raw 17-20 digit snowflake -> Discord, shorter numeric IDs -> Telegram, C/D/G-prefixed -> Slack, slack:<channel>:<thread_ts> -> Slack thread, mattermost:<channel>[:<root>] -> Mattermost channel/thread, rocket-chat:<room>[:<root>] -> Rocket.Chat room/thread, zulip:<channel>[:topic:<encoded>] -> Zulip channel/topic, zulip:dm:<user IDs> -> Zulip DM, email-thread:<id> -> existing Email thread, email-{address} -> Email address, phone-{hash} -> SMS/iMessage conversation. " +
 			"For email and Mattermost root messages, you can include file attachments. Email also accepts an optional subject line. " +
 			"If you send to an email-thread target, the adapter preserves native Gmail/Outlook threading and adds a native-style quoted reply block automatically. " +
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
@@ -167,7 +179,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			if (signal?.aborted) throw new Error("Operation aborted");
 
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("send_message requires a target. Give me a destination such as rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>] or zulip:dm:<user IDs>, slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-....");
+				throw new Error("send_message requires a target. Give me a destination such as teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>] or zulip:dm:<user IDs>, slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-....");
 			}
 			if (typeof text !== "string" || !text.trim()) {
 				throw new Error("send_message requires non-empty text.");
@@ -183,7 +195,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 
 			const resolved = resolveMessageTarget(target.trim(), adapters);
 			if (!resolved) {
-				throw new Error(`No adapter found for target "${target}". Valid targets include rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
+				throw new Error(`No adapter found for target "${target}". Valid targets include teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
 			}
 
 			try {

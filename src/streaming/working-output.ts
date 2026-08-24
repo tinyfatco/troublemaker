@@ -5,6 +5,7 @@ import type {
 	PlatformAdapter,
 	WorkingOutputContextOptions,
 } from "../adapters/types.js";
+import { formatTeamsTarget } from "../adapters/teams-target.js";
 
 export interface WorkingOutputRoutingOptions {
 	policy: MomWorkingOutputSettings;
@@ -40,6 +41,8 @@ function sendTargetForWorkingOutput(target: NonNullable<MomWorkingOutputSettings
 			return `zulip:${target.channelId}`;
 		case "slack":
 			return target.channelId;
+		case "teams":
+			return formatTeamsTarget(target.channelId);
 	}
 }
 

@@ -1,6 +1,6 @@
 # Troublemaker
 
-An AI agent runtime with multi-platform adapters. Connects to Slack, Zulip, Rocket.Chat, Mattermost, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
+An AI agent runtime with multi-platform adapters. Connects to Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
 
 Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
 
@@ -12,7 +12,7 @@ Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://m
 
 When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
 
-**For each conversation** (Slack, Zulip, Rocket.Chat, or Mattermost channel, Telegram chat, email thread), the agent maintains:
+**For each conversation** (Microsoft Teams, Slack, Zulip, Rocket.Chat, or Mattermost channel, Telegram chat, email thread), the agent maintains:
 - **Persistent memory** — `MEMORY.md` files (global + per-channel) loaded into every prompt
 - **Full history** — `log.jsonl` with searchable message archive, `context.jsonl` for the LLM window
 - **Custom tools** — Skills the agent writes and reuses across sessions
@@ -29,6 +29,7 @@ The agent has full bash access (in a Docker sandbox or on host), reads/writes fi
                     │    port 3002             │
                     ├─────────────────────────┤
 Slack webhook ────► │  POST /slack/events      │
+Teams webhook ────► │  POST /teams/messages    │
 Rocket.Chat host ─► │  POST /rocketchat/inbound│
 Zulip host ───────► │  POST /zulip/inbound     │
 Telegram webhook ─► │  POST /telegram/webhook  │
@@ -70,6 +71,7 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 |---------|------|-------------------|----------|
 | `slack` / `slack:socket` | Outbound WebSocket | `MOM_SLACK_APP_TOKEN`, `MOM_SLACK_BOT_TOKEN` | Always-on (VPS, Docker) |
 | `slack:webhook` | Inbound HTTP | `MOM_SLACK_BOT_TOKEN`, `MOM_SLACK_SIGNING_SECRET` | Webhook-based |
+| `teams:webhook` | Authenticated Bot Connector HTTP | `MOM_TEAMS_CLIENT_ID`, client secret or managed identity | Personal/group chats, channels, threads, ambient RSC messages, reactions, personal files, and inline images |
 | `mattermost` / `mattermost:socket` | Outbound WebSocket + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN` | Self-hosted or managed Mattermost |
 | `rocket-chat:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ROCKETCHAT_URL`, `MOM_ROCKETCHAT_BOT_TOKEN`, `MOM_ROCKETCHAT_INBOUND_TOKEN`, `MOM_ROCKETCHAT_ALLOWED_ROOMS` | TinyFat customer relationship rooms |
 | `zulip:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ZULIP_URL`, `MOM_ZULIP_BOT_TOKEN`, `MOM_ZULIP_INBOUND_TOKEN` | Subscribed channels, topics, ambient messages, and direct messages |
@@ -125,6 +127,17 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
 | `MOM_SLACK_INBOUND_TOKEN` | slack:webhook | Scoped bearer capability when a trusted host proxy verifies Slack instead |
+| `MOM_TEAMS_CLIENT_ID` | teams:webhook | Microsoft Entra application and bot ID |
+| `MOM_TEAMS_CLIENT_SECRET` | teams:webhook | Bot client credential; omit when using managed identity |
+| `MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID` | teams:webhook | Managed identity client ID, or `system` |
+| `MOM_TEAMS_TENANT_ID` | teams:webhook | Single tenant used for Bot Connector authentication |
+| `MOM_TEAMS_CLOUD` | teams:webhook | Optional `Public`, `USGov`, `USGovDoD`, or `China` cloud |
+| `MOM_TEAMS_SERVICE_URL` | teams:webhook | Optional Bot Connector service URL override |
+| `MOM_TEAMS_ALLOWED_TENANTS` | teams:webhook | Optional comma-separated tenant allowlist |
+| `MOM_TEAMS_ALLOWED_TEAMS` | teams:webhook | Optional comma-separated team allowlist |
+| `MOM_TEAMS_ALLOWED_CONVERSATIONS` | teams:webhook | Optional comma-separated durable conversation allowlist |
+| `MOM_TEAMS_ALLOWED_DM_USERS` | teams:webhook | Optional comma-separated Teams or Entra user IDs allowed in personal/group chats |
+| `MOM_TEAMS_CHANNEL_MESSAGES_DIRECT` | teams:webhook | When `true`, every allowed channel post directly wakes the agent; otherwise unmentioned traffic is ambient |
 | `MOM_MATTERMOST_URL` | mattermost:* | Mattermost base URL, for example `https://mattermost.example.com` |
 | `MOM_MATTERMOST_BOT_TOKEN` | mattermost:* | Mattermost bot personal access token |
 | `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |

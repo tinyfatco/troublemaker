@@ -125,6 +125,7 @@ function formatMessageTarget(target: string): string {
   if (target.startsWith('email-')) return `Email ${target.slice(6) || target}`;
   if (target.startsWith('phone-')) return 'Phone';
   if (/^slack:[CDG][A-Z0-9]+:\d+\.\d+$/i.test(target)) return 'Slack thread';
+  if (target.startsWith('teams:')) return target.slice('teams:'.length).includes(':') ? 'Microsoft Teams thread' : 'Microsoft Teams';
   if (target.startsWith('discord:') || target.startsWith('discord-') || /^\d{17,20}$/.test(target)) return 'Discord';
   if (/^-?\d+$/.test(target)) return 'Telegram';
   if (/^[CDG]/.test(target)) return 'Slack';

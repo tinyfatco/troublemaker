@@ -19,8 +19,8 @@ import { z } from "zod";
 import * as log from "../log.js";
 import { appendAwarenessLine } from "../awareness.js";
 import type { ChannelStore } from "../store.js";
-import { collectChannels, collectPhoneConversations, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
-import { resolveSlackReactionTarget } from "../tools/react-to-message.js";
+import { collectChannels, collectPhoneConversations, collectSlackThreads, collectTeamsThreads, formatChannelTable } from "../tools/list-channels.js";
+import { resolveReactionTarget } from "../tools/react-to-message.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
 import { collectThreadMessages, formatThreadTranscript } from "../tools/read-thread.js";
 import { collectEmailThreadListings } from "../adapters/email/thread-ledger.js";
@@ -337,7 +337,7 @@ export class McpAdapter implements PlatformAdapter {
 
 		// ── send_message ─────────────────────────────────────────────────
 		// Lets the MCP client send a message on any of the agent's connected
-		// channels (Telegram, Slack, Discord, Email, phone) using the agent's bot
+			// channels (Teams, Telegram, Slack, Discord, Email, phone) using the agent's bot
 		// credentials. Appears in the agent's awareness stream as a system
 		// notification but does NOT trigger a runner wake.
 		server.registerTool(
@@ -345,16 +345,16 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description:
 					"Send a message on the agent's behalf to one of its connected channels " +
-					"(Telegram, Slack, Rocket.Chat, Mattermost, Discord, Email, SMS/iMessage). The required target determines routing: " +
+						"(Microsoft Teams, Telegram, Slack, Rocket.Chat, Mattermost, Discord, Email, SMS/iMessage). The required target determines routing: " +
 					"discord:<17-20 digit ID> or raw 17-20 digit snowflake → Discord, shorter numeric → Telegram, " +
-					"C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, rocket-chat:<room>[:<root>] → Rocket.Chat room/thread, mattermost:<channel>[:<root>] → Mattermost channel/thread, email-thread:<id> → existing Email thread, email-{address} → Email, phone-{hash} → SMS/iMessage conversation. The send appears in the agent's " +
+						"teams:<encoded conversation>[:<encoded message>] → Microsoft Teams, C/D/G prefix → Slack, slack:<channel>:<thread_ts> → Slack thread, rocket-chat:<room>[:<root>] → Rocket.Chat room/thread, mattermost:<channel>[:<root>] → Mattermost channel/thread, email-thread:<id> → existing Email thread, email-{address} → Email, phone-{hash} → SMS/iMessage conversation. The send appears in the agent's " +
 					"awareness stream but does NOT trigger a run. Use list_channels to discover valid IDs.",
 				inputSchema: {
 					label: mcpToolLabelSchema,
-					target: z.string().describe("Required target (rocket-chat:<room>[:<root>] for Rocket.Chat, mattermost:<channel>[:<root>] for Mattermost, discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-thread:<id> for existing Email threads, email-{addr} for Email, phone-{hash} for SMS/iMessage conversations)"),
+						target: z.string().describe("Required target (teams:<encoded conversation>[:<encoded message>] for Microsoft Teams, rocket-chat:<room>[:<root>] for Rocket.Chat, mattermost:<channel>[:<root>] for Mattermost, discord:<snowflake> for Discord, numeric for Telegram, C/D/G-prefixed for Slack, slack:<channel>:<thread_ts> for Slack threads, email-thread:<id> for existing Email threads, email-{addr} for Email, phone-{hash} for SMS/iMessage conversations)"),
 					text: z.string().describe("Message text to send"),
 					subject: z.string().optional().describe("Subject line (email only)"),
-					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
+						attachments: z.array(z.string()).optional().describe("Absolute file paths to attach on supported providers, including Microsoft Teams"),
 					recipients: z.array(z.string()).optional().describe("Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group."),
 				},
 			},
@@ -363,7 +363,7 @@ export class McpAdapter implements PlatformAdapter {
 
 				if (!target.trim()) {
 					return {
-						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-...." }],
+							content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-...." }],
 						isError: true,
 					};
 				}
@@ -448,18 +448,18 @@ export class McpAdapter implements PlatformAdapter {
 			"react_to_message",
 			{
 				description:
-					"Add an emoji reaction to one exact Slack message without posting text. " +
-					"The target must be slack:<channel_id>:<message_ts>; all non-Slack and channel-only targets fail closed.",
+						"Add an emoji reaction to one exact Slack or Microsoft Teams message without posting text. " +
+						"The target must be slack:<channel_id>:<message_ts> or teams:<encoded conversation>:<encoded message>; channel-only targets fail closed.",
 				inputSchema: {
 					label: mcpToolLabelSchema,
 					show: z.boolean().optional().describe("Surface the safe label only when it is a meaningful progress milestone. Default false."),
-					target: z.string().describe("Exact Slack message target: slack:<channel_id>:<message_ts>"),
-					emoji: z.string().describe("Slack emoji name with or without one matching pair of colons, e.g. thumbsup or :thumbsup:"),
+						target: z.string().describe("Exact Slack or Microsoft Teams message target"),
+						emoji: z.string().describe("Provider-supported emoji or reaction name"),
 				},
 			},
 			async ({ target, emoji }: { target: string; emoji: string }) => {
 				try {
-					const resolved = resolveSlackReactionTarget(target, emoji, this.peerAdapters);
+						const resolved = resolveReactionTarget(target, emoji, this.peerAdapters);
 					await resolved.adapter.addReaction(resolved.channelId, resolved.messageTs, resolved.emoji);
 					this.logToFile({
 						date: new Date().toISOString(),
@@ -471,7 +471,7 @@ export class McpAdapter implements PlatformAdapter {
 						emoji: resolved.emoji,
 						success: true,
 					});
-					return { content: [{ type: "text" as const, text: `Added :${resolved.emoji}: to Slack message ${resolved.target}.` }] };
+						return { content: [{ type: "text" as const, text: `Added :${resolved.emoji}: to ${resolved.platform === "teams" ? "Microsoft Teams" : "Slack"} message ${resolved.target}.` }] };
 				} catch (error) {
 					const message = error instanceof Error ? error.message : String(error);
 					return { content: [{ type: "text" as const, text: message }], isError: true };
@@ -487,14 +487,15 @@ export class McpAdapter implements PlatformAdapter {
 			"list_channels",
 			{
 				description:
-					"List every channel the agent has ever sent or received a message on, plus recent Slack, email, and phone conversation targets. Uses Slack API " +
+						"List every channel the agent has ever sent or received a message on, plus recent Microsoft Teams, Slack, email, and phone conversation targets. Uses Slack API " +
 					"for live Slack thread discovery when available, with log.jsonl/ledgers as durable fallback for all adapters. " +
 					"Returns markdown tables of channels and concrete conversation send targets. Use slack:<channel>:<thread_ts>, email-thread:<id>, or phone-... targets returned here with send_message when choosing among conversations.",
 				inputSchema: { label: mcpToolLabelSchema },
 			},
 			async () => {
 				const channels = collectChannels(this.workingDir, this.peerAdapters);
-				const slackThreads = await collectSlackThreads(this.workingDir, this.peerAdapters);
+					const slackThreads = await collectSlackThreads(this.workingDir, this.peerAdapters);
+					const teamsThreads = await collectTeamsThreads(this.workingDir, this.peerAdapters);
 				const emailThreads = collectEmailThreadListings(this.workingDir);
 				const phoneConversations = collectPhoneConversations(this.workingDir);
 				log.logInfo(`[mcp] list_channels: ${channels.length} channels, ${slackThreads.length} slack threads, ${emailThreads.length} email threads, ${phoneConversations.length} phone conversations`);
@@ -509,7 +510,7 @@ export class McpAdapter implements PlatformAdapter {
 					phone_conversation_count: phoneConversations.length,
 					success: true,
 				});
-				return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads, emailThreads, phoneConversations) }] };
+					return { content: [{ type: "text" as const, text: formatChannelTable(channels, slackThreads, emailThreads, phoneConversations, [], teamsThreads) }] };
 			},
 		);
 
@@ -519,7 +520,7 @@ export class McpAdapter implements PlatformAdapter {
 			{
 				description:
 					"Read the transcript for a conversation target returned by list_channels, " +
-					"such as rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-.... Falls back to APIs, log.jsonl, and ledgers when live access is unavailable. " +
+						"such as teams:<encoded conversation>:<encoded message>, rocket-chat:<room>:<root>, mattermost:<channel>:<root>, slack:<channel>:<thread_ts>, email-thread:<id>, or phone-.... Falls back to APIs, log.jsonl, and ledgers when live access is unavailable. " +
 					"Use this to distinguish similar conversations before send_message.",
 				inputSchema: {
 					label: mcpToolLabelSchema,

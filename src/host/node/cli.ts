@@ -21,6 +21,8 @@ import { McpAdapter } from "../../adapters/mcp.js";
 import { MattermostSocketAdapter } from "../../adapters/mattermost-socket.js";
 import { RocketChatWebhookAdapter } from "../../adapters/rocket-chat-webhook.js";
 import { ZulipWebhookAdapter } from "../../adapters/zulip-webhook.js";
+import { TeamsWebhookAdapter } from "../../adapters/teams-webhook.js";
+import { cloudFromName } from "@microsoft/teams.api";
 import { PhoneMessagingWebhookAdapter } from "../../adapters/phone-messaging-webhook.js";
 import { ScheduledPromptWebhookIngress } from "../../adapters/scheduled-prompt-webhook.js";
 import { FormWebhookAdapter } from "../../adapters/form-webhook.js";
@@ -108,6 +110,7 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	for (const adapter of adaptersList) {
 		const ch = adapter.getChannel(channelId);
 		if (ch) {
+			if (adapter.name === "teams") return `teams:${ch.name}`;
 			if (adapter.name === "mattermost" || isMattermostId(channelId)) return `mattermost:${ch.name}`;
 			if (adapter.name === "zulip") return `zulip:${ch.name}`;
 			if (/^[CDG]/.test(channelId)) return `slack:#${ch.name}`;
@@ -226,6 +229,9 @@ function parseArgs(): ParsedArgs {
 			// signing secret or scoped host-proxy capability is still required.
 			adapters.push("slack:webhook");
 		}
+		if (process.env.MOM_TEAMS_CLIENT_ID && (process.env.MOM_TEAMS_CLIENT_SECRET || process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID)) {
+			adapters.push("teams:webhook");
+		}
 		if (process.env.MOM_MATTERMOST_URL && process.env.MOM_MATTERMOST_BOT_TOKEN) {
 			adapters.push("mattermost");
 		}
@@ -310,9 +316,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,mattermost,telegram:webhook,discord:gateway] [--port=3000] [--skills=<dir>] <working-directory>");
+		console.error("Usage: mom [--sandbox=host|docker:<name>] [--adapter=slack:socket,teams:webhook,mattermost,telegram:webhook,discord:gateway] [--port=3000] [--skills=<dir>] <working-directory>");
 	console.error("       mom --download <channel-id>");
-	console.error("       Adapters: slack (=slack:socket), slack:webhook, mattermost (=mattermost:socket), mattermost:webhook, rocket-chat:webhook, zulip:webhook, telegram (=telegram:polling), telegram:webhook, discord (=discord:gateway), discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
+		console.error("       Adapters: slack (=slack:socket), slack:webhook, teams:webhook, mattermost (=mattermost:socket), mattermost:webhook, rocket-chat:webhook, zulip:webhook, telegram (=telegram:polling), telegram:webhook, discord (=discord:gateway), discord:webhook, email:webhook, phone-messaging:webhook, form:webhook, web, mcp, voice");
 	console.error("       --skills: Additional skills directory to scan (can be specified multiple times)");
 	console.error("       (omit --adapter to auto-detect from env vars)");
 	process.exit(1);
@@ -503,6 +509,13 @@ function createAdapter(name: string): AdapterWithHandler {
 	const allowedMattermostDmUsers = process.env.MOM_MATTERMOST_ALLOWED_DM_USERS === undefined
 		? undefined
 		: process.env.MOM_MATTERMOST_ALLOWED_DM_USERS.split(",").map((id) => id.trim()).filter(Boolean);
+	const teamsList = (key: string): string[] | undefined => process.env[key] === undefined
+		? undefined
+		: process.env[key]!.split(",").map((id) => id.trim()).filter(Boolean);
+	const teamsChannelMessagesDirect = process.env.MOM_TEAMS_CHANNEL_MESSAGES_DIRECT;
+	if (teamsChannelMessagesDirect !== undefined && teamsChannelMessagesDirect !== "true" && teamsChannelMessagesDirect !== "false") {
+		throw new Error("MOM_TEAMS_CHANNEL_MESSAGES_DIRECT must be true or false");
+	}
 	const allowedMattermostChannelIds = process.env.MOM_MATTERMOST_ALLOWED_CHANNELS === undefined
 		? undefined
 		: process.env.MOM_MATTERMOST_ALLOWED_CHANNELS.split(",").map((id) => id.trim()).filter(Boolean);
@@ -557,8 +570,38 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
-		}
+				return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
+			}
+			case "teams":
+			case "teams:webhook": {
+				const clientId = process.env.MOM_TEAMS_CLIENT_ID;
+				const clientSecret = process.env.MOM_TEAMS_CLIENT_SECRET;
+				if (!clientId || (!clientSecret && !process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID)) {
+					console.error("Missing env: MOM_TEAMS_CLIENT_ID and MOM_TEAMS_CLIENT_SECRET (or managed identity)");
+					process.exit(1);
+				}
+				const cloudName = process.env.MOM_TEAMS_CLOUD;
+				const cloud = cloudName ? cloudFromName(cloudName) : undefined;
+				if (cloudName && !cloud) throw new Error("MOM_TEAMS_CLOUD must be Public, USGov, USGovDoD, or China");
+				const store = new ChannelStore({ workingDir, botToken: "" });
+				return new TeamsWebhookAdapter({
+					clientId,
+					clientSecret,
+					managedIdentityClientId: process.env.MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID,
+					tenantId: process.env.MOM_TEAMS_TENANT_ID,
+					serviceUrl: process.env.MOM_TEAMS_SERVICE_URL,
+					cloud,
+					workingDir,
+					store,
+					pulse,
+					allowedTenantIds: teamsList("MOM_TEAMS_ALLOWED_TENANTS"),
+					allowedTeamIds: teamsList("MOM_TEAMS_ALLOWED_TEAMS"),
+					allowedConversationIds: teamsList("MOM_TEAMS_ALLOWED_CONVERSATIONS"),
+					allowedDmUsers: teamsList("MOM_TEAMS_ALLOWED_DM_USERS"),
+					directChannelMessages: teamsChannelMessagesDirect === "true",
+					onAmbientMessage: handleAmbientMessage,
+				});
+			}
 		case "mattermost":
 		case "mattermost:socket": {
 			const url = process.env.MOM_MATTERMOST_URL;
@@ -946,6 +989,9 @@ function resolveActiveWorkingOutputTarget(): WorkingOutputTarget | undefined {
 	if (scope.adapter.name === "slack" && /^[CDG][A-Z0-9]+$/i.test(scope.channelId)) {
 		return { platform: "slack", channelId: scope.channelId };
 	}
+	if (scope.adapter.name === "teams" && scope.channelId) {
+		return { platform: "teams", channelId: scope.channelId };
+	}
 	if (scope.adapter.name === "mattermost" && /^[a-z0-9]{26}$/.test(scope.channelId)) {
 		return { platform: "mattermost", channelId: scope.channelId };
 	}
@@ -1241,19 +1287,21 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 			// Build a fresh delivery context for each automatic goal turn while
 			// preserving the original channel/thread placement. Working labels can
 			// then follow it, disappear, or move to one durable Slack destination.
-			const sourceContext = platform.createContext(turnEvent, state.store, isEvent);
-			const workingSettings = new MomSettingsManager(workingDir);
-			const ctx = turnEvent.followUp
+				const sourceContext = platform.createContext(turnEvent, state.store, isEvent);
+				const workingSettings = new MomSettingsManager(workingDir);
+				const workingPolicy = workingSettings.getWorkingOutput();
+				const fixedTeamsOutput = workingPolicy.mode === "fixed" && workingPolicy.target?.platform === "teams";
+				const ctx = turnEvent.followUp
 				? sourceContext
 				: routeWorkingOutputContext({
-					policy: workingSettings.getWorkingOutput(),
+						policy: workingPolicy,
 					sourceContext,
 					adapters,
 					store: state.store,
 					presentation: {
-						toolStreaming: workingSettings.getSlackToolStreaming(),
-						presentation: workingSettings.getSlackToolStreamPresentation(),
-						windowMinutes: workingSettings.getSlackToolStreamWindowMinutes(),
+							toolStreaming: fixedTeamsOutput ? workingSettings.getTeamsToolStreaming() : workingSettings.getSlackToolStreaming(),
+							presentation: fixedTeamsOutput ? workingSettings.getTeamsToolStreamPresentation() : workingSettings.getSlackToolStreamPresentation(),
+							windowMinutes: fixedTeamsOutput ? workingSettings.getTeamsToolStreamWindowMinutes() : workingSettings.getSlackToolStreamWindowMinutes(),
 					},
 					warn: (message) => log.logWarning(`[working-output] ${message}`),
 				});

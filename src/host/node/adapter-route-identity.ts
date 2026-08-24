@@ -1,5 +1,6 @@
 export const DISPATCH_PATHS: Readonly<Record<string, string>> = Object.freeze({
 	"slack:webhook": "/slack/events",
+	"teams:webhook": "/teams/messages",
 	"telegram:webhook": "/telegram/webhook",
 	"discord:webhook": "/discord/interactions",
 	"email:webhook": "/email/inbound",

@@ -27,6 +27,7 @@ import {
 	type MomWorkingOutputSettings,
 	type SlackResponsePlacement,
 	type SlackToolStreamPresentation,
+	type TeamsResponsePlacement,
 	type ToolStreamingMode,
 	type VerbosityLevel,
 	type VoiceWebhookInputMode,
@@ -52,6 +53,12 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"verbosity",
 	"working_output",
 	"mattermost.channel_attention",
+	"teams.channel_attention",
+	"teams.verbosity",
+	"teams.response_placement",
+	"teams.tool_streaming",
+	"teams.tool_stream_presentation",
+	"teams.tool_stream_window_minutes",
 	"slack.verbosity",
 	"slack.response_placement",
 	"slack.tool_streaming",
@@ -99,6 +106,17 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"workingMessages": "working_output",
 	"mattermost.channelAttention": "mattermost.channel_attention",
 	"mattermost.attention": "mattermost.channel_attention",
+	"teams.channelAttention": "teams.channel_attention",
+	"teams.attention": "teams.channel_attention",
+	"teams.verbose": "teams.verbosity",
+	"teams.responsePlacement": "teams.response_placement",
+	"teams.toolStreaming": "teams.tool_streaming",
+	"teams.toolStreamPresentation": "teams.tool_stream_presentation",
+	"teams.tool_stream_layout": "teams.tool_stream_presentation",
+	"teams.toolStreamLayout": "teams.tool_stream_presentation",
+	"teams.toolStreamWindowMinutes": "teams.tool_stream_window_minutes",
+	"teams.tool_stream_group_minutes": "teams.tool_stream_window_minutes",
+	"teams.toolStreamGroupMinutes": "teams.tool_stream_window_minutes",
 	"slack.verbose": "slack.verbosity",
 	"slack.responsePlacement": "slack.response_placement",
 	"slack.response_placement": "slack.response_placement",
@@ -280,6 +298,20 @@ function configureSlackVerbosity(workingDir: string, value: unknown): SelfConfig
 	};
 }
 
+function configureTeamsVerbosity(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getPlatformVerboseOverride("teams") ?? manager.getVerboseDefault();
+	const newValue = parseVerbosity(value);
+	manager.setPlatformVerbose("teams", newValue);
+	return {
+		changed: true,
+		setting: "teams.verbosity",
+		previousValue,
+		newValue,
+		note: "Microsoft Teams verbosity takes effect on the next Teams turn without changing other platforms.",
+	};
+}
+
 function parseSlackResponsePlacement(value: unknown): SlackResponsePlacement {
 	const normalized = parseString(value, "slack.response_placement").trim().toLowerCase().replace(/_/g, "-");
 	if (["thread", "inbound-thread", "subthread", "reply"].includes(normalized)) return "thread";
@@ -300,6 +332,26 @@ function configureSlackResponsePlacement(workingDir: string, value: unknown): Se
 		note: newValue === "thread"
 			? "Slack working state and reply delivery will use the inbound thread on the next turn."
 			: "Slack working state and reply delivery will both use new top-level channel messages on the next turn.",
+	};
+}
+
+function configureTeamsResponsePlacement(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getTeamsResponsePlacement();
+	const normalized = parseString(value, "teams.response_placement").trim().toLowerCase().replace(/_/g, "-");
+	let newValue: TeamsResponsePlacement;
+	if (["thread", "inbound-thread", "subthread", "reply"].includes(normalized)) newValue = "thread";
+	else if (["channel", "new-channel-message", "new-message", "top-level"].includes(normalized)) newValue = "channel";
+	else throw new Error('teams.response_placement must be "thread" or "channel".');
+	manager.setTeamsResponsePlacement(newValue);
+	return {
+		changed: true,
+		setting: "teams.response_placement",
+		previousValue,
+		newValue,
+		note: newValue === "thread"
+			? "Microsoft Teams working state and reply delivery will use the inbound channel thread on the next turn."
+			: "Microsoft Teams working state and reply delivery will use top-level channel messages on the next turn.",
 	};
 }
 
@@ -329,6 +381,24 @@ function configureSlackToolStreaming(workingDir: string, value: unknown): SelfCo
 	};
 }
 
+function configureTeamsToolStreaming(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getTeamsToolStreaming();
+	const newValue = parseToolStreamingMode(value, "teams.tool_streaming");
+	manager.setTeamsToolStreaming(newValue);
+	return {
+		changed: true,
+		setting: "teams.tool_streaming",
+		previousValue,
+		newValue,
+		note: newValue === "off"
+			? "Microsoft Teams tool labels are quiet on the next turn."
+			: newValue === "important"
+				? "On the next Teams turn, only safe tool labels explicitly marked show: true will surface."
+				: "On the next Teams turn, every safe tool label will surface; raw arguments and results remain internal.",
+	};
+}
+
 function parseToolStreamPresentation(value: unknown, setting: string): SlackToolStreamPresentation {
 	const normalized = parseString(value, setting).trim().toLowerCase().replace(/_/g, "-");
 	if (["split", "batched", "segmented", "interleaved", "grouped", "chronological", "rollover"].includes(normalized)) return "split";
@@ -352,6 +422,22 @@ function configureSlackToolStreamPresentation(workingDir: string, value: unknown
 	};
 }
 
+function configureTeamsToolStreamPresentation(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getTeamsToolStreamPresentation();
+	const newValue = parseToolStreamPresentation(value, "teams.tool_stream_presentation");
+	manager.setTeamsToolStreamPresentation(newValue);
+	return {
+		changed: true,
+		setting: "teams.tool_stream_presentation",
+		previousValue,
+		newValue,
+		note: newValue === "condensed"
+			? "On the next Teams turn, tool progress will stay in one edited working message."
+			: `On the next Teams turn, tool progress will edit one working message for each rolling ${manager.getTeamsToolStreamWindowMinutes()}-minute window.`,
+	};
+}
+
 function configureSlackToolStreamWindowMinutes(workingDir: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getSlackToolStreamWindowMinutes();
@@ -369,6 +455,23 @@ function configureSlackToolStreamWindowMinutes(workingDir: string, value: unknow
 	};
 }
 
+function configureTeamsToolStreamWindowMinutes(workingDir: string, value: unknown): SelfConfigureResult {
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = manager.getTeamsToolStreamWindowMinutes();
+	const parsed = parseNumber(value, "teams.tool_stream_window_minutes");
+	if (!Number.isInteger(parsed) || parsed < MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES || parsed > MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES) {
+		throw new Error(`teams.tool_stream_window_minutes must be an integer from ${MIN_SLACK_TOOL_STREAM_WINDOW_MINUTES} to ${MAX_SLACK_TOOL_STREAM_WINDOW_MINUTES}.`);
+	}
+	manager.setTeamsToolStreamWindowMinutes(parsed);
+	return {
+		changed: true,
+		setting: "teams.tool_stream_window_minutes",
+		previousValue,
+		newValue: parsed,
+		note: `On the next split Teams turn, each edited working message will cover a rolling ${parsed}-minute window.`,
+	};
+}
+
 function parseWorkingOutputMode(value: unknown): WorkingOutputMode {
 	const normalized = parseString(value, "working_output.mode").trim().toLowerCase().replace(/_/g, "-");
 	if (["off", "none", "hidden", "quiet", "disabled"].includes(normalized)) return "off";
@@ -382,14 +485,14 @@ function resolveWorkingOutputTarget(value: unknown, options: SelfConfigureOption
 		const target = value.trim();
 		if (target.toLowerCase() === "here") {
 			const current = options.resolveWorkingOutputTarget?.();
-			if (!current) throw new Error('working_output target "here" requires an active Slack, Mattermost, Rocket.Chat, or Zulip channel turn.');
+			if (!current) throw new Error('working_output target "here" requires an active Slack, Mattermost, Rocket.Chat, or Zulip channel turn, or an active Microsoft Teams conversation.');
 			return current;
 		}
 		const direct = { platform: "slack" as const, channelId: target };
 		if (isWorkingOutputTarget(direct)) return direct;
 	}
 	if (isWorkingOutputTarget(value)) return { ...value };
-	throw new Error("working_output fixed target must be 'here', a Slack C/G/D channel or DM ID, {platform:'mattermost', channelId:'<26-character ID>'}, {platform:'rocket-chat', channelId:'<room ID>'}, or {platform:'zulip', channelId:'<numeric channel ID or dm:user IDs>'}.");
+	throw new Error("working_output fixed target must be 'here', a Slack C/G/D channel or DM ID, {platform:'teams', channelId:'<conversation ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, {platform:'rocket-chat', channelId:'<room ID>'}, or {platform:'zulip', channelId:'<numeric channel ID or dm:user IDs>'}.");
 }
 
 function workingOutputSnapshot(manager: MomSettingsManager, policy = manager.getWorkingOutput()): Record<string, unknown> {
@@ -455,8 +558,10 @@ function configureWorkingOutput(
 		: mode === "follow"
 			? "From the next turn, working labels follow the supported channel, thread, or DM where the agent is contacted."
 			: `From the next turn, working labels from every turn go to the configured ${
-				configured.target?.platform === "mattermost"
-					? "Mattermost channel"
+				configured.target?.platform === "teams"
+					? "Microsoft Teams conversation"
+					: configured.target?.platform === "mattermost"
+						? "Mattermost channel"
 					: configured.target?.platform === "rocket-chat"
 						? "Rocket.Chat room"
 						: configured.target?.platform === "zulip"
@@ -520,6 +625,46 @@ function configureMattermostChannelAttention(
 		note: mode === "mentions-only"
 			? "Ordinary posts in this channel remain logged and readable, but no longer schedule ambient evaluation. Direct @mentions still wake the agent."
 			: "Ordinary posts in this channel will again participate in ambient evaluation; direct @mentions continue to wake the agent.",
+	};
+}
+
+function configureTeamsChannelAttention(
+	workingDir: string,
+	value: unknown,
+	options: SelfConfigureOptions,
+): SelfConfigureResult {
+	const request = value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: { mode: value, channel: "here" };
+	const normalized = parseString(request.mode, "teams.channel_attention.mode").trim().toLowerCase().replace(/_/g, "-");
+	const mode = ["ambient", "watch", "observe", "on", "enabled"].includes(normalized)
+		? "ambient" as const
+		: ["mentions-only", "mention-only", "ignore", "off", "muted", "mute"].includes(normalized)
+			? "mentions-only" as const
+			: null;
+	if (!mode) throw new Error('teams.channel_attention mode must be "ambient" or "mentions-only".');
+	let channelId: string;
+	if (request.channel === undefined || (typeof request.channel === "string" && request.channel.trim().toLowerCase() === "here")) {
+		const current = options.resolveWorkingOutputTarget?.();
+		if (!current || current.platform !== "teams") {
+			throw new Error('teams.channel_attention channel "here" requires an active Microsoft Teams turn.');
+		}
+		channelId = current.channelId;
+	} else {
+		channelId = parseString(request.channel, "teams.channel_attention.channel").trim();
+		if (!channelId || channelId.length > 2048) throw new Error("teams.channel_attention channel must be 'here' or a valid Teams conversation ID.");
+	}
+	const manager = new MomSettingsManager(workingDir);
+	const previousValue = { channelId, mode: manager.getTeamsChannelAttention(channelId) };
+	manager.setTeamsChannelAttention(channelId, mode);
+	return {
+		changed: true,
+		setting: "teams.channel_attention",
+		previousValue,
+		newValue: { channelId, mode },
+		note: mode === "mentions-only"
+			? "Ordinary channel posts remain logged and readable but no longer schedule ambient evaluation; direct mentions still wake the agent."
+			: "Ordinary channel posts will again participate in ambient evaluation; direct mentions continue to wake the agent.",
 	};
 }
 
@@ -867,6 +1012,12 @@ export function applySelfConfiguration(
 	if (target === "verbosity") return configureVerbosity(workingDir, value);
 	if (target === "working_output") return configureWorkingOutput(workingDir, value, options);
 	if (target === "mattermost.channel_attention") return configureMattermostChannelAttention(workingDir, value, options);
+	if (target === "teams.channel_attention") return configureTeamsChannelAttention(workingDir, value, options);
+	if (target === "teams.verbosity") return configureTeamsVerbosity(workingDir, value);
+	if (target === "teams.response_placement") return configureTeamsResponsePlacement(workingDir, value);
+	if (target === "teams.tool_streaming") return configureTeamsToolStreaming(workingDir, value);
+	if (target === "teams.tool_stream_presentation") return configureTeamsToolStreamPresentation(workingDir, value);
+	if (target === "teams.tool_stream_window_minutes") return configureTeamsToolStreamWindowMinutes(workingDir, value);
 	if (target === "slack.verbosity") return configureSlackVerbosity(workingDir, value);
 	if (target === "slack.response_placement") return configureSlackResponsePlacement(workingDir, value);
 	if (target === "slack.tool_streaming") return configureSlackToolStreaming(workingDir, value);
@@ -904,7 +1055,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, working_output, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, working_output, teams.channel_attention, teams.verbosity, teams.response_placement, teams.tool_streaming, teams.tool_stream_presentation, teams.tool_stream_window_minutes, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"follow_ups, follow_ups.enabled, follow_ups.preset, follow_ups.intervals_minutes, follow_ups.cancel, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
@@ -918,7 +1069,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Mattermost channel attention, coherent Slack turn placement, selective Slack or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation in the current Mattermost room while keeping direct @mentions and read_thread access, or mode 'ambient' to resume observing it. Use slack.response_placement to choose inbound threads (the default) or whole-turn top-level channel delivery, slack.tool_streaming or discord.tool_streaming for requests such as ‘quiet down’, ‘show important tool calls’, or ‘show all tool labels’, the matching platform tool_stream_presentation setting with split (the default) to edit within rolling time windows or condensed to keep one edited working message for the whole turn, the matching tool_stream_window_minutes setting to choose 1-60 minutes per split message, slack.native_progress to enable or disable native task cards, and voice.webhook_input_mode to choose interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Microsoft Teams or Mattermost channel attention, coherent Teams or Slack turn placement, selective Teams, Slack, or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Microsoft Teams, Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'teams', channelId:'<conversation ID>'}, {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use teams.channel_attention or mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation while keeping direct mentions and read_thread access. Use teams.response_placement or slack.response_placement to choose inbound threads (the default) or top-level channel delivery; use the platform tool_streaming, tool_stream_presentation, and tool_stream_window_minutes settings to control progress. Slack native_progress controls native task cards. voice.webhook_input_mode chooses interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,
