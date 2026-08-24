@@ -65,9 +65,10 @@ It can also be selected explicitly:
 troublemaker --adapter=teams:webhook --port=3000 ./data
 ```
 
-Production deployments should set at least a tenant allowlist. Conversation,
-team, and direct-message allowlists are optional additional boundaries. When an
-allowlist variable is present but empty, it denies every member of that scope.
+`MOM_TEAMS_TENANT_ID` is always the mandatory activity and outbound tenant
+boundary, not only an authentication setting. Tenant, conversation, team, and
+direct-message allowlists are optional additional boundaries. When an allowlist
+variable is present but empty, it denies every member of that scope.
 Direct-message allowlists accept durable Teams or Entra IDs only; display names
 and usernames are not authorization identities. Missing or malformed Teams
 configuration disables only this adapter so other configured adapters remain

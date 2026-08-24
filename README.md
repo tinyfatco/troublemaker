@@ -130,7 +130,7 @@ tool or run; `stop` remains the explicit cancellation control.
 | `MOM_TEAMS_CLIENT_ID` | teams:webhook | Microsoft Entra application and bot ID |
 | `MOM_TEAMS_CLIENT_SECRET` | teams:webhook | Bot client credential; omit when using managed identity |
 | `MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID` | teams:webhook | Managed identity client ID, or `system` |
-| `MOM_TEAMS_TENANT_ID` | teams:webhook | Single tenant used for Bot Connector authentication |
+| `MOM_TEAMS_TENANT_ID` | teams:webhook | Required tenant for Bot Connector authentication and all activity/outbound scope |
 | `MOM_TEAMS_CLOUD` | teams:webhook | Optional `Public`, `USGov`, `USGovDoD`, or `China` cloud |
 | `MOM_TEAMS_SERVICE_URL` | teams:webhook | Optional Bot Connector service URL override |
 | `MOM_TEAMS_ALLOWED_TENANTS` | teams:webhook | Optional comma-separated tenant allowlist |

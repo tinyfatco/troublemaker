@@ -154,7 +154,7 @@ export interface TeamsWebhookConfig {
 	clientId: string;
 	clientSecret?: string;
 	managedIdentityClientId?: "system" | (string & {});
-	tenantId?: string;
+	tenantId: string;
 	serviceUrl?: string;
 	cloud?: CloudEnvironment;
 	messagingEndpoint?: `/${string}`;
@@ -187,6 +187,7 @@ Mention people only when their exact Teams mention identity is available.`;
 	private readonly workingDir: string;
 	private readonly store: ChannelStore;
 	private readonly pulse?: ChannelPulse;
+	private readonly tenantId: string;
 	private readonly allowedTenantIds?: ReadonlySet<string>;
 	private readonly allowedTeamIds?: ReadonlySet<string>;
 	private readonly allowedConversationIds?: ReadonlySet<string>;
@@ -214,7 +215,10 @@ Mention people only when their exact Teams mention identity is available.`;
 		this.workingDir = config.workingDir;
 		this.store = config.store;
 		this.pulse = config.pulse;
-		this.allowedTenantIds = normalizedSet(config.allowedTenantIds);
+		const tenantId = config.tenantId?.trim();
+		if (!tenantId) throw new Error("Teams tenant ID is required");
+		this.tenantId = tenantId.toLowerCase();
+		this.allowedTenantIds = normalizedSet(config.allowedTenantIds, true);
 		this.allowedTeamIds = normalizedSet(config.allowedTeamIds);
 		this.allowedConversationIds = normalizedSet(config.allowedConversationIds);
 		this.allowedDmUsers = normalizedSet(config.allowedDmUsers);
@@ -237,7 +241,7 @@ Mention people only when their exact Teams mention identity is available.`;
 			clientId: config.clientId,
 			...(config.clientSecret ? { clientSecret: config.clientSecret } : {}),
 			...(config.managedIdentityClientId ? { managedIdentityClientId: config.managedIdentityClientId } : {}),
-			...(config.tenantId ? { tenantId: config.tenantId } : {}),
+			tenantId: this.tenantId,
 			...(config.serviceUrl ? { serviceUrl: config.serviceUrl } : {}),
 			...(config.cloud ? { cloud: config.cloud } : {}),
 			messagingEndpoint: config.messagingEndpoint ?? "/api/messages",
@@ -977,6 +981,9 @@ Mention people only when their exact Teams mention identity is available.`;
 		if (!request.activity && !this.isIdentityFresh(record)) {
 			return { allowed: false, reason: "conversation_identity_stale" };
 		}
+		if (record.tenantId !== this.tenantId) {
+			return { allowed: false, reason: "configured_tenant_mismatch" };
+		}
 		if (this.allowedTenantIds && !this.allowedTenantIds.has(record.tenantId)) {
 			return { allowed: false, reason: "tenant_out_of_scope" };
 		}
@@ -1008,8 +1015,8 @@ Mention people only when their exact Teams mention identity is available.`;
 		const type = activity.conversation?.conversationType;
 		if (type !== "personal" && type !== "groupChat" && type !== "channel") return undefined;
 		const conversationId = activity.conversation.id?.trim();
-		const channelTenantId = activity.channelData?.tenant?.id?.trim();
-		const conversationTenantId = activity.conversation.tenantId?.trim();
+		const channelTenantId = activity.channelData?.tenant?.id?.trim().toLowerCase();
+		const conversationTenantId = activity.conversation.tenantId?.trim().toLowerCase();
 		const tenantIds = new Set([channelTenantId, conversationTenantId].filter((value): value is string => Boolean(value)));
 		if (!conversationId || tenantIds.size !== 1) return undefined;
 		const tenantId = Array.from(tenantIds)[0];

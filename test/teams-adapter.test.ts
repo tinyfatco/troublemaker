@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TeamsWebhookAdapter } from "../src/adapters/teams-webhook.js";
@@ -12,6 +12,7 @@ import { collectChannels, collectTeamsThreads } from "../src/tools/list-channels
 import { collectTeamsThreadMessages } from "../src/tools/read-thread.js";
 
 const TENANT_ID = "00000000-0000-0000-0000-000000000001";
+const OTHER_TENANT_ID = "00000000-0000-0000-0000-000000000004";
 const TEAM_ID = "00000000-0000-0000-0000-000000000002";
 const CHANNEL_CONVERSATION = "example-conversation-channel-0001";
 const GROUP_CONVERSATION = "example-conversation-group-0001";
@@ -81,11 +82,13 @@ function activity(input: {
 	mentioned?: boolean;
 	replyToId?: string;
 	omitTenant?: boolean;
+	tenantId?: string;
 	omitTeam?: boolean;
 	omitConversationType?: boolean;
 	omitServiceUrl?: boolean;
 }): any {
 	const conversationType = input.conversationType ?? "channel";
+	const tenantId = input.tenantId ?? TENANT_ID;
 	const defaultConversationId = conversationType === "channel"
 		? CHANNEL_CONVERSATION
 		: conversationType === "groupChat" ? GROUP_CONVERSATION : PERSONAL_CONVERSATION;
@@ -107,12 +110,12 @@ function activity(input: {
 			id: input.conversationId ?? defaultConversationId,
 			name: "Example Conversation",
 			conversationType: input.omitConversationType ? undefined : conversationType,
-			tenantId: input.omitTenant ? undefined : TENANT_ID,
+			tenantId: input.omitTenant ? undefined : tenantId,
 		},
 		channelData: {
 			channel: { id: "example-channel-0001", name: "Example Channel" },
 			...(conversationType === "channel" && !input.omitTeam ? { team: { id: TEAM_ID, name: "Example Team" } } : {}),
-			...(input.omitTenant ? {} : { tenant: { id: TENANT_ID } }),
+			...(input.omitTenant ? {} : { tenant: { id: tenantId } }),
 		},
 		entities: input.mentioned
 			? [{ type: "mention", mentioned: { id: SELF_ID }, text: "<at>Example Agent</at>" }]
@@ -151,6 +154,7 @@ try {
 	const adapter = new TeamsWebhookAdapter({
 		clientId: "00000000-0000-0000-0000-000000000003",
 		clientSecret: "synthetic-client-secret",
+		tenantId: TENANT_ID,
 		workingDir,
 		store: new ChannelStore({ workingDir, botToken: "" }),
 		allowedTenantIds: [TENANT_ID],
@@ -353,6 +357,7 @@ try {
 	const adapter = new TeamsWebhookAdapter({
 		clientId: "00000000-0000-0000-0000-000000000003",
 		clientSecret: "synthetic-client-secret",
+		tenantId: TENANT_ID,
 		workingDir: staleDir,
 		store: new ChannelStore({ workingDir: staleDir, botToken: "" }),
 		allowedTenantIds: [TENANT_ID],
@@ -418,6 +423,61 @@ try {
 	await adapter.stop();
 } finally {
 	rmSync(staleDir, { recursive: true, force: true });
+}
+
+const tenantBoundaryDir = mkdtempSync(join(tmpdir(), "troublemaker-teams-tenant-test-"));
+try {
+	writeFileSync(join(tenantBoundaryDir, "teams-conversations.json"), `${JSON.stringify([{
+		id: PERSONAL_CONVERSATION,
+		type: "personal",
+		name: "Example Conversation",
+		serviceUrl: "https://example.com/teams",
+		verifiedAt: new Date().toISOString(),
+		tenantId: OTHER_TENANT_ID,
+	}])}\n`, { mode: 0o600 });
+	const state: FakeAppState = {
+		handlers: new Map(),
+		created: [],
+		replies: [],
+		updates: [],
+		deletes: [],
+		reactions: [],
+	};
+	const accepted: MomEvent[] = [];
+	const adapter = new TeamsWebhookAdapter({
+		clientId: "00000000-0000-0000-0000-000000000003",
+		clientSecret: "synthetic-client-secret",
+		tenantId: TENANT_ID,
+		workingDir: tenantBoundaryDir,
+		store: new ChannelStore({ workingDir: tenantBoundaryDir, botToken: "" }),
+		app: fakeApp(state),
+	});
+	adapter.setHandler({
+		isRunning: () => false,
+		handleEvent: async (event) => { accepted.push(event); },
+		handleSlashCommand: async () => false,
+		handleSteer: () => {},
+		handleStop: async () => {},
+		resolvePendingInput: () => false,
+	});
+	await adapter.start();
+	await state.handlers.get("message")!({ activity: activity({
+		id: "example-tenant-message-0001",
+		conversationType: "personal",
+		tenantId: OTHER_TENANT_ID,
+	}) });
+	await settle();
+	assert.equal(accepted.length, 0, "the configured authentication tenant rejects a different signed activity tenant without an optional allowlist");
+	assert.equal(adapter.getChannel(PERSONAL_CONVERSATION), undefined, "cross-tenant cached identity is excluded from listing scope");
+	await assert.rejects(
+		adapter.postMessage(PERSONAL_CONVERSATION, "Rejected cross-tenant send"),
+		/configured_tenant_mismatch/,
+		"outbound scope rejects a cached conversation from outside the configured authentication tenant",
+	);
+	assert.equal(state.created.length, 0, "cross-tenant outbound scope rejects before calling the provider API");
+	await adapter.stop();
+} finally {
+	rmSync(tenantBoundaryDir, { recursive: true, force: true });
 }
 
 const authDir = mkdtempSync(join(tmpdir(), "troublemaker-teams-auth-test-"));
