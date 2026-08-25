@@ -47,6 +47,7 @@ import {
 	ToolSelectorSequence,
 	type TerminalToolCallView,
 } from "./tool-inspector.js";
+import { TmuxToolProjectionPublisher } from "./tmux-tool-projection.js";
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
@@ -100,6 +101,7 @@ class TroublemakerTuiApp {
 	private readonly editorContainer = new Container();
 	private readonly editor: Editor;
 	private readonly toolCalls = new TerminalToolCallRegistry();
+	private readonly toolProjection = new TmuxToolProjectionPublisher();
 	private readonly toolSelectorInput: ToolSelectorSequence;
 	private status: TuiAgentStatus;
 	private activeAbort: AbortController | null = null;
@@ -268,7 +270,7 @@ class TroublemakerTuiApp {
 			return true;
 		}
 		if (command === "/help") {
-			this.addNotice("Tool calls show a number such as [12]. Press Ctrl+T, release it, type the number, and pause briefly to expand or close its details. Terminals with enhanced keyboard reporting also support holding Ctrl while typing the number.\n\n/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
+			this.addNotice("Tool calls show a number such as [12]. In a configured tmux session, press Ctrl+T then g, type the number, and press Enter to open its Markdown projection in a popup; press q to close it. Outside tmux, inline inspection remains available with Ctrl+T, release, type the number, and pause briefly.\n\n/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
 			return true;
 		}
 		if (command === "/reload") {
@@ -298,6 +300,7 @@ class TroublemakerTuiApp {
 		const snapshot = toAssistantSnapshot(event);
 		if (snapshot) {
 			this.toolCalls.updateSnapshot(snapshot, false);
+			this.syncToolProjection();
 			this.ui.requestRender();
 			return;
 		}
@@ -669,6 +672,7 @@ class TroublemakerTuiApp {
 	private renderAwarenessEntry(entry: TuiHistoryEntry, complete: boolean): void {
 		if (entry.role === "toolResult") {
 			this.toolCalls.updateResults(entry.content);
+			this.syncToolProjection();
 			this.ui.requestRender();
 			return;
 		}
@@ -707,6 +711,7 @@ class TroublemakerTuiApp {
 	): TranscriptContentKind | null {
 		target.clear();
 		const toolViews = this.toolCalls.updateSnapshot(snapshot, historical);
+		this.syncToolProjection();
 		let textGroup: TextContent[] = [];
 		let toolGroup: TerminalToolCallView[] = [];
 		let previousKind = precedingContent;
@@ -755,6 +760,10 @@ class TroublemakerTuiApp {
 		this.chat.addChild(new UserMessageComponent(text, getMarkdownTheme(), 1));
 		this.lastTranscriptContent = "user";
 		this.ui.requestRender();
+	}
+
+	private syncToolProjection(): void {
+		this.toolProjection.sync(this.toolCalls.values());
 	}
 
 	private addNotice(message: string): void {
@@ -1096,6 +1105,7 @@ class TroublemakerTuiApp {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.toolSelectorInput.dispose();
+		this.toolProjection.dispose();
 		this.awarenessAbort.abort();
 		for (const controller of this.steeringAborts) controller.abort();
 		this.steeringAborts.clear();

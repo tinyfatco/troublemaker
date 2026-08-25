@@ -5,6 +5,7 @@
 ### Added
 
 - Numbered, collapsed terminal tool calls whose arguments, output, and results can be toggled with a Ctrl+digit sequence.
+- Owner-only Markdown projections for terminal tool calls, with a tmux popup command that renders a selected projection through `bat` without editing the composer.
 
 ### Changed
 
