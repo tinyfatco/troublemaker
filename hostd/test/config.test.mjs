@@ -30,7 +30,59 @@ const ENVIRONMENT = {
 	ROCKETCHAT_CREATE_TOKENS_FOR_USERS_SECRET: "example-create-token-secret-at-least-32-bytes",
 	META_CAPI_ACCESS_TOKEN: "synthetic-meta-access-token-at-least-32-bytes",
 	META_CAPI_TEST_EVENT_CODE: "TEST12345",
+	RESEND_SERVICE_MAILBOX_API_KEY: "re_synthetic_service_mailbox_key",
 };
+
+test("service mailbox grants one exact named-agent address to one exact context", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-service-mailbox-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.serviceMailbox = {
+			provider: "resend",
+			apiKeyEnv: "RESEND_SERVICE_MAILBOX_API_KEY",
+			grants: [{
+				targetId: "front-desk",
+				contextId: "front-desk:relationship:relationship-example",
+				address: "scout@example.com",
+			}],
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.serviceMailbox.provider, "resend");
+		assert.equal(config.serviceMailbox.requestTimeoutMs, 15_000);
+		assert.equal(config.serviceMailbox.maximumScanPages, 5);
+		assert.deepEqual(config.serviceMailbox.grants, raw.serviceMailbox.grants);
+		assert.deepEqual(
+			config.serviceMailbox.grantsByContextId.get(raw.serviceMailbox.grants[0].contextId),
+			raw.serviceMailbox.grants[0],
+		);
+
+		raw.serviceMailbox.grants[0].address = "other@example.com";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must match its target named-agent mailbox/);
+
+		raw.serviceMailbox.grants[0].address = "scout@example.com";
+		raw.serviceMailbox.grants[0].contextId = "other-target:relationship:relationship-example";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /exact context owned by its target/);
+
+		raw.serviceMailbox.grants[0].contextId = "front-desk:relationship:relationship-example";
+		raw.targets[0].runtimeEnv = { MOM_SERVICE_MAILBOX_TOKEN: "runtime-override" };
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /owned by Hostd and cannot be overridden/);
+
+		delete raw.targets[0].runtimeEnv;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, { ...ENVIRONMENT, RESEND_SERVICE_MAILBOX_API_KEY: "not-a-resend-key" }),
+			/must contain a Resend API key/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 test("requires distinct MCP assertion authority for each edge issuer", async () => {
 	const path = fileURLToPath(new URL("../config.example.json", import.meta.url));

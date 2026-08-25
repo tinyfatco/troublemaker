@@ -56,6 +56,7 @@ import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-n
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
 import hostMcpConnectionsExtension from "./extensions/host-mcp-connections.js";
+import hostServiceMailboxExtension from "./extensions/host-service-mailbox.js";
 import hostSitesExtension from "./extensions/host-sites.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
 import {
@@ -485,6 +486,7 @@ async function createRunner(
 		extensionFactories: [
 			hostGmailExtension,
 			hostMcpConnectionsExtension,
+			hostServiceMailboxExtension,
 			hostSitesExtension,
 			tinyfatDomainsExtension,
 		],

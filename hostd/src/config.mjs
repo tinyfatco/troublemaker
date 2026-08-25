@@ -849,6 +849,71 @@ function namedAgentConfig(raw, label) {
 	};
 }
 
+function serviceMailboxConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const mailbox = object(raw, "serviceMailbox");
+	const provider = text(mailbox.provider, "serviceMailbox.provider").toLowerCase();
+	if (provider !== "resend") {
+		throw new Error("serviceMailbox.provider must be resend");
+	}
+	const apiKey = envSecret(mailbox.apiKeyEnv, "serviceMailbox.apiKeyEnv", environment);
+	if (!apiKey.startsWith("re_") || apiKey.length < 24) {
+		throw new Error("serviceMailbox.apiKeyEnv must contain a Resend API key");
+	}
+	if (!Array.isArray(mailbox.grants) || mailbox.grants.length === 0) {
+		throw new Error("serviceMailbox.grants must contain at least one exact context grant");
+	}
+	if (mailbox.grants.length > 256) {
+		throw new Error("serviceMailbox.grants cannot exceed 256 grants");
+	}
+	const grants = mailbox.grants.map((candidate, index) => {
+		const label = `serviceMailbox.grants[${index}]`;
+		const grant = object(candidate, label);
+		const targetId = text(grant.targetId, `${label}.targetId`);
+		if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(targetId)) {
+			throw new Error(`${label}.targetId contains unsupported characters`);
+		}
+		const contextId = text(grant.contextId, `${label}.contextId`);
+		if (
+			contextId.length > 256
+			|| /[\u0000-\u001f\u007f]/u.test(contextId)
+			|| !contextId.startsWith(`${targetId}:`)
+		) {
+			throw new Error(`${label}.contextId must be an exact context owned by its target`);
+		}
+		return {
+			targetId,
+			contextId,
+			address: normalizeAddress(grant.address, `${label}.address`),
+		};
+	});
+	if (new Set(grants.map((grant) => grant.contextId)).size !== grants.length) {
+		throw new Error("serviceMailbox.grants cannot repeat a context");
+	}
+	if (new Set(grants.map((grant) => grant.address)).size !== grants.length) {
+		throw new Error("serviceMailbox.grants cannot repeat an address");
+	}
+	return {
+		provider,
+		apiKey,
+		requestTimeoutMs: integer(
+			mailbox.requestTimeoutMs,
+			15_000,
+			"serviceMailbox.requestTimeoutMs",
+			1_000,
+			60_000,
+		),
+		maximumScanPages: integer(
+			mailbox.maximumScanPages,
+			5,
+			"serviceMailbox.maximumScanPages",
+			1,
+			20,
+		),
+		grants,
+	};
+}
+
 function webAppConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const webApp = object(raw, "webApp");
@@ -1300,7 +1365,7 @@ function targetConfig(raw, index, environment) {
 				const label = `targets[${index}].runtimeEnv.${rawKey}`;
 				const key = text(rawKey, `targets[${index}].runtimeEnv key`);
 				const isHostOwnedChannelSetting =
-					/^(?:MOM_(?:EMAIL|FORM|MATTERMOST|MCP|OPERATOR|PHONE|ROCKETCHAT|SCHEDULED|SITE|SLACK|TELEGRAM|WEB|ZULIP)_|FAT_TOOLS_TOKEN)/.test(key)
+					/^(?:MOM_(?:EMAIL|FORM|MATTERMOST|MCP|OPERATOR|PHONE|ROCKETCHAT|SCHEDULED|SERVICE_MAILBOX|SITE|SLACK|TELEGRAM|WEB|ZULIP)_|FAT_TOOLS_TOKEN)/.test(key)
 					&& key !== "MOM_EMAIL_LOG_MODE";
 				if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(key)) {
 					throw new Error(`${label} has an invalid environment variable name`);
@@ -1421,6 +1486,20 @@ export async function loadConfig(path, environment = process.env) {
 		}
 	}
 	const targetIds = new Set(targets.map((target) => target.id));
+	const serviceMailbox = serviceMailboxConfig(raw.serviceMailbox, environment);
+	if (serviceMailbox) {
+		for (const [index, grant] of serviceMailbox.grants.entries()) {
+			const label = `serviceMailbox.grants[${index}]`;
+			const target = targets.find((candidate) => candidate.id === grant.targetId);
+			if (!target) throw new Error(`${label}.targetId references unknown target ${grant.targetId}`);
+			if (!target.agent) {
+				throw new Error(`${label}.targetId must reference a target with named agent identity`);
+			}
+			if (grant.address !== target.agent.email) {
+				throw new Error(`${label}.address must match its target named-agent mailbox`);
+			}
+		}
+	}
 	const actorTarget = text(routing.actorTarget, "routing.actorTarget");
 	if (!targetIds.has(actorTarget)) throw new Error(`routing.actorTarget references unknown target ${actorTarget}`);
 	const selectedTarget = targets.find((target) => target.id === actorTarget);
@@ -1753,6 +1832,10 @@ export async function loadConfig(path, environment = process.env) {
 		zulip,
 		phone,
 		metaContact,
+		serviceMailbox: serviceMailbox ? {
+			...serviceMailbox,
+			grantsByContextId: new Map(serviceMailbox.grants.map((grant) => [grant.contextId, grant])),
+		} : undefined,
 		webApp,
 		mcp,
 		openAi,
