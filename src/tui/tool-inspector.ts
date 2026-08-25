@@ -155,7 +155,7 @@ export class TerminalToolCallStream implements Component {
 	}
 }
 
-/** Collects a Ctrl+digit burst and commits its multi-digit selector after a pause. */
+/** Collects a Ctrl+T-led or enhanced Ctrl+digit burst and commits it after a pause. */
 export class ToolSelectorSequence {
 	private digits = "";
 	private timer: ReturnType<typeof setTimeout> | undefined;
@@ -178,7 +178,6 @@ export class ToolSelectorSequence {
 		if (matchesKey(data, Key.ctrl("t"))) {
 			this.flush();
 			this.acceptsPlainDigits = true;
-			this.scheduleCommit();
 			return true;
 		}
 		if (this.acceptsPlainDigits && /^[0-9]$/.test(data)) {

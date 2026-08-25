@@ -514,8 +514,8 @@ expect {
   timeout { puts stderr "Tool result detail timeout"; exit 38 }
   eof { puts stderr "TUI exited before tool result details"; exit 39 }
 }
-send -- "\\033\\[49;5u"
-send -- "\\033\\[50;5u"
+send -- "\\024"
+send -- "12"
 expect {
   -re {\[12\].*▸} {}
   timeout { puts stderr "Multi-digit tool selector collapse timeout"; exit 40 }

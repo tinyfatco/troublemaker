@@ -158,14 +158,15 @@ try {
 }
 
 const fallbackSelectors: number[] = [];
-const fallbackSequence = new ToolSelectorSequence((selector) => fallbackSelectors.push(selector), 10_000, () => false);
+const fallbackSequence = new ToolSelectorSequence((selector) => fallbackSelectors.push(selector), 5, () => false);
 try {
 	assert.equal(fallbackSequence.handleInput("1"), false, "ordinary digits still reach the composer without Control");
 	assert.equal(fallbackSequence.handleInput("\u0014"), true, "Ctrl+T opens terminal-independent selector entry");
+	await new Promise((resolvePromise) => setTimeout(resolvePromise, 15));
 	assert.equal(fallbackSequence.handleInput("1"), true);
 	assert.equal(fallbackSequence.handleInput("2"), true);
 	fallbackSequence.flush();
-	assert.deepEqual(fallbackSelectors, [12], "Ctrl+T followed by plain digits selects a tool on legacy terminals");
+	assert.deepEqual(fallbackSelectors, [12], "the Ctrl+T leader remains armed while the user releases it before typing digits");
 } finally {
 	fallbackSequence.dispose();
 }

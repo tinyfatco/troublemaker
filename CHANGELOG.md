@@ -9,7 +9,7 @@
 ### Changed
 
 - Consecutive terminal tool labels now flow and wrap inline, and the persistent send-hint footer has been removed to reclaim vertical space.
-- Ctrl+digit tool selection now recognizes native macOS and legacy control-key encodings, with Ctrl+T followed by digits as a terminal-independent fallback.
+- Ctrl+T followed by a tool number is now the terminal-independent inspection shortcut; direct Ctrl+digit selection remains available when enhanced keyboard reporting can distinguish it.
 
 ## [0.52.10] - 2026-02-12
 
