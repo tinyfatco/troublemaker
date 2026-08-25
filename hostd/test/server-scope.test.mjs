@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ContextRouter } from "../src/router.mjs";
 import { HostMcp } from "../src/mcp.mjs";
+import { PhoneDeliveryUncertainError } from "../src/phone.mjs";
 import { createHostServer } from "../src/server.mjs";
 import { contextCapability, sealPrivateValue } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
@@ -192,13 +193,28 @@ test("phone-only hosts expose no Gmail delivery surface", async () => {
 	const address = server.address();
 	assert(address && typeof address === "object");
 	try {
-		const response = await fetch(`http://127.0.0.1:${address.port}/v1/outbound/gmail`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({}),
-		});
-		assert.equal(response.status, 503);
-		assert.deepEqual(await response.json(), { error: "gmail_unavailable" });
+		for (const path of [
+			"/v1/gmail/search",
+			"/v1/gmail/read",
+			"/v1/gmail/draft",
+			"/v1/gmail/send",
+			"/v1/outbound/gmail",
+		]) {
+			const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({}),
+			});
+			assert.equal(response.status, 503, path);
+			assert.deepEqual(
+				await response.json(),
+				{ error: path === "/v1/outbound/gmail" ? "gmail_unavailable" : "gmail_tools_unavailable" },
+				path,
+			);
+		}
+		assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM gmail_drafts").get().count, 0);
+		assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM gmail_tool_requests").get().count, 0);
+		assert.equal(store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();
@@ -289,6 +305,9 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		phoneGateway: {
 			async sendDirect(selected, body) {
 				sends.push({ threadTarget: selected.threadTarget, body });
+				if (body === "Ambiguous provider result.") {
+					throw new PhoneDeliveryUncertainError("synthetic timeout after provider acceptance");
+				}
 				return { providerMessageId: `phone-sent-${sends.length}`, status: "queued" };
 			},
 		},
@@ -300,15 +319,15 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 	const address = server.address();
 	assert(address && typeof address === "object");
 	const base = `http://127.0.0.1:${address.port}`;
-	const token = contextCapability(target.outboundToken, "outbound", owner.contextId);
-	const post = (body) => fetch(`${base}/v1/outbound/phone`, {
+	const postAs = (contextId, body) => fetch(`${base}/v1/outbound/phone`, {
 		method: "POST",
 		headers: {
-			authorization: `Bearer ${token}`,
+			authorization: `Bearer ${contextCapability(target.outboundToken, "outbound", contextId)}`,
 			"content-type": "application/json",
 		},
 		body: JSON.stringify(body),
 	});
+	const post = (body) => postAs(owner.contextId, body);
 
 	try {
 		const mcpControl = await fetch(`${base}/v1/mcp/control`, {
@@ -332,6 +351,17 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(otherChannel.status, 403);
 		assert.equal(mattermostCalls.length, 0);
 
+		const unknown = await post({
+			context_id: owner.contextId,
+			thread_target: "phone-aaaaaaaaaaaaaaaaaaaa",
+			agent_body: "Unknown conversation attempt.",
+			idempotency_key: "phone-unknown",
+			origin_event_id: claimed.id,
+		});
+		assert.equal(unknown.status, 403);
+		assert.deepEqual(await unknown.json(), { error: "conversation_scope_denied" });
+		assert.equal(sends.length, 0);
+
 		const denied = await post({
 			context_id: owner.contextId,
 			thread_target: stranger.threadTarget,
@@ -340,6 +370,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 			origin_event_id: claimed.id,
 		});
 		assert.equal(denied.status, 403);
+		assert.deepEqual(await denied.json(), { error: "conversation_scope_denied" });
 		assert.equal(sends.length, 0);
 
 		const sent = await post({
@@ -393,6 +424,26 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(duplicate.status, 200);
 		assert.equal(sends.length, 1);
 
+		const uncertain = await postAs(stranger.contextId, {
+			context_id: stranger.contextId,
+			thread_target: stranger.threadTarget,
+			agent_body: "Ambiguous provider result.",
+			idempotency_key: "phone-uncertain",
+		});
+		assert.equal(uncertain.status, 409);
+		assert.deepEqual(await uncertain.json(), { error: "delivery_result_uncertain" });
+		assert.equal(sends.length, 2);
+
+		const uncertainRetry = await postAs(stranger.contextId, {
+			context_id: stranger.contextId,
+			thread_target: stranger.threadTarget,
+			agent_body: "Ambiguous provider result.",
+			idempotency_key: "phone-uncertain",
+		});
+		assert.equal(uncertainRetry.status, 409);
+		assert.deepEqual(await uncertainRetry.json(), { error: "delivery_result_uncertain" });
+		assert.equal(sends.length, 2);
+
 		const secondBody = await post({
 			context_id: owner.contextId,
 			thread_target: owner.threadTarget,
@@ -404,7 +455,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.deepEqual(await secondBody.json(), {
 			error: "relationship_instruction_delivery_already_exists",
 		});
-		assert.equal(sends.length, 1);
+		assert.equal(sends.length, 2);
 		assert.equal(store.listProviderReceiptsForEvent(claimed.id).length, 1);
 
 		await mcp.revoke(owner.contextId, { direction: "inbound", id: grant.id });
@@ -416,7 +467,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 			origin_event_id: claimed.id,
 		});
 		assert.equal(revoked.status, 403);
-		assert.equal(sends.length, 1);
+		assert.equal(sends.length, 2);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();
