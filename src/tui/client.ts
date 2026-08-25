@@ -125,8 +125,9 @@ export class TroublemakerTuiClient {
 		onConnected?: () => void | Promise<void>,
 		afterSequence = 0,
 	): Promise<void> {
-		const suffix = afterSequence > 0 ? `?after=${afterSequence}` : "";
-		const response = await fetch(this.url(`/api/v2/agents/current/live${suffix}`), {
+		const params = new URLSearchParams({ details: "tools" });
+		if (afterSequence > 0) params.set("after", String(afterSequence));
+		const response = await fetch(this.url(`/api/v2/agents/current/live?${params}`), {
 			headers: {
 				Accept: "text/event-stream",
 				...(afterSequence > 0 ? { "Last-Event-ID": String(afterSequence) } : {}),

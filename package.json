@@ -83,7 +83,7 @@
 		"test:email-host-managed": "pnpm exec tsx test/email-host-managed.test.ts",
 		"test:gmail-tools": "pnpm exec tsx test/gmail-tools.test.ts",
 		"test:email-tools-only": "pnpm exec tsx test/email-tools-only.test.ts",
-		"test:tui": "pnpm exec tsx test/tui.test.ts && pnpm run test:terminal-steering",
+		"test:tui": "pnpm exec tsx test/tui.test.ts && pnpm exec tsx test/tui-tool-inspector.test.ts && pnpm run test:terminal-steering",
 		"test:tui-pty": "pnpm exec tsx test/tui-pty.test.ts",
 		"test:terminal-steering": "pnpm exec tsx test/terminal-steering.test.ts",
 		"test:noninterrupting-steering": "pnpm exec tsx test/noninterrupting-steering.test.ts",

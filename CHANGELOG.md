@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Numbered, collapsed terminal tool calls whose arguments, output, and results can be toggled with a Ctrl+digit sequence.
+
+### Changed
+
+- Consecutive terminal tool labels now flow and wrap inline, and the persistent send-hint footer has been removed to reclaim vertical space.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08

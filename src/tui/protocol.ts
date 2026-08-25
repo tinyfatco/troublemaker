@@ -76,7 +76,9 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 
 	const role = raw.message.role;
 	if (role !== "user" && role !== "assistant" && role !== "toolResult") return null;
-	const content = normalizeContent(raw.message.content);
+	const content = role === "toolResult"
+		? normalizeToolResultMessage(raw.message)
+		: normalizeContent(raw.message.content);
 	const entry: TuiHistoryEntry = {
 		id: stringValue(raw.id) || `message-${stringValue(raw.timestamp) || Date.now()}`,
 		parentId: stringValue(raw.parentId) || undefined,
@@ -355,6 +357,31 @@ function normalizeContent(value: unknown): RuntimeAssistantSnapshotContent[] {
 		}
 	}
 	return content;
+}
+
+function normalizeToolResultMessage(message: Record<string, unknown>): RuntimeAssistantSnapshotContent[] {
+	const normalized = normalizeContent(message.content);
+	const toolCallId = stringValue(message.toolCallId) || stringValue(message.tool_call_id);
+	const inlineResults = normalized.filter((block) => block.type === "toolResult");
+	if (inlineResults.length > 0) {
+		return inlineResults.map((block) => block.type === "toolResult"
+			? { ...block, toolCallId: block.toolCallId || toolCallId }
+			: block);
+	}
+	if (!toolCallId) return normalized;
+	const directResult = message.result ?? message.output;
+	const text = typeof directResult === "string"
+		? directResult
+		: normalized
+			.filter((block) => block.type === "text")
+			.map((block) => block.type === "text" ? block.text : "")
+			.join("\n");
+	return [{
+		type: "toolResult",
+		toolCallId,
+		result: text,
+		isError: Boolean(message.isError ?? message.is_error),
+	}];
 }
 
 function visibleAssistantTokens(content: RuntimeAssistantSnapshotContent[]): string[] {
