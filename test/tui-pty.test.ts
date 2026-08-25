@@ -551,7 +551,6 @@ expect eof
 		env: {
 			...process.env,
 			TERM: "xterm-256color",
-			TROUBLEMAKER_TUI_DISABLE_TMUX_PROJECTION: "1",
 			TROUBLEMAKER_TUI_CONFIG: installed.configPath,
 		},
 	});

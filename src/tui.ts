@@ -3,7 +3,6 @@
 import { fileURLToPath } from "url";
 import { installTuiProfile, loadTuiProfiles, resolveInvokedAgent } from "./tui/config.js";
 import { runTroublemakerTui } from "./tui/app.js";
-import { viewTmuxToolProjection } from "./tui/tmux-tool-projection.js";
 
 interface ParsedInstallArgs {
 	command: string;
@@ -48,13 +47,6 @@ async function main(): Promise<void> {
 			return;
 		}
 		for (const profile of profiles) console.log(`${profile.command}\t${profile.name}\t${profile.baseUrl}`);
-		return;
-	}
-	if (command === "tmux-view") {
-		const selector = args.pop() || process.env.TROUBLEMAKER_TOOL_SELECTOR;
-		const paneId = args.pop() || process.env.TROUBLEMAKER_TMUX_PANE || process.env.TMUX_PANE;
-		if (!paneId || !selector || args.length > 0) throw new Error("Usage: troublemaker-tui tmux-view [pane-id] <tool-number>");
-		viewTmuxToolProjection({ paneId, selector });
 		return;
 	}
 	if (command === "open") {
@@ -107,7 +99,6 @@ Usage:
   troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>]
   troublemaker-tui open <agent>
   troublemaker-tui list
-  troublemaker-tui tmux-view [pane-id] <tool-number>
   <agent-command>
 
 Installed agent commands open a Pi-styled terminal client against that agent's

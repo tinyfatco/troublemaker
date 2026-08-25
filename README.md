@@ -109,16 +109,7 @@ troublemaker-tui install demo-agent \
 demo-agent
 ```
 
-The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, follows the resident's live awareness stream, and presents tool calls as a compact numbered stream. Tool details stay collapsed by default. Outside tmux, press Ctrl+T, release it, type a call's number, and pause briefly to expand or close its arguments, output, and result; terminals with enhanced keyboard reporting can also distinguish direct Ctrl+digit sequences. Inside tmux, use the popup binding below. The UI supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`. Input remains available during active turns so follow-ups can soft-steer the same terminal run, and automatic context compaction is labeled explicitly instead of appearing as continued thinking.
-
-Inside tmux, the TUI also publishes each tool call as an owner-only temporary Markdown file and removes those projections when the TUI exits. The following tmux configuration makes Ctrl+T a second prefix and opens a prompt-driven `bat` popup with Ctrl+T then g, followed by the tool number and Enter. Use an absolute installed agent-command path if the tmux server does not inherit `~/.local/bin` in `PATH`.
-
-```tmux
-set-option -g prefix2 C-t
-bind-key -T prefix g command-prompt -F -p "Tool number:" 'display-popup -E -w 90% -h 85% -e TROUBLEMAKER_TOOL_SELECTOR=%1 -e TROUBLEMAKER_TMUX_PANE=#{pane_id} -T "Tool details" "$HOME/.local/bin/demo-agent tmux-view"'
-```
-
-The popup leaves the terminal composer untouched. Press q to close `bat` and return to the same pane.
+The installer creates a profile in `~/.config/troublemaker/tui.json` and a command symlink in `~/.local/bin`. Keep the gateway loopback-only (or reach it through a local tunnel), and ensure `~/.local/bin` is on your `PATH`. The UI uses Pi's terminal styling, labels messages by source, follows the resident's live awareness stream, and presents tool calls as a compact numbered stream. Tool details stay collapsed by default; press Ctrl+T, release it, type a call's number, and pause briefly to expand or close its arguments, output, and result. Terminals with enhanced keyboard reporting also support holding Ctrl while typing the number directly. The UI supports `/help`, `/reload`, `/status`, `/clear`, `/stop`, and `/quit`. Input remains available during active turns so follow-ups can soft-steer the same terminal run, and automatic context compaction is labeled explicitly instead of appearing as continued thinking.
 
 Busy DMs and explicit @mentions use the same non-interrupting contract across
 adapters: the message soft-steers an accepting model at its next safe boundary,

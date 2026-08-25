@@ -134,10 +134,6 @@ export class TerminalToolCallRegistry {
 	get(selector: number): TerminalToolCallView | undefined {
 		return this.callsBySelector.get(selector);
 	}
-
-	values(): TerminalToolCallView[] {
-		return [...this.callsBySelector.values()].sort((left, right) => left.selector - right.selector);
-	}
 }
 
 /** Renders consecutive labels in one natural flow, followed by selected details. */
