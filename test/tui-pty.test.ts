@@ -502,8 +502,8 @@ expect {
   eof { puts stderr "TUI exited before goal continuation output"; exit 33 }
 }
 send -- "run a check"
-send -- "\\033\\[49;5u"
-send -- "\\033\\[50;5u"
+send -- "\\024"
+send -- "12"
 expect {
   {SYNTHETIC_TARGET_DETAIL} {}
   timeout { puts stderr "Multi-digit tool selector expansion timeout"; exit 36 }

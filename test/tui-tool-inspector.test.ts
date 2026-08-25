@@ -132,8 +132,42 @@ try {
 	assert.equal(sequence.handleInput("\u001b[51;5u"), true);
 	assert.equal(sequence.handleInput("x"), false, "ordinary editor input is not consumed");
 	assert.deepEqual(selectors, [12, 3], "ordinary input commits a pending selector before reaching the editor");
+
+	assert.equal(sequence.handleInput("\u001b[27;5;49~"), true, "xterm modifyOtherKeys Ctrl+1 is consumed");
+	assert.equal(sequence.handleInput("\u001b[27;5;50~"), true, "xterm modifyOtherKeys Ctrl+2 extends the selector");
+	sequence.flush();
+	assert.deepEqual(selectors, [12, 3, 12], "xterm modifier reporting commits the same selector");
 } finally {
 	sequence.dispose();
+}
+
+const nativeSelectors: number[] = [];
+const nativeSequence = new ToolSelectorSequence((selector) => nativeSelectors.push(selector), 10_000, () => true);
+try {
+	assert.equal(nativeSequence.handleInput("1"), true, "a plain digit is consumed while native Control is held");
+	assert.equal(nativeSequence.handleInput("2"), true, "native Control preserves a multi-digit sequence");
+	nativeSequence.flush();
+	assert.deepEqual(nativeSelectors, [12], "native macOS modifier detection recovers Ctrl+digits from legacy terminals");
+
+	assert.equal(nativeSequence.handleInput("\u001b"), true, "legacy Ctrl+3 is decoded while native Control is held");
+	assert.equal(nativeSequence.handleInput("\u001c"), true, "legacy Ctrl+4 is decoded while native Control is held");
+	nativeSequence.flush();
+	assert.deepEqual(nativeSelectors, [12, 34], "legacy control bytes retain their physical digit identities");
+} finally {
+	nativeSequence.dispose();
+}
+
+const fallbackSelectors: number[] = [];
+const fallbackSequence = new ToolSelectorSequence((selector) => fallbackSelectors.push(selector), 10_000, () => false);
+try {
+	assert.equal(fallbackSequence.handleInput("1"), false, "ordinary digits still reach the composer without Control");
+	assert.equal(fallbackSequence.handleInput("\u0014"), true, "Ctrl+T opens terminal-independent selector entry");
+	assert.equal(fallbackSequence.handleInput("1"), true);
+	assert.equal(fallbackSequence.handleInput("2"), true);
+	fallbackSequence.flush();
+	assert.deepEqual(fallbackSelectors, [12], "Ctrl+T followed by plain digits selects a tool on legacy terminals");
+} finally {
+	fallbackSequence.dispose();
 }
 
 console.log("troublemaker TUI tool inspector tests passed");

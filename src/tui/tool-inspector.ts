@@ -7,6 +7,7 @@ import {
 	Text,
 	type Component,
 } from "@earendil-works/pi-tui";
+import { isNativeModifierPressed } from "@earendil-works/pi-tui/dist/native-modifiers.js";
 import chalk from "chalk";
 import type {
 	RuntimeAssistantSnapshotContent,
@@ -20,6 +21,15 @@ const MAX_SELECTOR_DIGITS = 6;
 const MAX_DETAIL_CHARACTERS = 24_000;
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g;
 const CTRL_DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
+const LEGACY_CTRL_DIGITS = new Map([
+	["\x00", "2"],
+	["\x1b", "3"],
+	["\x1c", "4"],
+	["\x1d", "5"],
+	["\x1e", "6"],
+	["\x1f", "7"],
+	["\x7f", "8"],
+]);
 
 export type TerminalToolState = "pending" | "success" | "error";
 
@@ -149,28 +159,40 @@ export class TerminalToolCallStream implements Component {
 export class ToolSelectorSequence {
 	private digits = "";
 	private timer: ReturnType<typeof setTimeout> | undefined;
+	private acceptsPlainDigits = false;
 
 	constructor(
 		private readonly onSelector: (selector: number) => void,
 		private readonly commitDelayMs = TOOL_SELECTOR_COMMIT_MS,
+		private readonly isControlPressed = () => isNativeModifierPressed("control"),
 	) {}
 
 	handleInput(data: string): boolean {
-		const digit = ctrlDigit(data);
-		if (digit === undefined) {
-			this.flush();
-			return false;
+		const digit = ctrlDigit(data, this.isControlPressed);
+		if (digit !== undefined) {
+			if (isKeyRelease(data) || isKeyRepeat(data)) return true;
+			this.acceptsPlainDigits = false;
+			this.appendDigit(digit);
+			return true;
 		}
-		if (isKeyRelease(data) || isKeyRepeat(data)) return true;
-		if (this.digits.length >= MAX_SELECTOR_DIGITS) this.flush();
-		this.digits += digit;
-		this.scheduleCommit();
-		return true;
+		if (matchesKey(data, Key.ctrl("t"))) {
+			this.flush();
+			this.acceptsPlainDigits = true;
+			this.scheduleCommit();
+			return true;
+		}
+		if (this.acceptsPlainDigits && /^[0-9]$/.test(data)) {
+			this.appendDigit(data);
+			return true;
+		}
+		this.flush();
+		return false;
 	}
 
 	flush(): void {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
+		this.acceptsPlainDigits = false;
 		if (!this.digits) return;
 		const selector = Number.parseInt(this.digits, 10);
 		this.digits = "";
@@ -181,6 +203,13 @@ export class ToolSelectorSequence {
 		if (this.timer) clearTimeout(this.timer);
 		this.timer = undefined;
 		this.digits = "";
+		this.acceptsPlainDigits = false;
+	}
+
+	private appendDigit(digit: string): void {
+		if (this.digits.length >= MAX_SELECTOR_DIGITS) this.flush();
+		this.digits += digit;
+		this.scheduleCommit();
 	}
 
 	private scheduleCommit(): void {
@@ -222,11 +251,13 @@ export function sanitizeDetail(value: string): string {
 		.replace(CONTROL_CHARACTERS, "");
 }
 
-function ctrlDigit(data: string): string | undefined {
+function ctrlDigit(data: string, isControlPressed: () => boolean): string | undefined {
 	for (const digit of CTRL_DIGITS) {
 		if (matchesKey(data, Key.ctrl(digit))) return digit;
 	}
-	return undefined;
+	if (!isControlPressed()) return undefined;
+	if (/^[0-9]$/.test(data)) return data;
+	return LEGACY_CTRL_DIGITS.get(data);
 }
 
 function toolIdentity(snapshot: RuntimeAssistantSnapshotEntry, toolCallId: string, contentIndex: number): string {

@@ -268,7 +268,7 @@ class TroublemakerTuiApp {
 			return true;
 		}
 		if (command === "/help") {
-			this.addNotice("Tool calls show a number such as [12]. Hold Ctrl while typing that number, then pause briefly, to expand or close its details.\n\n/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
+			this.addNotice("Tool calls show a number such as [12]. Hold Ctrl while typing that number, then pause briefly, to expand or close its details. If your terminal does not report Ctrl+digits, press Ctrl+T, release it, type the number, and pause.\n\n/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
 			return true;
 		}
 		if (command === "/reload") {
