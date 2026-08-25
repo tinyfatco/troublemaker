@@ -253,6 +253,12 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		contactAddress: "+15555550124",
 		label: "Phone •••• 0124",
 	});
+	const heldRoute = router.resolvePhone({
+		providerThreadId: "held-provider-thread",
+		contactAddress: "+15555550125",
+		label: "Phone •••• 0125",
+	});
+	config.phone = { deliveryHolds: [heldRoute.contextId] };
 	store.createContext({
 		id: ownerRoute.contextId,
 		targetId: target.id,
@@ -272,6 +278,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 	});
 	const owner = conversation("phone-0123456789abcdef0123", "+15555550123", ownerRoute);
 	const stranger = conversation("phone-123456789abcdef01234", "+15555550124", strangerRoute);
+	const held = conversation("phone-23456789abcdef012345", "+15555550125", heldRoute);
 	const mcp = new HostMcp({ config, store, routingKey });
 	const handoff = mcp.createHandoff(target, owner.contextId, {
 		direction: "inbound",
@@ -372,6 +379,17 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(denied.status, 403);
 		assert.deepEqual(await denied.json(), { error: "conversation_scope_denied" });
 		assert.equal(sends.length, 0);
+
+		const heldDelivery = await postAs(held.contextId, {
+			context_id: held.contextId,
+			thread_target: held.threadTarget,
+			agent_body: "A held relationship must not send.",
+			idempotency_key: "phone-held",
+		});
+		assert.equal(heldDelivery.status, 403);
+		assert.deepEqual(await heldDelivery.json(), { error: "phone_delivery_held" });
+		assert.equal(sends.length, 0);
+		assert.equal(store.getOutbox("phone-held"), undefined);
 
 		const sent = await post({
 			context_id: owner.contextId,

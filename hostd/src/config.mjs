@@ -639,6 +639,20 @@ function phoneConfig(raw, environment) {
 	if (provider !== "sendly") throw new Error("phone.provider must be sendly");
 	const directOnly = boolean(phone.directOnly, true, "phone.directOnly");
 	if (!directOnly) throw new Error("phone.directOnly must remain true");
+	const rawDeliveryHolds = phone.deliveryHolds ?? [];
+	if (!Array.isArray(rawDeliveryHolds) || rawDeliveryHolds.length > 256) {
+		throw new Error("phone.deliveryHolds must be an array of at most 256 exact contexts");
+	}
+	const deliveryHolds = rawDeliveryHolds.map((value, index) => {
+		const contextId = text(value, `phone.deliveryHolds[${index}]`);
+		if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId) || !contextId.includes(":")) {
+			throw new Error(`phone.deliveryHolds[${index}] must be an exact context ID`);
+		}
+		return contextId;
+	});
+	if (new Set(deliveryHolds).size !== deliveryHolds.length) {
+		throw new Error("phone.deliveryHolds cannot repeat a context");
+	}
 	const webhookSecret = envSecret(
 		phone.webhookSecretEnv,
 		"phone.webhookSecretEnv",
@@ -650,6 +664,7 @@ function phoneConfig(raw, environment) {
 	return {
 		provider,
 		directOnly,
+		deliveryHolds,
 		senderAddress: normalizePhoneAddress(phone.senderAddress, "phone.senderAddress"),
 		webhookSecret,
 		apiKey: envSecret(phone.apiKeyEnv, "phone.apiKeyEnv", environment),
@@ -1582,6 +1597,12 @@ export async function loadConfig(path, environment = process.env) {
 	if (webChat && !zulip) throw new Error("webChat integration currently requires zulip");
 	if (!phone && knownPhonePrincipals.length > 0) {
 		throw new Error("routing.knownPhonePrincipals requires phone configuration");
+	}
+	for (const [index, contextId] of (phone?.deliveryHolds ?? []).entries()) {
+		const targetId = contextId.split(":", 1)[0];
+		if (!targetIds.has(targetId)) {
+			throw new Error(`phone.deliveryHolds[${index}] must name a context owned by a configured target`);
+		}
 	}
 	if (!gmail && targets.some((target) => target.gmailToolsOnly)) {
 		throw new Error("targets cannot enable gmailToolsOnly when Gmail is not configured");

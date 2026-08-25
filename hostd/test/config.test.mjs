@@ -121,6 +121,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 	assert.deepEqual(config.phone, {
 		provider: "sendly",
 		directOnly: true,
+		deliveryHolds: [],
 		senderAddress: "+15555550100",
 		webhookSecret: "test-phone-webhook-secret-at-least-24-bytes",
 		apiKey: "test-phone-api-key",
@@ -562,6 +563,31 @@ test("loads a phone-only Zulip host without Gmail", async () => {
 		assert.equal(config.gmail, undefined);
 		assert.equal(config.phone.senderAddress, "+15555550100");
 		assert.equal(config.zulip.agentDisplayName, "Operator");
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("phone delivery holds bind to unique exact contexts on configured targets", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-delivery-holds-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.phone.deliveryHolds = ["front-desk:relationship:relationship-example"];
+		await writeFile(path, JSON.stringify(raw));
+		assert.deepEqual(
+			(await loadConfig(path, ENVIRONMENT)).phone.deliveryHolds,
+			raw.phone.deliveryHolds,
+		);
+
+		raw.phone.deliveryHolds.push(raw.phone.deliveryHolds[0]);
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /cannot repeat a context/);
+
+		raw.phone.deliveryHolds = ["other-target:relationship:relationship-example"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /configured target/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

@@ -581,6 +581,10 @@ export function createHostServer({
 					json(response, 403, { error: "conversation_scope_denied" });
 					return;
 				}
+				if (config.phone?.deliveryHolds?.includes(contextId)) {
+					json(response, 403, { error: "phone_delivery_held" });
+					return;
+				}
 				const originEventId = typeof body.origin_event_id === "string"
 					? body.origin_event_id.trim()
 					: "";
