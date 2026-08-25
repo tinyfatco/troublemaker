@@ -4,6 +4,7 @@ import { HostMcpError } from "./mcp.mjs";
 import { OpenAiError } from "./openai.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
+import { HostServiceMailbox, ServiceMailboxError } from "./service-mailbox.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
 import { WorkersAiError } from "./workers-ai.mjs";
 
@@ -102,6 +103,7 @@ export function createHostServer({
 	rocketChatGateway,
 	zulipGateway,
 	phoneGateway,
+	serviceMailboxGateway,
 	sitesGateway,
 	workersAiGateway,
 	openAiGateway,
@@ -112,6 +114,8 @@ export function createHostServer({
 	const gmailTools = routingKey && gmail && config.gmail
 		? new HostGmailTools({ config, store, gmail, routingKey })
 		: null;
+	const serviceMailbox = serviceMailboxGateway
+		|| (config.serviceMailbox ? new HostServiceMailbox(config) : null);
 	const sites = sitesGateway || (config.sites ? new HostSites({ config, store, routingKey }) : null);
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
@@ -416,6 +420,31 @@ export function createHostServer({
 				json(response, 200, await handlers[url.pathname]());
 				return;
 			}
+			if (request.method === "POST" && [
+				"/v1/service-mailbox/list",
+				"/v1/service-mailbox/read",
+			].includes(url.pathname)) {
+				if (!serviceMailbox) {
+					json(response, 503, { error: "service_mailbox_unavailable" });
+					return;
+				}
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const body = await readJson(request, 32 * 1024);
+				const contextId = typeof body.context_id === "string" ? body.context_id : "";
+				const target = authenticateContext(request, config, contextId, "service-mailbox");
+				if (!target) {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				if (denyNonPhoneDuringMcpInstruction(store, mcp, contextId, response)) return;
+				json(response, 200, url.pathname === "/v1/service-mailbox/list"
+					? await serviceMailbox.list(target, contextId, body)
+					: await serviceMailbox.read(target, contextId, body));
+				return;
+			}
 			if (request.method === "POST" && ["/v1/sites/create", "/v1/sites/deploy"].includes(url.pathname)) {
 				if (!sites) {
 					json(response, 503, { error: "sites_unavailable" });
@@ -717,6 +746,10 @@ export function createHostServer({
 				return;
 			}
 			if (error instanceof GmailToolError) {
+				json(response, error.status, { error: error.code });
+				return;
+			}
+			if (error instanceof ServiceMailboxError) {
 				json(response, error.status, { error: error.code });
 				return;
 			}

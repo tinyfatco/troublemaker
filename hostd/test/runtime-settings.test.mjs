@@ -18,6 +18,8 @@ import {
 	RuntimeManager,
 	runtimeEngineRunFlags,
 	scheduledWakeRuntimeVersion,
+	serviceMailboxRuntimeEnvironment,
+	serviceMailboxRuntimeVersionSuffix,
 	serializeRuntimeEnvironment,
 	writeComputerControlState,
 } from "../src/runtime.mjs";
@@ -346,7 +348,7 @@ Operator is the old generic workspace label.
 Keep this customer-specific safety rule.
 `);
 		assert.equal(await initializeNamedAgentIdentity(workspace, agent), true);
-		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true), true);
+		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true, true), true);
 		const identity = await readFile(join(workspace, "IDENTITY.md"), "utf8");
 		const instructions = await readFile(join(workspace, "AGENTS.md"), "utf8");
 		assert.match(identity, /\*\*Name:\*\* Scout/);
@@ -357,10 +359,12 @@ Keep this customer-specific safety rule.
 		assert.match(instructions, /workspace belongs to \*\*Scout\*\*/);
 		assert.match(instructions, /operator.*role|“Operator” describes work/i);
 		assert.match(instructions, /persistent Chromium desktop/);
+		assert.match(instructions, /service_mailbox_list/);
+		assert.match(instructions, /untrusted input/);
 		assert.match(instructions, /Keep this customer-specific safety rule/);
 		assert.equal(await readFile(join(workspace, "MEMORY.md"), "utf8"), "Keep every durable memory.\n");
 		assert.equal(await initializeNamedAgentIdentity(workspace, agent), false);
-		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true), false);
+		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true, true), false);
 		assert.match(agentIdentityRuntimeVersionSuffix({ agent }), /^:agent-[0-9a-f]{12}$/);
 		assert.notEqual(
 			agentIdentityRuntimeVersionSuffix({ agent }),
@@ -369,6 +373,44 @@ Keep this customer-specific safety rule.
 	} finally {
 		await rm(workspace, { recursive: true, force: true });
 	}
+});
+
+test("service mailbox runtime authority is exact-context and never includes the provider key", () => {
+	const contextId = "front-desk:relationship:relationship-example";
+	const grant = { targetId: "front-desk", contextId, address: "scout@example.com" };
+	const config = {
+		server: { port: 3099 },
+		serviceMailbox: {
+			apiKey: "re_host_only_provider_key",
+			grants: [grant],
+			grantsByContextId: new Map([[contextId, grant]]),
+		},
+	};
+	const target = {
+		id: "front-desk",
+		hostGateway: "host.example",
+		outboundToken: "synthetic-outbound-secret",
+	};
+	const env = serviceMailboxRuntimeEnvironment(config, target, contextId);
+	assert.deepEqual(env, {
+		MOM_SERVICE_MAILBOX_URL: "http://host.example:3099",
+		MOM_SERVICE_MAILBOX_TOKEN: contextCapability(
+			target.outboundToken,
+			"service-mailbox",
+			contextId,
+		),
+		MOM_SERVICE_MAILBOX_ADDRESS: "scout@example.com",
+	});
+	assert.doesNotMatch(JSON.stringify(env), /host_only_provider_key/);
+	assert.match(serviceMailboxRuntimeVersionSuffix(config, target, contextId), /^:service-mailbox-v1-[0-9a-f]{12}$/);
+	assert.deepEqual(
+		serviceMailboxRuntimeEnvironment(config, target, "front-desk:relationship:someone-else"),
+		{},
+	);
+	assert.equal(
+		serviceMailboxRuntimeVersionSuffix(config, target, "front-desk:relationship:someone-else"),
+		"",
+	);
 });
 
 test("Zulip cutover migrates only old fixed customer-channel working output", async () => {
