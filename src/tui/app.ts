@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import {
 	AssistantMessageComponent,
@@ -53,6 +54,31 @@ const MAX_PENDING_LOCAL_ECHOES = 100;
 const ASSISTANT_ECHO_TTL_MS = 30_000;
 const INPUT_RECONCILIATION_TTL_MS = 30_000;
 const RUN_STATUS_POLL_MS = 500;
+
+const OSC133_ZONE_START = "\x1b]133;A\x07";
+const OSC133_ZONE_END = "\x1b]133;B\x07";
+const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
+
+class CompactTuiUserMessage extends UserMessageComponent {
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		if (lines.length < 3) return lines;
+		if (stripVTControlCharacters(lines[0] || "").trim()) return lines;
+		if (stripVTControlCharacters(lines[lines.length - 1] || "").trim()) return lines;
+
+		// Pi fixes user bubbles at one blank row above and below. Remove only
+		// those visually blank rows, then re-anchor its shell-integration zone.
+		const compact = lines.slice(1, -1);
+		if (compact.length === 0) return lines;
+		compact[0] = OSC133_ZONE_START + compact[0];
+		compact[compact.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL;
+		return compact;
+	}
+}
+
+export function createTuiUserMessage(text: string): UserMessageComponent {
+	return new CompactTuiUserMessage(text, getMarkdownTheme(), 1);
+}
 
 type AwarenessState = "connecting" | "live" | "reconnecting";
 type TranscriptContentKind = "user" | "text" | "tool";
@@ -722,7 +748,7 @@ class TroublemakerTuiApp {
 	private addUserMessage(channel: string, user: string, text: string): void {
 		this.chat.addChild(new Spacer(1));
 		this.chat.addChild(new Text(chalk.dim(`[${channel}] ${user}`), 1, 0));
-		this.chat.addChild(new UserMessageComponent(text, getMarkdownTheme(), 1));
+		this.chat.addChild(createTuiUserMessage(text));
 		this.lastTranscriptContent = "user";
 		this.ui.requestRender();
 	}
