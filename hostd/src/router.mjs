@@ -24,15 +24,15 @@ export class ContextRouter {
 		this.routingKey = routingKey;
 	}
 
-	ensurePrincipalScope(sender, { project, label } = {}) {
+	ensurePrincipalScope(sender, { project, label, targetId: requestedTargetId } = {}) {
 		const normalizedSender = sender.toLowerCase();
 		const principalHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
-		const targetId = this.config.routing.actorTarget;
+		const known = this.config.routing.knownPrincipals.find((principal) => principal.email === normalizedSender);
+		const targetId = requestedTargetId ?? known?.targetId ?? this.config.routing.actorTarget;
 		const target = this.config.targetsById.get(targetId);
 		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
 
 		this.store.ensurePrincipal(principalHash, normalizedSender, label);
-		const known = this.config.routing.knownPrincipals.find((principal) => principal.email === normalizedSender);
 		for (const project of known?.projects ?? []) {
 			this.store.ensureProject(principalHash, project.slug, project.name);
 		}
@@ -58,14 +58,15 @@ export class ContextRouter {
 		return this.config.routing.knownPrincipals.map((principal) => ({
 			email: principal.email,
 			name: principal.name,
-			...this.ensurePrincipalScope(principal.email),
+			...this.ensurePrincipalScope(principal.email, { targetId: principal.targetId }),
 		}));
 	}
 
 	ensurePhoneScope(contactAddress, { providerThreadId, label } = {}) {
 		const normalized = contactAddress.trim();
 		const principalHash = stablePrivateKey(this.routingKey, "phone-principal", normalized);
-		const targetId = this.config.routing.actorTarget;
+		const known = this.config.routing.knownPhonePrincipals?.find((principal) => principal.phone === normalized);
+		const targetId = known?.targetId ?? this.config.routing.actorTarget;
 		const target = this.config.targetsById.get(targetId);
 		if (!target) throw new Error(`router selected unavailable target ${targetId}`);
 		this.store.ensurePrincipal(principalHash, undefined, label);
@@ -149,7 +150,7 @@ export class ContextRouter {
 		});
 	}
 
-	resolve({ source, threadId, sender, project, label }) {
+	resolve({ source, threadId, sender, project, label, targetId }) {
 		const normalizedSender = sender.toLowerCase();
 		const principalHash = stablePrivateKey(this.routingKey, "email-principal", normalizedSender);
 		const existing = this.store.getRoute(source, threadId);
@@ -158,12 +159,15 @@ export class ContextRouter {
 				throw new RouteParticipantDeniedError(source, threadId);
 			}
 			this.store.ensurePrincipal(principalHash, normalizedSender, label);
+			if (targetId && existing.targetId !== targetId) {
+				throw new RelationshipContextMismatchError(source);
+			}
 			this.store.touchRoute(source, threadId);
 			this.store.touchRouteParticipant(source, threadId, principalHash);
 			return this.store.getRoute(source, threadId);
 		}
 
-		const scope = this.ensurePrincipalScope(normalizedSender, { project, label });
+		const scope = this.ensurePrincipalScope(normalizedSender, { project, label, targetId });
 		return this.store.bindRoute({
 			source,
 			providerThreadId: threadId,

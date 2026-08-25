@@ -39,6 +39,18 @@ export function scheduledWakeRuntimeVersion(config, target, contextId) {
 		: target.runtimeVersion;
 }
 
+export function computerRuntimeVersionSuffix(target) {
+	return target.computer?.enabled ? ":computer-v1" : "";
+}
+
+export function agentIdentityRuntimeVersionSuffix(target) {
+	if (!target.agent) return "";
+	return `:agent-${createHash("sha256")
+		.update(JSON.stringify(target.agent), "utf8")
+		.digest("hex")
+		.slice(0, 12)}`;
+}
+
 /** Derive one context workspace without accepting path input from schedule files. */
 export function contextWorkspacePath(target, contextId) {
 	const contextDirectory = resolve(
@@ -50,6 +62,73 @@ export function contextWorkspacePath(target, contextId) {
 		throw new Error(`context ${contextId} escaped its configured contexts directory`);
 	}
 	return join(contextDirectory, "workspace");
+}
+
+export function computerControlDirectory(target, contextId) {
+	return join(dirname(contextWorkspacePath(target, contextId)), "computer-control");
+}
+
+export function computerControlPath(target, contextId) {
+	return join(computerControlDirectory(target, contextId), "state.json");
+}
+
+function normalizedComputerControlState(value, now = Date.now()) {
+	if (
+		value?.version === 1
+		&& value.mode === "human"
+		&& typeof value.expiresAt === "string"
+		&& Date.parse(value.expiresAt) > now
+	) {
+		return {
+			version: 1,
+			mode: "human",
+			expiresAt: value.expiresAt,
+			updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : value.expiresAt,
+		};
+	}
+	return {
+		version: 1,
+		mode: "agent",
+		expiresAt: null,
+		updatedAt: typeof value?.updatedAt === "string" ? value.updatedAt : null,
+	};
+}
+
+export async function readComputerControlState(target, contextId, now = Date.now()) {
+	try {
+		return normalizedComputerControlState(
+			JSON.parse(await readFile(computerControlPath(target, contextId), "utf8")),
+			now,
+		);
+	} catch (error) {
+		if (error?.code === "ENOENT") return normalizedComputerControlState(undefined, now);
+		throw error;
+	}
+}
+
+export async function writeComputerControlState(target, contextId, mode, {
+	now = Date.now(),
+	leaseSeconds = 90,
+} = {}) {
+	if (mode !== "agent" && mode !== "human") throw new Error("invalid computer control mode");
+	const directory = computerControlDirectory(target, contextId);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	const state = {
+		version: 1,
+		mode,
+		expiresAt: mode === "human" ? new Date(now + leaseSeconds * 1000).toISOString() : null,
+		updatedAt: new Date(now).toISOString(),
+	};
+	await replacePrivateFile(computerControlPath(target, contextId), `${JSON.stringify(state)}\n`);
+	return state;
+}
+
+async function initializeComputerControlState(target, contextId) {
+	const directory = computerControlDirectory(target, contextId);
+	await mkdir(directory, { recursive: true, mode: 0o700 });
+	if (!(await exists(computerControlPath(target, contextId)))) {
+		await writeComputerControlState(target, contextId, "agent");
+	}
 }
 
 async function exists(path) {
@@ -89,6 +168,93 @@ async function replacePrivateFile(path, content) {
 		await unlink(temporaryPath).catch(() => {});
 		throw error;
 	}
+}
+
+function setIdentityField(content, label, value) {
+	const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const markdown = new RegExp(`^(\\s*-\\s*\\*\\*${escapedLabel}:\\*\\*\\s*).*$`, "mi");
+	if (markdown.test(content)) return content.replace(markdown, (_match, prefix) => `${prefix}${value}`);
+	const plain = new RegExp(`^(\\s*(?:-\\s*)?${escapedLabel}:\\s*).*$`, "mi");
+	if (plain.test(content)) return content.replace(plain, (_match, prefix) => `${prefix}${value}`);
+	const field = `- **${label}:** ${value}`;
+	const headingEnd = content.match(/^# .*\r?\n/m);
+	if (!headingEnd || headingEnd.index === undefined) return `${field}\n${content}`;
+	const insertAt = headingEnd.index + headingEnd[0].length;
+	return `${content.slice(0, insertAt)}\n${field}\n${content.slice(insertAt)}`;
+}
+
+const NAMED_AGENT_BLOCK_START = "<!-- hostd:named-fat-agent:start -->";
+const NAMED_AGENT_BLOCK_END = "<!-- hostd:named-fat-agent:end -->";
+
+function namedAgentInstructionBlock(agent, computerEnabled) {
+	const computer = computerEnabled
+		? `\n- The persistent Chromium desktop is your primary surface for operating existing websites and dashboards. Use the Hostd-managed \`cua\` tools so the owner can watch the same mouse and screen.\n- The owner may temporarily take the shared mouse and keyboard for passwords, MFA, CAPTCHA, or any sensitive step. While human control is active, do not attempt computer input. Inspect the visible state again after control returns.`
+		: "";
+	return `${NAMED_AGENT_BLOCK_START}
+# Hostd named Fat Agent contract
+
+This workspace belongs to **${agent.name}**. Your stable agent ID is \`${agent.id}\` and your service mailbox is \`${agent.email}\`. These identity rules override any older generic or inherited name elsewhere in this workspace.
+
+- ${agent.name} is the agent principal. “Operator” describes work you may perform; it is never your name or mailbox.
+- Use \`${agent.email}\` when the owner authorizes you to create or access an external service account. Treat inbox links, recovery messages, and one-time codes as private account material.
+- Never request that a password, session cookie, recovery code, or MFA secret be pasted into chat. Ask the owner to take control of the shared computer for sensitive entry.
+- Chat, web, phone, email, and MCP are projections into this same named agent. Preserve the current principal and project boundary supplied by Hostd; never merge another person's context.
+- Do not expose Hostd target IDs, routing hashes, capabilities, or other control-plane mechanics to users.
+- Verify consequential computer actions from visible state before claiming they succeeded.${computer}
+${NAMED_AGENT_BLOCK_END}`;
+}
+
+export async function initializeNamedAgentInstructions(workspace, agent, computerEnabled = false) {
+	if (!agent) return false;
+	const instructionsPath = join(workspace, "AGENTS.md");
+	let current;
+	try {
+		current = await readFile(instructionsPath, "utf8");
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+		current = "";
+	}
+	const block = namedAgentInstructionBlock(agent, computerEnabled);
+	const start = current.indexOf(NAMED_AGENT_BLOCK_START);
+	const end = current.indexOf(NAMED_AGENT_BLOCK_END);
+	if ((start === -1) !== (end === -1) || (start !== -1 && end < start)) {
+		throw new Error("AGENTS.md contains an incomplete Hostd named-agent block");
+	}
+	let next;
+	if (start === -1) {
+		next = current.trim()
+			? `${block}\n\n${current}`
+			: `${block}\n`;
+	} else {
+		const after = end + NAMED_AGENT_BLOCK_END.length;
+		next = `${current.slice(0, start)}${block}${current.slice(after)}`;
+	}
+	if (!next.endsWith("\n")) next += "\n";
+	if (next === current) return false;
+	await replacePrivateFile(instructionsPath, next);
+	return true;
+}
+
+export async function initializeNamedAgentIdentity(workspace, agent) {
+	if (!agent) return false;
+	const identityPath = join(workspace, "IDENTITY.md");
+	let current;
+	try {
+		current = await readFile(identityPath, "utf8");
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+		current = "# IDENTITY.md - Who Am I?\n";
+	}
+	let next = setIdentityField(current, "Name", agent.name);
+	next = setIdentityField(next, "Service mailbox", agent.email);
+	next = next.replace(
+		/^(\s*-\s*\*\*Name:\*\*\s+[^\r\n]+)\r?\n\s+_\(pick something you like\)_\r?\n/mi,
+		"$1\n",
+	);
+	if (!next.endsWith("\n")) next += "\n";
+	if (next === current) return false;
+	await replacePrivateFile(identityPath, next);
+	return true;
 }
 
 async function rebindHostManagedPhoneChannelRegistry(
@@ -240,6 +406,51 @@ export async function initializeHostMcpSettings(
 	});
 	const nextServers = [...unmanaged, ...managed];
 	if (JSON.stringify(existing) === JSON.stringify(nextServers)) return false;
+	settings.mcpServers = nextServers;
+	await writePrivateFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+	return true;
+}
+
+export async function initializeComputerUseSettings(workspace, target) {
+	if (!target.computer?.enabled) return false;
+	const settingsPath = join(workspace, "settings.json");
+	let settings = {};
+	try {
+		const parsed = JSON.parse(await readFile(settingsPath, "utf8"));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("settings.json must contain an object");
+		}
+		settings = parsed;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	const existing = Array.isArray(settings.mcpServers) ? settings.mcpServers : [];
+	const unmanaged = existing.filter((entry) => entry?.managedBy !== "hostd-computer");
+	if (unmanaged.some((entry) => entry?.alias === "cua")) {
+		throw new Error("Hostd computer alias conflicts with workspace settings: cua");
+	}
+	const computer = {
+		managedBy: "hostd-computer",
+		alias: "cua",
+		transport: "stdio",
+		command: "/usr/local/bin/cua-driver",
+		args: ["mcp"],
+		env: {
+			HOME: "/data",
+			DISPLAY: target.computer.display,
+			XDG_RUNTIME_DIR: "/tmp/cua-runtime",
+			CUA_DRIVER_PERMISSION_MODE: "bounded",
+			CUA_DRIVER_CAPABILITY_MANIFEST_FILE: "/etc/troublemaker/cua-capabilities.yaml",
+			CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED: "1",
+			TROUBLEMAKER_COMPUTER_CONTROL_FILE: "/run/troublemaker-hostd/computer-control/state.json",
+		},
+		scopes: ["computer:use"],
+	};
+	const nextServers = [...unmanaged, computer];
+	const changed = settings.display_mode !== "desktop"
+		|| JSON.stringify(existing) !== JSON.stringify(nextServers);
+	if (!changed) return false;
+	settings.display_mode = "desktop";
 	settings.mcpServers = nextServers;
 	await writePrivateFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 	return true;
@@ -786,6 +997,8 @@ export class RuntimeManager {
 				preserveTimestamps: true,
 			});
 		}
+		await initializeNamedAgentIdentity(workspace, target.agent);
+		await initializeNamedAgentInstructions(workspace, target.agent, target.computer?.enabled === true);
 		if (mattermost) {
 			await initializeMattermostWorkingOutput(workspace, mattermost.channelId);
 		}
@@ -862,7 +1075,11 @@ export class RuntimeManager {
 				serverPort: this.config.server.port,
 			});
 		}
-		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${mcpRuntimeVersionSuffix(this.config, this.store, contextId)}${runtimeModelVersionSuffix(runtimeModel)}`;
+		if (target.computer?.enabled) {
+			await initializeComputerControlState(target, contextId);
+			await initializeComputerUseSettings(workspace, target);
+		}
+		const expectedRuntimeVersion = `${scheduledWakeRuntimeVersion(this.config, target, contextId)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v2" : ""}${agentIdentityRuntimeVersionSuffix(target)}${computerRuntimeVersionSuffix(target)}${mcpRuntimeVersionSuffix(this.config, this.store, contextId)}${runtimeModelVersionSuffix(runtimeModel)}`;
 
 		let inspect = await run(
 			target.engine,
@@ -903,8 +1120,19 @@ export class RuntimeManager {
 			const scheduledWakesOwned = hostOwnsScheduledWakes(this.config, contextId);
 			const env = {
 				HOME: "/data",
+				...(target.agent ? {
+					TROUBLEMAKER_AGENT_NAME: target.agent.name,
+					TROUBLEMAKER_AGENT_PROFILE: target.agent.slug,
+					TROUBLEMAKER_LOCAL_AGENT_ID: target.agent.id,
+				} : {}),
 				...(this.config.webApp ? {
 					MOM_WEB_INPUT_TOKEN: contextCapability(target.inboundToken, "web-app", contextId),
+				} : {}),
+				...(target.computer?.enabled ? {
+					TROUBLEMAKER_COMPUTER_ENABLED: "1",
+					TROUBLEMAKER_COMPUTER_DISPLAY: target.computer.display,
+					TROUBLEMAKER_COMPUTER_WEBSOCKET_PORT: String(target.computer.websocketPort),
+					TROUBLEMAKER_COMPUTER_CONTROL_FILE: "/run/troublemaker-hostd/computer-control/state.json",
 				} : {}),
 				...(this.config.gmail ? {
 					MOM_EMAIL_INBOUND_TOKEN: contextCapability(target.inboundToken, "inbound", contextId),
@@ -995,7 +1223,7 @@ export class RuntimeManager {
 				"--memory",
 				target.memory,
 				"--pids-limit",
-				"512",
+				target.computer?.enabled ? "1024" : "512",
 				"--cap-drop=all",
 				"--security-opt=no-new-privileges",
 				"--env-file",
@@ -1003,6 +1231,14 @@ export class RuntimeManager {
 				"--volume",
 				`${workspace}:/data:rw`,
 			];
+			if (target.computer?.enabled) {
+				args.push(
+					"--shm-size",
+					"512m",
+					"--volume",
+					`${computerControlDirectory(target, contextId)}:/run/troublemaker-hostd/computer-control:ro`,
+				);
+			}
 			if (!target.immutableImage) {
 				args.push("--volume", `${target.checkout}:/opt/troublemaker:ro`);
 			}
@@ -1113,7 +1349,7 @@ export class RuntimeManager {
 				target,
 				context.id,
 			);
-			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v1" : ""}${mcpRuntimeVersionSuffix(this.config, this.store, context.id)}${runtimeModelVersionSuffix(runtimeModel)}`;
+			const expected = `${scheduledWakeRuntimeVersion(this.config, target, context.id)}${siteFactory ? ":sites-custody-v1" : ""}${this.config.webApp ? ":web-app-v2" : ""}${agentIdentityRuntimeVersionSuffix(target)}${computerRuntimeVersionSuffix(target)}${mcpRuntimeVersionSuffix(this.config, this.store, context.id)}${runtimeModelVersionSuffix(runtimeModel)}`;
 			const wasHostOwned = context.runtimeVersion?.includes(":scheduled-host-v1") === true;
 			if (context.runtimeVersion === expected || (!hostOwned && !wasHostOwned)) continue;
 			await this.stopOciContext(target, { ...context, contextId: context.id });

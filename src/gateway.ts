@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
@@ -140,6 +141,22 @@ export function isTrustedGatewayBrowserRequest(req: Pick<IncomingMessage, "heade
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
 	const first = Array.isArray(value) ? value[0] : value;
 	return first?.split(",", 1)[0]?.trim() || undefined;
+}
+
+export function isAuthorizedDesktopUpgrade(
+	req: Pick<IncomingMessage, "headers">,
+	expectedToken = process.env.MOM_WEB_INPUT_TOKEN,
+): boolean {
+	const expected = expectedToken?.trim() || "";
+	const authorization = firstHeaderValue(req.headers.authorization) || "";
+	const supplied = authorization.startsWith("Bearer ")
+		? authorization.slice("Bearer ".length)
+		: "";
+	const expectedBytes = Buffer.from(expected, "utf8");
+	const suppliedBytes = Buffer.from(supplied, "utf8");
+	return Boolean(expected)
+		&& expectedBytes.length === suppliedBytes.length
+		&& timingSafeEqual(expectedBytes, suppliedBytes);
 }
 
 function authorityHostname(value: string | undefined): string | undefined {
@@ -339,6 +356,51 @@ export class Gateway {
 			for (const [key, value] of Object.entries(headers)) {
 				const values = Array.isArray(value) ? value : [value];
 				for (const item of values) upstream.write(`${key}: ${item}\r\n`);
+			}
+			upstream.write("\r\n");
+			if (head.length > 0) upstream.write(head);
+			socket.pipe(upstream).pipe(socket);
+		});
+		upstream.on("error", () => socket.destroy());
+		socket.on("error", () => upstream.destroy());
+		return true;
+	}
+
+	private handleDesktopUpgrade(req: IncomingMessage, socket: Socket, head: Buffer): boolean {
+		const urlPath = (req.url || "").split("?", 1)[0];
+		if (urlPath !== "/desktop/socket" || process.env.TROUBLEMAKER_COMPUTER_ENABLED !== "1") {
+			return false;
+		}
+		if (!isAuthorizedDesktopUpgrade(req)) {
+			socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n");
+			socket.destroy();
+			return true;
+		}
+		const rawPort = process.env.TROUBLEMAKER_COMPUTER_WEBSOCKET_PORT || "6901";
+		if (!/^\d{4,5}$/.test(rawPort)) {
+			socket.destroy();
+			return true;
+		}
+		const port = Number(rawPort);
+		if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+			socket.destroy();
+			return true;
+		}
+
+		const upstream = connectSocket(port, "127.0.0.1");
+		upstream.on("connect", () => {
+			upstream.write("GET / HTTP/1.1\r\n");
+			upstream.write(`Host: 127.0.0.1:${port}\r\n`);
+			upstream.write("Connection: Upgrade\r\n");
+			upstream.write("Upgrade: websocket\r\n");
+			for (const header of [
+				"sec-websocket-key",
+				"sec-websocket-version",
+				"sec-websocket-protocol",
+				"sec-websocket-extensions",
+			]) {
+				const value = req.headers[header];
+				if (value) upstream.write(`${header}: ${Array.isArray(value) ? value.join(", ") : value}\r\n`);
 			}
 			upstream.write("\r\n");
 			if (head.length > 0) upstream.write(head);
@@ -949,6 +1011,9 @@ export class Gateway {
 				return;
 			}
 			if (this.handlePreviewUpgrade(req, socket, head)) {
+				return;
+			}
+			if (this.handleDesktopUpgrade(req, socket, head)) {
 				return;
 			}
 			const handler = this.upgradeRoutes.get(urlPath);

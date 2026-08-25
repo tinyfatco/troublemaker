@@ -15,6 +15,7 @@ const CONFIG = {
 const IDENTITY = {
 	subject: "00000000-0000-4000-8000-000000000001",
 	email: "casey@example.com",
+	agent: "scout",
 };
 
 function assertion(overrides = {}) {
@@ -47,6 +48,7 @@ test("rejects path, body, identity, and expiry tampering", () => {
 		{ path: "/v1/app/messages?project=other" },
 		{ body: Buffer.from('{"message":"Changed"}') },
 		{ headers: { ...assertion(), "x-tinyfat-app-email": "other@example.com" } },
+		{ headers: { ...assertion(), "x-tinyfat-app-agent": "other-agent" } },
 		{
 			headers: assertion({
 				timestamp: Math.floor(NOW / 1000) - 61,
@@ -64,7 +66,7 @@ test("rejects path, body, identity, and expiry tampering", () => {
 	}
 });
 
-test("rejects a replayed mutating assertion", () => {
+test("rejects a replayed assertion", () => {
 	const verifier = new WebAppAssertionVerifier(CONFIG, { now: () => NOW });
 	const request = {
 		headers: assertion(),

@@ -1,7 +1,8 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { TextContent } from "@earendil-works/pi-ai";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Type, type TSchema } from "typebox";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { readFileSync } from "node:fs";
 import * as log from "../log.js";
 import { requireNonblankToolLabel, requiredToolLabelSchema, stripToolPresentationArgs } from "../tools/tool-label.js";
 
@@ -32,6 +33,30 @@ interface PeekabooObservationBounds {
 }
 
 const peekabooObservationBounds = new WeakMap<Client, PeekabooObservationBounds>();
+const COMPUTER_USE_ALIASES = new Set(["cua", "cua-driver", "computer-use", "codex-computer-use"]);
+
+export function isComputerControlHeld(
+	alias: string,
+	controlFile = process.env.TROUBLEMAKER_COMPUTER_CONTROL_FILE,
+	now = Date.now(),
+): boolean {
+	if (!COMPUTER_USE_ALIASES.has(alias) || !controlFile) return false;
+	try {
+		const state = JSON.parse(readFileSync(controlFile, "utf8")) as {
+			version?: unknown;
+			mode?: unknown;
+			expiresAt?: unknown;
+		};
+		return state.version === 1
+			&& state.mode === "human"
+			&& typeof state.expiresAt === "string"
+			&& Date.parse(state.expiresAt) > now;
+	} catch {
+		// A missing or malformed optional gate cannot grant human control. Hostd
+		// mounts the real file read-only for computer-enabled OCI contexts.
+		return false;
+	}
+}
 
 function getStringArg(args: Record<string, unknown>, key: string): string | undefined {
 	const value = args[key];
@@ -281,7 +306,7 @@ export function wrapMcpTool(
 			params: unknown,
 			signal?: AbortSignal,
 			_onUpdate?: unknown,
-		): Promise<{ content: TextContent[]; details: undefined }> => {
+		): Promise<{ content: (TextContent | ImageContent)[]; details: undefined }> => {
 			requireNonblankToolLabel(params, namespacedName);
 			const toolArgs = stripToolPresentationArgs(params);
 			const normalizedArgs = normalizePeekabooToolArgs(alias, tool.name, toolArgs, client, namespacedName);
@@ -289,19 +314,43 @@ export function wrapMcpTool(
 
 			try {
 				if (signal?.aborted) throw signal.reason ?? new Error("Operation aborted");
+				if (isComputerControlHeld(alias)) {
+					return {
+						content: [{
+							type: "text",
+							text: "Computer use is paused while the user controls the shared desktop. Wait for them to return control.",
+						}],
+						details: undefined,
+					};
+				}
 				await maybePreMovePeekabooCursor(alias, tool.name, normalizedArgs, client, namespacedName, signal);
 				const result = await client.callTool({ name: tool.name, arguments: normalizedArgs }, undefined, { signal });
 
+				const content: (TextContent | ImageContent)[] = [];
 				const textParts: string[] = [];
 				if ("content" in result && Array.isArray(result.content)) {
 					for (const part of result.content) {
 						if (part.type === "text" && "text" in part) {
-							textParts.push(part.text as string);
+							const text = part.text as string;
+							textParts.push(text);
+							content.push({ type: "text", text });
+						} else if (
+							part.type === "image"
+							&& "data" in part
+							&& "mimeType" in part
+							&& typeof part.data === "string"
+							&& typeof part.mimeType === "string"
+							&& part.mimeType.startsWith("image/")
+						) {
+							content.push({ type: "image", data: part.data, mimeType: part.mimeType });
 						}
 					}
 				}
 
-				const text = textParts.length > 0 ? textParts.join("\n") : JSON.stringify(result);
+				const text = textParts.length > 0
+					? textParts.join("\n")
+					: (content.length > 0 ? "MCP tool returned image content" : JSON.stringify(result));
+				if (content.length === 0) content.push({ type: "text", text });
 				maybeRememberPeekabooObservation(alias, tool.name, client, text);
 				const isError = "isError" in result && result.isError === true;
 
@@ -310,7 +359,7 @@ export function wrapMcpTool(
 				}
 
 				return {
-					content: [{ type: "text", text }],
+					content,
 					details: undefined,
 				};
 			} catch (err) {

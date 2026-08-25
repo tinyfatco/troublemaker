@@ -13,6 +13,7 @@ export const WEB_APP_ASSERTION_HEADERS = Object.freeze({
 	nonce: "x-tinyfat-app-nonce",
 	subject: "x-tinyfat-app-subject",
 	email: "x-tinyfat-app-email",
+	agent: "x-tinyfat-app-agent",
 	signature: "x-tinyfat-app-signature",
 });
 
@@ -29,7 +30,7 @@ export function webAppBodyDigest(body = Buffer.alloc(0)) {
 }
 
 export function webAppCanonicalRequest({
-	version = "1",
+	version = "2",
 	issuer,
 	audience,
 	timestamp,
@@ -39,6 +40,7 @@ export function webAppCanonicalRequest({
 	bodyDigest,
 	subject,
 	email,
+	agent,
 }) {
 	return [
 		version,
@@ -51,6 +53,7 @@ export function webAppCanonicalRequest({
 		bodyDigest,
 		subject,
 		email.toLowerCase(),
+		agent.toLowerCase(),
 	].join("\n");
 }
 
@@ -63,6 +66,7 @@ export function createWebAppAssertionHeaders({
 	body = Buffer.alloc(0),
 	subject,
 	email,
+	agent,
 	timestamp = Math.floor(Date.now() / 1000),
 	nonce = randomUUID(),
 }) {
@@ -78,15 +82,17 @@ export function createWebAppAssertionHeaders({
 		bodyDigest: digest,
 		subject,
 		email: normalizedEmail,
+		agent,
 	});
 	return {
-		[WEB_APP_ASSERTION_HEADERS.version]: "1",
+		[WEB_APP_ASSERTION_HEADERS.version]: "2",
 		[WEB_APP_ASSERTION_HEADERS.issuer]: issuer,
 		[WEB_APP_ASSERTION_HEADERS.audience]: audience,
 		[WEB_APP_ASSERTION_HEADERS.timestamp]: String(timestamp),
 		[WEB_APP_ASSERTION_HEADERS.nonce]: nonce,
 		[WEB_APP_ASSERTION_HEADERS.subject]: subject,
 		[WEB_APP_ASSERTION_HEADERS.email]: normalizedEmail,
+		[WEB_APP_ASSERTION_HEADERS.agent]: agent.toLowerCase(),
 		[WEB_APP_ASSERTION_HEADERS.signature]: createHmac("sha256", secret)
 			.update(canonical)
 			.digest("hex"),
@@ -119,13 +125,15 @@ export class WebAppAssertionVerifier {
 		const nonce = requiredHeader(headers, WEB_APP_ASSERTION_HEADERS.nonce);
 		const subject = requiredHeader(headers, WEB_APP_ASSERTION_HEADERS.subject);
 		const email = requiredHeader(headers, WEB_APP_ASSERTION_HEADERS.email).toLowerCase();
+		const agent = requiredHeader(headers, WEB_APP_ASSERTION_HEADERS.agent).toLowerCase();
 		const signature = requiredHeader(headers, WEB_APP_ASSERTION_HEADERS.signature);
 
-		if (version !== "1" || issuer !== this.config.issuer || audience !== this.config.audience) {
+		if (version !== "2" || issuer !== this.config.issuer || audience !== this.config.audience) {
 			throw new WebAppAuthError();
 		}
 		if (!/^[A-Za-z0-9._:-]{1,256}$/.test(subject)) throw new WebAppAuthError();
 		if (!/^[^@\s]+@[^@\s]+$/.test(email) || email.length > 320) throw new WebAppAuthError();
+		if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(agent)) throw new WebAppAuthError();
 		if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) throw new WebAppAuthError();
 		if (!/^\d{10}$/.test(timestampText)) throw new WebAppAuthError();
 		if (!/^[0-9a-f]{64}$/.test(signature)) throw new WebAppAuthError();
@@ -148,6 +156,7 @@ export class WebAppAssertionVerifier {
 			bodyDigest: digest,
 			subject,
 			email,
+			agent,
 		});
 		const expected = Buffer.from(
 			createHmac("sha256", this.config.assertionSecret).update(canonical).digest("hex"),
@@ -159,12 +168,10 @@ export class WebAppAssertionVerifier {
 		}
 
 		this.pruneNonces(nowSeconds);
-		if (method.toUpperCase() !== "GET") {
-			if (this.usedNonces.has(nonce)) throw new WebAppAuthError();
-			this.usedNonces.set(nonce, timestamp + this.config.assertionTtlSeconds);
-		}
+		if (this.usedNonces.has(nonce)) throw new WebAppAuthError();
+		this.usedNonces.set(nonce, timestamp + this.config.assertionTtlSeconds);
 
-		return { subject, email };
+		return { subject, email, agent };
 	}
 
 	pruneNonces(nowSeconds) {

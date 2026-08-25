@@ -4,14 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	agentIdentityRuntimeVersionSuffix,
+	computerControlPath,
+	computerRuntimeVersionSuffix,
 	initializeChannelWorkingOutput,
 	contextWorkspacePath,
 	hostOwnsScheduledWakes,
+	initializeComputerUseSettings,
 	initializeMattermostWorkingOutput,
+	initializeNamedAgentIdentity,
+	initializeNamedAgentInstructions,
+	readComputerControlState,
 	RuntimeManager,
 	runtimeEngineRunFlags,
 	scheduledWakeRuntimeVersion,
 	serializeRuntimeEnvironment,
+	writeComputerControlState,
 } from "../src/runtime.mjs";
 import { contextCapability } from "../src/security.mjs";
 import { HostStore } from "../src/store.mjs";
@@ -239,6 +247,127 @@ test("private customer runtime initializes fixed topic-free Zulip working output
 		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("computer-enabled contexts receive one host-managed bounded CUA server", async () => {
+	const workspace = await mkdtemp(join(tmpdir(), "hostd-computer-settings-"));
+	const target = {
+		computer: { enabled: true, display: ":1", websocketPort: 6901 },
+	};
+	try {
+		await writeFile(join(workspace, "settings.json"), JSON.stringify({
+			defaultThinkingLevel: "high",
+			mcpServers: [{ alias: "local-tools", transport: "stdio", command: "example-tool" }],
+		}));
+		assert.equal(await initializeComputerUseSettings(workspace, target), true);
+		const settings = JSON.parse(await readFile(join(workspace, "settings.json"), "utf8"));
+		assert.equal(settings.defaultThinkingLevel, "high");
+		assert.equal(settings.display_mode, "desktop");
+		assert.deepEqual(settings.mcpServers, [
+			{ alias: "local-tools", transport: "stdio", command: "example-tool" },
+			{
+				managedBy: "hostd-computer",
+				alias: "cua",
+				transport: "stdio",
+				command: "/usr/local/bin/cua-driver",
+				args: ["mcp"],
+				env: {
+					HOME: "/data",
+					DISPLAY: ":1",
+					XDG_RUNTIME_DIR: "/tmp/cua-runtime",
+					CUA_DRIVER_PERMISSION_MODE: "bounded",
+					CUA_DRIVER_CAPABILITY_MANIFEST_FILE: "/etc/troublemaker/cua-capabilities.yaml",
+					CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED: "1",
+					TROUBLEMAKER_COMPUTER_CONTROL_FILE: "/run/troublemaker-hostd/computer-control/state.json",
+				},
+				scopes: ["computer:use"],
+			},
+		]);
+		assert.equal(await initializeComputerUseSettings(workspace, target), false);
+		assert.equal(computerRuntimeVersionSuffix(target), ":computer-v1");
+		assert.equal(computerRuntimeVersionSuffix({ computer: { enabled: false } }), "");
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
+	}
+});
+
+test("computer control is a host-owned expiring lease outside the agent workspace", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-computer-control-"));
+	const target = { contextsDirectory: join(directory, "contexts") };
+	const contextId = "front-desk:relationship:intake";
+	const now = Date.parse("2026-08-25T12:00:00Z");
+	try {
+		const workspace = contextWorkspacePath(target, contextId);
+		const controlPath = computerControlPath(target, contextId);
+		assert.equal(controlPath.startsWith(workspace), false);
+		assert.deepEqual(await readComputerControlState(target, contextId, now), {
+			version: 1,
+			mode: "agent",
+			expiresAt: null,
+			updatedAt: null,
+		});
+		await writeComputerControlState(target, contextId, "human", { now, leaseSeconds: 90 });
+		assert.deepEqual(await readComputerControlState(target, contextId, now + 89_000), {
+			version: 1,
+			mode: "human",
+			expiresAt: "2026-08-25T12:01:30.000Z",
+			updatedAt: "2026-08-25T12:00:00.000Z",
+		});
+		assert.equal((await readComputerControlState(target, contextId, now + 91_000)).mode, "agent");
+		await assert.rejects(
+			writeComputerControlState(target, contextId, "shared", { now }),
+			/invalid computer control mode/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Hostd reconciles the canonical named agent without replacing personality or memory", async () => {
+	const workspace = await mkdtemp(join(tmpdir(), "hostd-agent-identity-"));
+	const agent = {
+		id: "scout",
+		name: "Scout",
+		slug: "scout",
+		email: "scout@example.com",
+	};
+	try {
+		await writeFile(join(workspace, "IDENTITY.md"), `# IDENTITY.md - Who Am I?
+
+- **Name:** Previous Agent
+- **Creature:** an enormous brown sasquatch
+- **Vibe:** warm and practical
+`);
+		await writeFile(join(workspace, "MEMORY.md"), "Keep every durable memory.\n");
+		await writeFile(join(workspace, "AGENTS.md"), `# Legacy relationship instructions
+
+Operator is the old generic workspace label.
+Keep this customer-specific safety rule.
+`);
+		assert.equal(await initializeNamedAgentIdentity(workspace, agent), true);
+		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true), true);
+		const identity = await readFile(join(workspace, "IDENTITY.md"), "utf8");
+		const instructions = await readFile(join(workspace, "AGENTS.md"), "utf8");
+		assert.match(identity, /\*\*Name:\*\* Scout/);
+		assert.match(identity, /\*\*Service mailbox:\*\* scout@example\.com/);
+		assert.match(identity, /an enormous brown sasquatch/);
+		assert.match(identity, /warm and practical/);
+		assert.doesNotMatch(identity, /Previous Agent/);
+		assert.match(instructions, /workspace belongs to \*\*Scout\*\*/);
+		assert.match(instructions, /operator.*role|“Operator” describes work/i);
+		assert.match(instructions, /persistent Chromium desktop/);
+		assert.match(instructions, /Keep this customer-specific safety rule/);
+		assert.equal(await readFile(join(workspace, "MEMORY.md"), "utf8"), "Keep every durable memory.\n");
+		assert.equal(await initializeNamedAgentIdentity(workspace, agent), false);
+		assert.equal(await initializeNamedAgentInstructions(workspace, agent, true), false);
+		assert.match(agentIdentityRuntimeVersionSuffix({ agent }), /^:agent-[0-9a-f]{12}$/);
+		assert.notEqual(
+			agentIdentityRuntimeVersionSuffix({ agent }),
+			agentIdentityRuntimeVersionSuffix({ agent: { ...agent, name: "Scout Two" } }),
+		);
+	} finally {
+		await rm(workspace, { recursive: true, force: true });
 	}
 });
 

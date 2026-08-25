@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { wrapMcpTool } from "../src/mcp-client/wrap-tool.js";
+import { isComputerControlHeld, wrapMcpTool } from "../src/mcp-client/wrap-tool.js";
 
 interface RecordedCall {
 	name: string;
@@ -207,6 +210,70 @@ UI Elements:
 	controller.abort();
 	await assert.rejects(execution, /MCP request aborted/);
 	assert.equal(receivedSignal, controller.signal, "wrapped MCP tools receive the active run abort signal");
+}
+
+{
+	const client = {
+		async callTool() {
+			return {
+				content: [
+					{ type: "text", text: "Desktop captured" },
+					{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+				],
+			};
+		},
+	} as unknown as Client;
+	const wrapped = wrapMcpTool("cua", {
+		name: "get_desktop_state",
+		inputSchema: { type: "object", properties: {} },
+	}, client);
+	const result = await wrapped.execute("tool-image", { label: "Inspect the desktop" });
+	assert.deepEqual(result.content, [
+		{ type: "text", text: "Desktop captured" },
+		{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+	], "CUA screenshots remain visible to the model");
+}
+
+{
+	const directory = await mkdtemp(join(tmpdir(), "troublemaker-computer-control-"));
+	const controlFile = join(directory, "state.json");
+	const previous = process.env.TROUBLEMAKER_COMPUTER_CONTROL_FILE;
+	let calls = 0;
+	try {
+		await writeFile(controlFile, JSON.stringify({
+			version: 1,
+			mode: "human",
+			expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		}));
+		process.env.TROUBLEMAKER_COMPUTER_CONTROL_FILE = controlFile;
+		assert.equal(isComputerControlHeld("cua", controlFile), true);
+		const client = {
+			async callTool() {
+				calls++;
+				return { content: [{ type: "text", text: "clicked" }] };
+			},
+		} as unknown as Client;
+		const wrapped = wrapMcpTool("cua", {
+			name: "click",
+			inputSchema: { type: "object", properties: {} },
+		}, client);
+		const held = await wrapped.execute("tool-held", { label: "Click target" });
+		assert.equal(calls, 0, "the agent cannot inject input during a human takeover");
+		assert.match(held.content[0].type === "text" ? held.content[0].text : "", /user controls/);
+
+		await writeFile(controlFile, JSON.stringify({
+			version: 1,
+			mode: "human",
+			expiresAt: new Date(Date.now() - 1_000).toISOString(),
+		}));
+		assert.equal(isComputerControlHeld("cua", controlFile), false, "expired leases fail back to agent control");
+		await wrapped.execute("tool-expired", { label: "Click target" });
+		assert.equal(calls, 1);
+	} finally {
+		if (previous === undefined) delete process.env.TROUBLEMAKER_COMPUTER_CONTROL_FILE;
+		else process.env.TROUBLEMAKER_COMPUTER_CONTROL_FILE = previous;
+		await rm(directory, { recursive: true, force: true });
+	}
 }
 
 console.log("mcp cursor pre-move tests passed");

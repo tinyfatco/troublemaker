@@ -827,7 +827,29 @@ function webChatConfig(raw, environment) {
 	};
 }
 
-function webAppConfig(raw, environment, defaultAgentName) {
+function namedAgentConfig(raw, label) {
+	const agent = object(raw, label);
+	const id = text(agent.id, `${label}.id`).toLowerCase();
+	if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(id)) {
+		throw new Error(`${label}.id must be a stable agent identifier`);
+	}
+	const slug = text(agent.slug, `${label}.slug`).toLowerCase();
+	if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug)) {
+		throw new Error(`${label}.slug must be a DNS-safe slug`);
+	}
+	const email = normalizeAddress(agent.email, `${label}.email`);
+	if (email.split("@", 1)[0] !== slug) {
+		throw new Error(`${label}.email local part must match its slug`);
+	}
+	return {
+		id,
+		name: text(agent.name, `${label}.name`),
+		slug,
+		email,
+	};
+}
+
+function webAppConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const webApp = object(raw, "webApp");
 	const listenerHost = loopbackHost(webApp.host, "127.0.0.1", "webApp.host");
@@ -852,20 +874,54 @@ function webAppConfig(raw, environment, defaultAgentName) {
 	if (defaultProject && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(defaultProject)) {
 		throw new Error("webApp.defaultProject must be a project slug");
 	}
-	const rawPrincipalAliases = webApp.principalAliases ?? [];
-	if (!Array.isArray(rawPrincipalAliases)) {
-		throw new Error("webApp.principalAliases must be an array");
+	if (webApp.principalAliases !== undefined || webApp.agentName !== undefined) {
+		throw new Error("webApp principalAliases and agentName are obsolete; configure accountBindings");
 	}
-	const principalAliases = rawPrincipalAliases.map((candidate, index) => {
-		const label = `webApp.principalAliases[${index}]`;
-		const alias = object(candidate, label);
+	const rawAccountBindings = webApp.accountBindings;
+	if (!Array.isArray(rawAccountBindings) || rawAccountBindings.length === 0) {
+		throw new Error("webApp.accountBindings must contain at least one account-owned agent");
+	}
+	const accountBindings = rawAccountBindings.map((candidate, index) => {
+		const label = `webApp.accountBindings[${index}]`;
+		const binding = object(candidate, label);
+		const agent = namedAgentConfig(binding.agent, `${label}.agent`);
+		const hasPrincipalEmail = binding.principalEmail !== undefined;
+		const hasPrincipalPhone = binding.principalPhone !== undefined;
+		if (hasPrincipalEmail === hasPrincipalPhone) {
+			throw new Error(`${label} must configure exactly one of principalEmail or principalPhone`);
+		}
+		const subject = text(binding.subject, `${label}.subject`);
+		if (!/^[A-Za-z0-9._:-]{1,256}$/.test(subject)) {
+			throw new Error(`${label}.subject contains unsupported characters`);
+		}
+		const role = binding.role === undefined
+			? "owner"
+			: text(binding.role, `${label}.role`).toLowerCase();
+		if (!["owner", "operator", "viewer"].includes(role)) {
+			throw new Error(`${label}.role must be owner, operator, or viewer`);
+		}
 		return {
-			email: normalizeAddress(alias.email, `${label}.email`),
-			principalEmail: normalizeAddress(alias.principalEmail, `${label}.principalEmail`),
+			accountEmail: normalizeAddress(binding.accountEmail, `${label}.accountEmail`),
+			...(hasPrincipalEmail ? {
+				principalEmail: normalizeAddress(binding.principalEmail, `${label}.principalEmail`),
+			} : {}),
+			...(hasPrincipalPhone ? {
+				principalPhone: normalizePhoneAddress(binding.principalPhone, `${label}.principalPhone`),
+			} : {}),
+			subject,
+			role,
+			agent: {
+				...agent,
+				targetId: text(binding.agent.targetId, `${label}.agent.targetId`),
+			},
 		};
 	});
-	if (new Set(principalAliases.map((alias) => alias.email)).size !== principalAliases.length) {
-		throw new Error("webApp.principalAliases cannot repeat an authenticated email");
+	if (new Set(accountBindings.map((binding) => binding.accountEmail)).size !== accountBindings.length) {
+		throw new Error("webApp.accountBindings cannot repeat an account email");
+	}
+	const configuredSubjects = accountBindings.map((binding) => binding.subject);
+	if (new Set(configuredSubjects).size !== configuredSubjects.length) {
+		throw new Error("webApp.accountBindings cannot repeat an account subject");
 	}
 	return {
 		host: listenerHost,
@@ -888,10 +944,7 @@ function webAppConfig(raw, environment, defaultAgentName) {
 			1024 * 1024,
 		),
 		defaultProject,
-		principalAliases,
-		agentName: webApp.agentName === undefined
-			? defaultAgentName
-			: text(webApp.agentName, "webApp.agentName"),
+		accountBindings,
 	};
 }
 
@@ -1276,6 +1329,31 @@ function targetConfig(raw, index, environment) {
 	const rawSkills = target.skills === undefined
 		? []
 		: (Array.isArray(target.skills) ? target.skills : [target.skills]);
+	const computer = target.computer === undefined
+		? { enabled: false, display: ":1", websocketPort: 6901 }
+		: (() => {
+			const candidate = object(target.computer, `targets[${index}].computer`);
+			const display = candidate.display === undefined
+				? ":1"
+				: text(candidate.display, `targets[${index}].computer.display`);
+			if (!/^:[1-9]\d{0,2}$/.test(display)) {
+				throw new Error(`targets[${index}].computer.display must be an X11 display number`);
+			}
+			return {
+				enabled: boolean(candidate.enabled, true, `targets[${index}].computer.enabled`),
+				display,
+				websocketPort: integer(
+					candidate.websocketPort,
+					6901,
+					`targets[${index}].computer.websocketPort`,
+					1024,
+					65535,
+				),
+			};
+		})();
+	const agent = target.agent === undefined
+		? undefined
+		: namedAgentConfig(target.agent, `targets[${index}].agent`);
 	return {
 		...common,
 		engine: target.engine === undefined ? "docker" : text(target.engine, `targets[${index}].engine`),
@@ -1302,6 +1380,8 @@ function targetConfig(raw, index, environment) {
 		),
 		outboundToken: envSecret(target.outboundTokenEnv, `targets[${index}].outboundTokenEnv`, environment),
 		runtimeEnv,
+		computer,
+		agent,
 	};
 }
 
@@ -1320,6 +1400,9 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("targets must contain at least one target");
 	}
 	const targets = raw.targets.map((target, index) => targetConfig(target, index, environment));
+	if (new Set(targets.map((target) => target.id)).size !== targets.length) {
+		throw new Error("targets cannot repeat an id");
+	}
 	if (openAi?.scope.mode === "all") {
 		const hostOwnedModelKeys = new Set([
 			"MOM_MODEL_PROVIDER",
@@ -1354,7 +1437,7 @@ export async function loadConfig(path, environment = process.env) {
 	const phone = phoneConfig(raw.phone, environment);
 	const metaContact = metaContactConfig(raw.metaContact, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
-	const webApp = webAppConfig(raw.webApp, environment, company.actor);
+	const webApp = webAppConfig(raw.webApp, environment);
 	const mcp = mcpConfig(raw.mcp, environment);
 	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
@@ -1460,6 +1543,9 @@ export async function loadConfig(path, environment = process.env) {
 		return {
 			email: normalizeAddress(principal.email, `${principalLabel}.email`),
 			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			targetId: principal.targetId === undefined
+				? actorTarget
+				: text(principal.targetId, `${principalLabel}.targetId`),
 			projects: projects.map((rawProject, projectIndex) => {
 				const projectLabel = `${principalLabel}.projects[${projectIndex}]`;
 				const project = object(rawProject, projectLabel);
@@ -1483,15 +1569,12 @@ export async function loadConfig(path, environment = process.env) {
 			}),
 		};
 	});
-	if (webApp) {
-		const configuredEmails = new Set(configuredPrincipals.map((principal) => principal.email));
-		for (const alias of webApp.principalAliases) {
-			if (configuredEmails.has(alias.email)) {
-				throw new Error("webApp.principalAliases cannot replace a configured principal email");
-			}
-			if (!configuredEmails.has(alias.principalEmail)) {
-				throw new Error(`webApp principal alias references unknown principal ${alias.principalEmail}`);
-			}
+	for (const [index, principal] of configuredPrincipals.entries()) {
+		if (!targetIds.has(principal.targetId)) {
+			throw new Error(`routing.knownPrincipals[${index}].targetId references unknown target ${principal.targetId}`);
+		}
+		if (targets.find((target) => target.id === principal.targetId)?.driver !== "oci") {
+			throw new Error(`routing.knownPrincipals[${index}].targetId must reference an OCI target`);
 		}
 	}
 	const configuredPhonePrincipals = knownPhonePrincipals.map((candidate, index) => {
@@ -1505,6 +1588,9 @@ export async function loadConfig(path, environment = process.env) {
 		return {
 			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
 			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			targetId: principal.targetId === undefined
+				? actorTarget
+				: text(principal.targetId, `${principalLabel}.targetId`),
 			model: principalModelConfig(principal.model, `${principalLabel}.model`, workersAi),
 			siteDeployments,
 			siteFactory,
@@ -1514,6 +1600,59 @@ export async function loadConfig(path, environment = process.env) {
 	});
 	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
 		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
+	}
+	for (const [index, principal] of configuredPhonePrincipals.entries()) {
+		if (!targetIds.has(principal.targetId)) {
+			throw new Error(`routing.knownPhonePrincipals[${index}].targetId references unknown target ${principal.targetId}`);
+		}
+		if (targets.find((target) => target.id === principal.targetId)?.driver !== "oci") {
+			throw new Error(`routing.knownPhonePrincipals[${index}].targetId must reference an OCI target`);
+		}
+	}
+	if (webApp) {
+		const configuredEmails = new Set(configuredPrincipals.map((principal) => principal.email));
+		const configuredPhones = new Set(configuredPhonePrincipals.map((principal) => principal.phone));
+		const agents = new Map();
+		for (const [index, binding] of webApp.accountBindings.entries()) {
+			const label = `webApp.accountBindings[${index}]`;
+			if (binding.principalEmail && !configuredEmails.has(binding.principalEmail)) {
+				throw new Error(`${label}.principalEmail references unknown principal ${binding.principalEmail}`);
+			}
+			if (binding.principalPhone && !configuredPhones.has(binding.principalPhone)) {
+				throw new Error(`${label}.principalPhone references unknown phone principal`);
+			}
+			if (!targetIds.has(binding.agent.targetId)) {
+				throw new Error(`${label}.agent.targetId references unknown target ${binding.agent.targetId}`);
+			}
+			const selectedTarget = targets.find((target) => target.id === binding.agent.targetId);
+			if (selectedTarget?.driver !== "oci") {
+				throw new Error(`${label}.agent.targetId must reference an OCI target`);
+			}
+			if (!selectedTarget.agent) {
+				throw new Error(`${label}.agent.targetId must reference a target with named agent identity`);
+			}
+			const bindingIdentity = {
+				id: binding.agent.id,
+				name: binding.agent.name,
+				slug: binding.agent.slug,
+				email: binding.agent.email,
+			};
+			if (JSON.stringify(bindingIdentity) !== JSON.stringify(selectedTarget.agent)) {
+				throw new Error(`${label}.agent identity must match its target identity`);
+			}
+			const principal = binding.principalEmail
+				? configuredPrincipals.find((candidate) => candidate.email === binding.principalEmail)
+				: configuredPhonePrincipals.find((candidate) => candidate.phone === binding.principalPhone);
+			if (principal.targetId !== binding.agent.targetId) {
+				throw new Error(`${label}.agent.targetId must match its principal target`);
+			}
+			const prior = agents.get(binding.agent.id);
+			const identity = JSON.stringify(binding.agent);
+			if (prior && prior !== identity) {
+				throw new Error(`webApp agent ${binding.agent.id} has conflicting identity metadata`);
+			}
+			agents.set(binding.agent.id, identity);
+		}
 	}
 	const siteFactories = configuredPrincipals.flatMap((principal) => (
 		principal.projects
