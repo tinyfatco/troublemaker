@@ -8,10 +8,10 @@ import {
 	initTheme,
 } from "@earendil-works/pi-coding-agent";
 import {
-	Box,
 	CombinedAutocompleteProvider,
 	Container,
 	Editor,
+	isKeyRelease,
 	Key,
 	Loader,
 	ProcessTerminal,
@@ -41,6 +41,12 @@ import {
 	toAssistantSnapshot,
 	type TuiHistoryEntry,
 } from "./protocol.js";
+import {
+	TerminalToolCallRegistry,
+	TerminalToolCallStream,
+	ToolSelectorSequence,
+	type TerminalToolCallView,
+} from "./tool-inspector.js";
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
@@ -92,8 +98,9 @@ class TroublemakerTuiApp {
 	private readonly statusContainer = new Container();
 	private readonly inputMargin = new Spacer(1);
 	private readonly editorContainer = new Container();
-	private readonly footer = new Container();
 	private readonly editor: Editor;
+	private readonly toolCalls = new TerminalToolCallRegistry();
+	private readonly toolSelectorInput: ToolSelectorSequence;
 	private status: TuiAgentStatus;
 	private activeAbort: AbortController | null = null;
 	private activeTurn: Container | null = null;
@@ -153,20 +160,21 @@ class TroublemakerTuiApp {
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
+		this.toolSelectorInput = new ToolSelectorSequence((selector) => {
+			if (this.toolCalls.toggle(selector)) this.ui.requestRender(true);
+		});
 	}
 
 	async run(historyLines: string[]): Promise<void> {
 		this.rebuildHeader();
 		this.renderHistory(historyLines);
 		this.editorContainer.addChild(this.editor);
-		this.rebuildFooter();
 
 		this.ui.addChild(this.header);
 		this.ui.addChild(this.chat);
 		this.ui.addChild(this.statusContainer);
 		this.ui.addChild(this.inputMargin);
 		this.ui.addChild(this.editorContainer);
-		this.ui.addChild(this.footer);
 		this.ui.setFocus(this.editor);
 		this.ui.addInputListener((data) => this.handleGlobalInput(data));
 		this.terminal.setTitle(`${this.status.agentName} · Troublemaker`);
@@ -183,6 +191,8 @@ class TroublemakerTuiApp {
 	}
 
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
+		if (this.toolSelectorInput.handleInput(data)) return { consume: true };
+		if (isKeyRelease(data)) return undefined;
 		if (matchesKey(data, Key.ctrl("c"))) {
 			if (this.activeAbort) void this.requestStop();
 			else void this.shutdown();
@@ -258,7 +268,7 @@ class TroublemakerTuiApp {
 			return true;
 		}
 		if (command === "/help") {
-			this.addNotice("/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
+			this.addNotice("Tool calls show a number such as [12]. Press Ctrl+T, release it, type the number, and pause briefly to expand or close its details. Terminals with enhanced keyboard reporting also support holding Ctrl while typing the number.\n\n/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
 			return true;
 		}
 		if (command === "/reload") {
@@ -285,7 +295,12 @@ class TroublemakerTuiApp {
 		}
 		// Assistant snapshots are rendered exclusively from the unified live
 		// feed. The POST response remains the control/compatibility channel.
-		if (toAssistantSnapshot(event)) return;
+		const snapshot = toAssistantSnapshot(event);
+		if (snapshot) {
+			this.toolCalls.updateSnapshot(snapshot, false);
+			this.ui.requestRender();
+			return;
+		}
 		if (event.type === "error") {
 			this.addError(event.message, this.activeTurn || this.chat);
 			this.clearLoader();
@@ -559,8 +574,15 @@ class TroublemakerTuiApp {
 			this.resolveAwarenessChannel(entry);
 			if (this.rememberAwarenessId(entry.id)) newIds.add(entry.id);
 		}
-		for (const entry of entries.filter((entry) => entry.role !== "toolResult").slice(-HISTORY_RENDER_LIMIT)) {
-			if (!newIds.has(entry.id)) continue;
+		const visibleEntries = entries.filter((entry) => entry.role !== "toolResult").slice(-HISTORY_RENDER_LIMIT);
+		const visibleIds = new Set(visibleEntries.map((entry) => entry.id));
+		const firstVisibleIndex = visibleEntries[0] ? entries.indexOf(visibleEntries[0]) : entries.length;
+		for (const entry of entries.slice(firstVisibleIndex)) {
+			if (entry.role === "toolResult") {
+				this.renderAwarenessEntry(entry, true);
+				continue;
+			}
+			if (!visibleIds.has(entry.id) || !newIds.has(entry.id)) continue;
 			if (entry.role === "user") {
 				const inputs = entry.batchedUserEntries || (entry.text ? [{
 					channel: entry.channel || "awareness",
@@ -645,6 +667,11 @@ class TroublemakerTuiApp {
 	}
 
 	private renderAwarenessEntry(entry: TuiHistoryEntry, complete: boolean): void {
+		if (entry.role === "toolResult") {
+			this.toolCalls.updateResults(entry.content);
+			this.ui.requestRender();
+			return;
+		}
 		if (entry.role === "user" && entry.batchedUserEntries) {
 			for (const message of entry.batchedUserEntries) {
 				this.addUserMessage(message.channel, message.userName, message.text);
@@ -679,10 +706,9 @@ class TroublemakerTuiApp {
 		precedingContent: TranscriptContentKind | null = null,
 	): TranscriptContentKind | null {
 		target.clear();
-		const results = new Map(snapshot.content
-			.filter((block) => block.type === "toolResult")
-			.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
+		const toolViews = this.toolCalls.updateSnapshot(snapshot, historical);
 		let textGroup: TextContent[] = [];
+		let toolGroup: TerminalToolCallView[] = [];
 		let previousKind = precedingContent;
 		let renderedKind: TranscriptContentKind | null = null;
 		const flushText = () => {
@@ -698,23 +724,27 @@ class TroublemakerTuiApp {
 			previousKind = "text";
 			renderedKind = "text";
 		};
+		const flushTools = () => {
+			if (toolGroup.length === 0) return;
+			if (previousKind !== "tool") target.addChild(new Spacer(1));
+			target.addChild(new TerminalToolCallStream(toolGroup));
+			toolGroup = [];
+			previousKind = "tool";
+			renderedKind = "tool";
+		};
 
-		for (const block of snapshot.content) {
+		for (const [contentIndex, block] of snapshot.content.entries()) {
 			if (block.type === "text" && block.text.trim()) {
+				flushTools();
 				textGroup.push({ type: "text", text: block.text });
 				continue;
 			}
 			if (block.type !== "toolCall") continue;
 			flushText();
-			const label = safeToolLabel(block);
-			if (!label) continue;
-			if (previousKind !== "tool") target.addChild(new Spacer(1));
-			const result = results.get(block.id);
-			const state = result ? (result.isError ? "error" : "success") : historical ? "success" : "pending";
-			target.addChild(createToolLabel(label, state));
-			previousKind = "tool";
-			renderedKind = "tool";
+			const view = toolViews.get(contentIndex);
+			if (view) toolGroup.push(view);
 		}
+		flushTools();
 		flushText();
 		return renderedKind;
 	}
@@ -1052,11 +1082,6 @@ class TroublemakerTuiApp {
 		this.ui.requestRender();
 	}
 
-	private rebuildFooter(): void {
-		this.footer.clear();
-		this.footer.addChild(new Text(chalk.dim("enter send · esc stop · ctrl-c exit · /help"), 1, 0));
-	}
-
 	private registerSignals(): void {
 		const bind = (signal: NodeJS.Signals) => {
 			const handler = () => { void this.shutdown(); };
@@ -1070,6 +1095,7 @@ class TroublemakerTuiApp {
 	private async shutdown(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.toolSelectorInput.dispose();
 		this.awarenessAbort.abort();
 		for (const controller of this.steeringAborts) controller.abort();
 		this.steeringAborts.clear();
@@ -1085,14 +1111,6 @@ class TroublemakerTuiApp {
 		this.resolveDone?.();
 		this.resolveDone = null;
 	}
-}
-
-function createToolLabel(label: string, state: "pending" | "success" | "error"): Box {
-	const color = state === "error" ? chalk.red : state === "success" ? chalk.green : chalk.yellow;
-	const icon = state === "error" ? "×" : state === "success" ? "✓" : "→";
-	const box = new Box(1, 0);
-	box.addChild(new Text(`${color(icon)} ${chalk.bold(label)}`, 0, 0));
-	return box;
 }
 
 function toPiAssistantMessage(snapshot: RuntimeAssistantSnapshotEntry, content: TextContent[]): AssistantMessage {

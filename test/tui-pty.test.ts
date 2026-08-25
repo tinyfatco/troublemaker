@@ -14,6 +14,29 @@ let resolveSteer!: () => void;
 const steerReceived = new Promise<void>((resolvePromise) => {
 	resolveSteer = resolvePromise;
 });
+const toolHistoryLine = JSON.stringify({
+	type: "message",
+	id: "history-tools",
+	timestamp: "2026-01-02T03:04:04Z",
+	message: {
+		role: "assistant",
+		content: [
+			...Array.from({ length: 12 }, (_, index) => ({
+				type: "toolCall",
+				id: `history-tool-${index + 1}`,
+				name: "example_tool",
+				label: `History check ${index + 1}`,
+				arguments: index === 11 ? { marker: "SYNTHETIC_TARGET_DETAIL" } : {},
+			})),
+			{
+				type: "toolResult",
+				toolCallId: "history-tool-12",
+				result: "SYNTHETIC_TARGET_RESULT",
+				isError: false,
+			},
+		],
+	},
+});
 const ambientLine = JSON.stringify({
 	type: "message",
 	id: "ambient-1",
@@ -181,7 +204,7 @@ const server = createServer(async (req, res) => {
 	}
 	if (req.url?.startsWith("/api/v2/agents/current/events")) {
 		res.writeHead(200, { "Content-Type": "application/json" });
-		res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+		res.end(JSON.stringify({ lines: [toolHistoryLine], total: 1, offset: 0 }));
 		return;
 	}
 	if (req.url === "/awareness/stream") {
@@ -408,7 +431,7 @@ try {
 set timeout 8
 spawn -noecho {${installed.commandPath}}
 expect {
-  -re {enter.*send} {}
+  {Demo Agent} {}
   timeout { puts stderr "TUI prompt timeout"; exit 2 }
   eof { puts stderr "TUI exited before prompt"; exit 3 }
 }
@@ -478,7 +501,27 @@ expect {
   timeout { puts stderr "Goal continuation output ordering timeout"; exit 32 }
   eof { puts stderr "TUI exited before goal continuation output"; exit 33 }
 }
-send -- "run a check\\r"
+send -- "run a check"
+send -- "\\024"
+send -- "12"
+expect {
+  {SYNTHETIC_TARGET_DETAIL} {}
+  timeout { puts stderr "Multi-digit tool selector expansion timeout"; exit 36 }
+  eof { puts stderr "TUI exited before numbered tool details"; exit 37 }
+}
+expect {
+  {SYNTHETIC_TARGET_RESULT} {}
+  timeout { puts stderr "Tool result detail timeout"; exit 38 }
+  eof { puts stderr "TUI exited before tool result details"; exit 39 }
+}
+send -- "\\024"
+send -- "12"
+expect {
+  -re {\[12\].*▸} {}
+  timeout { puts stderr "Multi-digit tool selector collapse timeout"; exit 40 }
+  eof { puts stderr "TUI exited before numbered tool collapse"; exit 41 }
+}
+send -- "\\r"
 expect {
   {All done.} {}
   timeout { puts stderr "TUI response timeout"; exit 4 }
@@ -527,6 +570,9 @@ expect eof
 	assert.match(visibleOutput(output), /terminal:demo-agent/);
 
 	const rendered = visibleOutput(output);
+	assert.match(rendered, /\[12\].*History check 12/);
+	assert.match(rendered, /SYNTHETIC_TARGET_DETAIL/);
+	assert.match(rendered, /SYNTHETIC_TARGET_RESULT/);
 	assert.match(rendered, /Checking the workspace/);
 	assert.match(rendered, /All done\./);
 	assert.match(rendered, /Compacting context\.\.\./);
@@ -554,6 +600,7 @@ expect eof
 	assert.match(rendered, /\[slack:#general\] Taylor/);
 	assert.match(rendered, /awareness live/);
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
+	assert.doesNotMatch(rendered, /enter send/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
 	assert.doesNotMatch(rendered, /EXTERNAL_PRIVATE_COMMAND/);
 	assert.doesNotMatch(rendered, /private route/);

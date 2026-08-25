@@ -70,6 +70,7 @@ async function run() {
   console.log("\nTest 3: Unified runtime event delivery is sanitized");
 
   const runtimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live");
+  const toolDetailPromise = collectEvents(2, 5000, "/api/v2/agents/current/live?details=tools");
   await sleep(200);
   const inputEnvelope = gw.publishRuntimeEvent({
     runId: "external-run",
@@ -96,20 +97,28 @@ async function run() {
       content: [
         { type: "thinking", thinking: "PRIVATE_THINKING" },
         { type: "toolCall", id: "tool-1", name: "bash", label: "Checking safely", arguments: { command: "PRIVATE_ARGUMENT" } },
+        { type: "toolOutput", toolCallId: "tool-1", stream: "stdout", text: "PRIVATE_OUTPUT" },
         { type: "toolResult", toolCallId: "tool-1", result: "PRIVATE_RESULT", isError: false },
       ],
     },
   });
   const runtimeEvents = await runtimePromise;
+  const toolDetailEvents = await toolDetailPromise;
   const inputPayload = runtimeEvents.find((event) => event.includes('"type":"user_input"')) || "";
   const runtimePayload = runtimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
+  const toolDetailPayload = toolDetailEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
   assert(inputPayload.includes("Visible webhook input"), "unified feed carries the sanitized webhook input");
   assert(inputEnvelope.sequence < assistantEnvelope.sequence, "webhook input is sequenced before assistant paint events");
   assert(runtimePayload.includes('"kind":"runtime"'), "unified feed identifies runtime events");
   assert(runtimePayload.includes("Checking safely"), "unified feed preserves safe tool labels");
   assert(!runtimePayload.includes("PRIVATE_ARGUMENT"), "unified feed removes raw tool arguments");
+  assert(!runtimePayload.includes("PRIVATE_OUTPUT"), "unified feed removes raw tool output");
   assert(!runtimePayload.includes("PRIVATE_RESULT"), "unified feed removes raw tool results");
   assert(!runtimePayload.includes("PRIVATE_THINKING"), "unified feed removes thinking content");
+  assert(toolDetailPayload.includes("PRIVATE_ARGUMENT"), "explicit terminal detail subscriptions receive tool arguments");
+  assert(toolDetailPayload.includes("PRIVATE_OUTPUT"), "explicit terminal detail subscriptions receive tool output");
+  assert(toolDetailPayload.includes("PRIVATE_RESULT"), "explicit terminal detail subscriptions receive tool results");
+  assert(!toolDetailPayload.includes("PRIVATE_THINKING"), "terminal detail subscriptions still remove thinking content");
 
   const runtimeSequence = Number((JSON.parse(runtimePayload) as { sequence: number }).sequence);
   const statusEnvelope = gw.publishRuntimeEvent({ runId: "external-run", channelId: "voice", source: "voice" }, {

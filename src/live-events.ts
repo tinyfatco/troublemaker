@@ -17,10 +17,20 @@ export interface LiveEventSubscription {
 	unsubscribe(): void;
 }
 
+export interface LiveEventSubscriptionOptions {
+	/** Include tool arguments, output, and results. Thinking remains excluded. */
+	toolDetails?: boolean;
+}
+
+interface LiveEventSubscriber {
+	listener: (event: RuntimeLiveEvent) => void;
+	toolDetails: boolean;
+}
+
 /**
  * Small in-process fanout with bounded reconnect replay. It deliberately owns
- * no platform behavior: producers publish sanitized events and transports
- * subscribe to one ordered sequence.
+ * no platform behavior: transports subscribe to one ordered sequence and each
+ * subscription receives its requested projection.
  */
 export class RuntimeLiveEventHub {
 	private sequence = 0;
@@ -29,7 +39,7 @@ export class RuntimeLiveEventHub {
 	private readonly activeRuns = new Map<string, RuntimeLiveEvent>();
 	private readonly activeSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly latestSteering = new Map<string, RuntimeLiveEvent>();
-	private readonly subscribers = new Set<(event: RuntimeLiveEvent) => void>();
+	private readonly subscribers = new Set<LiveEventSubscriber>();
 
 	constructor(private readonly historyLimit = DEFAULT_HISTORY_LIMIT) {}
 
@@ -38,18 +48,27 @@ export class RuntimeLiveEventHub {
 	}
 
 	publishRuntime(metadata: RuntimeLiveRunMetadata, event: RuntimeStreamEvent): RuntimeLiveEvent {
-		return this.publish({
+		const published = this.publish({
 			kind: "runtime",
 			...metadata,
-			event: projectRuntimeEventForTerminal(event),
+			event,
 		});
+		return projectLiveEventForTerminal(published, false);
 	}
 
 	publishReset(reason: "context_rotated" | "replay_gap"): RuntimeLiveEvent {
 		return this.publish({ kind: "reset", reason });
 	}
 
-	subscribe(listener: (event: RuntimeLiveEvent) => void, afterSequence = 0): LiveEventSubscription {
+	subscribe(
+		listener: (event: RuntimeLiveEvent) => void,
+		afterSequence = 0,
+		options: LiveEventSubscriptionOptions = {},
+	): LiveEventSubscription {
+		const subscriber: LiveEventSubscriber = {
+			listener,
+			toolDetails: options.toolDetails === true,
+		};
 		if (afterSequence === 0) {
 			// A newly opened live client can attach in the middle of an external run.
 			// Replay only each active run's latest cumulative state, never stale
@@ -59,21 +78,21 @@ export class RuntimeLiveEventHub {
 				active.set(event.id, event);
 			}
 			for (const event of [...active.values()].sort((a, b) => a.sequence - b.sequence)) {
-				listener(event);
+				this.deliver(subscriber, event);
 			}
 		} else {
 			const oldest = this.history[0]?.sequence;
 			if (oldest !== undefined && afterSequence < oldest - 1) {
-				listener(this.createEphemeralReset("replay_gap"));
+				this.deliver(subscriber, this.createEphemeralReset("replay_gap"));
 			} else {
 				for (const event of this.history) {
-					if (event.sequence > afterSequence) listener(event);
+					if (event.sequence > afterSequence) this.deliver(subscriber, event);
 				}
 			}
 		}
-		this.subscribers.add(listener);
+		this.subscribers.add(subscriber);
 		return {
-			unsubscribe: () => this.subscribers.delete(listener),
+			unsubscribe: () => this.subscribers.delete(subscriber),
 		};
 	}
 
@@ -120,8 +139,12 @@ export class RuntimeLiveEventHub {
 				this.latestSteering.delete(removed.event.id);
 			}
 		}
-		for (const subscriber of this.subscribers) subscriber(event);
+		for (const subscriber of this.subscribers) this.deliver(subscriber, event);
 		return event;
+	}
+
+	private deliver(subscriber: LiveEventSubscriber, event: RuntimeLiveEvent): void {
+		subscriber.listener(projectLiveEventForTerminal(event, subscriber.toolDetails));
 	}
 
 	private createEphemeralReset(reason: "replay_gap"): RuntimeLiveEvent {
@@ -137,11 +160,14 @@ export class RuntimeLiveEventHub {
 }
 
 /**
- * Live clients need visible input, safe tool labels, and tool completion
- * state. Raw arguments, tool output, results, and thinking never cross the
- * shared live endpoint.
+ * Default live clients receive visible input, safe tool labels, and completion
+ * state. An explicit terminal-detail subscription may additionally receive
+ * tool arguments, output, and results. Thinking never crosses this endpoint.
  */
-export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent {
+export function projectRuntimeEventForTerminal(
+	event: RuntimeStreamEvent,
+	includeToolDetails = false,
+): RuntimeStreamEvent {
 	if (event.type === "user_input" || event.type === "steering_input") {
 		return {
 			...event,
@@ -159,7 +185,7 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 			...event,
 			entry: {
 				...event.entry,
-				content: event.entry.content.flatMap(projectSnapshotContent),
+				content: event.entry.content.flatMap((block) => projectSnapshotContent(block, includeToolDetails)),
 			},
 		};
 	}
@@ -171,29 +197,50 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 	) {
 		return {
 			...event,
-			arguments: event.arguments ? {} : event.arguments,
-			delta: event.delta === undefined ? undefined : "",
-			toolCall: event.toolCall ? { ...event.toolCall, arguments: {} } : event.toolCall,
-			toolCalls: event.toolCalls?.map((toolCall) => ({ ...toolCall, arguments: {} })),
+			arguments: event.arguments
+				? includeToolDetails ? event.arguments : {}
+				: event.arguments,
+			delta: event.delta === undefined
+				? undefined
+				: includeToolDetails ? event.delta : "",
+			toolCall: event.toolCall
+				? { ...event.toolCall, arguments: includeToolDetails ? event.toolCall.arguments : {} }
+				: event.toolCall,
+			toolCalls: event.toolCalls?.map((toolCall) => ({
+				...toolCall,
+				arguments: includeToolDetails ? toolCall.arguments : {},
+			})),
 		};
 	}
-	if (event.type === "toolResult") return { ...event, result: "" };
-	if (event.type === "toolResultDelta") return { ...event, text: "" };
+	if (event.type === "toolResult") return { ...event, result: includeToolDetails ? event.result : "" };
+	if (event.type === "toolResultDelta") return { ...event, text: includeToolDetails ? event.text : "" };
 	if (event.type === "thinking_delta") return { ...event, delta: "", thinking: "" };
 	if (event.type === "thinking_patch") return { ...event, thinking: "" };
 	return event;
 }
 
-function projectSnapshotContent(block: RuntimeAssistantSnapshotContent): RuntimeAssistantSnapshotContent[] {
-	if (block.type === "thinking" || block.type === "toolOutput") return [];
+function projectLiveEventForTerminal(event: RuntimeLiveEvent, includeToolDetails: boolean): RuntimeLiveEvent {
+	if (event.kind !== "runtime") return event;
+	return {
+		...event,
+		event: projectRuntimeEventForTerminal(event.event, includeToolDetails),
+	};
+}
+
+function projectSnapshotContent(
+	block: RuntimeAssistantSnapshotContent,
+	includeToolDetails: boolean,
+): RuntimeAssistantSnapshotContent[] {
+	if (block.type === "thinking") return [];
+	if (block.type === "toolOutput") return includeToolDetails ? [block] : [];
 	if (block.type === "toolCall") {
 		return [{
 			...block,
-			arguments: block.label ? { label: block.label } : {},
+			arguments: includeToolDetails ? block.arguments : block.label ? { label: block.label } : {},
 		}];
 	}
 	if (block.type === "toolResult") {
-		return [{ ...block, result: "" }];
+		return [{ ...block, result: includeToolDetails ? block.result : "" }];
 	}
 	return [block];
 }

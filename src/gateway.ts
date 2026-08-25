@@ -223,7 +223,7 @@ export class Gateway {
 		log.logInfo(`[gateway] registered route: POST ${path}`);
 	}
 
-	/** Publish one sanitized in-flight runtime event to every unified live client. */
+	/** Publish one in-flight runtime event through each live client's projection. */
 	publishRuntimeEvent(metadata: RuntimeLiveRunMetadata, event: RuntimeStreamEvent): RuntimeLiveEvent {
 		return this.liveEvents.publishRuntime(metadata, event);
 	}
@@ -646,6 +646,7 @@ export class Gateway {
 			? req.headers["last-event-id"][0]
 			: req.headers["last-event-id"];
 		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
+		const includeToolDetails = url.searchParams.get("details") === "tools";
 		this.liveClientCount++;
 		const subscription = this.liveEvents.subscribe((event) => {
 			try {
@@ -653,7 +654,7 @@ export class Gateway {
 			} catch {
 				// The close handler owns cleanup.
 			}
-		}, afterSequence);
+		}, afterSequence, { toolDetails: includeToolDetails });
 
 		if (!this.awarenessWatcher) {
 			this.awarenessFileSize = currentSize;

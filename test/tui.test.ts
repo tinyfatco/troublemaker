@@ -82,6 +82,24 @@ try {
 	assert.equal(parsedHistory?.channel, "slack:#general");
 	assert.equal(parsedHistory?.userName, "Taylor");
 	assert.equal(parsedHistory?.text, "hello there");
+	const parsedToolResult = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "tool-result-message",
+		timestamp: "2026-01-02T03:04:06Z",
+		message: {
+			role: "toolResult",
+			toolCallId: "tool-example",
+			content: [{ type: "text", text: "SYNTHETIC_HISTORY_RESULT" }],
+			isError: false,
+		},
+	}));
+	assert.equal(parsedToolResult?.role, "toolResult");
+	assert.deepEqual(parsedToolResult?.content, [{
+		type: "toolResult",
+		toolCallId: "tool-example",
+		result: "SYNTHETIC_HISTORY_RESULT",
+		isError: false,
+	}], "Pi history tool-result messages retain their root tool-call identity");
 	assert.deepEqual(parseVisibleUserInputs(JSON.parse(historyLine).message.content[0].text), [{
 		channel: "#general",
 		userName: "Taylor",
@@ -203,6 +221,7 @@ try {
 
 	let receivedMessage: Record<string, unknown> | undefined;
 	let receivedStop: Record<string, unknown> | undefined;
+	let receivedLiveUrl: string | undefined;
 	const server = createServer(async (req, res) => {
 		if (req.url === "/health") {
 			res.writeHead(200);
@@ -227,6 +246,12 @@ try {
 		if (req.url === "/awareness/stream") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
 			res.end(`id: message-1\ndata: ${historyLine}\n\n`);
+			return;
+		}
+		if (req.url?.startsWith("/api/v2/agents/current/live")) {
+			receivedLiveUrl = req.url;
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.end();
 			return;
 		}
 		if (req.url === "/api/v2/agents/current/messages") {
@@ -261,6 +286,8 @@ try {
 		assert.equal(statusResponse.workspaceReady, true);
 		assert.equal((await client.getRunStatus()).idle, false);
 		assert.equal((await client.getBacklog()).lines.length, 1);
+		await client.streamLive(() => {}, undefined, undefined, 7);
+		assert.equal(receivedLiveUrl, "/api/v2/agents/current/live?details=tools&after=7", "the TUI explicitly opts into local tool details while retaining its reconnect cursor");
 		let awarenessConnected = false;
 		const awarenessLines: string[] = [];
 		await client.streamAwareness(
