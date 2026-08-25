@@ -482,11 +482,12 @@ and the URL capability is never accepted as a completion credential.
 
 An optional `webApp` listener connects an authenticated product surface to the
 existing Hostd principal/project model. The product server signs the verified
-account subject, normalized email, method, exact path, body digest, timestamp,
-and one-time nonce with HMAC-SHA256. Hostd accepts only short-lived assertions,
-requires the email to match either an exact `routing.knownPrincipals` entry or
-an explicit principal alias, and maps the requested project only within that
-principal's configured projects.
+account subject, normalized email, selected agent route, method, exact path,
+body digest, timestamp, and one-time nonce with HMAC-SHA256. Hostd accepts only
+short-lived assertions and requires the subject, account email, and agent route
+to match one exact host-owned account binding. The binding then selects an
+existing principal, named agent identity, and OCI target. A request can choose
+only a project that already belongs to that principal.
 
 ```json
 {
@@ -497,24 +498,42 @@ principal's configured projects.
     "issuer": "fat-platform",
     "audience": "troublemaker-hostd-web",
     "assertionTtlSeconds": 60,
-    "principalAliases": [
+    "accountBindings": [
       {
-        "email": "product-login@example.com",
-        "principalEmail": "customer@example.com"
+        "accountEmail": "product-login@example.com",
+        "subject": "00000000-0000-4000-8000-000000000001",
+        "principalPhone": "+15555550123",
+        "role": "owner",
+        "agent": {
+          "id": "scout",
+          "name": "Scout",
+          "slug": "scout",
+          "email": "scout@example.com",
+          "targetId": "front-desk"
+        }
       }
-    ],
-    "defaultProject": "website",
-    "agentName": "Operator"
+    ]
   }
 }
 ```
 
-`principalAliases` is an optional exact, host-owned bridge from a verified
-product login email to an existing canonical Hostd principal. Every target must
-already exist in `routing.knownPrincipals`; aliases cannot replace canonical
-entries or create a second principal/context. Hostd still signs and displays
-the authenticated product identity while routing only as the configured
-canonical relationship.
+Every `accountBindings` entry names one durable agent for one verified product
+account. The mailbox local part must match `agent.slug`; production can use the
+deployment's dedicated agent-mail domain. `operator` is a role, not a default
+identity or mailbox. A binding configures exactly one of
+`principalPhone` or `principalEmail`. A phone binding projects the web app onto
+the one existing Hostd phone relationship for that configured human, including
+its durable workspace and private Zulip room. It fails closed if that
+relationship has not been created yet or resolves to more than one context. An
+email binding retains the per-principal/per-project web behavior for products
+that do not use the shared phone.
+
+The principal and target must already exist, and the target must match the
+corresponding `routing.knownPhonePrincipals[].targetId` or
+`routing.knownPrincipals[].targetId`. These bindings authorize a Fat Platform
+route; they do not provision a context or use the legacy Supabase `agents`
+table. Hostd creates or wakes the already-scoped runtime through its normal
+fenced scheduler.
 
 The listener must remain on loopback. If a remote product server needs it,
 publish only this listener through an authenticated outbound tunnel; never
@@ -522,12 +541,39 @@ publish the Hostd operator API or a child runtime port. The shared assertion
 secret belongs only in the product server and Hostd host environments. It must
 not enter a browser, model context, runtime environment, or workspace.
 
-The gateway returns redacted session/project/preview metadata and proxies only
-the portable status, awareness, live-stream, message, and stop routes. It does
-not accept caller-selected context IDs, runtime ports, target IDs, or Sites
-grant identifiers. Message bodies remain authored by the authenticated user or
-agent; the gateway supplies routing metadata but never writes visible fallback
-text.
+The gateway returns redacted session, named-agent, project, and capability
+metadata. It proxies only the portable status, awareness, live-stream, message,
+stop, and shared-desktop routes. It does not accept caller-selected context IDs,
+runtime ports, target IDs, or Sites grant identifiers. Message bodies remain
+authored by the authenticated user or agent; the gateway supplies routing
+metadata but never writes visible fallback text.
+
+An OCI target may opt into the persistent shared desktop:
+
+```json
+{
+  "computer": {
+    "enabled": true,
+    "display": ":1",
+    "websocketPort": 6901
+  }
+}
+```
+
+The immutable runtime image starts loopback-only TigerVNC and websockify around
+an X11 XFCE desktop and a persistent Chromium profile under `/data`. The child
+gateway is the only process that can reach websockify, and Hostd is the only
+process that can reach the child gateway. The browser therefore receives the
+desktop over the same signed account/agent route as chat; neither VNC nor a
+runtime port is public.
+
+Hostd installs a pinned, checksum-verified Cua Driver binary and one bounded MCP
+server into computer-enabled workspaces. Its full-desktop X11 actions are
+visible in the streamed desktop, including the agent cursor overlay. Screenshot
+image blocks are preserved for the model. When an owner or operator takes over,
+Hostd stops the current web turn, writes a 90-second renewable lease outside
+the agent workspace, and the MCP bridge refuses CUA calls until control returns
+or the lease expires. Viewer accounts can watch but cannot take control.
 
 ## Routing
 
@@ -554,16 +600,24 @@ no global customer context and no privileged master runtime.
     "knownPrincipals": [
       {
         "email": "customer@example.com",
+        "targetId": "scout",
         "projects": [{ "slug": "website", "name": "Company website" }]
+      }
+    ],
+    "knownPhonePrincipals": [
+      {
+        "phone": "+15555550123",
+        "targetId": "scout"
       }
     ]
   }
 }
 ```
 
-The actor target uses the `oci` driver. One runtime is lazily created per
-principal/project scope, while all runtimes share the same actor template and
-external mailbox identity.
+Every target uses the `oci` driver and may carry its own named agent identity,
+template, mailbox, and durable context directory. `actorTarget` is the fallback
+for an unknown principal; each configured email or phone principal may select a
+different target. One runtime is lazily created per principal/project scope.
 
 ## Direct SMS
 
@@ -581,10 +635,15 @@ filters to its one configured sender, and supports direct SMS text only. Group
 markers, multiple recipients, media, MMS, and unknown event shapes are
 quarantined before they can create a context.
 
-A new direct correspondent receives a private `intake` principal and one
-durable OCI context. Hostd stores the contact address encrypted and gives the
-runtime only a redacted label plus an opaque `phone-…` target. The runtime
-cannot see provider credentials, the business number, the contact number, or
+A configured direct correspondent is routed from the shared TinyFat number to
+that human's `knownPhonePrincipals[].targetId`. When a web account binding uses
+that same `principalPhone`, phone, Zulip, and `/app` all project onto the exact
+same relationship context rather than parallel chat histories. An unknown
+correspondent falls back to `actorTarget` for intake. Each native phone
+relationship receives one private, durable OCI context. Hostd stores the
+contact address encrypted and gives the runtime only
+a redacted label plus an opaque `phone-…` target. The runtime cannot see
+provider credentials, the business number, the contact number, or
 recipient-selection fields.
 
 Agent-authored replies use `send_message` against the opaque target. Hostd

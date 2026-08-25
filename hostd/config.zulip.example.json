@@ -14,7 +14,21 @@
     "assertionSecretEnv": "TROUBLEMAKER_HOSTD_WEB_APP_SECRET",
     "issuer": "fat-platform",
     "audience": "troublemaker-hostd-web",
-    "agentName": "Operator"
+    "accountBindings": [
+      {
+        "accountEmail": "customer@example.com",
+        "subject": "00000000-0000-4000-8000-000000000001",
+        "principalPhone": "+15555550123",
+        "role": "owner",
+        "agent": {
+          "id": "front-desk",
+          "name": "Scout",
+          "slug": "scout",
+          "email": "scout@example.com",
+          "targetId": "front-desk"
+        }
+      }
+    ]
   },
   "state": {
     "database": "/var/lib/troublemaker-hostd/state.sqlite",
@@ -132,6 +146,7 @@
       {
         "email": "customer@example.com",
         "name": "Example Customer",
+        "targetId": "front-desk",
         "projects": []
       }
     ],
@@ -139,6 +154,7 @@
       {
         "phone": "+15555550123",
         "name": "Example Owner",
+        "targetId": "front-desk",
         "model": {
           "provider": "cloudflare-workers-ai",
           "id": "@cf/zai-org/glm-5.2"
@@ -149,6 +165,12 @@
   "targets": [
     {
       "id": "front-desk",
+      "agent": {
+        "id": "front-desk",
+        "name": "Scout",
+        "slug": "scout",
+        "email": "scout@example.com"
+      },
       "driver": "oci",
       "protocol": "email-webhook",
       "engine": "/opt/troublemaker/hostd/bin/podman-user-session",
@@ -163,7 +185,12 @@
       "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
       "basePort": 32000,
       "maxPort": 32999,
-      "memory": "420m",
+      "memory": "1536m",
+      "computer": {
+        "enabled": true,
+        "display": ":1",
+        "websocketPort": 6901
+      },
       "stopAfterTurn": false,
       "gmailToolsOnly": true,
       "hostGateway": "10.0.2.2",

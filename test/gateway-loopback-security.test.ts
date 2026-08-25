@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+	isAuthorizedDesktopUpgrade,
 	isTrustedGatewayBrowserRequest,
 	isTrustedStandaloneWebSocketRequest,
 	resolveGatewayListenHost,
@@ -23,6 +24,13 @@ assert.equal(isTrustedGatewayBrowserRequest(browserRequest({
 	"sec-fetch-site": "cross-site",
 })), false, "unrelated webpages cannot drive the loopback gateway");
 assert.equal(isTrustedGatewayBrowserRequest(browserRequest({ origin: "null" })), false);
+
+const desktopToken = "example-context-capability-with-enough-entropy";
+assert.equal(isAuthorizedDesktopUpgrade(browserRequest({}), desktopToken), false);
+assert.equal(isAuthorizedDesktopUpgrade(browserRequest({ authorization: `Bearer ${desktopToken}` }), desktopToken), true);
+assert.equal(isAuthorizedDesktopUpgrade(browserRequest({ authorization: "Bearer wrong-capability" }), desktopToken), false);
+assert.equal(isAuthorizedDesktopUpgrade(browserRequest({ authorization: desktopToken }), desktopToken), false);
+assert.equal(isAuthorizedDesktopUpgrade(browserRequest({ authorization: `Bearer ${desktopToken}` }), ""), false);
 
 assert.equal(
 	isTrustedStandaloneWebSocketRequest(browserRequest({ host: "127.0.0.1:8766" })),

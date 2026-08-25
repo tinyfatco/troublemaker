@@ -112,6 +112,40 @@ test("routes each verified phone relationship to its own Operator context", () =
 	}
 });
 
+test("the shared phone routes each known human to that human's named agent target", () => {
+	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-phone-agent-router-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
+	const config = {
+		routing: {
+			actorTarget: "front-desk",
+			knownPrincipals: [],
+			knownPhonePrincipals: [{ phone: "+15555550123", targetId: "scout" }],
+		},
+		targetsById: new Map([
+			["front-desk", { id: "front-desk", driver: "oci" }],
+			["scout", { id: "scout", driver: "oci" }],
+		]),
+	};
+	const router = new ContextRouter(config, store, Buffer.alloc(32, 7));
+	try {
+		const known = router.resolvePhone({
+			providerThreadId: "known-human-thread",
+			contactAddress: "+15555550123",
+		});
+		const unknown = router.resolvePhone({
+			providerThreadId: "unknown-human-thread",
+			contactAddress: "+15555550999",
+		});
+		assert.equal(known.targetId, "scout");
+		assert.match(known.contextId, /^scout:/);
+		assert.equal(unknown.targetId, "front-desk");
+		assert.match(unknown.contextId, /^front-desk:/);
+	} finally {
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
 test("fails closed instead of reusing a legacy phone intake context", () => {
 	const subject = fixture();
 	try {

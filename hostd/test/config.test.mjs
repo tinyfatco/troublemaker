@@ -122,8 +122,19 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		assertionTtlSeconds: 60,
 		maximumRequestBytes: 128 * 1024,
 		defaultProject: undefined,
-		principalAliases: [],
-		agentName: "Operator",
+		accountBindings: [{
+			accountEmail: "customer@example.com",
+			principalPhone: "+15555550123",
+			subject: "00000000-0000-4000-8000-000000000001",
+			role: "owner",
+			agent: {
+				id: "front-desk",
+				name: "Scout",
+				slug: "scout",
+				email: "scout@example.com",
+				targetId: "front-desk",
+			},
+		}],
 	});
 	assert.deepEqual(config.routing.knownPhonePrincipals[0].model, {
 		provider: "cloudflare-workers-ai",
@@ -155,27 +166,51 @@ test("requires the web app gateway to remain loopback-only and use a distinct po
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /webApp.port must differ from server.port/);
 
 		raw.webApp.port = 3120;
-		raw.webApp.principalAliases = [{
-			email: "signed-in@example.com",
-			principalEmail: "customer@example.com",
-		}];
+		raw.webApp.accountBindings[0].accountEmail = "signed-in@example.com";
 		await writeFile(path, JSON.stringify(raw));
 		const aliased = await loadConfig(path, ENVIRONMENT);
-		assert.deepEqual(aliased.webApp.principalAliases, [{
-			email: "signed-in@example.com",
-			principalEmail: "customer@example.com",
-		}]);
+		assert.equal(aliased.webApp.accountBindings[0].accountEmail, "signed-in@example.com");
+		assert.equal(aliased.webApp.accountBindings[0].agent.email, "scout@example.com");
 
-		raw.webApp.principalAliases[0].principalEmail = "unknown@example.com";
+		delete raw.webApp.accountBindings[0].principalPhone;
+		raw.webApp.accountBindings[0].principalEmail = "unknown@example.com";
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /references unknown principal/);
 
-		raw.webApp.principalAliases = [];
+		raw.webApp.accountBindings[0].principalEmail = "customer@example.com";
+		raw.webApp.accountBindings[0].agent.email = "operator@example.com";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /local part must match its slug/);
+
+		raw.webApp.accountBindings[0].agent.email = "scout@example.com";
+		raw.webApp.accountBindings[0].principalPhone = raw.routing.knownPhonePrincipals[0].phone;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /exactly one of principalEmail or principalPhone/);
+
+		delete raw.webApp.accountBindings[0].principalEmail;
+		await writeFile(path, JSON.stringify(raw));
+		const phoneProjection = await loadConfig(path, ENVIRONMENT);
+		assert.equal(
+			phoneProjection.webApp.accountBindings[0].principalPhone,
+			raw.routing.knownPhonePrincipals[0].phone,
+		);
+		assert.equal(phoneProjection.webApp.accountBindings[0].principalEmail, undefined);
+
+		raw.webApp.accountBindings[0].principalPhone = "+15550000000";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /principalPhone references unknown phone principal/);
+
+		delete raw.webApp.accountBindings[0].principalPhone;
+		raw.webApp.accountBindings[0].principalEmail = "customer@example.com";
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(
 			loadConfig(path, { ...ENVIRONMENT, TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "short" }),
 			/at least 32 bytes/,
 		);
+
+		raw.targets.push(structuredClone(raw.targets[0]));
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /targets cannot repeat an id/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
@@ -467,6 +502,7 @@ test("loads a phone-only Zulip host without Gmail", async () => {
 	try {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		delete raw.gmail;
+		delete raw.webApp;
 		raw.routing.knownPrincipals = [];
 		raw.targets[0].gmailToolsOnly = false;
 		await writeFile(path, JSON.stringify(raw));
@@ -486,6 +522,7 @@ test("rejects Gmail-only runtime tools on a phone-only host", async () => {
 	try {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		delete raw.gmail;
+		delete raw.webApp;
 		raw.routing.knownPrincipals = [];
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(
@@ -610,6 +647,7 @@ test("loads one exact phone-intake Sites deploy binding without broadening phone
 				siteSlug: "example-business",
 			},
 		}];
+		raw.webApp.accountBindings[0].principalPhone = raw.routing.knownPhonePrincipals[0].phone;
 		await writeFile(path, JSON.stringify(raw));
 		const config = await loadConfig(path, {
 			...ENVIRONMENT,
@@ -671,6 +709,7 @@ test("loads two exact Sites grants for one phone intake without merging their id
 				allowedBranches: ["main"],
 			}],
 		}];
+		raw.webApp.accountBindings[0].principalPhone = raw.routing.knownPhonePrincipals[0].phone;
 		await writeFile(path, JSON.stringify(raw));
 		const config = await loadConfig(path, {
 			...ENVIRONMENT,

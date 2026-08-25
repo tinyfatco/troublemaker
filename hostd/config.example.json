@@ -14,14 +14,22 @@
     "assertionSecretEnv": "TROUBLEMAKER_HOSTD_WEB_APP_SECRET",
     "issuer": "fat-platform",
     "audience": "troublemaker-hostd-web",
-    "principalAliases": [
+    "accountBindings": [
       {
-        "email": "product-login@example.com",
-        "principalEmail": "customer@example.com"
+        "accountEmail": "product-login@example.com",
+        "subject": "00000000-0000-4000-8000-000000000001",
+        "principalEmail": "customer@example.com",
+        "role": "owner",
+        "agent": {
+          "id": "front-desk",
+          "name": "Scout",
+          "slug": "scout",
+          "email": "scout@example.com",
+          "targetId": "front-desk"
+        }
       }
     ],
-    "defaultProject": "website",
-    "agentName": "Operator"
+    "defaultProject": "website"
   },
   "mcp": {
     "edge": {
@@ -110,6 +118,7 @@
     "knownPrincipals": [
       {
         "email": "customer@example.com",
+        "targetId": "front-desk",
         "projects": [
           {
             "slug": "website",
@@ -122,6 +131,12 @@
   "targets": [
     {
       "id": "front-desk",
+      "agent": {
+        "id": "front-desk",
+        "name": "Scout",
+        "slug": "scout",
+        "email": "scout@example.com"
+      },
       "driver": "oci",
       "protocol": "email-webhook",
       "engine": "/opt/troublemaker/hostd/bin/podman-user-session",
@@ -137,7 +152,12 @@
       "contextsDirectory": "/var/lib/troublemaker-hostd/contexts",
       "basePort": 32000,
       "maxPort": 32999,
-      "memory": "420m",
+      "memory": "1536m",
+      "computer": {
+        "enabled": true,
+        "display": ":1",
+        "websocketPort": 6901
+      },
       "stopAfterTurn": false,
       "gmailToolsOnly": true,
       "hostGateway": "host.containers.internal",

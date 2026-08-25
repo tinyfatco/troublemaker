@@ -15,10 +15,14 @@ interface ConnectedServer {
 	tools: AgentTool<any>[];
 }
 
+const COMPUTER_USE_MCP_ALIASES = new Set(["computer-use", "codex-computer-use", "cua", "cua-driver"]);
+
+export function isComputerUseMcpServer(config: ResolvedMcpServer): boolean {
+	return COMPUTER_USE_MCP_ALIASES.has(config.alias) || config.scopes.includes("computer:use");
+}
+
 function isLocalComputerUseServer(config: ResolvedMcpServer): boolean {
-	return config.alias === "computer-use"
-		&& config.transport === "stdio"
-		&& config.scopes.includes("computer:use");
+	return config.transport === "stdio" && isComputerUseMcpServer(config);
 }
 
 export function isComputerUseAppApproval(params: unknown): boolean {

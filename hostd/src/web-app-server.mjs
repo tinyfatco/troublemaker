@@ -1,6 +1,11 @@
 import { createServer } from "node:http";
+import { connect as connectSocket } from "node:net";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
-import { siteDeploymentBindings } from "./runtime.mjs";
+import {
+	readComputerControlState,
+	siteDeploymentBindings,
+	writeComputerControlState,
+} from "./runtime.mjs";
 import { branchPreviewHostname } from "./sites.mjs";
 import { WebAppAssertionVerifier, WebAppAuthError } from "./web-app-auth.mjs";
 
@@ -58,25 +63,47 @@ function requestedProject(url) {
 	return project;
 }
 
-function canonicalPrincipalEmail(config, authenticatedEmail) {
-	return config.webApp.principalAliases.find((alias) => alias.email === authenticatedEmail)?.principalEmail
-		?? authenticatedEmail;
+function selectAccountBinding(config, claims) {
+	const binding = config.webApp.accountBindings.find((candidate) => (
+		candidate.accountEmail === claims.email
+			&& candidate.subject === claims.subject
+			&& candidate.agent.id === claims.agent
+	));
+	if (!binding) throw new WebAppRequestError(403, "account_not_configured");
+	return binding;
 }
 
-function selectPrincipalProject(config, authenticatedEmail, projectSlug) {
-	const principalEmail = canonicalPrincipalEmail(config, authenticatedEmail);
-	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === principalEmail);
+function selectPrincipalProject(config, binding, projectSlug) {
+	if (binding.principalPhone) {
+		const configured = config.routing.knownPhonePrincipals.find(
+			(candidate) => candidate.phone === binding.principalPhone,
+		);
+		if (!configured) throw new WebAppRequestError(403, "principal_not_configured");
+		if (projectSlug && projectSlug !== "intake") {
+			throw new WebAppRequestError(404, "project_not_available");
+		}
+		return {
+			principal: {
+				...configured,
+				channel: "phone",
+				projects: [],
+			},
+			project: { slug: "intake", name: "Private relationship", siteDeployments: [] },
+		};
+	}
+	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === binding.principalEmail);
 	if (!principal) throw new WebAppRequestError(403, "principal_not_configured");
+	const selectedPrincipal = { ...principal, channel: "email" };
 	if (projectSlug) {
 		if (projectSlug === "intake" && principal.projects.length === 0) {
 			return {
-				principal,
+				principal: selectedPrincipal,
 				project: { slug: "intake", name: "Private intake", siteDeployments: [] },
 			};
 		}
 		const project = principal.projects.find((candidate) => candidate.slug === projectSlug);
 		if (!project) throw new WebAppRequestError(404, "project_not_available");
-		return { principal, project };
+		return { principal: selectedPrincipal, project };
 	}
 	const configuredDefault = config.webApp.defaultProject
 		? principal.projects.find((candidate) => candidate.slug === config.webApp.defaultProject)
@@ -86,7 +113,7 @@ function selectPrincipalProject(config, authenticatedEmail, projectSlug) {
 		name: "Private intake",
 		siteDeployments: [],
 	};
-	return { principal, project };
+	return { principal: selectedPrincipal, project };
 }
 
 function validateQuery(url, route) {
@@ -108,24 +135,50 @@ function validateQuery(url, route) {
 }
 
 function resolveScope(state, claims, projectSlug) {
-	const { principal, project } = selectPrincipalProject(state.config, claims.email, projectSlug);
-	const threadId = stablePrivateKey(
-		state.routingKey,
-		"web-app-thread",
-		`${claims.subject}\n${claims.email}\n${project.slug}`,
-	).slice(0, 48);
-	const route = state.router.resolve({
-		source: "web-app",
-		threadId,
-		sender: principal.email,
-		project: project.slug === "intake" ? undefined : project,
-		label: principal.name,
-	});
+	const binding = selectAccountBinding(state.config, claims);
+	const { principal, project } = selectPrincipalProject(state.config, binding, projectSlug);
+	let route;
+	if (binding.principalPhone) {
+		const principalHash = stablePrivateKey(
+			state.routingKey,
+			"phone-principal",
+			binding.principalPhone,
+		);
+		const routes = state.store.listRoutesForPrincipal(
+			"phone",
+			principalHash,
+			binding.agent.targetId,
+		);
+		const contexts = new Set(routes.map((candidate) => candidate.contextId));
+		if (routes.length === 0) throw new WebAppRequestError(409, "relationship_not_ready");
+		if (contexts.size !== 1) throw new WebAppRequestError(409, "relationship_ambiguous");
+		route = routes[0];
+		if (
+			route.principalHash !== principalHash
+			|| route.targetId !== binding.agent.targetId
+			|| route.projectSlug !== "intake"
+			|| !state.store.getContext(route.contextId)
+		) throw new WebAppRequestError(409, "relationship_not_ready");
+	} else {
+		const threadId = stablePrivateKey(
+			state.routingKey,
+			"web-app-thread",
+			`${binding.agent.id}\n${claims.subject}\n${claims.email}\n${project.slug}`,
+		).slice(0, 48);
+		route = state.router.resolve({
+			source: "web-app",
+			threadId,
+			sender: principal.email,
+			project: project.slug === "intake" ? undefined : project,
+			label: principal.name,
+			targetId: binding.agent.targetId,
+		});
+	}
 	const target = state.config.targetsById.get(route.targetId);
 	if (!target || target.driver !== "oci") {
 		throw new WebAppRequestError(503, "workspace_unavailable");
 	}
-	return { principal, project, route, target };
+	return { binding, principal, project, route, target };
 }
 
 function previewSites(state, scope) {
@@ -153,9 +206,18 @@ function sessionPayload(state, claims, scope) {
 		user: {
 			email: claims.email,
 			displayName: scope.principal.name || null,
+			role: scope.binding.role,
+		},
+		principal: {
+			channel: scope.principal.channel,
+			email: scope.principal.email ?? null,
+			displayName: scope.principal.name || null,
 		},
 		agent: {
-			name: state.config.webApp.agentName,
+			id: scope.binding.agent.id,
+			name: scope.binding.agent.name,
+			slug: scope.binding.agent.slug,
+			email: scope.binding.agent.email,
 			state: storedContext?.status === "online" ? "online" : "sleeping",
 		},
 		project: {
@@ -164,11 +226,13 @@ function sessionPayload(state, claims, scope) {
 		},
 		projects: scope.principal.projects.length > 0
 			? scope.principal.projects.map((project) => ({ slug: project.slug, name: project.name }))
-			: [{ slug: "intake", name: "Private intake" }],
+			: [{ slug: scope.project.slug, name: scope.project.name }],
 		sites,
 		capabilities: {
 			messages: true,
 			awareness: true,
+			desktop: scope.target.computer?.enabled === true,
+			takeover: scope.target.computer?.enabled === true && scope.binding.role !== "viewer",
 			preview: sites.length > 0,
 		},
 	};
@@ -213,6 +277,25 @@ function normalizedMessageBody(body, scope, route) {
 	}));
 }
 
+function requestedComputerControl(body) {
+	let parsed;
+	try {
+		parsed = JSON.parse(body.toString("utf8"));
+	} catch {
+		throw new WebAppRequestError(400, "invalid_json");
+	}
+	if (
+		!parsed
+		|| typeof parsed !== "object"
+		|| Array.isArray(parsed)
+		|| Object.keys(parsed).some((key) => key !== "mode")
+		|| !["agent", "human"].includes(parsed.mode)
+	) {
+		throw new WebAppRequestError(400, "invalid_computer_control");
+	}
+	return parsed.mode;
+}
+
 async function writeUpstream(response, upstream) {
 	const contentType = upstream.headers.get("content-type") || "application/octet-stream";
 	const mediaType = contentType.split(";", 1)[0].trim().toLowerCase();
@@ -248,12 +331,44 @@ const ROUTES = new Map([
 	["GET /v1/app/live", "live"],
 	["POST /v1/app/messages", "messages"],
 	["POST /v1/app/messages/stop", "messages-stop"],
+	["GET /v1/app/desktop/status", "desktop-status"],
+	["POST /v1/app/desktop/control", "desktop-control"],
 ]);
+
+function writeUpgradeError(socket, status, reason) {
+	if (socket.destroyed) return;
+	socket.write(`HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n`);
+	socket.destroy();
+}
+
+function forwardUpgradeHeaders(request, upstream, port, authorization) {
+	upstream.write("GET /desktop/socket HTTP/1.1\r\n");
+	upstream.write(`Host: 127.0.0.1:${port}\r\n`);
+	upstream.write("Connection: Upgrade\r\n");
+	upstream.write("Upgrade: websocket\r\n");
+	upstream.write(`Authorization: Bearer ${authorization}\r\n`);
+	for (const header of [
+		"sec-websocket-key",
+		"sec-websocket-version",
+		"sec-websocket-protocol",
+		"sec-websocket-extensions",
+	]) {
+		const value = request.headers[header];
+		if (value) upstream.write(`${header}: ${Array.isArray(value) ? value.join(", ") : value}\r\n`);
+	}
+	upstream.write("\r\n");
+}
 
 export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) {
 	if (!state.config.webApp) throw new Error("webApp is not configured");
 	const assertionVerifier = verifier ?? new WebAppAssertionVerifier(state.config.webApp);
-	return createServer(async (request, response) => {
+	const desktopConnections = new Map();
+	const humanLeases = new Map();
+	state.runtime.setExternalActivityProbe?.((contextId) => (
+		(desktopConnections.get(contextId) ?? 0) > 0
+			|| (humanLeases.get(contextId) ?? 0) > Date.now()
+	));
+	const server = createServer(async (request, response) => {
 		const method = request.method || "GET";
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		if (method === "GET" && url.pathname === "/health") {
@@ -287,8 +402,51 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 				json(response, 200, sessionPayload(state, claims, scope));
 				return;
 			}
+			if ((route === "desktop-status" || route === "desktop-control") && !scope.target.computer?.enabled) {
+				throw new WebAppRequestError(404, "desktop_not_available");
+			}
 
 			const runtime = await state.runtime.ensureOciContext(scope.target, scope.route.contextId);
+			if (route === "desktop-status") {
+				const control = await readComputerControlState(scope.target, scope.route.contextId);
+				if (control.mode === "human") humanLeases.set(scope.route.contextId, Date.parse(control.expiresAt));
+				else humanLeases.delete(scope.route.contextId);
+				json(response, 200, {
+					state: "ready",
+					control: control.mode,
+					expiresAt: control.expiresAt,
+					canTakeOver: scope.binding.role !== "viewer",
+				});
+				return;
+			}
+			if (route === "desktop-control") {
+				if (scope.binding.role === "viewer") throw new WebAppRequestError(403, "takeover_not_allowed");
+				const mode = requestedComputerControl(body);
+				const control = await writeComputerControlState(scope.target, scope.route.contextId, mode);
+				if (mode === "human") {
+					humanLeases.set(scope.route.contextId, Date.parse(control.expiresAt));
+					await fetchImpl(`http://127.0.0.1:${runtime.port}/api/v2/agents/current/messages/stop`, {
+						method: "POST",
+						headers: {
+							authorization: `Bearer ${contextCapability(
+								scope.target.inboundToken,
+								"web-app",
+								scope.route.contextId,
+							)}`,
+							"content-type": "application/json",
+						},
+						body: JSON.stringify({ channelId: `web-app:${scope.project.slug}` }),
+						signal: AbortSignal.timeout(5_000),
+					}).catch(() => undefined);
+				} else {
+					humanLeases.delete(scope.route.contextId);
+				}
+				json(response, 200, {
+					control: control.mode,
+					expiresAt: control.expiresAt,
+				});
+				return;
+			}
 			const outboundBody = method === "POST"
 				? normalizedMessageBody(body, scope, route)
 				: undefined;
@@ -342,4 +500,65 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 			json(response, 503, { error: "workspace_unavailable" });
 		}
 	});
+
+	server.on("upgrade", async (request, socket, head) => {
+		try {
+			const method = request.method || "GET";
+			const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+			if (
+				method !== "GET"
+				|| url.pathname !== "/v1/app/desktop/socket"
+				|| String(request.headers.upgrade || "").toLowerCase() !== "websocket"
+			) {
+				writeUpgradeError(socket, 404, "Not Found");
+				return;
+			}
+			validateQuery(url, "desktop-socket");
+			const claims = assertionVerifier.verify({
+				headers: request.headers,
+				method,
+				path: request.url || "/",
+				body: Buffer.alloc(0),
+			});
+			const scope = resolveScope(state, claims, requestedProject(url));
+			if (!scope.target.computer?.enabled) throw new WebAppRequestError(404, "desktop_not_available");
+			const runtime = await state.runtime.ensureOciContext(scope.target, scope.route.contextId);
+			const upstream = connectSocket(runtime.port, "127.0.0.1");
+			let released = false;
+			const release = () => {
+				if (released) return;
+				released = true;
+				const count = Math.max(0, (desktopConnections.get(scope.route.contextId) ?? 1) - 1);
+				if (count === 0) desktopConnections.delete(scope.route.contextId);
+				else desktopConnections.set(scope.route.contextId, count);
+			};
+			desktopConnections.set(
+				scope.route.contextId,
+				(desktopConnections.get(scope.route.contextId) ?? 0) + 1,
+			);
+			upstream.once("connect", () => {
+				forwardUpgradeHeaders(
+					request,
+					upstream,
+					runtime.port,
+					contextCapability(scope.target.inboundToken, "web-app", scope.route.contextId),
+				);
+				if (head.length > 0) upstream.write(head);
+				socket.pipe(upstream).pipe(socket);
+			});
+			upstream.once("error", () => {
+				release();
+				writeUpgradeError(socket, 502, "Bad Gateway");
+			});
+			upstream.once("close", release);
+			socket.once("close", release);
+			socket.once("error", () => upstream.destroy());
+		} catch (error) {
+			if (error instanceof WebAppAuthError) writeUpgradeError(socket, 401, "Unauthorized");
+			else if (error instanceof WebAppRequestError) writeUpgradeError(socket, error.status, "Rejected");
+			else writeUpgradeError(socket, 503, "Service Unavailable");
+		}
+	});
+
+	return server;
 }

@@ -1450,6 +1450,18 @@ export class HostStore {
 		`).all(contextId, targetId);
 	}
 
+	listRoutesForPrincipal(source, principalHash, targetId) {
+		return this.database.prepare(`
+			SELECT source, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, project_slug AS projectSlug,
+				target_id AS targetId, context_id AS contextId,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM routes
+			WHERE source = ? AND principal_hash = ? AND target_id = ?
+			ORDER BY last_seen_at DESC
+		`).all(source, principalHash, targetId);
+	}
+
 	getRoute(source, threadId) {
 		return this.database.prepare(`
 			SELECT source, provider_thread_id AS providerThreadId,

@@ -1,8 +1,43 @@
 FROM docker.io/library/node:22-bookworm
 
+ARG TARGETARCH
+ARG CUA_DRIVER_VERSION=0.22.0
+
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
+	&& apt-get install -y --no-install-recommends \
+		at-spi2-core \
+		ca-certificates \
+		chromium \
+		curl \
+		dbus-x11 \
+		fonts-liberation \
+		git \
+		netcat-openbsd \
+		openssh-client \
+		tigervnc-standalone-server \
+		tigervnc-tools \
+		tini \
+		websockify \
+		x11-xserver-utils \
+		xfce4 \
+		xfce4-terminal \
 	&& rm -rf /var/lib/apt/lists/*
+
+RUN set -eux; \
+	case "$TARGETARCH" in \
+		amd64) cua_arch=x86_64; cua_sha=eff649dc75420f2fef2ee9306213b495be96218c0ce9f2f5ea2df086e83682cc ;; \
+		arm64) cua_arch=arm64; cua_sha=e803b864a7528c09cc26ed6a35dd44fd35dad8ef93560558bb4d59ba6c73ee80 ;; \
+		*) echo "unsupported Cua Driver architecture: $TARGETARCH" >&2; exit 1 ;; \
+	esac; \
+	cua_archive="cua-driver-rs-${CUA_DRIVER_VERSION}-linux-${cua_arch}-binary.tar.gz"; \
+	curl -fsSL "https://github.com/trycua/cua/releases/download/cua-driver-rs-v${CUA_DRIVER_VERSION}/${cua_archive}" -o /tmp/cua-driver.tar.gz; \
+	echo "${cua_sha}  /tmp/cua-driver.tar.gz" | sha256sum -c -; \
+	mkdir -p /opt/cua-driver; \
+	tar -xzf /tmp/cua-driver.tar.gz -C /opt/cua-driver; \
+	chmod 0555 /opt/cua-driver/cua-driver /opt/cua-driver/cua-cursor-theme; \
+	ln -s /opt/cua-driver/cua-driver /usr/local/bin/cua-driver; \
+	rm /tmp/cua-driver.tar.gz; \
+	cua-driver --version
 
 WORKDIR /opt/troublemaker
 
@@ -12,7 +47,16 @@ RUN npm ci --omit=dev --ignore-scripts \
 	&& npm cache clean --force
 
 COPY dist ./dist
+COPY hostd/runtime/cua-capabilities.yaml /etc/troublemaker/cua-capabilities.yaml
+COPY hostd/runtime/runtime-entrypoint.sh /usr/local/bin/troublemaker-runtime-entrypoint
+COPY hostd/runtime/xfce-xstartup.sh /usr/local/bin/troublemaker-xfce-xstartup
+
+RUN chmod 0555 \
+	/usr/local/bin/troublemaker-runtime-entrypoint \
+	/usr/local/bin/troublemaker-xfce-xstartup \
+	&& chmod 0444 /etc/troublemaker/cua-capabilities.yaml
 
 ENV NODE_ENV=production
 
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/troublemaker-runtime-entrypoint"]
 CMD ["node", "/opt/troublemaker/dist/main.js"]
