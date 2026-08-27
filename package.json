@@ -142,6 +142,7 @@
 		"test:web-ui-thinking-display": "npx tsx test/web-ui-thinking-display.test.ts",
 		"test:web-ui-thinking-markdown": "npx tsx test/web-ui-thinking-markdown.test.ts",
 		"test:web-ui-webchat-routing": "npx tsx test/web-ui-webchat-routing.test.ts",
+		"test:web-ui-hostd-app": "npx tsx --test test/web-ui-hostd-app.test.ts",
 		"test:web-ui-tool-display": "npx tsx test/web-ui-tool-display.test.ts",
 		"test:web-ui-ambient-display": "npx tsx test/web-ui-ambient-display.test.ts",
 		"test:web-ui-turn-complete-refresh": "npx tsx test/web-ui-turn-complete-refresh.test.ts",

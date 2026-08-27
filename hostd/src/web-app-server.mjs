@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
 import {
 	readComputerControlState,
@@ -8,6 +11,14 @@ import {
 } from "./runtime.mjs";
 import { branchPreviewHostname } from "./sites.mjs";
 import { WebAppAssertionVerifier, WebAppAuthError } from "./web-app-auth.mjs";
+
+const DEFAULT_WEB_APP_UI_DIRECTORY = fileURLToPath(new URL("../../ui/dist/", import.meta.url));
+const WEB_APP_UI_ASSET_RE = /^\/v1\/app\/ui\/assets\/([a-zA-Z0-9._-]+)$/;
+const WEB_APP_UI_CONTENT_TYPES = new Map([
+	[".css", "text/css; charset=utf-8"],
+	[".js", "text/javascript; charset=utf-8"],
+	[".map", "application/json; charset=utf-8"],
+]);
 
 class WebAppRequestError extends Error {
 	constructor(status, code) {
@@ -26,6 +37,37 @@ function json(response, status, body) {
 		"x-content-type-options": "nosniff",
 	});
 	response.end(JSON.stringify(body));
+}
+
+function requestedUiAsset(method, pathname) {
+	if (method !== "GET") return null;
+	if (pathname === "/v1/app/ui" || pathname === "/v1/app/ui/" || pathname === "/v1/app/ui/index.html") {
+		return { file: "index.html", index: true };
+	}
+	const match = pathname.match(WEB_APP_UI_ASSET_RE);
+	return match ? { file: join("assets", match[1]), index: false } : null;
+}
+
+async function writeUiAsset(response, uiDirectory, asset) {
+	let content;
+	try {
+		content = await readFile(join(uiDirectory, asset.file));
+	} catch (error) {
+		if (error?.code === "ENOENT") throw new WebAppRequestError(404, "ui_asset_not_found");
+		throw error;
+	}
+	const contentType = asset.index
+		? "text/html; charset=utf-8"
+		: WEB_APP_UI_CONTENT_TYPES.get(extname(asset.file).toLowerCase());
+	if (!contentType) throw new WebAppRequestError(404, "ui_asset_not_found");
+	response.writeHead(200, {
+		"content-type": contentType,
+		"cache-control": asset.index ? "no-store" : "private, max-age=31536000, immutable",
+		"content-security-policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+		"cross-origin-resource-policy": "same-origin",
+		"x-content-type-options": "nosniff",
+	});
+	response.end(content);
 }
 
 function isJsonContentType(value) {
@@ -359,7 +401,11 @@ function forwardUpgradeHeaders(request, upstream, port, authorization) {
 	upstream.write("\r\n");
 }
 
-export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) {
+export function createWebAppServer(state, {
+	fetchImpl = fetch,
+	verifier,
+	uiDirectory = DEFAULT_WEB_APP_UI_DIRECTORY,
+} = {}) {
 	if (!state.config.webApp) throw new Error("webApp is not configured");
 	const assertionVerifier = verifier ?? new WebAppAssertionVerifier(state.config.webApp);
 	const desktopConnections = new Map();
@@ -376,7 +422,8 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 			response.end("ok");
 			return;
 		}
-		const route = ROUTES.get(`${method} ${url.pathname}`);
+		const uiAsset = requestedUiAsset(method, url.pathname);
+		const route = uiAsset ? "ui" : ROUTES.get(`${method} ${url.pathname}`);
 		if (!route) {
 			json(response, 404, { error: "not_found" });
 			return;
@@ -397,6 +444,12 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 				path: request.url || "/",
 				body,
 			});
+			if (uiAsset) {
+				const binding = selectAccountBinding(state.config, claims);
+				if (uiAsset.index) selectPrincipalProject(state.config, binding, requestedProject(url));
+				await writeUiAsset(response, uiDirectory, uiAsset);
+				return;
+			}
 			const scope = resolveScope(state, claims, requestedProject(url));
 			if (route === "session") {
 				json(response, 200, sessionPayload(state, claims, scope));

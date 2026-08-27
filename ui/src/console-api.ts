@@ -103,6 +103,17 @@ export interface AgentSettingsSnapshot {
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 const OPERATOR_FETCH_TIMEOUT_MS = 75000;
 const EMBED_TOKEN_STORAGE_PREFIX = 'troublemaker.embedToken.';
+const HOSTD_APP_PROXY_PREFIX = '/api/troublemaker';
+const HOSTD_APP_UI_PREFIX = `${HOSTD_APP_PROXY_PREFIX}/ui`;
+const HOSTD_APP_PROJECT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+const HOSTD_APP_CONSOLE_ROUTES = new Map([
+  ['/status', 'status'],
+  ['/events', 'events'],
+  ['/events/stream', 'events/stream'],
+  ['/live', 'live'],
+  ['/messages', 'messages'],
+  ['/messages/stop', 'messages/stop'],
+]);
 
 function currentAgentId(): string {
   const match = window.location.pathname.match(/\/agents\/([0-9a-f-]{36})(?:\/|$)/i);
@@ -149,6 +160,22 @@ export function isEmbedMode(): boolean {
   return window.location.pathname.includes('/embed/agents/') || !!embedToken();
 }
 
+export function isHostdAppMode(pathname = window.location.pathname): boolean {
+  return pathname === HOSTD_APP_UI_PREFIX || pathname.startsWith(`${HOSTD_APP_UI_PREFIX}/`);
+}
+
+export function hostdAppConsoleUrl(endpoint: string, pageHref = window.location.href): string {
+  const page = new URL(pageHref);
+  const target = new URL(endpoint, 'https://troublemaker.invalid');
+  const route = HOSTD_APP_CONSOLE_ROUTES.get(target.pathname);
+  if (!route) throw new Error(`Unsupported Hostd app console endpoint: ${target.pathname}`);
+
+  const project = page.searchParams.get('project');
+  if (project && HOSTD_APP_PROJECT_RE.test(project)) target.searchParams.set('project', project);
+  const search = target.searchParams.toString();
+  return `${HOSTD_APP_PROXY_PREFIX}/${route}${search ? `?${search}` : ''}`;
+}
+
 function appendEmbedToken(url: string): string {
   const token = embedToken();
   if (!token) return url;
@@ -158,6 +185,7 @@ function appendEmbedToken(url: string): string {
 
 export function consoleAgentUrl(endpoint: string): string {
   const suffix = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  if (isHostdAppMode()) return hostdAppConsoleUrl(suffix);
   const base = isEmbedMode() ? '/embed/api/agents' : '/api/v2/agents';
   return appendEmbedToken(`${base}/${encodeURIComponent(currentAgentId())}${suffix}`);
 }

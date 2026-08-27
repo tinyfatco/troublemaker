@@ -25,6 +25,7 @@ interface AwarenessPaneProps {
   allowSettings?: boolean;
   allowVoice?: boolean;
   showChannels?: boolean;
+  showPromptStatus?: boolean;
 }
 
 function initialDraftFromUrl(): string {
@@ -39,6 +40,7 @@ export function AwarenessPane({
   allowSettings = true,
   allowVoice = true,
   showChannels = true,
+  showPromptStatus = true,
 }: AwarenessPaneProps) {
   const {
     entries,
@@ -347,7 +349,7 @@ export function AwarenessPane({
     setSettingsVersion((version) => version + 1);
   }, []);
 
-  const promptStatus = (
+  const promptStatus = showPromptStatus ? (
     <PromptStatus
       allowSettings={allowSettings}
       allowVoice={allowVoice}
@@ -360,7 +362,7 @@ export function AwarenessPane({
       onOpenTurnSettings={() => openSettings('turn')}
       onOpenVoiceSettings={() => openSettings('voice')}
     />
-  );
+  ) : null;
 
   return (
     <div className="awareness-pane" style={paneStyle}>

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -141,6 +141,42 @@ function signedHeaders(method, path, body = Buffer.alloc(0), email = EMAIL, agen
 		agent,
 	});
 }
+
+test("serves the canonical built web UI through the authenticated app boundary", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-web-ui-"));
+	await mkdir(join(directory, "assets"));
+	await writeFile(
+		join(directory, "index.html"),
+		'<!doctype html><div id="root"></div><script type="module" src="./assets/index-example.js"></script>',
+	);
+	await writeFile(join(directory, "assets", "index-example.js"), 'document.title = "Troublemaker";');
+	const appServer = createWebAppServer(state(65534), { uiDirectory: directory });
+	const appPort = await listen(appServer);
+	try {
+		const indexPath = "/v1/app/ui/?project=website";
+		const indexResponse = await fetch(`http://127.0.0.1:${appPort}${indexPath}`, {
+			headers: signedHeaders("GET", indexPath),
+		});
+		assert.equal(indexResponse.status, 200);
+		assert.match(indexResponse.headers.get("content-type") || "", /^text\/html/);
+		assert.match(indexResponse.headers.get("content-security-policy") || "", /script-src 'self'/);
+		assert.match(await indexResponse.text(), /\.\/assets\/index-example\.js/);
+
+		const assetPath = "/v1/app/ui/assets/index-example.js";
+		const assetResponse = await fetch(`http://127.0.0.1:${appPort}${assetPath}`, {
+			headers: signedHeaders("GET", assetPath),
+		});
+		assert.equal(assetResponse.status, 200);
+		assert.match(assetResponse.headers.get("content-type") || "", /^text\/javascript/);
+		assert.match(await assetResponse.text(), /Troublemaker/);
+
+		const unsigned = await fetch(`http://127.0.0.1:${appPort}${assetPath}`);
+		assert.equal(unsigned.status, 401);
+	} finally {
+		await close(appServer);
+		await rm(directory, { recursive: true, force: true });
+	}
+});
 
 test("maps an authenticated product user to one redacted Hostd workspace", async () => {
 	const runtimeServer = createServer((request, response) => {

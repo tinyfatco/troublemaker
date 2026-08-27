@@ -23,7 +23,7 @@ import { DisplayPane } from './DisplayPane';
 import { AwarenessPane } from './AwarenessPane';
 import { UploadZone } from './UploadZone';
 import { HeaderStatus } from './HeaderStatus';
-import { isEmbedMode } from '../console-api';
+import { isEmbedMode, isHostdAppMode } from '../console-api';
 import { hostToolsAllowedFromSearch } from '../workspaceCapabilities';
 
 type BuiltInCanvasMode = 'terminal' | 'desktop' | 'calendar' | 'preview';
@@ -78,10 +78,12 @@ function projectIdFromCanvasMode(mode: CanvasMode | null): string | null {
 
 export function WorkspaceLayout() {
   const embedMode = isEmbedMode();
-  const hostToolsAllowed = hostToolsAllowedFromSearch(window.location.search);
+  const hostdAppMode = isHostdAppMode();
+  const compactChatMode = embedMode || hostdAppMode;
+  const hostToolsAllowed = !compactChatMode && hostToolsAllowedFromSearch(window.location.search);
   const { config, isLoading: configLoading } = useConfig();
   const awarenessStream = useAwarenessStream();
-  const displayProjectsQuery = useDisplayProjects(!embedMode && hostToolsAllowed);
+  const displayProjectsQuery = useDisplayProjects(!compactChatMode && hostToolsAllowed);
   const displayProjects = displayProjectsQuery.data?.projects ?? [];
   const [canvasModeOverride, setCanvasModeOverride] = usePersistentState<CanvasMode | null>(
     'troublemaker.ui.canvasMode',
@@ -89,11 +91,11 @@ export function WorkspaceLayout() {
     { parse: parseCanvasModePreference },
   );
   const capabilities = config.capabilities || {};
-  const filesAvailable = hostToolsAllowed && !embedMode && capabilities.files !== false;
-  const terminalAvailable = hostToolsAllowed && !embedMode && capabilities.terminal !== false;
-  const desktopAvailable = hostToolsAllowed && !embedMode && capabilities.desktop === true;
-  const calendarAvailable = hostToolsAllowed && !embedMode && capabilities.calendar !== false;
-  const displayAvailable = hostToolsAllowed && !embedMode && capabilities.display !== false;
+  const filesAvailable = hostToolsAllowed && capabilities.files !== false;
+  const terminalAvailable = hostToolsAllowed && capabilities.terminal !== false;
+  const desktopAvailable = hostToolsAllowed && capabilities.desktop === true;
+  const calendarAvailable = hostToolsAllowed && capabilities.calendar !== false;
+  const displayAvailable = hostToolsAllowed && capabilities.display !== false;
   const interactiveMode =
     config.display_mode === 'desktop' && desktopAvailable
       ? 'desktop'
@@ -124,7 +126,7 @@ export function WorkspaceLayout() {
   const selectedDisplayProject = selectedDisplayProjectId
     ? displayProjects.find((project) => project.id === selectedDisplayProjectId) ?? null
     : null;
-  const hasCanvas = !embedMode && (canvasModes.some((item) => item.available) || displayProjects.length > 0);
+  const hasCanvas = !compactChatMode && (canvasModes.some((item) => item.available) || displayProjects.length > 0);
   const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistentState(
     'troublemaker.ui.sidebarCollapsed',
@@ -416,10 +418,11 @@ export function WorkspaceLayout() {
     <div className="awareness-sidebar" style={chatStyle}>
       <AwarenessPane
         stream={awarenessStream}
-        allowCommands={!embedMode}
-        allowSettings={!embedMode}
-        allowVoice={!embedMode && capabilities.voice !== false}
+        allowCommands={!compactChatMode}
+        allowSettings={!compactChatMode}
+        allowVoice={!compactChatMode && capabilities.voice !== false}
         showChannels={!embedMode}
+        showPromptStatus={!hostdAppMode}
       />
     </div>
   ) : null;
@@ -434,33 +437,35 @@ export function WorkspaceLayout() {
     : null;
 
   return (
-    <div className={`workspace-root ${embedMode ? 'embed-mode' : ''}`}>
-      <header className="workspace-header">
-        <div className="header-left">
-          {filesAvailable && (
-            <button
-              className={`header-btn header-text-btn ${!sidebarCollapsed || mobileDrawerOpen ? 'active' : ''}`}
-              onClick={toggleSidebar}
-              title="Toggle files"
-            >
-              Files
-            </button>
-          )}
-          {embedMode ? (
-            <div className="embed-brand" aria-label={config.agent_name}>
-              <span className="embed-brand-mark">TF</span>
-              <span className="embed-brand-copy">
-                <span className="embed-brand-title">{config.agent_name}</span>
-              </span>
-            </div>
-          ) : (
-            <CanvasControls />
-          )}
-        </div>
-        <div className="header-right">
-          <HeaderStatus stream={awarenessStream} />
-        </div>
-      </header>
+    <div className={`workspace-root ${compactChatMode ? 'embed-mode' : ''} ${hostdAppMode ? 'hostd-app-mode' : ''}`}>
+      {!hostdAppMode && (
+        <header className="workspace-header">
+          <div className="header-left">
+            {filesAvailable && (
+              <button
+                className={`header-btn header-text-btn ${!sidebarCollapsed || mobileDrawerOpen ? 'active' : ''}`}
+                onClick={toggleSidebar}
+                title="Toggle files"
+              >
+                Files
+              </button>
+            )}
+            {embedMode ? (
+              <div className="embed-brand" aria-label={config.agent_name}>
+                <span className="embed-brand-mark">TF</span>
+                <span className="embed-brand-copy">
+                  <span className="embed-brand-title">{config.agent_name}</span>
+                </span>
+              </div>
+            ) : (
+              <CanvasControls />
+            )}
+          </div>
+          <div className="header-right">
+            <HeaderStatus stream={awarenessStream} />
+          </div>
+        </header>
+      )}
 
       {uploadEnabled && upload.FileInput}
       <div className="workspace-body" ref={containerRef} {...(uploadEnabled ? upload.dragProps : {})}>
