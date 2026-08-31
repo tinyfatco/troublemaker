@@ -276,7 +276,77 @@ async function run() {
 		} catch (error) {
 			assert(error instanceof Error && error.message.includes("direct plain-text"), "MCP relationship turn denies recipient expansion");
 		}
+		try {
+			await (tool.execute as any)("call-mcp-progress-denied", {
+				label: "MCP progress denial",
+				target: relationshipTarget,
+				text: "must not attach direct-phone progress",
+				relationship_progress: {
+					close_state: "request_answered",
+					next_step: "await_customer_choice",
+				},
+			});
+			assert(false, "MCP instructions cannot attach direct-phone progress");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("exact direct Hostd phone turn"), "MCP instructions cannot attach direct-phone progress");
+		}
 	});
+
+	await withHostDeliveryScope({
+		source: "hostd-phone",
+		eventId: "phone:direct-two",
+		eventIds: ["phone:direct-one", "phone:direct-two"],
+		replyTarget: relationshipTarget,
+	}, async () => {
+		try {
+			await (tool.execute as any)("call-direct-progress-missing", {
+				label: "missing direct progress",
+				target: relationshipTarget,
+				text: "must not send without a close state",
+			});
+			assert(false, "direct Hostd phone turns require relationship progress");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("requires one exact close state"), "direct Hostd phone turns require relationship progress");
+		}
+		try {
+			await (tool.execute as any)("call-direct-progress-mismatch", {
+				label: "mismatched direct progress",
+				target: relationshipTarget,
+				text: "must not send with a mismatched next step",
+				relationship_progress: {
+					close_state: "request_answered",
+					next_step: "confirm_payment",
+				},
+			});
+			assert(false, "mismatched close-state pairs fail before delivery");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("invalid close_state and next_step pair"), "mismatched close-state pairs fail before delivery");
+		}
+		await (tool.execute as any)("call-direct-progress-exact", {
+			label: "exact direct progress",
+			target: relationshipTarget,
+			text: "one short answer and one next step",
+			relationship_progress: {
+				close_state: "request_answered",
+				next_step: "await_customer_choice",
+			},
+		});
+		assertEqual(phone.sent.at(-1)?.channel, relationshipTarget, "exact direct Hostd progress permits only the bound target");
+	});
+	try {
+		await (tool.execute as any)("call-progress-outside-hostd", {
+			label: "unscoped progress",
+			target: relationshipTarget,
+			text: "must not attach progress outside Hostd",
+			relationship_progress: {
+				close_state: "request_answered",
+				next_step: "await_customer_choice",
+			},
+		});
+		assert(false, "relationship progress outside Hostd scope fails closed");
+	} catch (error) {
+		assert(error instanceof Error && error.message.includes("exact direct Hostd phone turn"), "relationship progress outside Hostd scope fails closed");
+	}
 
 	const silentResult = await (tool.execute as any)("call-2", {
 		label: "legacy silent",

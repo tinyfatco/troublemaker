@@ -5,6 +5,7 @@ import { join } from "path";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
+import { withHostDeliveryScope } from "./host-delivery-scope.js";
 import { withHostReceipt } from "./host-receipt.js";
 import { createPhoneProviderRegistryFromEnv, type PhoneProviderRegistry } from "./phone-messaging/registry.js";
 import type { PhoneChannelRecord, PhoneInboundPayload, PhoneOutboundAttachment, PhoneTransport } from "./phone-messaging/types.js";
@@ -120,7 +121,12 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 						const completed = deliveryIds.filter((deliveryId) => this.isCompletedDelivery(deliveryId));
 						if (completed.length === deliveryIds.length) return;
 						if (completed.length > 0) throw new Error("phone delivery batch ledger is partial");
-						await this.processInbound(payload);
+						await withHostDeliveryScope({
+							source: "hostd-phone",
+							eventId: deliveryIds[deliveryIds.length - 1],
+							eventIds: Object.freeze([...deliveryIds]),
+							replyTarget: payload.channelId,
+						}, async () => this.processInbound(payload));
 						this.markDeliveryBatchCompleted(deliveryIds);
 					});
 				} else {

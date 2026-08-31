@@ -27,6 +27,13 @@ import { basename } from "path";
 import type { PlatformAdapter } from "../adapters/types.js";
 import { parseZulipTarget } from "../adapters/zulip-target.js";
 import { currentHostDeliveryScope } from "../adapters/host-delivery-scope.js";
+import {
+	normalizeRelationshipProgress,
+	RELATIONSHIP_CLOSE_STATES,
+	RELATIONSHIP_NEXT_STEPS,
+	RELATIONSHIP_RUNTIME_MILESTONES,
+	withRelationshipProgressRequest,
+} from "../relationship-progress.js";
 import * as log from "../log.js";
 import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
 
@@ -142,6 +149,14 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 		attachments: Type.Optional(Type.Array(Type.String(), { description: "File paths to attach (email or Mattermost root message). Each path should be an absolute path to a file on disk." })),
 		subject: Type.Optional(Type.String({ description: "Subject line (email only - ignored for Telegram/Slack/Discord). If omitted while replying inside an active email conversation, the current thread subject is reused." })),
 		recipients: Type.Optional(Type.Array(Type.String(), { description: "Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group." })),
+		relationship_progress: Type.Optional(Type.Object({
+			close_state: Type.Union(RELATIONSHIP_CLOSE_STATES.map((value) => Type.Literal(value))),
+			next_step: Type.Union(RELATIONSHIP_NEXT_STEPS.map((value) => Type.Literal(value))),
+			milestone: Type.Optional(Type.Union(RELATIONSHIP_RUNTIME_MILESTONES.map((value) => Type.Literal(value)))),
+		}, {
+			description: "Hostd relationship turns only: one durable close state and one next step. Add a milestone only when the current inbound message or this provider-confirmed outbound delivery is exact evidence.",
+			additionalProperties: false,
+		})),
 	});
 
 	return {
@@ -156,13 +171,14 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			"IMPORTANT: When a cross-channel message arrives while you are working, you MUST send a message to the appropriate target. Never leave a cross-channel message unacknowledged.",
 		parameters: schema,
 			execute: async (_toolCallId: string, params: unknown, signal?: AbortSignal) => {
-			const { target, text, attachments, subject, recipients } = params as {
+			const { target, text, attachments, subject, recipients, relationship_progress } = params as {
 				label?: string;
 				target?: string;
 				text?: string;
 				attachments?: string[];
 				subject?: string;
 				recipients?: string[];
+				relationship_progress?: unknown;
 			};
 
 			if (signal?.aborted) throw new Error("Operation aborted");
@@ -175,12 +191,19 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			}
 			const normalizedTarget = target.trim();
 			const hostDelivery = currentHostDeliveryScope();
-			if (hostDelivery?.source === "mcp-operator") {
+			const relationshipProgress = normalizeRelationshipProgress(relationship_progress);
+			if (relationshipProgress && hostDelivery?.source !== "hostd-phone") {
+				throw new Error("relationship_progress is available only inside an exact direct Hostd phone turn");
+			}
+			if (hostDelivery?.source === "hostd-phone" && !relationshipProgress) {
+				throw new Error("This direct Hostd relationship reply requires one exact close state and next step.");
+			}
+			if (hostDelivery) {
 				if (!hostDelivery.replyTarget || normalizedTarget !== hostDelivery.replyTarget) {
-					throw new Error("This MCP relationship turn can send only to Hostd's exact bound reply target.");
+					throw new Error("This Hostd relationship turn can send only to its exact bound reply target.");
 				}
 				if ((attachments?.length ?? 0) > 0 || (recipients?.length ?? 0) > 0 || subject) {
-					throw new Error("This MCP relationship turn permits one direct plain-text relationship message only.");
+					throw new Error("This Hostd relationship turn permits one direct plain-text relationship message only.");
 				}
 			}
 
@@ -210,11 +233,13 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				if (signal?.aborted) throw new Error("Operation aborted");
 				await waitForToolDisplay(_toolCallId);
 
-				const ts = resolved.threadTs
-					? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
-					: phoneRecipients.length > 0
-						? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
-						: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
+				const ts = await withRelationshipProgressRequest(relationshipProgress, async () => (
+					resolved.threadTs
+						? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
+						: phoneRecipients.length > 0
+							? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
+							: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject)
+				));
 				resolved.adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";

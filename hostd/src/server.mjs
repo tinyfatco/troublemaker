@@ -3,6 +3,10 @@ import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { HostMcpError } from "./mcp.mjs";
 import { OpenAiError } from "./openai.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
+import {
+	normalizeRelationshipProgress,
+	relationshipProgressSha256,
+} from "./relationship-funnel.mjs";
 import { bearerMatches, contextCapability } from "./security.mjs";
 import { HostServiceMailbox, ServiceMailboxError } from "./service-mailbox.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
@@ -577,6 +581,7 @@ export function createHostServer({
 					!conversation
 					|| conversation.contextId !== contextId
 					|| conversation.targetId !== target.id
+					|| conversation.status !== "active"
 				) {
 					json(response, 403, { error: "conversation_scope_denied" });
 					return;
@@ -588,25 +593,105 @@ export function createHostServer({
 				const originEventId = typeof body.origin_event_id === "string"
 					? body.origin_event_id.trim()
 					: "";
+				const maximumOriginEvents = config.scheduler?.relationshipBurstMaximumMessages ?? 10;
+				const rawOriginEventIds = body.origin_event_ids;
+				const originEventIds = Array.isArray(rawOriginEventIds)
+					? rawOriginEventIds.map((value) => typeof value === "string" ? value.trim() : "")
+					: [];
+				if (
+					rawOriginEventIds !== undefined
+					&& (
+						!Array.isArray(rawOriginEventIds)
+						|| originEventIds.length < 1
+						|| originEventIds.length > maximumOriginEvents
+						|| originEventIds.some((id) => !id || id.length > 256)
+						|| new Set(originEventIds).size !== originEventIds.length
+					)
+				) {
+					json(response, 400, { error: "origin_event_ids_invalid" });
+					return;
+				}
 				const mcpRelationship = activeMcpRelationshipScope(store, mcp, contextId);
 				if (
-					(originEventId && !mcpRelationship)
-					|| (mcpRelationship && (
+					!mcpRelationship
+					&& (
+						Boolean(originEventId) !== Boolean(originEventIds.length)
+						|| (originEventId && originEventIds.at(-1) !== originEventId)
+					)
+				) {
+					json(response, 400, { error: "origin_event_scope_invalid" });
+					return;
+				}
+				let originEvents = [];
+				let directPhoneScope = false;
+				if (mcpRelationship) {
+					if (
 						mcpRelationship.invalid
 						|| mcpRelationship.source !== "phone"
+						|| originEventIds.length !== 0
 						|| mcpRelationship.eventId !== originEventId
 						|| mcpRelationship.providerThreadId !== conversation.providerThreadId
 						|| mcpRelationship.principalHash !== conversation.principalHash
 						|| mcpRelationship.targetId !== conversation.targetId
 						|| mcpRelationship.contextId !== conversation.contextId
-						|| conversation.status !== "active"
-					))
-				) {
-					json(response, 403, { error: "relationship_instruction_scope_denied" });
+					) {
+						json(response, 403, { error: "relationship_instruction_scope_denied" });
+						return;
+					}
+					const instructionEvent = store.getEvent(originEventId);
+					if (
+						!instructionEvent
+						|| instructionEvent.source !== "mcp-operator"
+						|| instructionEvent.contextId !== contextId
+						|| instructionEvent.status !== "running"
+					) {
+						json(response, 403, { error: "relationship_instruction_scope_denied" });
+						return;
+					}
+					originEvents = [instructionEvent];
+				} else if (originEventId) {
+					const activeEvents = store.getActivePhoneEventScope({
+						contextId,
+						conversation,
+						eventIds: originEventIds,
+					});
+					if (!activeEvents) {
+						json(response, 403, { error: "relationship_event_scope_denied" });
+						return;
+					}
+					originEvents = activeEvents;
+					directPhoneScope = true;
+				}
+				let relationshipProgress;
+				try {
+					relationshipProgress = normalizeRelationshipProgress(body.relationship_progress);
+				} catch {
+					json(response, 400, { error: "relationship_progress_invalid" });
 					return;
 				}
+				if (relationshipProgress && !directPhoneScope) {
+					json(response, 403, { error: "relationship_progress_scope_denied" });
+					return;
+				}
+				if (directPhoneScope && !relationshipProgress) {
+					json(response, 400, { error: "relationship_progress_required" });
+					return;
+				}
+				if (relationshipProgress) {
+					try {
+						store.validateRelationshipProgress({
+							conversation,
+							originEvents,
+							progress: relationshipProgress,
+						});
+					} catch {
+						json(response, 403, { error: "relationship_progress_evidence_denied" });
+						return;
+					}
+				}
 				const message = typeof body.agent_body === "string" ? body.agent_body.trim() : "";
-				if (!message || message.length > 1600) {
+				const maximumMessageLength = directPhoneScope ? 320 : 1600;
+				if (!message || message.length > maximumMessageLength) {
 					json(response, 400, { error: "agent_body_invalid" });
 					return;
 				}
@@ -618,21 +703,32 @@ export function createHostServer({
 					return;
 				}
 				const sha256 = bodyDigest(message);
-				if (mcpRelationship) {
+				if (originEventId) {
 					const existingDelivery = store.getOutboxForOriginEvent(originEventId);
 					if (existingDelivery && existingDelivery.idempotencyKey !== idempotencyKey) {
 						json(response, 409, { error: "relationship_instruction_delivery_already_exists" });
 						return;
 					}
 				}
-				let outbox = store.startOutbox({
-					idempotencyKey,
-					targetId: target.id,
-					contextId,
-					providerThreadId: conversation.providerThreadId,
-					originEventId: originEventId || undefined,
-					bodySha256: sha256,
-				});
+				let outbox;
+				try {
+					outbox = store.startOutbox({
+						idempotencyKey,
+						targetId: target.id,
+						contextId,
+						providerThreadId: conversation.providerThreadId,
+						originEventId: originEventId || undefined,
+						bodySha256: sha256,
+						progressSha256: relationshipProgressSha256(relationshipProgress),
+					});
+				} catch (error) {
+					if (String(error).includes("idempotency key conflicts")) {
+						json(response, 409, { error: "delivery_idempotency_conflict" });
+						return;
+					}
+					throw error;
+				}
+
 				if (outbox.status === "completed" && outbox.providerMessageId) {
 					json(response, 200, {
 						ok: true,
@@ -681,6 +777,11 @@ export function createHostServer({
 							receipt.providerMessageId,
 							receipt.status,
 							ledgerEvent,
+							{
+								conversation,
+								originEvents,
+								relationshipProgress,
+							},
 						);
 					} catch (error) {
 						store.markOutboxUncertain(

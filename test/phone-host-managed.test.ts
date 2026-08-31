@@ -5,6 +5,7 @@ import {
 } from "../src/adapters/host-delivery-scope.js";
 import { HostManagedPhoneProvider } from "../src/adapters/phone-messaging/host-managed-provider.js";
 import type { PhoneChannelRecord } from "../src/adapters/phone-messaging/types.js";
+import { withRelationshipProgressRequest } from "../src/relationship-progress.js";
 
 async function run() {
 	const originalFetch = globalThis.fetch;
@@ -61,11 +62,58 @@ async function run() {
 			text: "One relationship-scoped reply.",
 		}));
 		assert.equal(sentBodies[1]?.origin_event_id, eventId);
+		assert.equal("origin_event_ids" in (sentBodies[1] || {}), false, "MCP retains its deployed single-event request contract");
 		assert.match(
 			String(sentBodies[1]?.idempotency_key),
 			new RegExp(`:mcp:${eventId}:[a-f0-9]{24}$`),
+			"MCP retains its deployed retry-stable idempotency lineage",
 		);
 		assert.equal(currentHostDeliveryScope(), undefined, "relationship delivery scope clears after the turn");
+		await assert.rejects(
+			() => withHostDeliveryScope({
+				source: "mcp-operator",
+				eventId,
+				replyTarget: channel.channelId,
+			}, () => withRelationshipProgressRequest({
+				close_state: "request_answered",
+				next_step: "await_customer_choice",
+			}, () => provider.sendMessage({ channel, text: "MCP progress is out of scope." }))),
+			/exact direct Hostd phone scope/i,
+		);
+
+		const directEventIds = [
+			"phone:provider-message-one",
+			"phone:provider-message-two",
+		];
+		const directProgress = {
+			close_state: "request_answered",
+			next_step: "await_customer_choice",
+		} as const;
+		await withHostDeliveryScope({
+			source: "hostd-phone",
+			eventId: directEventIds[1],
+			eventIds: directEventIds,
+			replyTarget: channel.channelId,
+		}, () => withRelationshipProgressRequest(directProgress, () => provider.sendMessage({
+			channel,
+			text: "A concise direct reply.",
+		})));
+		assert.equal(sentBodies[2]?.origin_event_id, directEventIds[1]);
+		assert.deepEqual(sentBodies[2]?.origin_event_ids, directEventIds);
+		assert.deepEqual(sentBodies[2]?.relationship_progress, directProgress);
+		assert.match(
+			String(sentBodies[2]?.idempotency_key),
+			/:hostd-phone:[a-f0-9]{24}:[a-f0-9]{24}$/,
+		);
+		await assert.rejects(
+			() => withHostDeliveryScope({
+				source: "hostd-phone",
+				eventId: directEventIds[1],
+				eventIds: directEventIds,
+				replyTarget: channel.channelId,
+			}, () => provider.sendMessage({ channel, text: "Missing progress." })),
+			/require one close state and next step/i,
+		);
 		await assert.rejects(
 			() => withHostDeliveryScope({ source: "mcp-operator", eventId, replyTarget: channel.channelId }, async () => {
 				await withHostDeliveryScope({

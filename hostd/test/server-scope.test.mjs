@@ -391,6 +391,22 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(sends.length, 0);
 		assert.equal(store.getOutbox("phone-held"), undefined);
 
+		const mcpProgressDenied = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "MCP must not mutate direct phone progress.",
+			idempotency_key: "phone-mcp-progress-denied",
+			origin_event_id: claimed.id,
+			relationship_progress: {
+				close_state: "request_answered",
+				next_step: "await_customer_choice",
+			},
+		});
+		assert.equal(mcpProgressDenied.status, 403);
+		assert.deepEqual(await mcpProgressDenied.json(), { error: "relationship_progress_scope_denied" });
+		assert.equal(sends.length, 0);
+		assert.equal(store.getOutbox("phone-mcp-progress-denied"), undefined);
+
 		const sent = await post({
 			context_id: owner.contextId,
 			thread_target: owner.threadTarget,

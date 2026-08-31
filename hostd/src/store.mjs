@@ -3,6 +3,13 @@ import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { requireHostdOpenAiModel } from "./openai-models.mjs";
+import {
+	evidenceSha256,
+	milestoneAuthority,
+	normalizeRelationshipProgress,
+	relationshipProgressSha256,
+	requireFunnelMilestone,
+} from "./relationship-funnel.mjs";
 import { siteActorRefForContext } from "./site-actor.mjs";
 
 function now() {
@@ -31,6 +38,9 @@ export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"scheduled_prompts",
 	"outbox",
 	"phone_conversations",
+	"relationship_funnels",
+	"relationship_funnel_milestones",
+	"relationship_funnel_turns",
 	"web_chat_conversations",
 	"web_chat_outbox",
 	"workers_ai_requests",
@@ -425,6 +435,7 @@ export class HostStore {
 				provider_thread_id TEXT NOT NULL,
 				origin_event_id TEXT,
 				body_sha256 TEXT,
+				progress_sha256 TEXT,
 				status TEXT NOT NULL,
 				provider_message_id TEXT,
 				provider_status TEXT,
@@ -454,6 +465,83 @@ export class HostStore {
 				observed_at TEXT NOT NULL,
 				FOREIGN KEY (principal_hash) REFERENCES principals(id)
 			);
+
+			CREATE TABLE IF NOT EXISTS relationship_funnels (
+				context_id TEXT PRIMARY KEY,
+				source TEXT NOT NULL CHECK(source = 'phone'),
+				provider_thread_id TEXT NOT NULL,
+				principal_hash TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				measurement_started_at TEXT NOT NULL,
+				first_inbound_at TEXT NOT NULL,
+				inbound_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(inbound_turn_count >= 0),
+				outbound_turn_count INTEGER NOT NULL DEFAULT 0 CHECK(outbound_turn_count >= 0),
+				close_state TEXT NOT NULL CHECK(close_state IN (
+					'inbound_received', 'request_answered', 'awaiting_customer_detail',
+					'preview_in_progress', 'awaiting_preview_review', 'approval_received',
+					'checkout_sent', 'awaiting_payment_confirmation', 'awaiting_domain_intake',
+					'domain_intake_received', 'awaiting_live_acceptance', 'live_accepted'
+				)),
+				next_step TEXT NOT NULL CHECK(next_step IN (
+					'reply_to_customer', 'await_customer_choice', 'share_missing_detail',
+					'prepare_preview', 'review_preview', 'send_checkout', 'complete_checkout',
+					'confirm_payment', 'share_domain_choice', 'connect_domain',
+					'review_live_site', 'none'
+				)),
+				close_evidence_kind TEXT NOT NULL CHECK(close_evidence_kind IN (
+					'host_inbound', 'provider_outbound_turn', 'provider_outbound',
+					'customer_inbound', 'payment_provider', 'host_operation'
+				)),
+				close_evidence_sha256 TEXT NOT NULL,
+				close_observed_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				CHECK(
+					(close_state = 'inbound_received' AND next_step = 'reply_to_customer')
+					OR (close_state = 'request_answered' AND next_step = 'await_customer_choice')
+					OR (close_state = 'awaiting_customer_detail' AND next_step = 'share_missing_detail')
+					OR (close_state = 'preview_in_progress' AND next_step = 'prepare_preview')
+					OR (close_state = 'awaiting_preview_review' AND next_step = 'review_preview')
+					OR (close_state = 'approval_received' AND next_step = 'send_checkout')
+					OR (close_state = 'checkout_sent' AND next_step = 'complete_checkout')
+					OR (close_state = 'awaiting_payment_confirmation' AND next_step = 'confirm_payment')
+					OR (close_state = 'awaiting_domain_intake' AND next_step = 'share_domain_choice')
+					OR (close_state = 'domain_intake_received' AND next_step = 'connect_domain')
+					OR (close_state = 'awaiting_live_acceptance' AND next_step = 'review_live_site')
+					OR (close_state = 'live_accepted' AND next_step = 'none')
+				)
+			);
+
+			CREATE TABLE IF NOT EXISTS relationship_funnel_milestones (
+				context_id TEXT NOT NULL,
+				milestone TEXT NOT NULL CHECK(milestone IN (
+					'first_inbound', 'preview', 'approval', 'checkout', 'payment',
+					'domain_intake', 'domain_connection', 'live_acceptance'
+				)),
+				observed_at TEXT NOT NULL,
+				authority TEXT NOT NULL CHECK(authority IN (
+					'host_inbound', 'provider_outbound', 'customer_inbound',
+					'payment_provider', 'host_operation'
+				)),
+				evidence_sha256 TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (context_id, milestone),
+				FOREIGN KEY (context_id) REFERENCES relationship_funnels(context_id)
+					ON UPDATE CASCADE ON DELETE CASCADE
+			);
+
+			CREATE TABLE IF NOT EXISTS relationship_funnel_turns (
+				evidence_sha256 TEXT PRIMARY KEY,
+				context_id TEXT NOT NULL,
+				direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')),
+				observed_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (context_id) REFERENCES relationship_funnels(context_id)
+					ON UPDATE CASCADE ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS relationship_funnel_scope
+				ON relationship_funnels(source, provider_thread_id, principal_hash, target_id);
 
 			CREATE TABLE IF NOT EXISTS web_chat_conversations (
 				session_id TEXT PRIMARY KEY,
@@ -653,6 +741,7 @@ export class HostStore {
 			);
 		`);
 		this.migrate();
+		this.backfillRelationshipFunnels();
 	}
 
 	migrate() {
@@ -685,6 +774,7 @@ export class HostStore {
 		add("outbox", "body_sha256 TEXT");
 		add("outbox", "origin_event_id TEXT");
 		add("outbox", "provider_status TEXT");
+		add("outbox", "progress_sha256 TEXT");
 		add("gmail_drafts", "to_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("workers_ai_requests", "rejection_count INTEGER NOT NULL DEFAULT 0");
@@ -882,6 +972,438 @@ export class HostStore {
 				updated_at = ?
 			WHERE status = 'sending'
 		`).run(now(), now());
+	}
+
+	backfillRelationshipFunnels() {
+		const marker = "relationship_funnel_backfill_v1";
+		if (this.getMeta(marker) === "complete") return;
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.backfillRelationshipFunnelRows();
+			this.setMeta(marker, "complete");
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	backfillRelationshipFunnelRows() {
+		const inbound = this.database.prepare(`
+			SELECT event.id, event.context_id AS contextId,
+				event.provider_thread_id AS providerThreadId,
+				event.principal_hash AS principalHash, event.target_id AS targetId,
+				event.received_at AS observedAt
+			FROM events AS event
+			INNER JOIN phone_conversations AS conversation
+				ON conversation.context_id = event.context_id
+				AND conversation.provider_thread_id = event.provider_thread_id
+				AND conversation.principal_hash = event.principal_hash
+				AND conversation.target_id = event.target_id
+			WHERE event.source = 'phone'
+			ORDER BY event.received_at, event.id
+		`).all();
+		for (const event of inbound) {
+			this.recordRelationshipTurn({
+				...event,
+				source: "phone",
+				direction: "inbound",
+				evidenceId: event.id,
+			});
+		}
+		const outbound = this.database.prepare(`
+			SELECT delivery.idempotency_key AS idempotencyKey,
+				delivery.context_id AS contextId,
+				delivery.provider_thread_id AS providerThreadId,
+				conversation.principal_hash AS principalHash,
+				delivery.target_id AS targetId,
+				COALESCE(delivery.completed_at, delivery.created_at) AS observedAt
+			FROM outbox AS delivery
+			INNER JOIN phone_conversations AS conversation
+				ON conversation.context_id = delivery.context_id
+				AND conversation.provider_thread_id = delivery.provider_thread_id
+				AND conversation.target_id = delivery.target_id
+			INNER JOIN relationship_funnels AS funnel
+				ON funnel.context_id = delivery.context_id
+				AND funnel.provider_thread_id = delivery.provider_thread_id
+				AND funnel.principal_hash = conversation.principal_hash
+				AND funnel.target_id = delivery.target_id
+			WHERE delivery.status = 'completed'
+			ORDER BY delivery.created_at, delivery.id
+		`).all();
+		for (const delivery of outbound) {
+			this.recordRelationshipTurn({
+				...delivery,
+				source: "phone",
+				direction: "outbound",
+				evidenceId: delivery.idempotencyKey,
+			});
+		}
+	}
+
+	getRelationshipFunnel(contextId) {
+		const funnel = this.database.prepare(`
+			SELECT context_id AS contextId, source,
+				provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				measurement_started_at AS measurementStartedAt,
+				first_inbound_at AS firstInboundAt,
+				inbound_turn_count AS inboundTurnCount,
+				outbound_turn_count AS outboundTurnCount,
+				close_state AS closeState, next_step AS nextStep,
+				close_evidence_kind AS closeEvidenceKind,
+				close_evidence_sha256 AS closeEvidenceSha256,
+				close_observed_at AS closeObservedAt,
+				created_at AS createdAt, updated_at AS updatedAt
+			FROM relationship_funnels WHERE context_id = ?
+		`).get(contextId);
+		if (!funnel) return undefined;
+		return { ...funnel, milestones: this.listRelationshipFunnelMilestones(contextId) };
+	}
+
+	listRelationshipFunnelMilestones(contextId) {
+		return this.database.prepare(`
+			SELECT milestone, observed_at AS observedAt, authority,
+				evidence_sha256 AS evidenceSha256, created_at AS createdAt
+			FROM relationship_funnel_milestones
+			WHERE context_id = ? ORDER BY observed_at, milestone
+		`).all(contextId);
+	}
+
+	ensureRelationshipFunnel({
+		contextId,
+		source,
+		providerThreadId,
+		principalHash,
+		targetId,
+		observedAt,
+		evidenceId,
+	}) {
+		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
+		let existing = this.getRelationshipFunnel(contextId);
+		if (existing) {
+			if (
+				existing.source !== source
+				|| existing.providerThreadId !== providerThreadId
+				|| existing.principalHash !== principalHash
+				|| existing.targetId !== targetId
+			) throw new Error("relationship_funnel_scope_conflict");
+			if (Date.parse(observedAt) < Date.parse(existing.firstInboundAt)) {
+				this.database.prepare(`
+					UPDATE relationship_funnels SET first_inbound_at = ?, updated_at = ?
+					WHERE context_id = ?
+				`).run(observedAt, now(), contextId);
+			}
+			return this.getRelationshipFunnel(contextId);
+		}
+		const timestamp = now();
+		const initialEvidence = evidenceSha256(
+			"relationship-close-v1",
+			contextId,
+			"host_inbound",
+			evidenceId,
+		);
+		this.database.prepare(`
+			INSERT INTO relationship_funnels(
+				context_id, source, provider_thread_id, principal_hash, target_id,
+				measurement_started_at, first_inbound_at,
+				close_state, next_step, close_evidence_kind,
+				close_evidence_sha256, close_observed_at, created_at, updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 'inbound_received', 'reply_to_customer',
+				'host_inbound', ?, ?, ?, ?)
+		`).run(
+			contextId,
+			source,
+			providerThreadId,
+			principalHash,
+			targetId,
+			timestamp,
+			observedAt,
+			initialEvidence,
+			observedAt,
+			timestamp,
+			timestamp,
+		);
+		this.recordRelationshipMilestone({
+			contextId,
+			milestone: "first_inbound",
+			observedAt,
+			authority: "host_inbound",
+			evidenceSha256: initialEvidence,
+		});
+		existing = this.getRelationshipFunnel(contextId);
+		return existing;
+	}
+
+	recordRelationshipTurn({
+		contextId,
+		source,
+		providerThreadId,
+		principalHash,
+		targetId,
+		direction,
+		evidenceId,
+		observedAt,
+	}) {
+		if (!["inbound", "outbound"].includes(direction)) throw new Error("relationship_turn_direction_invalid");
+		if (typeof evidenceId !== "string" || !evidenceId) throw new Error("relationship_turn_evidence_invalid");
+		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
+		let funnel = this.getRelationshipFunnel(contextId);
+		if (direction === "inbound") {
+			funnel = this.ensureRelationshipFunnel({
+				contextId,
+				source,
+				providerThreadId,
+				principalHash,
+				targetId,
+				observedAt,
+				evidenceId,
+			});
+		} else if (!funnel) {
+			return undefined;
+		}
+		if (
+			!funnel
+			|| funnel.source !== source
+			|| funnel.providerThreadId !== providerThreadId
+			|| funnel.principalHash !== principalHash
+			|| funnel.targetId !== targetId
+		) throw new Error("relationship_funnel_scope_conflict");
+		const digest = evidenceSha256(
+			"relationship-turn-v1",
+			contextId,
+			direction,
+			evidenceId,
+		);
+		const inserted = this.database.prepare(`
+			INSERT INTO relationship_funnel_turns(
+				evidence_sha256, context_id, direction, observed_at, created_at
+			) VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(evidence_sha256) DO NOTHING
+		`).run(digest, contextId, direction, observedAt, now());
+		if (inserted.changes) {
+			const column = direction === "inbound" ? "inbound_turn_count" : "outbound_turn_count";
+			this.database.prepare(`
+				UPDATE relationship_funnels
+				SET ${column} = ${column} + 1, updated_at = ?
+				WHERE context_id = ?
+			`).run(now(), contextId);
+		}
+		return this.getRelationshipFunnel(contextId);
+	}
+
+	recordRelationshipMilestone({
+		contextId,
+		milestone,
+		observedAt,
+		authority,
+		evidenceSha256: evidence,
+	}) {
+		requireFunnelMilestone(milestone);
+		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
+		if (!/^[a-f0-9]{64}$/.test(evidence)) throw new Error("relationship_evidence_invalid");
+		const inserted = this.database.prepare(`
+			INSERT INTO relationship_funnel_milestones(
+				context_id, milestone, observed_at, authority, evidence_sha256, created_at
+			) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(context_id, milestone) DO NOTHING
+		`).run(contextId, milestone, observedAt, authority, evidence, now());
+		if (!inserted.changes) {
+			const existing = this.database.prepare(`
+				SELECT observed_at AS observedAt, authority, evidence_sha256 AS evidenceSha256
+				FROM relationship_funnel_milestones
+				WHERE context_id = ? AND milestone = ?
+			`).get(contextId, milestone);
+			if (!existing) throw new Error("relationship_milestone_missing_after_conflict");
+			return { ...existing, milestone, duplicate: true };
+		}
+		return { milestone, observedAt, authority, evidenceSha256: evidence, duplicate: false };
+	}
+
+	getActivePhoneEventScope({ contextId, conversation, eventIds }) {
+		if (!Array.isArray(eventIds) || eventIds.length < 1 || eventIds.length > 100) return undefined;
+		const unique = [...new Set(eventIds)];
+		if (unique.length !== eventIds.length || unique.some((id) => typeof id !== "string" || !id)) return undefined;
+		const placeholders = unique.map(() => "?").join(", ");
+		const events = this.database.prepare(`
+			SELECT id, source, provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, awareness_sequence AS awarenessSequence,
+				status, lease_token AS leaseToken, received_at AS receivedAt
+			FROM events WHERE id IN (${placeholders})
+			ORDER BY awareness_sequence, received_at, id
+		`).all(...unique);
+		if (events.length !== unique.length) return undefined;
+		if (events.some((event, index) => event.id !== eventIds[index])) return undefined;
+		const leaseToken = events[0].leaseToken;
+		if (!leaseToken || events.some((event) => (
+			event.source !== "phone"
+			|| event.status !== "running"
+			|| event.leaseToken !== leaseToken
+			|| event.contextId !== contextId
+			|| event.providerThreadId !== conversation.providerThreadId
+			|| event.principalHash !== conversation.principalHash
+			|| event.targetId !== conversation.targetId
+		))) return undefined;
+		const exactBatch = this.database.prepare(`
+			SELECT id FROM events
+			WHERE context_id = ? AND lease_token = ?
+			ORDER BY awareness_sequence, received_at, id
+		`).all(contextId, leaseToken).map((event) => event.id);
+		if (exactBatch.length !== unique.length || exactBatch.some((id, index) => id !== unique[index])) return undefined;
+		return events;
+	}
+
+	validateRelationshipProgress({ conversation, originEvents, progress }) {
+		const normalized = normalizeRelationshipProgress(progress);
+		if (!normalized) return undefined;
+		if (!Array.isArray(originEvents) || originEvents.length < 1) {
+			throw new Error("relationship_progress_event_scope_required");
+		}
+		const funnel = this.getRelationshipFunnel(conversation.contextId);
+		if (
+			!funnel
+			|| funnel.source !== "phone"
+			|| funnel.providerThreadId !== conversation.providerThreadId
+			|| funnel.principalHash !== conversation.principalHash
+			|| funnel.targetId !== conversation.targetId
+		) throw new Error("relationship_progress_scope_denied");
+		const milestones = new Set(funnel.milestones.map((entry) => entry.milestone));
+		if (normalized.milestone) {
+			const authority = milestoneAuthority(normalized.milestone);
+			if (
+				authority === "customer_inbound"
+				&& originEvents.some((event) => event.source !== "phone")
+			) throw new Error("relationship_milestone_authority_denied");
+			milestones.add(normalized.milestone);
+		}
+		const requireMilestones = (...required) => {
+			if (required.some((milestone) => !milestones.has(milestone))) {
+				throw new Error("relationship_close_evidence_missing");
+			}
+		};
+		switch (normalized.close_state) {
+			case "awaiting_preview_review": requireMilestones("preview"); break;
+			case "approval_received": requireMilestones("approval"); break;
+			case "checkout_sent": requireMilestones("checkout"); break;
+			case "awaiting_payment_confirmation": requireMilestones("checkout"); break;
+			case "awaiting_domain_intake": requireMilestones("payment"); break;
+			case "domain_intake_received": requireMilestones("payment", "domain_intake"); break;
+			case "awaiting_live_acceptance": requireMilestones("domain_connection"); break;
+			case "live_accepted": requireMilestones("domain_connection", "live_acceptance"); break;
+		}
+		return normalized;
+	}
+
+	applyRelationshipProgress({
+		conversation,
+		originEvents,
+		progress,
+		idempotencyKey,
+		providerMessageId,
+		observedAt,
+	}) {
+		const normalized = this.validateRelationshipProgress({ conversation, originEvents, progress });
+		if (!normalized) return undefined;
+		let evidenceKind = "provider_outbound_turn";
+		if (normalized.milestone) {
+			const authority = milestoneAuthority(normalized.milestone);
+			evidenceKind = authority;
+			const inboundEvidence = originEvents.map((event) => event.id).join("\n");
+			const milestoneEvidence = authority === "customer_inbound"
+				? evidenceSha256("relationship-milestone-v1", conversation.contextId, normalized.milestone, inboundEvidence)
+				: evidenceSha256("relationship-milestone-v1", conversation.contextId, normalized.milestone, idempotencyKey, providerMessageId);
+			const milestoneObservedAt = authority === "customer_inbound"
+				? originEvents.map((event) => event.receivedAt).sort()[0]
+				: observedAt;
+			this.recordRelationshipMilestone({
+				contextId: conversation.contextId,
+				milestone: normalized.milestone,
+				observedAt: milestoneObservedAt,
+				authority,
+				evidenceSha256: milestoneEvidence,
+			});
+		}
+		const closeEvidence = evidenceSha256(
+			"relationship-close-v1",
+			conversation.contextId,
+			relationshipProgressSha256(normalized),
+			originEvents.map((event) => event.id).join("\n"),
+			idempotencyKey,
+			providerMessageId,
+		);
+		this.database.prepare(`
+			UPDATE relationship_funnels
+			SET close_state = ?, next_step = ?, close_evidence_kind = ?,
+				close_evidence_sha256 = ?, close_observed_at = ?, updated_at = ?
+			WHERE context_id = ?
+		`).run(
+			normalized.close_state,
+			normalized.next_step,
+			evidenceKind,
+			closeEvidence,
+			observedAt,
+			now(),
+			conversation.contextId,
+		);
+		return this.getRelationshipFunnel(conversation.contextId);
+	}
+
+	recordTrustedRelationshipMilestone({ contextId, milestone, authority, evidenceId, observedAt = now() }) {
+		if (![["payment", "payment_provider"], ["domain_connection", "host_operation"]]
+			.some(([candidate, expected]) => milestone === candidate && authority === expected)) {
+			throw new Error("relationship_milestone_authority_denied");
+		}
+		if (typeof evidenceId !== "string" || !evidenceId) throw new Error("relationship_evidence_invalid");
+		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const funnel = this.getRelationshipFunnel(contextId);
+			if (!funnel) throw new Error("relationship_funnel_not_found");
+			const prior = new Set(funnel.milestones.map((entry) => entry.milestone));
+			if (milestone === "domain_connection" && (!prior.has("payment") || !prior.has("domain_intake"))) {
+				throw new Error("relationship_close_evidence_missing");
+			}
+			const evidence = evidenceSha256(
+				"relationship-trusted-milestone-v1",
+				contextId,
+				milestone,
+				authority,
+				evidenceId,
+			);
+			const receipt = this.recordRelationshipMilestone({
+				contextId,
+				milestone,
+				observedAt,
+				authority,
+				evidenceSha256: evidence,
+			});
+			if (receipt.duplicate) {
+				if (receipt.authority !== authority || receipt.evidenceSha256 !== evidence) {
+					throw new Error("relationship_milestone_conflict");
+				}
+				this.database.exec("COMMIT");
+				return this.getRelationshipFunnel(contextId);
+			}
+			const hasDomainIntake = milestone === "payment" && prior.has("domain_intake");
+			const closeState = milestone === "domain_connection"
+				? "awaiting_live_acceptance"
+				: (hasDomainIntake ? "domain_intake_received" : "awaiting_domain_intake");
+			const nextStep = milestone === "domain_connection"
+				? "review_live_site"
+				: (hasDomainIntake ? "connect_domain" : "share_domain_choice");
+			this.database.prepare(`
+				UPDATE relationship_funnels
+				SET close_state = ?, next_step = ?, close_evidence_kind = ?,
+					close_evidence_sha256 = ?, close_observed_at = ?, updated_at = ?
+				WHERE context_id = ?
+			`).run(closeState, nextStep, authority, evidence, observedAt, now(), contextId);
+			this.database.exec("COMMIT");
+			return this.getRelationshipFunnel(contextId);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
 	}
 
 	close() {
@@ -3976,6 +4498,18 @@ export class HostStore {
 				};
 			}
 			const storedEvent = this.upsertEvent(storedEventInput);
+			if (!existingEvent) {
+				this.recordRelationshipTurn({
+					contextId: storedEvent.contextId,
+					source: storedEvent.source,
+					providerThreadId: storedEvent.providerThreadId,
+					principalHash: storedEvent.principalHash,
+					targetId: storedEvent.targetId,
+					direction: "inbound",
+					evidenceId: storedEvent.id,
+					observedAt: storedEvent.receivedAt,
+				});
+			}
 			this.insertControlNotification(event, storedEvent);
 			let relationshipEventQueued = false;
 			if (firstAttributedContact) {
@@ -4400,7 +4934,8 @@ export class HostStore {
 			SELECT id, idempotency_key AS idempotencyKey, target_id AS targetId,
 				context_id AS contextId, provider_thread_id AS providerThreadId,
 				origin_event_id AS originEventId, body_sha256 AS bodySha256,
-				status, provider_message_id AS providerMessageId,
+				progress_sha256 AS progressSha256, status,
+				provider_message_id AS providerMessageId,
 				provider_status AS providerStatus, last_error AS lastError,
 				created_at AS createdAt, completed_at AS completedAt
 			FROM outbox WHERE idempotency_key = ?
@@ -4413,7 +4948,8 @@ export class HostStore {
 				target_id AS targetId, context_id AS contextId,
 				provider_thread_id AS providerThreadId,
 				origin_event_id AS originEventId, body_sha256 AS bodySha256,
-				status, provider_message_id AS providerMessageId,
+				progress_sha256 AS progressSha256, status,
+				provider_message_id AS providerMessageId,
 				provider_status AS providerStatus, last_error AS lastError,
 				created_at AS createdAt, completed_at AS completedAt
 			FROM outbox WHERE origin_event_id = ?
@@ -4427,12 +4963,13 @@ export class HostStore {
 		providerThreadId,
 		originEventId,
 		bodySha256,
+		progressSha256,
 	}) {
 		const inserted = this.database.prepare(`
 			INSERT INTO outbox(
 				idempotency_key, target_id, context_id, provider_thread_id,
-				origin_event_id, body_sha256, status, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, 'sending', ?)
+				origin_event_id, body_sha256, progress_sha256, status, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, 'sending', ?)
 			ON CONFLICT(idempotency_key) DO NOTHING
 		`).run(
 			idempotencyKey,
@@ -4441,6 +4978,7 @@ export class HostStore {
 			providerThreadId,
 			originEventId ?? null,
 			bodySha256 ?? null,
+			progressSha256 ?? null,
 			now(),
 		);
 		if (!inserted.changes) {
@@ -4452,6 +4990,7 @@ export class HostStore {
 				|| existing.providerThreadId !== providerThreadId
 				|| (existing.originEventId ?? null) !== (originEventId ?? null)
 				|| (bodySha256 !== undefined && existing.bodySha256 !== bodySha256)
+				|| (existing.progressSha256 ?? null) !== (progressSha256 ?? null)
 			) {
 				throw new Error("outbox idempotency key conflicts with existing delivery");
 			}
@@ -4484,10 +5023,71 @@ export class HostStore {
 		return this.getOutbox(idempotencyKey);
 	}
 
-	completePhoneOutboxWithLedger(idempotencyKey, providerMessageId, providerStatus, ledgerEvent) {
+	completePhoneOutboxWithLedger(
+		idempotencyKey,
+		providerMessageId,
+		providerStatus,
+		ledgerEvent,
+		{ conversation, originEvents = [], relationshipProgress } = {},
+	) {
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
+			const delivery = this.getOutbox(idempotencyKey);
+			if (!delivery || delivery.status !== "sending") {
+				throw new Error("phone outbox is no longer claimable");
+			}
+			if (conversation) {
+				const activeConversation = this.getPhoneConversation(conversation.threadTarget);
+				if (
+					delivery.contextId !== conversation.contextId
+					|| delivery.providerThreadId !== conversation.providerThreadId
+					|| delivery.targetId !== conversation.targetId
+					|| !activeConversation
+					|| activeConversation.status !== "active"
+					|| activeConversation.contextId !== conversation.contextId
+					|| activeConversation.providerThreadId !== conversation.providerThreadId
+					|| activeConversation.principalHash !== conversation.principalHash
+					|| activeConversation.targetId !== conversation.targetId
+				) throw new Error("phone outbox relationship scope conflicts");
+				if (
+					delivery.originEventId
+					&& originEvents.at(-1)?.id !== delivery.originEventId
+				) throw new Error("phone outbox origin event conflicts");
+				if (relationshipProgress) {
+					const activeOriginEvents = this.getActivePhoneEventScope({
+						contextId: conversation.contextId,
+						conversation: activeConversation,
+						eventIds: originEvents.map((event) => event.id),
+					});
+					if (!activeOriginEvents) throw new Error("phone outbox event scope is no longer active");
+					originEvents = activeOriginEvents;
+				} else if (delivery.originEventId) {
+					const instruction = this.getEvent(delivery.originEventId);
+					if (
+						originEvents.length !== 1
+						|| originEvents[0]?.id !== delivery.originEventId
+						|| !instruction
+						|| instruction.source !== "mcp-operator"
+						|| instruction.status !== "running"
+						|| instruction.contextId !== conversation.contextId
+					) throw new Error("phone outbox instruction scope is no longer active");
+					originEvents = [instruction];
+				}
+			} else if (relationshipProgress || delivery.progressSha256) {
+				throw new Error("phone outbox relationship scope is missing");
+			}
+			const normalizedProgress = relationshipProgress
+				? this.validateRelationshipProgress({
+					conversation,
+					originEvents,
+					progress: relationshipProgress,
+				})
+				: undefined;
+			if (
+				(delivery.progressSha256 ?? null)
+				!== (relationshipProgressSha256(normalizedProgress) ?? null)
+			) throw new Error("phone outbox relationship progress conflicts");
 			const updated = this.database.prepare(`
 				UPDATE outbox SET status = 'completed', provider_message_id = ?,
 					provider_status = ?,
@@ -4498,6 +5098,28 @@ export class HostStore {
 				throw new Error("phone outbox is no longer claimable");
 			}
 			this.insertCompletedLedgerEventWithControlNotification(ledgerEvent, timestamp);
+			if (conversation) {
+				this.recordRelationshipTurn({
+					contextId: conversation.contextId,
+					source: "phone",
+					providerThreadId: conversation.providerThreadId,
+					principalHash: conversation.principalHash,
+					targetId: conversation.targetId,
+					direction: "outbound",
+					evidenceId: idempotencyKey,
+					observedAt: timestamp,
+				});
+				if (normalizedProgress) {
+					this.applyRelationshipProgress({
+						conversation,
+						originEvents,
+						progress: normalizedProgress,
+						idempotencyKey,
+						providerMessageId,
+						observedAt: timestamp,
+					});
+				}
+			}
 			this.database.exec("COMMIT");
 			return this.getOutbox(idempotencyKey);
 		} catch (error) {

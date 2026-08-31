@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { currentHostDeliveryScope } from "../src/adapters/host-delivery-scope.js";
 import { PhoneMessagingWebhookAdapter } from "../src/adapters/phone-messaging-webhook.js";
 import type { PhoneProviderRegistry } from "../src/adapters/phone-messaging/registry.js";
 import type { MomEvent, MomHandler } from "../src/adapters/types.js";
@@ -12,7 +13,12 @@ const CHANNEL_ID = "phone-0123456789abcdef0123";
 const CONTEXT_ID = "front-desk:0123456789abcdef01234567:relationship-operator";
 const TOKEN = "relationship-inbound-token";
 
-function adapter(workingDir: string, events: MomEvent[], steers: MomEvent[]): PhoneMessagingWebhookAdapter {
+function adapter(
+	workingDir: string,
+	events: MomEvent[],
+	steers: MomEvent[],
+	scopes: unknown[] = [],
+): PhoneMessagingWebhookAdapter {
 	const instance = new PhoneMessagingWebhookAdapter({
 		workingDir,
 		registry: { available: () => [] } as unknown as PhoneProviderRegistry,
@@ -21,7 +27,10 @@ function adapter(workingDir: string, events: MomEvent[], steers: MomEvent[]): Ph
 		resolvePendingInput: () => false,
 		handleSlashCommand: async () => false,
 		isRunning: () => false,
-		handleEvent: async (event: MomEvent) => { events.push(event); },
+		handleEvent: async (event: MomEvent) => {
+			scopes.push(currentHostDeliveryScope());
+			events.push(event);
+		},
 		handleSteer: async (event: MomEvent) => { steers.push(event); },
 	} as unknown as MomHandler);
 	return instance;
@@ -111,7 +120,8 @@ async function main(): Promise<void> {
 	process.env.MOM_PHONE_HOST_MANAGED = "true";
 	const events: MomEvent[] = [];
 	const steers: MomEvent[] = [];
-	const first = adapter(workingDir, events, steers);
+	const scopes: unknown[] = [];
+	const first = adapter(workingDir, events, steers, scopes);
 	const firstServer = await serve(first);
 	let secondServer: Awaited<ReturnType<typeof serve>> | undefined;
 	try {
@@ -125,6 +135,17 @@ async function main(): Promise<void> {
 		assert.equal(event.type, "dm");
 		assert.equal(event.sourceEventType, "phone_message");
 		assert.equal(event.directlyAddressed, true);
+		assert.deepEqual(scopes, [{
+			source: "hostd-phone",
+			eventId: "phone:provider-message-three",
+			eventIds: [
+				"phone:provider-message-one",
+				"phone:provider-message-two",
+				"phone:provider-message-three",
+			],
+			replyTarget: CHANNEL_ID,
+		}], "the Operator turn is bound to every durable batch identity in order");
+		assert.equal(currentHostDeliveryScope(), undefined, "the exact batch scope clears after the turn");
 		assert.equal(event.channel, CHANNEL_ID);
 		assert.equal(event.replyTarget, CHANNEL_ID);
 		assert.equal(event.trustedOperatorIntent, TINYFAT_WEBSITE_INQUIRY_INTENT);

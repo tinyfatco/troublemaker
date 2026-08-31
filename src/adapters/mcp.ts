@@ -22,6 +22,14 @@ import type { ChannelStore } from "../store.js";
 import { collectChannels, collectPhoneConversations, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
 import { resolveSlackReactionTarget } from "../tools/react-to-message.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
+import { currentHostDeliveryScope } from "./host-delivery-scope.js";
+import {
+	normalizeRelationshipProgress,
+	RELATIONSHIP_CLOSE_STATES,
+	RELATIONSHIP_NEXT_STEPS,
+	RELATIONSHIP_RUNTIME_MILESTONES,
+	withRelationshipProgressRequest,
+} from "../relationship-progress.js";
 import { collectThreadMessages, formatThreadTranscript } from "../tools/read-thread.js";
 import { collectEmailThreadListings } from "../adapters/email/thread-ledger.js";
 import type {
@@ -356,9 +364,14 @@ export class McpAdapter implements PlatformAdapter {
 					subject: z.string().optional().describe("Subject line (email only)"),
 					attachments: z.array(z.string()).optional().describe("Absolute file paths to attach (email only)"),
 					recipients: z.array(z.string()).optional().describe("Phone only: additional E.164 numbers to persist on this phone target and include in the MMS group."),
+					relationship_progress: z.object({
+						close_state: z.enum(RELATIONSHIP_CLOSE_STATES),
+						next_step: z.enum(RELATIONSHIP_NEXT_STEPS),
+						milestone: z.enum(RELATIONSHIP_RUNTIME_MILESTONES).optional(),
+					}).strict().optional().describe("Hostd relationship turns only: one durable close state and one next step, with an optional evidence-backed milestone."),
 				},
 			},
-			async ({ target, text, subject, attachments, recipients }: { target: string; text: string; subject?: string; attachments?: string[]; recipients?: string[] }) => {
+			async ({ target, text, subject, attachments, recipients, relationship_progress }: { target: string; text: string; subject?: string; attachments?: string[]; recipients?: string[]; relationship_progress?: unknown }) => {
 				log.logInfo(`[mcp] send_message: ${target} (${text.length} chars)`);
 
 				if (!target.trim()) {
@@ -378,6 +391,22 @@ export class McpAdapter implements PlatformAdapter {
 				const { adapter } = resolved;
 
 				try {
+					const hostDelivery = currentHostDeliveryScope();
+					const relationshipProgress = normalizeRelationshipProgress(relationship_progress);
+					if (relationshipProgress && hostDelivery?.source !== "hostd-phone") {
+						throw new Error("relationship_progress is available only inside an exact direct Hostd phone turn");
+					}
+					if (hostDelivery?.source === "hostd-phone" && !relationshipProgress) {
+						throw new Error("This direct Hostd relationship reply requires one exact close state and next step.");
+					}
+					if (hostDelivery) {
+						if (!hostDelivery.replyTarget || target.trim() !== hostDelivery.replyTarget) {
+							throw new Error("This Hostd relationship turn can send only to its exact bound reply target.");
+						}
+						if ((attachments?.length ?? 0) > 0 || (recipients?.length ?? 0) > 0 || subject) {
+							throw new Error("This Hostd relationship turn permits one direct plain-text relationship message only.");
+						}
+					}
 					const attachmentObjects = attachments?.map((filePath) => ({
 						filePath,
 						filename: basename(filePath),
@@ -387,11 +416,13 @@ export class McpAdapter implements PlatformAdapter {
 						throw new Error("send_message recipients are only supported for phone/SMS/MMS targets.");
 					}
 
-					const ts = resolved.threadTs
-						? await adapter.postInThread(resolved.channel, resolved.threadTs, text)
-						: phoneRecipients.length > 0
-							? await phoneGroupAdapter(adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
-							: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
+					const ts = await withRelationshipProgressRequest(relationshipProgress, async () => (
+						resolved.threadTs
+							? await adapter.postInThread(resolved.channel, resolved.threadTs, text)
+							: phoneRecipients.length > 0
+								? await phoneGroupAdapter(adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
+								: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject)
+					));
 					adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 					// Append to awareness so the agent sees it on its next run.
