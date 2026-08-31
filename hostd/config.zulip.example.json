@@ -65,7 +65,9 @@
     "turnLeaseSeconds": 900,
     "idleSeconds": 300,
     "tickSeconds": 2,
-    "maximumAttempts": 5
+    "maximumAttempts": 5,
+    "relationshipBurstWindowMs": 0,
+    "relationshipBurstMaximumMessages": 10
   },
   "scheduledWakes": {
     "mode": "off",

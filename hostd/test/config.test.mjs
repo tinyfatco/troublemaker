@@ -1014,3 +1014,33 @@ test("loads bounded scheduled wake shadow and exact host ownership", async () =>
 		await rm(directory, { recursive: true, force: true });
 	}
 });
+
+test("bounds direct relationship burst latency and batch size", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-relationship-burst-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		await writeFile(path, JSON.stringify(raw));
+		let config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.scheduler.relationshipBurstWindowMs, 0, "coalescing is opt-in per Hostd deployment");
+		assert.equal(config.scheduler.relationshipBurstMaximumMessages, 10);
+
+		raw.scheduler.relationshipBurstWindowMs = 1_500;
+		raw.scheduler.relationshipBurstMaximumMessages = 8;
+		await writeFile(path, JSON.stringify(raw));
+		config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.scheduler.relationshipBurstWindowMs, 1_500);
+		assert.equal(config.scheduler.relationshipBurstMaximumMessages, 8);
+
+		raw.scheduler.relationshipBurstWindowMs = 5_001;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /scheduler\.relationshipBurstWindowMs/);
+		raw.scheduler.relationshipBurstWindowMs = 1_500;
+		raw.scheduler.relationshipBurstMaximumMessages = 1;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /scheduler\.relationshipBurstMaximumMessages/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});

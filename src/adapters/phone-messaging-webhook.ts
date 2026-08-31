@@ -115,9 +115,13 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 			try {
 				if (payload.hostManaged) {
 					await withHostReceipt(payload.hostReceipt, async () => {
-						if (payload.deliveryId && this.isCompletedDelivery(payload.deliveryId)) return;
+						const deliveryIds = payload.messages?.map((message) => message.deliveryId)
+							?? (payload.deliveryId ? [payload.deliveryId] : []);
+						const completed = deliveryIds.filter((deliveryId) => this.isCompletedDelivery(deliveryId));
+						if (completed.length === deliveryIds.length) return;
+						if (completed.length > 0) throw new Error("phone delivery batch ledger is partial");
 						await this.processInbound(payload);
-						if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
+						this.markDeliveryBatchCompleted(deliveryIds);
 					});
 				} else {
 					await this.processInbound(payload);
@@ -135,7 +139,15 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		}
 
 		const record = this.upsertChannel(payload);
-		const ts = payload.timestamp || new Date().toISOString();
+		const messages = payload.messages ?? [{
+			messageId: payload.messageId,
+			text: payload.text,
+			timestamp: payload.timestamp,
+			deliveryId: payload.deliveryId || payload.messageId,
+			...(payload.operatorIntent ? { operatorIntent: payload.operatorIntent } : {}),
+		}];
+		const latest = messages[messages.length - 1];
+		const ts = latest.timestamp || payload.timestamp || new Date().toISOString();
 		const userId = payload.hostManaged ? record.displayName : normalizeAddress(payload.from);
 		const userName = userId;
 		this.users.set(userId, { id: userId, userName, displayName: userId });
@@ -143,11 +155,17 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		const attachmentLines = (payload.attachments || [])
 			.map((a) => `- ${a.filename || a.url || "attachment"}${a.url ? `: ${a.url}` : ""}`)
 			.join("\n");
-		const text = attachmentLines ? `${payload.text}\n\nAttachments:\n${attachmentLines}` : payload.text;
+		const singleText = attachmentLines ? `${payload.text}\n\nAttachments:\n${attachmentLines}` : payload.text;
+		const text = messages.length === 1
+			? singleText
+			: `Recent messages:\n${messages.map((message) => (
+				`[${toIsoDate(message.timestamp || ts)}] [phone:${record.displayName}] [${userName}]: ${message.text}`
+			)).join("\n")}`;
 
 		const recipientDescription = record.outboundRecipients && record.outboundRecipients.length > 1
 			? `group with ${record.outboundRecipients.join(", ")}`
 			: `conversation with ${record.displayName}`;
+		const intents = new Set(messages.map((message) => message.operatorIntent).filter(Boolean));
 		const event: MomEvent = {
 			type: "dm",
 			channel: record.channelId,
@@ -160,25 +178,34 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 			replyTarget: record.channelId,
 			replyTargetDescription: `${(record.transport || "phone").toUpperCase()} ${recipientDescription}`,
 			trustedOperatorIntent: payload.hostManaged
-				? normalizeTrustedOperatorIntent(payload.operatorIntent)
+				? normalizeTrustedOperatorIntent([...intents][0] || payload.operatorIntent)
 				: undefined,
 		};
 
-		this.logToFile({
-			date: toIsoDate(ts),
-			ts,
-			channel: `phone:${record.displayName}`,
-			channelId: record.channelId,
-			user: userId,
-			userName,
-			displayName: userId,
-			text,
-			attachments: [],
-			isBot: false,
-			provider: payload.provider,
-			transport: record.transport,
-			providerMessageId: payload.messageId,
-		});
+		this.logBatchToFile(messages.map((message) => {
+			const messageTs = message.timestamp || ts;
+			return {
+				date: toIsoDate(messageTs),
+				ts: messageTs,
+				channel: `phone:${record.displayName}`,
+				channelId: record.channelId,
+				user: userId,
+				userName,
+				displayName: userId,
+				text: message.text,
+				attachments: [],
+				isBot: false,
+				provider: payload.provider,
+				transport: record.transport,
+				providerMessageId: message.messageId,
+				deliveryId: message.deliveryId,
+			};
+		}));
+		record.lastMessageId = latest.messageId;
+		record.deliveryId = latest.deliveryId;
+		record.updatedAt = new Date().toISOString();
+		this.channels.set(record.channelId, record);
+		this.saveChannelRegistry();
 
 		if (this.handler.resolvePendingInput(record.channelId, text)) return;
 		if (await this.handler.handleSlashCommand(event, this)) return;
@@ -257,7 +284,15 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 	}
 
 	logToFile(entry: object): void {
-		appendFileSync(join(this.workingDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+		this.logBatchToFile([entry]);
+	}
+
+	private logBatchToFile(entries: object[]): void {
+		if (entries.length === 0) return;
+		appendFileSync(
+			join(this.workingDir, "log.jsonl"),
+			`${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+		);
 	}
 
 	logBotResponse(channel: string, text: string, ts: string): void {
@@ -470,8 +505,13 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		try {
 			for (const line of readFileSync(this.deliveryLedgerPath(), "utf8").split("\n")) {
 				if (!line.trim()) continue;
-				const record = JSON.parse(line) as { deliveryId?: unknown };
+				const record = JSON.parse(line) as { deliveryId?: unknown; deliveryIds?: unknown };
 				if (typeof record.deliveryId === "string" && record.deliveryId) ids.add(record.deliveryId);
+				if (Array.isArray(record.deliveryIds)) {
+					for (const deliveryId of record.deliveryIds) {
+						if (typeof deliveryId === "string" && deliveryId) ids.add(deliveryId);
+					}
+				}
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -486,15 +526,20 @@ You are replying in a direct phone conversation. Keep messages concise, direct, 
 		return this.loadCompletedDeliveryIds().has(deliveryId);
 	}
 
-	private markDeliveryCompleted(deliveryId: string): void {
+	private markDeliveryBatchCompleted(deliveryIds: string[]): void {
+		if (deliveryIds.length === 0) return;
 		const ids = this.loadCompletedDeliveryIds();
-		if (ids.has(deliveryId)) return;
+		const pending = deliveryIds.filter((deliveryId) => !ids.has(deliveryId));
+		if (pending.length === 0) return;
+		if (pending.length !== deliveryIds.length) {
+			throw new Error("phone delivery batch ledger is partial");
+		}
 		appendFileSync(
 			this.deliveryLedgerPath(),
-			`${JSON.stringify({ deliveryId, completedAt: new Date().toISOString() })}\n`,
+			`${JSON.stringify({ deliveryIds, completedAt: new Date().toISOString() })}\n`,
 			{ mode: 0o600 },
 		);
-		ids.add(deliveryId);
+		for (const deliveryId of deliveryIds) ids.add(deliveryId);
 	}
 
 	private loadChannelRegistry(): void {
@@ -522,10 +567,50 @@ function validatePayload(payload: PhoneInboundPayload): string | null {
 	if (!payload.messageId) return "messageId";
 	if (!payload.from) return "from";
 	if (payload.text == null) return "text";
+	if (payload.hostManaged && !payload.deliveryId) return "deliveryId";
 	if (
 		payload.operatorIntent !== undefined
 		&& (!payload.hostManaged || payload.operatorIntent !== TINYFAT_WEBSITE_INQUIRY_INTENT)
 	) return "operatorIntent";
+	if (payload.messages !== undefined) {
+		if (
+			!payload.hostManaged
+			|| !Array.isArray(payload.messages)
+			|| payload.messages.length < 2
+			|| payload.messages.length > 20
+		) return "messages";
+		const messageIds = new Set<string>();
+		const deliveryIds = new Set<string>();
+		const intents = new Set<string>();
+		for (const message of payload.messages) {
+			if (
+				!message
+				|| typeof message.messageId !== "string"
+				|| !message.messageId
+				|| typeof message.deliveryId !== "string"
+				|| !message.deliveryId
+				|| typeof message.text !== "string"
+				|| (message.timestamp !== undefined && !Number.isFinite(Date.parse(message.timestamp)))
+				|| (
+					message.operatorIntent !== undefined
+					&& message.operatorIntent !== TINYFAT_WEBSITE_INQUIRY_INTENT
+				)
+			) return "messages";
+			if (messageIds.has(message.messageId) || deliveryIds.has(message.deliveryId)) return "messages";
+			messageIds.add(message.messageId);
+			deliveryIds.add(message.deliveryId);
+			if (message.operatorIntent) intents.add(message.operatorIntent);
+		}
+		const first = payload.messages[0];
+		if (
+			first.messageId !== payload.messageId
+			|| first.deliveryId !== payload.deliveryId
+			|| first.text !== payload.text
+			|| (first.timestamp ?? payload.timestamp) !== payload.timestamp
+			|| intents.size > 1
+			|| ([...intents][0] ?? payload.operatorIntent) !== payload.operatorIntent
+		) return "messages";
+	}
 	return null;
 }
 

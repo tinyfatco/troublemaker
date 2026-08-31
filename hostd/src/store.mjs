@@ -3794,12 +3794,13 @@ export class HostStore {
 
 	markEventUncertain(id, error, leaseToken) {
 		const event = this.getEvent(id);
-		if (!event || (leaseToken && event.leaseToken !== leaseToken)) return event;
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) return event;
 		this.database.prepare(`
 			UPDATE events SET status = 'uncertain', last_error = ?, lease_token = NULL,
 				lease_expires_at = NULL, updated_at = ?
-			WHERE id = ? AND status IN ('leased', 'accepted', 'running')
-		`).run(String(error).slice(0, 1000), now(), id);
+			WHERE context_id = ? AND lease_token = ?
+				AND status IN ('leased', 'accepted', 'running')
+		`).run(String(error).slice(0, 1000), now(), event.contextId, leaseToken);
 		return this.getEvent(id);
 	}
 
@@ -3842,6 +3843,26 @@ export class HostStore {
 		`).get(id);
 	}
 
+	getEventBatch(id, leaseToken) {
+		const event = this.getEvent(id);
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) {
+			return event ? [event] : [];
+		}
+		return this.database.prepare(`
+			SELECT id, source, provider_message_id AS providerMessageId,
+				provider_thread_id AS providerThreadId, principal_hash AS principalHash,
+				target_id AS targetId, context_id AS contextId,
+				awareness_sequence AS awarenessSequence, status, attempts,
+				last_error AS lastError, received_at AS receivedAt, completed_at AS completedAt,
+				payload_json AS payloadJson, available_at AS availableAt,
+				lease_token AS leaseToken, lease_expires_at AS leaseExpiresAt,
+				accepted_at AS acceptedAt, started_at AS startedAt, updated_at AS updatedAt
+			FROM events
+			WHERE context_id = ? AND lease_token = ?
+			ORDER BY awareness_sequence, received_at, id
+		`).all(event.contextId, leaseToken);
+	}
+
 	listRetryableEvents() {
 		return this.database.prepare(`
 			SELECT id, source, provider_message_id AS providerMessageId,
@@ -3861,6 +3882,10 @@ export class HostStore {
 		const existing = this.getEventByProviderMessage(event.source, event.providerMessageId);
 		if (existing) return existing;
 		const timestamp = now();
+		const availableAt = event.availableAt ?? timestamp;
+		if (typeof availableAt !== "string" || !Number.isFinite(Date.parse(availableAt))) {
+			throw new Error("event availability time is invalid");
+		}
 		const awarenessSequence = this.nextAwarenessSequence(event.contextId);
 		this.database.prepare(`
 			INSERT INTO events(
@@ -3880,7 +3905,7 @@ export class HostStore {
 			awarenessSequence,
 			event.payload === undefined ? null : JSON.stringify(event.payload),
 			timestamp,
-			timestamp,
+			availableAt,
 			timestamp,
 		);
 		return this.getEventByProviderMessage(event.source, event.providerMessageId);
@@ -4069,10 +4094,14 @@ export class HostStore {
 		leaseSeconds = 60,
 		maximumAttempts = 5,
 		maximumActiveContexts = Number.MAX_SAFE_INTEGER,
+		relationshipBurstWindowMs = 0,
+		maximumBatchSize = 1,
 	} = {}) {
 		const timestamp = now();
 		const leaseToken = randomUUID();
 		const contextLimit = Math.max(1, Math.floor(maximumActiveContexts));
+		const batchLimit = Math.max(1, Math.floor(maximumBatchSize));
+		const batchWindowMs = Math.max(0, Math.floor(relationshipBurstWindowMs));
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
 			const row = this.database.prepare(`
@@ -4123,23 +4152,74 @@ export class HostStore {
 							WHERE active.status IN ('leased', 'accepted', 'running')
 						) < ?
 					)
-				ORDER BY candidate.received_at
+				ORDER BY candidate.received_at, candidate.awareness_sequence, candidate.id
 				LIMIT 1
 			`).get(maximumAttempts, timestamp, contextLimit);
 			if (!row) {
 				this.database.exec("COMMIT");
 				return null;
 			}
-			this.database.prepare(`
+			const candidate = this.getEvent(row.id);
+			let eventIds = [row.id];
+			if (
+				!row.append_to_running
+				&& candidate?.source === "phone"
+				&& batchWindowMs > 0
+				&& batchLimit > 1
+			) {
+				const burstEnd = new Date(
+					Date.parse(candidate.receivedAt) + batchWindowMs,
+				).toISOString();
+				eventIds = this.database.prepare(`
+					SELECT id FROM events
+					WHERE source = 'phone'
+						AND provider_thread_id = ?
+						AND principal_hash = ?
+						AND target_id = ?
+						AND context_id = ?
+						AND status IN ('queued', 'failed')
+						AND attempts = ?
+						AND attempts < ?
+						AND received_at >= ?
+						AND received_at <= ?
+						AND (
+							(? = 0 AND attempts = 0)
+							OR available_at <= ?
+						)
+					ORDER BY awareness_sequence, received_at, id
+					LIMIT ?
+				`).all(
+					candidate.providerThreadId,
+					candidate.principalHash,
+					candidate.targetId,
+					candidate.contextId,
+					candidate.attempts,
+					maximumAttempts,
+					candidate.receivedAt,
+					burstEnd,
+					candidate.attempts,
+					timestamp,
+					batchLimit,
+				).map((event) => event.id);
+				if (!eventIds.includes(row.id)) eventIds = [row.id];
+			}
+			const leaseExpiresAt = future(leaseSeconds);
+			const lease = this.database.prepare(`
 				UPDATE events SET status = 'leased', attempts = attempts + 1,
 					lease_token = ?, lease_expires_at = ?, last_error = NULL,
 					updated_at = ?
 				WHERE id = ? AND status IN ('queued', 'failed')
-			`).run(leaseToken, future(leaseSeconds), timestamp, row.id);
+			`);
+			for (const eventId of eventIds) {
+				const result = lease.run(leaseToken, leaseExpiresAt, timestamp, eventId);
+				if (result.changes !== 1) throw new Error("event batch lease changed concurrently");
+			}
 			this.database.exec("COMMIT");
+			const batchEvents = this.getEventBatch(row.id, leaseToken);
 			return {
-				...this.getEvent(row.id),
+				...batchEvents[0],
 				deliveryMode: row.append_to_running ? "steer" : "turn",
+				...(batchEvents.length > 1 ? { batchEvents } : {}),
 			};
 		} catch (error) {
 			this.database.exec("ROLLBACK");
@@ -4148,44 +4228,50 @@ export class HostStore {
 	}
 
 	acceptEvent(id, leaseToken, leaseSeconds = 900) {
+		const event = this.getEvent(id);
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) return event;
 		this.database.prepare(`
 			UPDATE events SET status = 'accepted', accepted_at = COALESCE(accepted_at, ?),
 				lease_expires_at = ?, updated_at = ?, last_error = NULL
-			WHERE id = ? AND lease_token = ? AND status = 'leased'
-		`).run(now(), future(leaseSeconds), now(), id, leaseToken);
+			WHERE context_id = ? AND lease_token = ? AND status = 'leased'
+		`).run(now(), future(leaseSeconds), now(), event.contextId, leaseToken);
 		return this.getEvent(id);
 	}
 
 	heartbeatEvent(id, leaseToken, leaseSeconds = 900) {
+		const event = this.getEvent(id);
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) return event;
 		this.database.prepare(`
 			UPDATE events SET status = 'running', accepted_at = COALESCE(accepted_at, ?),
 				started_at = COALESCE(started_at, ?),
 				lease_expires_at = ?, updated_at = ?
-			WHERE id = ? AND lease_token = ? AND status IN ('leased', 'accepted', 'running')
-		`).run(now(), now(), future(leaseSeconds), now(), id, leaseToken);
+			WHERE context_id = ? AND lease_token = ?
+				AND status IN ('leased', 'accepted', 'running')
+		`).run(now(), now(), future(leaseSeconds), now(), event.contextId, leaseToken);
 		return this.getEvent(id);
 	}
 
 	completeEvent(id, leaseToken) {
-		if (!leaseToken) return this.getEvent(id);
+		const event = this.getEvent(id);
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) return event;
 		const result = this.database.prepare(`
 			UPDATE events SET status = 'completed', completed_at = ?, updated_at = ?,
 				lease_token = NULL, lease_expires_at = NULL, last_error = NULL
-			WHERE id = ? AND lease_token = ?
+			WHERE context_id = ? AND lease_token = ?
 				AND status IN ('leased', 'accepted', 'running')
-		`).run(now(), now(), id, leaseToken);
-		const event = this.getEvent(id);
-		if (result.changes && event) {
-			this.updateContext(event.contextId, {
-				status: this.getContext(event.contextId)?.status ?? "online",
+		`).run(now(), now(), event.contextId, leaseToken);
+		const completed = this.getEvent(id);
+		if (result.changes && completed) {
+			this.updateContext(completed.contextId, {
+				status: this.getContext(completed.contextId)?.status ?? "online",
 			});
 		}
-		return event;
+		return completed;
 	}
 
 	failEvent(id, error, leaseToken, retrySeconds = 15, maximumAttempts = 5) {
 		const event = this.getEvent(id);
-		if (!event || (leaseToken && event.leaseToken !== leaseToken)) return event;
+		if (!event || !leaseToken || event.leaseToken !== leaseToken) return event;
 		if (event.status === "running") {
 			return this.markEventUncertain(
 				id,
@@ -4198,8 +4284,16 @@ export class HostStore {
 		this.database.prepare(`
 			UPDATE events SET status = ?, last_error = ?, available_at = ?,
 				lease_token = NULL, lease_expires_at = NULL, updated_at = ?
-			WHERE id = ? AND status IN ('leased', 'accepted')
-		`).run(status, String(error).slice(0, 1000), future(retrySeconds), now(), id);
+			WHERE context_id = ? AND lease_token = ?
+				AND status IN ('leased', 'accepted')
+		`).run(
+			status,
+			String(error).slice(0, 1000),
+			future(retrySeconds),
+			now(),
+			event.contextId,
+			leaseToken,
+		);
 		return this.getEvent(id);
 	}
 

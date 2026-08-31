@@ -28,6 +28,48 @@ function safeRuntimeName(contextId) {
 	return `troublemaker-${normalized}`.slice(0, 63);
 }
 
+function orderedEventDeliveries(event) {
+	const deliveries = event.batchEvents ?? [event];
+	if (!Array.isArray(deliveries) || deliveries.length === 0 || deliveries.length > 20) {
+		throw new Error("event batch size is invalid");
+	}
+	if (deliveries.length === 1) {
+		if (event.batchEvents && deliveries[0]?.id !== event.id) {
+			throw new Error("event batch primary is invalid");
+		}
+		return deliveries;
+	}
+	if (event.source !== "phone" || event.deliveryMode !== "turn") {
+		throw new Error("only direct phone turns may be delivered as a batch");
+	}
+	if (deliveries[0]?.id !== event.id) throw new Error("event batch primary is invalid");
+	const ids = new Set();
+	const providerMessageIds = new Set();
+	let previousSequence = -1;
+	for (const delivery of deliveries) {
+		if (
+			delivery?.source !== event.source
+			|| delivery.providerThreadId !== event.providerThreadId
+			|| delivery.principalHash !== event.principalHash
+			|| delivery.targetId !== event.targetId
+			|| delivery.contextId !== event.contextId
+			|| delivery.leaseToken !== event.leaseToken
+			|| delivery.status !== "leased"
+		) throw new Error("event batch crossed its relationship lease");
+		if (
+			!Number.isSafeInteger(delivery.awarenessSequence)
+			|| delivery.awarenessSequence <= previousSequence
+		) throw new Error("event batch order is invalid");
+		if (ids.has(delivery.id) || providerMessageIds.has(delivery.providerMessageId)) {
+			throw new Error("event batch contains a duplicate delivery identity");
+		}
+		previousSequence = delivery.awarenessSequence;
+		ids.add(delivery.id);
+		providerMessageIds.add(delivery.providerMessageId);
+	}
+	return deliveries;
+}
+
 export function hostOwnsScheduledWakes(config, contextId) {
 	return config.scheduledWakes?.mode === "host"
 		&& config.scheduledWakes.contextIds.includes(contextId);
@@ -717,6 +759,7 @@ export class RuntimeManager {
 	}
 
 	async acceptEvent(event) {
+		const deliveries = orderedEventDeliveries(event);
 		const target = this.config.targetsById.get(event.targetId);
 		if (!target) throw new Error(`unknown target ${event.targetId}`);
 		const context = await this.ensureOciContext(target, event.contextId);
@@ -744,7 +787,12 @@ export class RuntimeManager {
 			return;
 		}
 		if (event.source === "phone") {
-			await this.deliverPhoneWebhook(target, context, event, payload);
+			const inputs = deliveries.map((delivery) => (
+				delivery.id === event.id
+					? payload
+					: (delivery.payloadJson ? JSON.parse(delivery.payloadJson) : {})
+			));
+			await this.deliverPhoneWebhook(target, context, event, inputs);
 			return;
 		}
 		if (event.source === "web_chat") {
@@ -869,35 +917,62 @@ export class RuntimeManager {
 		}
 	}
 
-	async deliverPhoneWebhook(target, context, event, input) {
+	async deliverPhoneWebhook(target, context, event, inputs) {
 		const inboundToken = contextCapability(
 			target.inboundToken,
 			"phone-inbound",
 			context.contextId,
 		);
+		const deliveries = event.batchEvents ?? [event];
+		if (!Array.isArray(inputs) || inputs.length !== deliveries.length) {
+			throw new Error("phone event batch payload is incomplete");
+		}
+		const primary = inputs[0];
+		const threadTarget = primary.phone?.threadTarget;
+		const displayName = primary.phone?.displayName;
+		const sender = primary.sender;
+		const intents = new Set();
+		const messages = inputs.map((input, index) => {
+			if (
+				input.phone?.threadTarget !== threadTarget
+				|| input.phone?.displayName !== displayName
+				|| input.sender !== sender
+			) throw new Error("phone event batch payload crossed its relationship envelope");
+			if (input.operatorIntent) intents.add(input.operatorIntent);
+			return {
+				messageId: input.message?.id || deliveries[index].providerMessageId,
+				text: input.message?.body || "",
+				timestamp: input.message?.timestamp || deliveries[index].receivedAt,
+				deliveryId: deliveries[index].id,
+				...(input.operatorIntent ? { operatorIntent: input.operatorIntent } : {}),
+			};
+		});
+		if (intents.size > 1) throw new Error("phone event batch has conflicting Operator intents");
+		const operatorIntent = [...intents][0];
 		const response = await fetch(context.phoneEndpoint, {
 			method: "POST",
-				headers: {
-					authorization: `Bearer ${inboundToken}`,
-					"content-type": "application/json",
-				},
+			headers: {
+				authorization: `Bearer ${inboundToken}`,
+				"content-type": "application/json",
+			},
 			body: JSON.stringify({
 				provider: "hostd",
 				hostManaged: true,
 				transport: "sms",
 				direction: "inbound",
 				status: "received",
-				messageId: input.message?.id || event.providerMessageId,
-				conversationId: input.phone?.threadTarget,
-				channelId: input.phone?.threadTarget,
-				displayName: input.phone?.displayName,
-				from: input.sender,
+				messageId: messages[0].messageId,
+				conversationId: threadTarget,
+				channelId: threadTarget,
+				displayName,
+				from: sender,
 				sender: "hostd",
-				text: input.message?.body || "",
-				...(input.operatorIntent ? { operatorIntent: input.operatorIntent } : {}),
-				timestamp: input.message?.timestamp || event.receivedAt,
+				text: messages[0].text,
+				...(operatorIntent ? { operatorIntent } : {}),
+				timestamp: messages[0].timestamp,
 				hostContextId: event.contextId,
 				deliveryId: event.id,
+				...(messages.length > 1 ? { messages } : {}),
 				hostReceipt: this.hostReceipt(target, event),
 			}),
 			signal: AbortSignal.timeout(30_000),

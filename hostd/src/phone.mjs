@@ -564,6 +564,9 @@ export class PhoneGateway {
 				principalHash: conversation.principalHash,
 				targetId: conversation.targetId,
 				contextId: conversation.contextId,
+				availableAt: new Date(
+					observedAt + (this.config.scheduler?.relationshipBurstWindowMs ?? 0),
+				).toISOString(),
 				payload: {
 					direction: "inbound",
 					sender: `Phone ending ${conversation.contactLastFour}`,

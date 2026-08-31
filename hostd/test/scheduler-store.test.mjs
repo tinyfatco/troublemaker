@@ -374,3 +374,202 @@ test("journals one durable control notification with each Gmail event", () => {
 		subject.close();
 	}
 });
+
+function enqueuePhone(store, {
+	id,
+	contextId,
+	providerMessageId,
+	providerThreadId = "phone-thread-one",
+	principalHash = "phone-principal-one",
+	availableAt = "2099-01-01T00:00:00.000Z",
+	body = providerMessageId,
+}) {
+	return store.upsertEvent({
+		id,
+		source: "phone",
+		providerMessageId,
+		providerThreadId,
+		principalHash,
+		targetId: "operator",
+		contextId,
+		availableAt,
+		payload: {
+			direction: "inbound",
+			sender: "Phone ending 0123",
+			message: { id: providerMessageId, body, timestamp: "2026-08-31T05:00:00.000Z" },
+			phone: { threadTarget: "phone-0123456789abcdef0123", displayName: "SMS •••• 0123" },
+		},
+	});
+}
+
+test("leases one ordered direct batch only inside the exact phone relationship", () => {
+	const subject = fixture();
+	try {
+		enqueuePhone(subject.store, {
+			id: "phone:event-one",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-message-one",
+			availableAt: "2000-01-01T00:00:00.000Z",
+			body: "first",
+		});
+		enqueuePhone(subject.store, {
+			id: "phone:event-two",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-message-two",
+			body: "second",
+		});
+		const duplicate = enqueuePhone(subject.store, {
+			id: "phone:event-two-forged-duplicate",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-message-two",
+			body: "forged",
+		});
+		assert.equal(duplicate.id, "phone:event-two", "provider duplicates retain one delivery identity");
+		enqueuePhone(subject.store, {
+			id: "phone:event-three",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-message-three",
+			body: "third",
+		});
+		enqueuePhone(subject.store, {
+			id: "phone:other-thread",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-message-other-thread",
+			providerThreadId: "phone-thread-other",
+			principalHash: "phone-principal-other",
+		});
+		enqueuePhone(subject.store, {
+			id: "phone:other-context",
+			contextId: subject.contexts[1],
+			providerMessageId: "phone-message-other-context",
+		});
+
+		const batch = subject.store.claimNextEvent({
+			relationshipBurstWindowMs: 5_000,
+			maximumBatchSize: 2,
+			maximumActiveContexts: 2,
+		});
+		assert.equal(batch.id, "phone:event-one");
+		assert.equal(batch.deliveryMode, "turn");
+		assert.deepEqual(
+			batch.batchEvents.map((event) => [event.id, event.providerMessageId, event.awarenessSequence]),
+			[
+				["phone:event-one", "phone-message-one", 1],
+				["phone:event-two", "phone-message-two", 2],
+			],
+			"every identity remains distinct and relationship arrival order is stable",
+		);
+		assert.equal(new Set(batch.batchEvents.map((event) => event.leaseToken)).size, 1);
+		assert.equal(subject.store.getEvent("phone:event-three").status, "queued", "the configured batch bound is hard");
+		assert.equal(subject.store.getEvent("phone:other-thread").status, "queued");
+		assert.equal(subject.store.getEvent("phone:other-context").status, "queued");
+
+		subject.store.acceptEvent(batch.id, "wrong-token");
+		assert.deepEqual(batch.batchEvents.map((event) => subject.store.getEvent(event.id).status), ["leased", "leased"]);
+		subject.store.acceptEvent(batch.id, batch.leaseToken);
+		assert.deepEqual(batch.batchEvents.map((event) => subject.store.getEvent(event.id).status), ["accepted", "accepted"]);
+		subject.store.heartbeatEvent(batch.id, batch.leaseToken);
+		assert.deepEqual(batch.batchEvents.map((event) => subject.store.getEvent(event.id).status), ["running", "running"]);
+		subject.store.completeEvent(batch.id, batch.leaseToken);
+		assert.deepEqual(batch.batchEvents.map((event) => subject.store.getEvent(event.id).status), ["completed", "completed"]);
+	} finally {
+		subject.close();
+	}
+});
+
+test("persists failed phone batches across restart and never replays a post-running batch", () => {
+	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-phone-batch-restart-"));
+	const databasePath = join(directory, "state.sqlite");
+	let store = new HostStore(databasePath);
+	try {
+		const contextId = "operator:restart:intake";
+		store.createContext({
+			id: contextId,
+			targetId: "operator",
+			driver: "oci",
+			runtimeName: "runtime-restart",
+			port: 32999,
+		});
+		enqueuePhone(store, {
+			id: "phone:restart-one",
+			contextId,
+			providerMessageId: "phone-restart-one",
+			availableAt: "2000-01-01T00:00:00.000Z",
+		});
+		enqueuePhone(store, {
+			id: "phone:restart-two",
+			contextId,
+			providerMessageId: "phone-restart-two",
+		});
+		let batch = store.claimNextEvent({ relationshipBurstWindowMs: 5_000, maximumBatchSize: 10 });
+		assert.equal(batch.batchEvents.length, 2);
+		store.failEvent(batch.id, "runtime unavailable before running", batch.leaseToken, 0, 5);
+		assert.deepEqual(["phone:restart-one", "phone:restart-two"].map((id) => store.getEvent(id).status), ["failed", "failed"]);
+
+		store.close();
+		store = new HostStore(databasePath);
+		batch = store.claimNextEvent({ relationshipBurstWindowMs: 5_000, maximumBatchSize: 10 });
+		assert.deepEqual(batch.batchEvents.map((event) => event.id), ["phone:restart-one", "phone:restart-two"]);
+		assert.deepEqual(batch.batchEvents.map((event) => event.attempts), [2, 2]);
+		store.heartbeatEvent(batch.id, batch.leaseToken);
+		store.failEvent(batch.id, "ambiguous runtime loss", batch.leaseToken, 0, 5);
+		assert.deepEqual(["phone:restart-one", "phone:restart-two"].map((id) => store.getEvent(id).status), ["uncertain", "uncertain"]);
+		assert.equal(
+			store.claimNextEvent({ relationshipBurstWindowMs: 5_000, maximumBatchSize: 10 }),
+			null,
+			"post-running batch identities remain terminal after restart",
+		);
+	} finally {
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
+	}
+});
+
+test("scheduler sends one configured direct phone batch to the runtime", async () => {
+	const subject = fixture();
+	try {
+		enqueuePhone(subject.store, {
+			id: "phone:scheduled-one",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-scheduled-one",
+			availableAt: "2000-01-01T00:00:00.000Z",
+		});
+		enqueuePhone(subject.store, {
+			id: "phone:scheduled-two",
+			contextId: subject.contexts[0],
+			providerMessageId: "phone-scheduled-two",
+		});
+		const delivered = [];
+		const scheduler = new EventScheduler({
+			config: {
+				scheduler: {
+					maxConcurrent: 1,
+					leaseSeconds: 60,
+					turnLeaseSeconds: 900,
+					maximumAttempts: 5,
+					relationshipBurstWindowMs: 5_000,
+					relationshipBurstMaximumMessages: 10,
+				},
+			},
+			store: subject.store,
+			runtime: {
+				reconcile: async () => {},
+				reapIdle: async () => {},
+				acceptEvent: async (event) => { delivered.push(event); },
+			},
+		});
+		await scheduler.start();
+		await waitFor(() => delivered.length === 1, "configured phone batch was not delivered");
+		assert.deepEqual(delivered[0].batchEvents.map((event) => event.id), [
+			"phone:scheduled-one",
+			"phone:scheduled-two",
+		]);
+		await waitFor(
+			() => subject.store.getEvent("phone:scheduled-two")?.status === "accepted",
+			"all batch identities were not accepted together",
+		);
+		assert.equal(delivered.length, 1);
+	} finally {
+		subject.close();
+	}
+});

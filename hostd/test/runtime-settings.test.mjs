@@ -637,3 +637,115 @@ test("runtime engine flags keep Docker and rootless Podman launchers distinct", 
 		"--network=slirp4netns:allow_host_loopback=true",
 	]);
 });
+
+test("phone relationship batches cross one direct runtime envelope with every ordered identity", async () => {
+	const contextId = "front-desk:0123456789abcdef01234567:relationship-operator";
+	const target = {
+		id: "front-desk",
+		inboundToken: "synthetic-inbound-secret",
+		hostGateway: "host.example",
+	};
+	const manager = new RuntimeManager({
+		server: { port: 3099 },
+		targetsById: new Map([[target.id, target]]),
+	}, {}, {});
+	manager.ensureOciContext = async () => ({
+		contextId,
+		phoneEndpoint: "http://127.0.0.1:32000/phone-messaging/webhook",
+	});
+	const phonePayload = (messageId, body, timestamp, operatorIntent) => JSON.stringify({
+		direction: "inbound",
+		sender: "Phone ending 0123",
+		message: { id: messageId, body, timestamp },
+		phone: {
+			threadTarget: "phone-0123456789abcdef0123",
+			displayName: "SMS •••• 0123",
+		},
+		...(operatorIntent ? { operatorIntent } : {}),
+	});
+	const first = {
+		id: "phone:provider-message-one",
+		source: "phone",
+		providerMessageId: "provider-message-one",
+		providerThreadId: "opaque-provider-thread",
+		principalHash: "opaque-principal",
+		targetId: target.id,
+		contextId,
+		awarenessSequence: 10,
+		status: "leased",
+		leaseToken: "shared-batch-lease",
+		receivedAt: "2026-08-31T05:00:00.000Z",
+		payloadJson: phonePayload(
+			"provider-message-one",
+			"First part of the request.",
+			"2026-08-31T05:00:00.000Z",
+			"tinyfat_website_inquiry",
+		),
+	};
+	const second = {
+		...first,
+		id: "phone:provider-message-two",
+		providerMessageId: "provider-message-two",
+		awarenessSequence: 11,
+		receivedAt: "2026-08-31T05:00:00.500Z",
+		payloadJson: phonePayload(
+			"provider-message-two",
+			"Second part with the needed detail.",
+			"2026-08-31T05:00:00.500Z",
+		),
+	};
+	const originalFetch = globalThis.fetch;
+	const requests = [];
+	globalThis.fetch = async (input, init) => {
+		requests.push({ input: String(input), init, body: JSON.parse(String(init?.body)) });
+		return new Response(JSON.stringify({ ok: true }), { status: 200 });
+	};
+	try {
+		await manager.acceptEvent({
+			...first,
+			deliveryMode: "turn",
+			batchEvents: [first, second],
+		});
+		assert.equal(requests.length, 1, "one relationship burst makes one runtime request");
+		assert.equal(requests[0].input, "http://127.0.0.1:32000/phone-messaging/webhook");
+		assert.equal(requests[0].body.hostContextId, contextId);
+		assert.equal(requests[0].body.deliveryId, first.id);
+		assert.equal(requests[0].body.operatorIntent, "tinyfat_website_inquiry");
+		assert.equal(requests[0].body.hostReceipt.leaseToken, "shared-batch-lease");
+		assert.deepEqual(requests[0].body.messages, [
+			{
+				messageId: "provider-message-one",
+				text: "First part of the request.",
+				timestamp: "2026-08-31T05:00:00.000Z",
+				deliveryId: "phone:provider-message-one",
+				operatorIntent: "tinyfat_website_inquiry",
+			},
+			{
+				messageId: "provider-message-two",
+				text: "Second part with the needed detail.",
+				timestamp: "2026-08-31T05:00:00.500Z",
+				deliveryId: "phone:provider-message-two",
+			},
+		]);
+
+		await assert.rejects(
+			manager.acceptEvent({
+				...first,
+				deliveryMode: "turn",
+				batchEvents: [first, { ...second, principalHash: "other-principal" }],
+			}),
+			/crossed its relationship lease/,
+		);
+		await assert.rejects(
+			manager.acceptEvent({
+				...first,
+				deliveryMode: "steer",
+				batchEvents: [first, second],
+			}),
+			/only direct phone turns/,
+		);
+		assert.equal(requests.length, 1, "mixed or steering batches fail before runtime delivery");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});

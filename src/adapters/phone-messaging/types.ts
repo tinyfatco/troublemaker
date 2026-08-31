@@ -9,6 +9,14 @@ export interface PhoneAttachment {
 	content?: string;
 }
 
+export interface PhoneInboundMessage {
+	messageId: string;
+	text: string;
+	timestamp?: string;
+	deliveryId: string;
+	operatorIntent?: string;
+}
+
 export interface PhoneInboundPayload {
 	provider: string;
 	hostManaged?: boolean;
@@ -31,6 +39,7 @@ export interface PhoneInboundPayload {
 	hostContextId?: string;
 	deliveryId?: string;
 	operatorIntent?: string;
+	messages?: PhoneInboundMessage[];
 	hostReceipt?: {
 		url: string;
 		token: string;

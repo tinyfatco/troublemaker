@@ -33,6 +33,10 @@ export class EventScheduler {
 					leaseSeconds: this.config.scheduler.leaseSeconds,
 					maximumAttempts: this.config.scheduler.maximumAttempts,
 					maximumActiveContexts: this.config.scheduler.maxConcurrent,
+					relationshipBurstWindowMs: this.config.scheduler.relationshipBurstWindowMs,
+					maximumBatchSize: this.config.scheduler.relationshipBurstWindowMs > 0
+						? this.config.scheduler.relationshipBurstMaximumMessages
+						: 1,
 				});
 				if (!event) break;
 				void this.accept(event);

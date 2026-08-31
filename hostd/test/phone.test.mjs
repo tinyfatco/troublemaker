@@ -821,3 +821,28 @@ test("polls encrypted edge relay events without opening an ingress listener", as
 		state.close();
 	}
 });
+
+test("holds a new relationship turn only for the configured bounded burst window", async () => {
+	const state = subject();
+	try {
+		state.config.scheduler = { relationshipBurstWindowMs: 1_500 };
+		const observedAt = Date.now();
+		assert.equal(await state.gateway.acceptWebhook(inbound(), { observedAt }), "queued");
+		const [event] = state.store.listRetryableEvents();
+		assert.equal(event.availableAt, new Date(observedAt + 1_500).toISOString());
+		assert.equal(
+			state.store.claimNextEvent({ relationshipBurstWindowMs: 1_500, maximumBatchSize: 10 }),
+			null,
+			"the Operator turn cannot start before the short window closes",
+		);
+		state.store.database.prepare("UPDATE events SET available_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
+			.run(event.id);
+		assert.equal(
+			state.store.claimNextEvent({ relationshipBurstWindowMs: 1_500, maximumBatchSize: 10 }).id,
+			event.id,
+			"the event is claimable immediately when the bound expires",
+		);
+	} finally {
+		state.close();
+	}
+});
