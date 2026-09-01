@@ -124,6 +124,8 @@ export class ZulipProvisioner {
 		form,
 		auth = "administrator",
 		allowMissing = false,
+		signal,
+		timeoutMs = 30_000,
 	} = {}) {
 		const url = new URL(`${this.config.url}/api/v1/${path.replace(/^\/+/, "")}`);
 		for (const [key, value] of Object.entries(query ?? {})) {
@@ -138,7 +140,9 @@ export class ZulipProvisioner {
 				authorization: `Basic ${Buffer.from(`${credentials.email}:${credentials.apiKey}`).toString("base64")}`,
 			},
 			...(form === undefined ? {} : { body: form instanceof URLSearchParams ? form : zulipForm(form) }),
-			signal: AbortSignal.timeout(30_000),
+			signal: signal
+				? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+				: AbortSignal.timeout(timeoutMs),
 		});
 		const text = await response.text();
 		let payload = {};

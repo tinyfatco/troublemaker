@@ -1,5 +1,8 @@
 import { bearerMatches } from "./security.mjs";
 
+const ZULIP_EVENT_POLL_TIMEOUT_MS = 2 * 60_000;
+const ZULIP_MUTATION_TIMEOUT_MS = 2 * 60_000;
+
 function json(response, status, value) {
 	response.writeHead(status, {
 		"content-type": "application/json",
@@ -43,6 +46,7 @@ export class ZulipGateway {
 		this.scheduler = scheduler;
 		this.stopped = true;
 		this.pollPromise = null;
+		this.pollAbortController = null;
 		this.queueId = null;
 		this.lastEventId = -1;
 		this.ignoredUserIds = new Set();
@@ -91,19 +95,25 @@ export class ZulipGateway {
 
 	async stop() {
 		this.stopped = true;
+		this.pollAbortController?.abort();
 		await this.pollPromise;
 		this.pollPromise = null;
+		this.pollAbortController = null;
 	}
 
 	async pollLoop() {
 		while (!this.stopped) {
+			const pollAbortController = new AbortController();
+			this.pollAbortController = pollAbortController;
 			try {
 				const result = await this.provisioner.request("events", {
 					query: {
 						queue_id: this.queueId,
 						last_event_id: this.lastEventId,
-						dont_block: true,
+						dont_block: false,
 					},
+					signal: pollAbortController.signal,
+					timeoutMs: ZULIP_EVENT_POLL_TIMEOUT_MS,
 				});
 				for (const event of result.events ?? []) {
 					if (Number.isInteger(event.id)) this.lastEventId = Math.max(this.lastEventId, event.id);
@@ -128,6 +138,10 @@ export class ZulipGateway {
 							error instanceof Error ? error.message : String(error),
 						);
 					}
+				}
+			} finally {
+				if (this.pollAbortController === pollAbortController) {
+					this.pollAbortController = null;
 				}
 			}
 			if (!this.stopped) {
@@ -257,6 +271,7 @@ export class ZulipGateway {
 					topic: "",
 					content,
 				}),
+				timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 			}));
 			return;
 		}
@@ -272,6 +287,7 @@ export class ZulipGateway {
 				method: "PATCH",
 				auth: "agent",
 				form: new URLSearchParams({ content }),
+				timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 			}));
 			return;
 		}
@@ -280,6 +296,7 @@ export class ZulipGateway {
 			json(response, 200, await this.provisioner.request(`messages/${messageMatch[1]}`, {
 				method: "DELETE",
 				auth: "agent",
+				timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 			}));
 			return;
 		}
@@ -318,7 +335,7 @@ export class ZulipGateway {
 					"content-type": request.headers["content-type"],
 				},
 				body: await readRawBody(request),
-				signal: AbortSignal.timeout(30_000),
+				signal: AbortSignal.timeout(ZULIP_MUTATION_TIMEOUT_MS),
 			});
 			const payload = Buffer.from(await upstream.arrayBuffer());
 			response.writeHead(upstream.status, {

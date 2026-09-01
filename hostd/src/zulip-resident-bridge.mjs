@@ -6,6 +6,14 @@ import { dirname } from "node:path";
 const MAX_PROXY_BODY_BYTES = 25 * 1024 * 1024;
 const DELIVERY_TIMEOUT_MS = 35 * 60_000;
 const DELIVERY_ACCEPT_TIMEOUT_MS = 30_000;
+const ZULIP_REQUEST_TIMEOUT_MS = 30_000;
+const ZULIP_EVENT_POLL_TIMEOUT_MS = 2 * 60_000;
+const ZULIP_MUTATION_TIMEOUT_MS = 2 * 60_000;
+
+function isUpstreamTimeout(error) {
+	return error instanceof Error
+		&& (error.name === "TimeoutError" || /aborted due to timeout/i.test(error.message));
+}
 
 function positiveId(value, label) {
 	const candidate = Number(value);
@@ -177,6 +185,7 @@ export class ZulipResidentBridge {
 		this.lastEventId = -1;
 		this.lastMessageId = null;
 		this.pollPromise = null;
+		this.pollAbortController = null;
 		this.stopped = true;
 		this.pendingReceipts = new Map();
 		this.liveDeliveryTail = Promise.resolve();
@@ -232,8 +241,10 @@ export class ZulipResidentBridge {
 
 	async stop() {
 		this.stopped = true;
+		this.pollAbortController?.abort();
 		await this.pollPromise;
 		this.pollPromise = null;
+		this.pollAbortController = null;
 		for (const pending of this.pendingReceipts.values()) {
 			pending.reject(new Error("Zulip resident bridge stopped"));
 		}
@@ -255,9 +266,12 @@ export class ZulipResidentBridge {
 	async listen() {
 		this.server = createServer((request, response) => {
 			void this.handleHttp(request, response).catch((error) => {
-				json(response, 500, {
+				const timedOut = isUpstreamTimeout(error);
+				json(response, timedOut ? 504 : 500, {
 					result: "error",
-					msg: error instanceof Error ? error.message : String(error),
+					msg: timedOut
+						? "zulip_upstream_timeout"
+						: error instanceof Error ? error.message : String(error),
 				});
 			});
 		});
@@ -360,6 +374,7 @@ export class ZulipResidentBridge {
 				json(response, 200, await this.nativeRequest("messages", {
 					method: "POST",
 					body: new URLSearchParams({ type: "channel", to: String(channelId), topic, content }),
+					timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 				}));
 				return;
 			}
@@ -373,6 +388,7 @@ export class ZulipResidentBridge {
 				json(response, 200, await this.nativeRequest("messages", {
 					method: "POST",
 					body: new URLSearchParams({ type: "direct", to: JSON.stringify(recipientIds), content }),
+					timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 				}));
 				return;
 			}
@@ -392,10 +408,14 @@ export class ZulipResidentBridge {
 				json(response, 200, await this.nativeRequest(`messages/${message.id}`, {
 					method: "PATCH",
 					body: new URLSearchParams({ content }),
+					timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 				}));
 				return;
 			}
-			json(response, 200, await this.nativeRequest(`messages/${message.id}`, { method: "DELETE" }));
+			json(response, 200, await this.nativeRequest(`messages/${message.id}`, {
+				method: "DELETE",
+				timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
+			}));
 			return;
 		}
 		if (request.method === "POST" && providerPath === "user_uploads") {
@@ -408,6 +428,7 @@ export class ZulipResidentBridge {
 				method: "POST",
 				headers: { "content-type": contentType },
 				body: await readRawBody(request),
+				timeoutMs: ZULIP_MUTATION_TIMEOUT_MS,
 			});
 			const payload = Buffer.from(await upstream.arrayBuffer());
 			response.writeHead(upstream.status, {
@@ -534,13 +555,17 @@ export class ZulipResidentBridge {
 
 	async pollLoop() {
 		while (!this.stopped) {
+			const pollAbortController = new AbortController();
+			this.pollAbortController = pollAbortController;
 			try {
 				const result = await this.nativeRequest("events", {
 					query: {
 						queue_id: this.queueId,
 						last_event_id: String(this.lastEventId),
-						dont_block: "true",
+						dont_block: "false",
 					},
+					signal: pollAbortController.signal,
+					timeoutMs: ZULIP_EVENT_POLL_TIMEOUT_MS,
 				});
 				for (const event of result.events || []) {
 					if (event.type === "message") this.scheduleLiveMessage(event.message);
@@ -562,6 +587,10 @@ export class ZulipResidentBridge {
 					} else {
 						console.error("zulip-resident-bridge: poll failed:", error instanceof Error ? error.message : String(error));
 					}
+				}
+			} finally {
+				if (this.pollAbortController === pollAbortController) {
+					this.pollAbortController = null;
 				}
 			}
 			if (!this.stopped) await sleep(500);
@@ -838,8 +867,14 @@ export class ZulipResidentBridge {
 		return this.nativeRequest("messages", { query });
 	}
 
-	async nativeRequest(path, { method = "GET", query, body } = {}) {
-		const response = await this.nativeFetch(path, { method, query, body });
+	async nativeRequest(path, {
+		method = "GET",
+		query,
+		body,
+		signal,
+		timeoutMs = ZULIP_REQUEST_TIMEOUT_MS,
+	} = {}) {
+		const response = await this.nativeFetch(path, { method, query, body, signal, timeoutMs });
 		const text = await response.text();
 		let payload;
 		try {
@@ -857,7 +892,14 @@ export class ZulipResidentBridge {
 		return payload;
 	}
 
-	nativeFetch(path, { method = "GET", query, headers = {}, body } = {}) {
+	nativeFetch(path, {
+		method = "GET",
+		query,
+		headers = {},
+		body,
+		signal,
+		timeoutMs = ZULIP_REQUEST_TIMEOUT_MS,
+	} = {}) {
 		const url = new URL(`${this.zulipUrl}/api/v1/${String(path).replace(/^\/+/, "")}`);
 		for (const [key, value] of Object.entries(query || {})) {
 			if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
@@ -869,7 +911,9 @@ export class ZulipResidentBridge {
 				authorization: basicAuthorization(this.zulipEmail, this.zulipApiKey),
 			},
 			body,
-			signal: AbortSignal.timeout(30_000),
+			signal: signal
+				? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+				: AbortSignal.timeout(timeoutMs),
 		});
 	}
 }
