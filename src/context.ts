@@ -20,13 +20,6 @@ export interface MomCompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
-	/**
-	 * Fraction of the current model's context window at which auto-compaction
-	 * should fire. 0.5 = compact when context hits 50% full. Translated to
-	 * `reserveTokens` at call time using the current model's contextWindow,
-	 * so a single setting works across models with different window sizes.
-	 */
-	thresholdPercent: number;
 }
 
 export interface MomRetrySettings {
@@ -189,11 +182,10 @@ export interface MomSettings {
 	speak?: MomSpeakSettings;
 }
 
-const DEFAULT_COMPACTION: MomCompactionSettings = {
+export const DEFAULT_COMPACTION: MomCompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
-	thresholdPercent: 0.5,
 };
 
 const DEFAULT_RETRY: MomRetrySettings = {
