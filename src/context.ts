@@ -42,7 +42,7 @@ export type FollowUpPreset = "default" | "custom";
 export interface MomFollowUpSettings {
 	enabled: boolean;
 	preset: FollowUpPreset;
-	/** Successive idle checkpoints after the latest completed human turn. */
+	/** Agent-global idle checkpoints after the latest eligible completed wake. */
 	intervalsMinutes: number[];
 }
 
