@@ -21,6 +21,7 @@ const subscriptions = [{ stream_id: CHANNEL_ID, name: "Crew", topics_policy: "em
 let registerCount = 0;
 let expireNextPoll = false;
 let nextMessageId = 100;
+const eventPollQueries = [];
 
 messages.set(50, {
 	id: 50,
@@ -96,6 +97,8 @@ const nativeServer = createServer(async (request, response) => {
 		return;
 	}
 	if (request.method === "GET" && url.pathname === "/api/v1/events") {
+		eventPollQueries.push(Object.fromEntries(url.searchParams));
+		assert.equal(url.searchParams.get("dont_block"), "false");
 		if (expireNextPoll) {
 			expireNextPoll = false;
 			response.writeHead(400, { "content-type": "text/html" });
@@ -241,6 +244,8 @@ const bridge = new ZulipResidentBridge({
 
 try {
 	await bridge.start();
+	await waitFor(() => eventPollQueries.length > 0, "initial long poll");
+	assert.equal(eventPollQueries[0].dont_block, "false");
 	assert.equal(inboundDeliveries.length, 0, "first start does not replay historical channel messages");
 	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 50);
 
@@ -493,6 +498,14 @@ try {
 		body: new URLSearchParams({ type: "channel", to: "6", topic: "", content: "escape" }),
 	});
 	assert.equal(denied.status, 403);
+	const originalNativeRequest = bridge.nativeRequest.bind(bridge);
+	const mutationTimeouts = [];
+	bridge.nativeRequest = async (path, options) => {
+		if (["POST", "PATCH", "DELETE"].includes(options?.method)) {
+			mutationTimeouts.push(options.timeoutMs);
+		}
+		return originalNativeRequest(path, options);
+	};
 	const sent = await fetch(`${bridge.proxyUrl()}/api/v1/messages`, {
 		method: "POST",
 		headers: proxyAuthorization,
@@ -516,6 +529,22 @@ try {
 	assert.equal(groupDirectSent.status, 200);
 	assert.equal(outbound.at(-1).type, "direct");
 	assert.equal(outbound.at(-1).to, "[8,10]");
+	assert.deepEqual(mutationTimeouts, [120_000, 120_000, 120_000]);
+
+	bridge.nativeRequest = async (path, options) => {
+		if (path === "users/me") {
+			const error = new Error("The operation was aborted due to timeout");
+			error.name = "TimeoutError";
+			throw error;
+		}
+		return originalNativeRequest(path, options);
+	};
+	const timeoutResponse = await fetch(`${bridge.proxyUrl()}/api/v1/users/me`, {
+		headers: proxyAuthorization,
+	});
+	assert.equal(timeoutResponse.status, 504);
+	assert.equal((await timeoutResponse.json()).msg, "zulip_upstream_timeout");
+	bridge.nativeRequest = originalNativeRequest;
 
 	expireNextPoll = true;
 	await waitFor(() => registerCount >= 2, "expired queue recovery");
@@ -539,7 +568,25 @@ try {
 	);
 	assert.equal(JSON.parse(readFileSync(statePath, "utf8")).lastMessageId, 201);
 
-	await bridge.stop();
+	const activeNativeRequest = bridge.nativeRequest.bind(bridge);
+	let resolveHeldPoll;
+	const heldPoll = new Promise((resolve) => {
+		resolveHeldPoll = resolve;
+	});
+	bridge.nativeRequest = async (path, options) => {
+		if (path !== "events") return activeNativeRequest(path, options);
+		assert(options.signal instanceof AbortSignal);
+		resolveHeldPoll();
+		return new Promise((resolve, reject) => {
+			options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+		});
+	};
+	await heldPoll;
+	await Promise.race([
+		bridge.stop(),
+		new Promise((_, reject) => setTimeout(() => reject(new Error("shutdown did not cancel long poll")), 500)),
+	]);
+	assert.equal(bridge.pollAbortController, null);
 	const restartMessage = {
 		...ambientMessage,
 		id: 202,

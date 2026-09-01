@@ -49,6 +49,67 @@ test("expired Zulip event queues are detected and re-registered", async () => {
 	assert.deepEqual(requests, ["register"]);
 });
 
+test("Zulip ingress uses bounded long polling instead of hot short polling", async () => {
+	let pollRequest;
+	const gateway = new ZulipGateway({
+		config: { zulip: {} },
+		store: {},
+		scheduler: {},
+		provisioner: {
+			async request(path, options) {
+				assert.equal(path, "events");
+				pollRequest = options;
+				gateway.stopped = true;
+				return { events: [] };
+			},
+		},
+	});
+	gateway.queueId = "queue-example";
+	gateway.lastEventId = 7;
+	gateway.stopped = false;
+
+	await gateway.pollLoop();
+	assert.deepEqual(pollRequest.query, {
+		queue_id: "queue-example",
+		last_event_id: 7,
+		dont_block: false,
+	});
+	assert(pollRequest.signal instanceof AbortSignal);
+	assert.equal(pollRequest.timeoutMs, 120_000);
+});
+
+test("Zulip long polling is cancelled promptly during shutdown", async () => {
+	let resolveStarted;
+	const started = new Promise((resolve) => {
+		resolveStarted = resolve;
+	});
+	const gateway = new ZulipGateway({
+		config: { zulip: {} },
+		store: {},
+		scheduler: {},
+		provisioner: {
+			request(path, options) {
+				assert.equal(path, "events");
+				resolveStarted();
+				return new Promise((resolve, reject) => {
+					options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+				});
+			},
+		},
+	});
+	gateway.queueId = "queue-example";
+	gateway.lastEventId = 7;
+	gateway.stopped = false;
+	gateway.pollPromise = gateway.pollLoop();
+
+	await started;
+	await Promise.race([
+		gateway.stop(),
+		new Promise((_, reject) => setTimeout(() => reject(new Error("shutdown did not cancel long poll")), 500)),
+	]);
+	assert.equal(gateway.pollAbortController, null);
+});
+
 test("configured customer names label pre-provisioned Zulip channels", () => {
 	const principalHash = "1234567890abcdef12345678";
 	const provisioner = new ZulipProvisioner(
