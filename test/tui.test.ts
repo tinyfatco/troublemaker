@@ -26,6 +26,10 @@ import { parseVisibleUserInputs } from "../src/user-input-display.js";
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
 try {
+	const appSource = await readFile(new URL("../src/tui/app.ts", import.meta.url), "utf8");
+	assert.doesNotMatch(appSource, /command === "\/clear"/, "TUI forwards /clear to the resident instead of clearing only its display");
+	assert.match(appSource, /\/clear  archive and reset agent context/, "TUI help describes the resident-side clear behavior");
+
 	const executablePath = join(tempRoot, "dist", "tui.js");
 	const configPath = join(tempRoot, "config", "tui.json");
 	const binDir = join(tempRoot, "bin");

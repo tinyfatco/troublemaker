@@ -11,6 +11,10 @@ import {
 	playCompactionCue,
 	resolveCompactionCue,
 } from "../src/compaction-cue.js";
+import { DEFAULT_COMPACTION } from "../src/context.js";
+
+assert.equal(DEFAULT_COMPACTION.reserveTokens, 16_384, "compaction uses Pi's native fixed response headroom");
+assert.equal(DEFAULT_COMPACTION.keepRecentTokens, 20_000, "compaction uses Pi's native recent-context retention");
 
 assert.equal(resolveCompactionTimeoutMs(undefined), DEFAULT_COMPACTION_TIMEOUT_MS, "compaction timeout has a bounded default");
 assert.equal(resolveCompactionTimeoutMs("invalid"), DEFAULT_COMPACTION_TIMEOUT_MS, "invalid timeout configuration fails safe");
