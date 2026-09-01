@@ -251,14 +251,8 @@ class TroublemakerTuiApp {
 			await this.shutdown();
 			return true;
 		}
-		if (command === "/clear") {
-			this.chat.clear();
-			this.lastTranscriptContent = null;
-			this.ui.requestRender(true);
-			return true;
-		}
 		if (command === "/help") {
-			this.addNotice("/clear  clear this transcript\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
+			this.addNotice("/clear  archive and reset agent context\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
 			return true;
 		}
 		if (command === "/reload") {
