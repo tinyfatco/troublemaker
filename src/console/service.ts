@@ -1,4 +1,5 @@
 import { join } from "path";
+import { resolveMacOSComputerAutoSpeech } from "../context.js";
 import { readLocalTenantProfile, type LocalTenantProfile } from "../local/tenant-profile.js";
 import type { WorkspaceStore } from "../storage/workspace.js";
 import type {
@@ -20,12 +21,18 @@ export class ConsoleError extends Error {
 interface WorkspaceConfig {
 	display_mode: "terminal" | "desktop";
 	agent_name: string;
+	macos_computer_auto_speech: boolean;
 }
+
+type PublicWorkspaceConfig = Pick<WorkspaceConfig, "display_mode" | "agent_name">;
 
 export class ConsoleService {
 	constructor(
 		private readonly workspace: WorkspaceStore,
 		private readonly env: Record<string, string | undefined> = process.env,
+		private readonly transcriptionAvailable = false,
+		private readonly voiceSessionAvailable = false,
+		private readonly ownerPushAvailable = false,
 	) {}
 
 	getSession(): ConsoleSession {
@@ -45,6 +52,9 @@ export class ConsoleService {
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
 				voice: true,
+				transcription: this.transcriptionAvailable,
+				voice_session: this.voiceSessionAvailable,
+				owner_push_v1: this.ownerPushAvailable,
 				fleet: profile.profileActive,
 			},
 		};
@@ -73,6 +83,11 @@ export class ConsoleService {
 		};
 	}
 
+	matchesAgentId(agentId: string): boolean {
+		const profile = this.readProfile();
+		return agentId === "current" || agentId === profile.localAgentId;
+	}
+
 	getStatus(): ConsoleStatus {
 		const config = this.readWorkspaceConfig();
 		if (!config) {
@@ -92,6 +107,9 @@ export class ConsoleService {
 			workspace_ready: true,
 			display_mode: profile.displayMode,
 			agent_name: profile.agentName,
+			client_preferences: {
+				macos_computer_auto_speech: config.macos_computer_auto_speech,
+			},
 			capabilities: {
 				awareness: true,
 				files: true,
@@ -99,16 +117,22 @@ export class ConsoleService {
 				terminal: true,
 				desktop: profile.displayMode === "desktop",
 				voice: true,
+				transcription: this.transcriptionAvailable,
+				voice_session: this.voiceSessionAvailable,
+				owner_push_v1: this.ownerPushAvailable,
 			},
 		};
 	}
 
-	getConfig(): WorkspaceConfig {
+	getConfig(): PublicWorkspaceConfig {
 		const config = this.readWorkspaceConfig();
 		if (!config) {
 			throw new ConsoleError(503, "Workspace not ready");
 		}
-		return config;
+		return {
+			display_mode: config.display_mode,
+			agent_name: config.agent_name,
+		};
 	}
 
 	listFiles(path: string): ConsoleFilesResponse {
@@ -165,6 +189,7 @@ export class ConsoleService {
 			return {
 				display_mode: settings.display_mode === "desktop" ? "desktop" : "terminal",
 				agent_name: settings.name || "agent",
+				macos_computer_auto_speech: resolveMacOSComputerAutoSpeech(settings),
 			};
 		} catch {
 			return null;

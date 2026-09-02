@@ -10,6 +10,7 @@ import {
 	ModelRuntime,
 	ModelRegistry,
 	SessionManager,
+	type ExtensionAPI,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
@@ -19,9 +20,12 @@ import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
+import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
-	buildSessionPreamble,
+	buildConciseWatchRuntimeContext,
+	buildRuntimeContext,
+	buildSessionRoutingPreamble,
 	buildSystemPrompt,
 	getWorkspaceContext,
 	getWorkspaceSkillsMtime,
@@ -40,6 +44,7 @@ import {
 import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
+import { AssistantTextProjection } from "./streaming/assistant-text-projection.js";
 import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
@@ -52,7 +57,9 @@ import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
+import hostSitesExtension from "./extensions/host-sites.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
+import { createDynamicRuntimeContextExtension } from "./extensions/dynamic-runtime-context.js";
 import {
 	createClaudeCliStream,
 	getClaudeCliRuntimeAuth,
@@ -117,6 +124,7 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 		formatInstructions?: string,
 		liveEventSink?: RuntimeEventSink,
+		completionID?: string,
 	): Promise<RunResult>;
 	abort(): void;
 	/** Abort only an in-progress manual or automatic context compaction. */
@@ -127,7 +135,11 @@ export interface AgentRunner {
 	 * and the active session is idle, allowing durable ingress receipts to stay
 	 * live across the in-memory steering interval.
 	 */
-	steer(text: string, options?: { projectionId?: string }): Promise<void> | null;
+	steer(text: string, options?: {
+		projectionId?: string;
+		deliveryId?: string;
+		onAccepted?: () => void | Promise<void>;
+	}): Promise<void> | null;
 	/** Describe an in-progress context compaction for status surfaces. */
 	getCompactionStatus(): CompactionStatus | null;
 	/** Get current context diagnostics */
@@ -358,6 +370,7 @@ export function getOrCreateRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	deferredTools: AgentTool<any>[] = [],
 ): Promise<AgentRunner> {
 	const existing = runners.get(awarenessDir);
 	if (existing) return existing;
@@ -368,6 +381,7 @@ export function getOrCreateRunner(
 		formatInstructions,
 		extraSkillsDirs,
 		extraTools,
+		deferredTools,
 	).catch((error) => {
 		if (runners.get(awarenessDir) === runnerPromise) runners.delete(awarenessDir);
 		throw error;
@@ -385,6 +399,7 @@ async function createRunner(
 	formatInstructions: string,
 	extraSkillsDirs: string[] = [],
 	extraTools: AgentTool<any>[] = [],
+	deferredTools: AgentTool<any>[] = [],
 ): Promise<AgentRunner> {
 	const t0 = performance.now();
 	const workspaceDir = join(awarenessDir, "..");
@@ -472,11 +487,26 @@ async function createRunner(
 
 	log.logInfo(`[perf] createRunner (no R2 reads): ${(performance.now() - t0).toFixed(0)}ms`);
 
+	let activeSystemPrompt = systemPrompt;
+	let activeRuntimeContext = "";
+	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
+		() => activeSystemPrompt,
+		() => activeRuntimeContext,
+	);
+	const deferredToolsExtension = (pi: ExtensionAPI): void => {
+		for (const tool of deferredTools) pi.registerTool(tool);
+	};
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
-		extensionFactories: [hostGmailExtension, tinyfatDomainsExtension],
+		extensionFactories: [
+			dynamicRuntimeContextExtension,
+			deferredToolsExtension,
+			hostGmailExtension,
+			hostSitesExtension,
+			tinyfatDomainsExtension,
+		],
 		extensionsOverride: (base) => {
 			for (const extension of base.extensions) {
 				for (const registered of extension.tools.values()) {
@@ -567,6 +597,8 @@ async function createRunner(
 		toolSearchRegistry.current = null;
 		sessionManager = null;
 		resourceLoaderReady = false;
+		activeSystemPrompt = systemPrompt;
+		activeRuntimeContext = "";
 		agent.state.messages = [];
 	};
 
@@ -632,7 +664,11 @@ async function createRunner(
 		modelCredentialUnavailable: false,
 		initialPromptSent: false,
 		liveSnapshot: new LiveAssistantSnapshot(),
+		assistantText: new AssistantTextProjection(),
 		liveEventSink: null as RuntimeEventSink | null,
+		completionID: "",
+		runStartLeafID: null as string | null,
+		claimedAssistantMessageIDs: new Set<string>(),
 	};
 
 	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
@@ -648,6 +684,42 @@ async function createRunner(
 		} catch (error) {
 			log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
 		}
+	};
+	const assistantMessageIDsForRun = (): string[] => {
+		try {
+			const branch = getSessionManager().getBranch();
+			const startIndex = runState.runStartLeafID
+				? branch.findIndex((entry) => entry.id === runState.runStartLeafID) + 1
+				: 0;
+			const runEntries = startIndex > 0 || runState.runStartLeafID === null
+				? branch.slice(startIndex)
+				: [];
+			return runEntries.flatMap((entry): string[] =>
+				entry.type === "message" && entry.message.role === "assistant" ? [entry.id] : []);
+		} catch (error) {
+			log.logWarning(
+				"[assistant-text] Could not reconcile durable assistant identity",
+				error instanceof Error ? error.message : String(error),
+			);
+			return [];
+		}
+	};
+	const claimNewAssistantMessageIDs = (): string[] => {
+		const unclaimed = assistantMessageIDsForRun().filter(
+			(id) => !runState.claimedAssistantMessageIDs.has(id),
+		);
+		for (const id of unclaimed) runState.claimedAssistantMessageIDs.add(id);
+		return unclaimed;
+	};
+	const emitAssistantTextEvent = (event: RuntimeStreamEvent | null): void => {
+		if (!event) return;
+		emitLiveEvent(event);
+		runState.ctx?.emitContentBlock?.({ ...event });
+	};
+	const closeAssistantPresentation = (): void => {
+		emitAssistantTextEvent(runState.assistantText.boundary({
+			durableMessageIds: claimNewAssistantMessageIDs(),
+		}));
 	};
 	const steeringProjections = new SteeringProjectionTracker(emitLiveEvent);
 
@@ -711,6 +783,7 @@ async function createRunner(
 
 		if (event.type === "tool_execution_start") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
+			closeAssistantPresentation();
 			const silentChannelTool = isYieldNoActionToolName(agentEvent.toolName);
 			const args = agentEvent.args && typeof agentEvent.args === "object"
 				? agentEvent.args as Record<string, unknown>
@@ -807,12 +880,24 @@ async function createRunner(
 		} else if (event.type === "message_update") {
 			const agentEvent = event as AgentEvent & { type: "message_update" };
 			runState.liveSnapshot.updateAssistantMessage(agentEvent.message);
+			const assistantText = runState.assistantText.update(
+				agentEvent.message,
+				agentEvent.assistantMessageEvent?.type,
+			);
+			if (assistantText) {
+				emitAssistantTextEvent(assistantText);
+			}
 			emitSnapshot(true);
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
+				closeAssistantPresentation();
 				log.logResponseStart(logCtx);
 				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
+				const assistantText = runState.assistantText.begin(agentEvent.message);
+				if (assistantText) {
+					emitAssistantTextEvent(assistantText);
+				}
 				emitSnapshot(true);
 			} else if (agentEvent.message.role === "user") {
 				const messageContent = agentEvent.message.content;
@@ -821,7 +906,10 @@ async function createRunner(
 					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
 				const entries = parseVisibleUserInputs(promptText);
 				steeringProjections.consume(promptText);
-				if (entries.length > 0) emitLiveEvent({ type: "user_input", entries });
+				if (entries.length > 0) {
+					closeAssistantPresentation();
+					emitLiveEvent({ type: "user_input", entries });
+				}
 
 				if (runState.initialPromptSent) {
 					log.logInfo(`[awareness] Steered message detected, restarting working message`);
@@ -836,6 +924,10 @@ async function createRunner(
 			const agentEvent = event as AgentEvent & { type: "message_end" };
 			if (agentEvent.message.role === "assistant") {
 				runState.liveSnapshot.endAssistantMessage(agentEvent.message);
+				const assistantText = runState.assistantText.end(agentEvent.message);
+				if (assistantText) {
+					emitAssistantTextEvent(assistantText);
+				}
 				emitSnapshot(false);
 				const assistantMsg = agentEvent.message as any;
 
@@ -898,11 +990,13 @@ async function createRunner(
 			}
 		} else if (event.type === "compaction_start") {
 			log.logInfo(`Compaction started (reason: ${(event as any).reason})`);
+			closeAssistantPresentation();
 			const status = { type: "status" as const, status: "compacting" as const, message: "Compacting context..." };
 			emitLiveEvent(status);
 			ctx.emitContentBlock?.(status);
 			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
 		} else if (event.type === "compaction_end") {
+			closeAssistantPresentation();
 			const compEvent = event as any;
 			if (compEvent.result) {
 				log.logInfo(`Compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
@@ -923,6 +1017,7 @@ async function createRunner(
 			emitLiveEvent(status);
 			ctx.emitContentBlock?.(status);
 		} else if (event.type === "auto_retry_start") {
+			closeAssistantPresentation();
 			const retryEvent = event as any;
 			log.logWarning(`Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`, retryEvent.errorMessage);
 			queue.enqueue(
@@ -975,8 +1070,11 @@ async function createRunner(
 			_pendingMessages?: PendingMessage[],
 			runFormatInstructions = formatInstructions,
 			liveEventSink?: RuntimeEventSink,
+			completionID?: string,
 		): Promise<RunResult> {
 			const tRun = performance.now();
+			runState.completionID = completionID?.trim() || randomUUID();
+			runState.assistantText.reset(runState.completionID);
 
 			// Ensure awareness directory exists
 			await mkdir(awarenessDir, { recursive: true });
@@ -992,17 +1090,27 @@ async function createRunner(
 				});
 			}
 			const sm = getSessionManager();
+			runState.runStartLeafID = sm.getLeafId();
 
 			// No sync step — the runner is the sole writer to context.jsonl
 			const tCtx = performance.now();
 			const reloadedSession = sm.buildSessionContext();
 			log.logInfo(`[perf] buildSessionContext: ${(performance.now() - tCtx).toFixed(0)}ms`);
 
-			if (reloadedSession.messages.length > 0) {
-				const tSan = performance.now();
-				const sanitized = sanitizeMessages(reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0]);
-				agent.state.messages = sanitized as unknown as typeof reloadedSession.messages;
-				log.logInfo(`[perf] sanitize+replace (${sanitized.length} msgs): ${(performance.now() - tSan).toFixed(0)}ms`);
+			const tSan = performance.now();
+			const sanitized = sanitizeMessages(
+				reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0],
+			);
+			const conciseWatch = ctx.message.contextProjection === "concise_watch"
+				? projectConciseWatchHistory(sanitized)
+				: undefined;
+			const promptMessages = conciseWatch?.messages ?? sanitized;
+			agent.state.messages = promptMessages as unknown as typeof reloadedSession.messages;
+			log.logInfo(`[perf] sanitize+replace (${promptMessages.length} msgs): ${(performance.now() - tSan).toFixed(0)}ms`);
+			if (conciseWatch) {
+				log.logInfo(
+					`[voice-context] source_messages=${conciseWatch.sourceMessageCount} source_bytes=${conciseWatch.sourceBytes} projected_messages=${conciseWatch.messages.length} projected_bytes=${conciseWatch.projectedBytes}`,
+				);
 			}
 
 			const tMem = performance.now();
@@ -1034,21 +1142,28 @@ async function createRunner(
 			}
 
 			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
+			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
-			// Build dynamic preamble (injected into user message below)
+			// Keep large, mostly stable workspace context in the per-turn system
+			// prompt. Only lightweight routing metadata is appended to the user
+			// transcript, so repeated wakes do not accumulate another memory copy.
 			settingsManager.reload();
 			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
-			const sessionPreamble = buildSessionPreamble(
+			const sessionContextOptions = {
 				workspaceContext,
-				ctx.channels,
-				ctx.users,
+				channels: ctx.channels,
+				users: ctx.users,
 				skills,
-				ctx.message.channel,
-				ctx.channelName,
-				channelVerbosity,
-				currentModel,
-			);
+				displayChannelId: ctx.message.channel,
+				displayChannelName: ctx.channelName,
+				verbosity: channelVerbosity,
+				model: currentModel,
+			};
+			activeRuntimeContext = ctx.message.contextProjection === "concise_watch"
+				? buildConciseWatchRuntimeContext(sessionContextOptions)
+				: buildRuntimeContext(sessionContextOptions);
+			const sessionPreamble = buildSessionRoutingPreamble(sessionContextOptions);
 
 			// Set up file upload function
 			setUploadFunction(async (filePath: string, title?: string) => {
@@ -1080,6 +1195,7 @@ async function createRunner(
 			runState.initialPromptSent = false;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
+			runState.claimedAssistantMessageIDs.clear();
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -1113,7 +1229,7 @@ async function createRunner(
 			};
 
 			// Log context info
-			log.logInfo(`Context sizes - preamble: ${sessionPreamble.length} chars, workspace: ${workspaceContext.length} chars`);
+			log.logInfo(`Context sizes - routing: ${sessionPreamble.length} chars, runtime: ${activeRuntimeContext.length} chars, workspace: ${workspaceContext.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
 			// Build user message with timestamp, channel tag, and username
@@ -1167,6 +1283,8 @@ async function createRunner(
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
+				runtimeContext: activeRuntimeContext,
+				runtimeContextPlacement: "system",
 				sessionPreamble,
 				messages: currentSession.messages,
 				newUserMessage: finalUserMessage,
@@ -1297,6 +1415,7 @@ async function createRunner(
 						const visibleError = formatUserVisibleError(runState.errorMessage);
 						const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
 						const errorEvent = { type: "error" as const, message: visibleError };
+						closeAssistantPresentation();
 						emitLiveEvent(errorEvent);
 						ctx.emitContentBlock?.(errorEvent);
 						await ctx.sendFinalResponse(userErrorMsg, { force: true });
@@ -1336,6 +1455,19 @@ async function createRunner(
 				}
 			}
 
+			const durableMessageIds = assistantMessageIDsForRun();
+			const presentationDurableMessageIds = claimNewAssistantMessageIDs();
+			const assistantFinal = runState.assistantText.finalize({
+				outcome: runState.stopReason === "error"
+					? "failed"
+					: runState.stopReason === "aborted"
+						? "cancelled"
+						: "completed",
+				durableMessageIds,
+				presentationDurableMessageIds,
+			});
+			emitAssistantTextEvent(assistantFinal);
+
 			// Log usage summary
 			if (runState.totalUsage.cost.total > 0 && runState.logCtx && runState.queue) {
 				const messages = currentSession.messages;
@@ -1364,6 +1496,8 @@ async function createRunner(
 			runState.queue = null;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = null;
+			runState.completionID = "";
+			runState.runStartLeafID = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return {
@@ -1390,14 +1524,20 @@ async function createRunner(
 			return requestCompactionAbort();
 		},
 
-		steer(text: string, options?: { projectionId?: string }): Promise<void> | null {
+		steer(text: string, options?: {
+			projectionId?: string;
+			deliveryId?: string;
+			onAccepted?: () => void | Promise<void>;
+		}): Promise<void> | null {
 			if (!session || !acceptsSteering) return null;
 			const activeSession = session;
 			if (options?.projectionId) {
 				const settlement = steeringProjections.track({
 					id: options.projectionId,
+					deliveryId: options.deliveryId,
 					prompt: text,
 					enqueue: () => activeSession.steer(text),
+					onAccepted: options.onAccepted,
 					waitForIdle: () => activeSession.waitForIdle(),
 				});
 				void settlement.catch((err: Error) => {

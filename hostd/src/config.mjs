@@ -1,3 +1,4 @@
+import { createPrivateKey } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -409,6 +410,142 @@ function phoneConfig(raw, environment) {
 	};
 }
 
+async function sitesConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const sites = object(raw, "sites");
+	const hasPrivateKeyEnv = sites.capabilityPrivateKeyEnv !== undefined;
+	const hasPrivateKeyFile = sites.capabilityPrivateKeyFile !== undefined;
+	if (hasPrivateKeyEnv === hasPrivateKeyFile) {
+		throw new Error("sites must configure exactly one of capabilityPrivateKeyEnv or capabilityPrivateKeyFile");
+	}
+	const capabilityPrivateKey = hasPrivateKeyEnv
+		? envSecret(sites.capabilityPrivateKeyEnv, "sites.capabilityPrivateKeyEnv", environment)
+		: await readFile(
+			resolve(text(sites.capabilityPrivateKeyFile, "sites.capabilityPrivateKeyFile")),
+			"utf8",
+		);
+	let key;
+	try {
+		key = createPrivateKey(capabilityPrivateKey);
+	} catch {
+		throw new Error("sites.capabilityPrivateKeyEnv must contain a valid private key");
+	}
+	if (key.asymmetricKeyType !== "ed25519") {
+		throw new Error("sites.capabilityPrivateKeyEnv must contain an Ed25519 private key");
+	}
+	const keyId = text(sites.capabilityKeyId, "sites.capabilityKeyId");
+	if (!/^[a-zA-Z0-9._-]{1,64}$/.test(keyId)) {
+		throw new Error("sites.capabilityKeyId contains unsupported characters");
+	}
+	const previewNamespace = text(sites.previewNamespace, "sites.previewNamespace");
+	const productionNamespace = text(sites.productionNamespace, "sites.productionNamespace");
+	if (![previewNamespace, productionNamespace].every((value) => /^[a-z0-9][a-z0-9_-]{0,127}$/.test(value))) {
+		throw new Error("sites preview/production namespaces contain unsupported characters");
+	}
+	if (previewNamespace === productionNamespace) {
+		throw new Error("sites previewNamespace and productionNamespace must differ");
+	}
+	const previewApex = normalizeDomain(sites.previewApex, "sites.previewApex");
+	const maximumFileBytes = integer(
+		sites.maximumFileBytes,
+		25 * 1024 * 1024,
+		"sites.maximumFileBytes",
+		1024,
+		100 * 1024 * 1024,
+	);
+	const maximumArtifactBytes = integer(
+		sites.maximumArtifactBytes,
+		75 * 1024 * 1024,
+		"sites.maximumArtifactBytes",
+		maximumFileBytes,
+		200 * 1024 * 1024,
+	);
+	return {
+		publishUrl: httpUrl(sites.publishUrl, "sites.publishUrl"),
+		previewApex,
+		previewNamespace,
+		productionNamespace,
+		capabilityPrivateKey,
+		capabilityKeyId: keyId,
+		capabilityIssuer: sites.capabilityIssuer === undefined
+			? "troublemaker-hostd"
+			: text(sites.capabilityIssuer, "sites.capabilityIssuer"),
+		capabilityAudience: sites.capabilityAudience === undefined
+			? "tinyfat-sites-publish"
+			: text(sites.capabilityAudience, "sites.capabilityAudience"),
+		capabilityTtlSeconds: integer(
+			sites.capabilityTtlSeconds,
+			60,
+			"sites.capabilityTtlSeconds",
+			15,
+			120,
+		),
+		maximumFiles: integer(sites.maximumFiles, 1500, "sites.maximumFiles", 1, 5000),
+		maximumFileBytes,
+		maximumArtifactBytes,
+		maximumCompressedBytes: integer(
+			sites.maximumCompressedBytes,
+			30 * 1024 * 1024,
+			"sites.maximumCompressedBytes",
+			1024,
+			100 * 1024 * 1024,
+		),
+	};
+}
+
+function uuid(value, label) {
+	const candidate = text(value, label).toLowerCase();
+	if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(candidate)) {
+		throw new Error(`${label} must be a UUID`);
+	}
+	return candidate;
+}
+
+function siteDeploymentProjectConfig(raw, label) {
+	if (raw === undefined) return undefined;
+	const deployment = object(raw, label);
+	const grantId = uuid(deployment.grantId, `${label}.grantId`);
+	const customerId = uuid(deployment.customerId, `${label}.customerId`);
+	const projectId = uuid(deployment.projectId, `${label}.projectId`);
+	const siteId = uuid(deployment.siteId, `${label}.siteId`);
+	const siteSlug = text(deployment.siteSlug, `${label}.siteSlug`).toLowerCase();
+	if (!/^[a-z0-9](?:[a-z0-9-]{0,53}[a-z0-9])?$/.test(siteSlug)) {
+		throw new Error(`${label}.siteSlug is invalid`);
+	}
+	const rawKinds = deployment.artifactKinds ?? ["static", "worker"];
+	if (!Array.isArray(rawKinds) || rawKinds.length === 0) {
+		throw new Error(`${label}.artifactKinds must contain static or worker`);
+	}
+	const artifactKinds = rawKinds.map((kind, index) => {
+		const value = text(kind, `${label}.artifactKinds[${index}]`).toLowerCase();
+		if (!['static', 'worker'].includes(value)) {
+			throw new Error(`${label}.artifactKinds must contain only static or worker`);
+		}
+		return value;
+	});
+	if (new Set(artifactKinds).size !== artifactKinds.length) {
+		throw new Error(`${label}.artifactKinds cannot repeat a value`);
+	}
+	const rawBranches = deployment.allowedBranches ?? ["*"];
+	if (!Array.isArray(rawBranches) || rawBranches.length === 0) {
+		throw new Error(`${label}.allowedBranches must contain at least one branch or *`);
+	}
+	const allowedBranches = rawBranches.map((branch, index) => {
+		const value = text(branch, `${label}.allowedBranches[${index}]`);
+		if (value.length > 240 || value.includes("\0")) {
+			throw new Error(`${label}.allowedBranches[${index}] is invalid`);
+		}
+		return value;
+	});
+	if (allowedBranches.includes("*") && allowedBranches.length !== 1) {
+		throw new Error(`${label}.allowedBranches must use * alone`);
+	}
+	if (new Set(allowedBranches).size !== allowedBranches.length) {
+		throw new Error(`${label}.allowedBranches cannot repeat a branch`);
+	}
+	return { grantId, customerId, projectId, siteId, siteSlug, artifactKinds, allowedBranches };
+}
+
 function targetConfig(raw, index, environment) {
 	const target = object(raw, `targets[${index}]`);
 	const id = text(target.id, `targets[${index}].id`);
@@ -491,10 +628,15 @@ export async function loadConfig(path, environment = process.env) {
 	if (selectedTarget?.driver !== "oci") throw new Error("routing.actorTarget must reference an OCI target");
 	const knownPrincipals = routing.knownPrincipals === undefined ? [] : routing.knownPrincipals;
 	if (!Array.isArray(knownPrincipals)) throw new Error("routing.knownPrincipals must be an array");
+	const knownPhonePrincipals = routing.knownPhonePrincipals === undefined ? [] : routing.knownPhonePrincipals;
+	if (!Array.isArray(knownPhonePrincipals)) {
+		throw new Error("routing.knownPhonePrincipals must be an array");
+	}
 	const mattermost = mattermostConfig(raw.mattermost, environment);
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
+	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
 		throw new Error("phone.ingress.path must be an absolute URL path");
 	}
@@ -543,6 +685,9 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("configure only one operator workspace: mattermost, rocketChat, or zulip");
 	}
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
+	if (!phone && knownPhonePrincipals.length > 0) {
+		throw new Error("routing.knownPhonePrincipals requires phone configuration");
+	}
 	if (!gmail && targets.some((target) => target.gmailToolsOnly)) {
 		throw new Error("targets cannot enable gmailToolsOnly when Gmail is not configured");
 	}
@@ -554,6 +699,88 @@ export async function loadConfig(path, environment = process.env) {
 		65535,
 	)) {
 		throw new Error("phone.ingress.port must differ from server.port");
+	}
+
+	const configuredPrincipals = knownPrincipals.map((candidate, index) => {
+		const principalLabel = `routing.knownPrincipals[${index}]`;
+		const principal = object(candidate, principalLabel);
+		const projects = principal.projects === undefined ? [] : principal.projects;
+		if (!Array.isArray(projects)) {
+			throw new Error(`${principalLabel}.projects must be an array`);
+		}
+		return {
+			email: normalizeAddress(principal.email, `${principalLabel}.email`),
+			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			projects: projects.map((rawProject, projectIndex) => {
+				const projectLabel = `${principalLabel}.projects[${projectIndex}]`;
+				const project = object(rawProject, projectLabel);
+				const slug = text(project.slug, `${projectLabel}.slug`).toLowerCase();
+				if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || slug === "intake") {
+					throw new Error(`project slug ${slug} is invalid or reserved`);
+				}
+				const siteDeployment = siteDeploymentProjectConfig(
+					project.siteDeployment,
+					`${projectLabel}.siteDeployment`,
+				);
+				if (siteDeployment && !sites) {
+					throw new Error(`${projectLabel}.siteDeployment requires top-level sites configuration`);
+				}
+				return {
+					slug,
+					name: text(project.name ?? project.slug, `${projectLabel}.name`),
+					siteDeployment,
+				};
+			}),
+		};
+	});
+	const configuredPhonePrincipals = knownPhonePrincipals.map((candidate, index) => {
+		const principalLabel = `routing.knownPhonePrincipals[${index}]`;
+		const principal = object(candidate, principalLabel);
+		const siteDeployment = siteDeploymentProjectConfig(
+			principal.siteDeployment,
+			`${principalLabel}.siteDeployment`,
+		);
+		if (siteDeployment && !sites) {
+			throw new Error(`${principalLabel}.siteDeployment requires top-level sites configuration`);
+		}
+		return {
+			phone: normalizePhoneAddress(principal.phone, `${principalLabel}.phone`),
+			name: principal.name === undefined ? undefined : text(principal.name, `${principalLabel}.name`),
+			siteDeployment,
+		};
+	});
+	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
+		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
+	}
+	const siteBindings = configuredPrincipals.flatMap((principal) => (
+		principal.projects
+			.filter((project) => project.siteDeployment)
+			.map((project) => ({
+				email: principal.email,
+				projectSlug: project.slug,
+				...project.siteDeployment,
+			}))
+	)).concat(configuredPhonePrincipals
+		.filter((principal) => principal.siteDeployment)
+		.map((principal) => ({ phone: principal.phone, projectSlug: "intake", ...principal.siteDeployment })));
+	const duplicateSiteIds = siteBindings.filter((binding, index) => (
+		siteBindings.findIndex((candidate) => candidate.siteId === binding.siteId) !== index
+	));
+	if (duplicateSiteIds.length > 0) {
+		throw new Error("each sites deployment siteId must bind to exactly one principal/project");
+	}
+	const duplicateSiteSlugs = siteBindings.filter((binding, index) => (
+		siteBindings.findIndex((candidate) => candidate.siteSlug === binding.siteSlug) !== index
+	));
+	if (duplicateSiteSlugs.length > 0) {
+		throw new Error("each sites deployment siteSlug must bind to exactly one principal/project");
+	}
+	for (const key of ["grantId", "projectId"]) {
+		if (siteBindings.some((binding, index) => (
+			siteBindings.findIndex((candidate) => candidate[key] === binding[key]) !== index
+		))) {
+			throw new Error(`each sites deployment ${key} must bind to exactly one principal/project`);
+		}
 	}
 
 	return {
@@ -596,41 +823,11 @@ export async function loadConfig(path, environment = process.env) {
 		rocketChat,
 		zulip,
 		phone,
+		sites,
 		routing: {
 			actorTarget,
-			knownPrincipals: knownPrincipals.map((candidate, index) => {
-				const principal = object(candidate, `routing.knownPrincipals[${index}]`);
-				const projects = principal.projects === undefined ? [] : principal.projects;
-				if (!Array.isArray(projects)) {
-					throw new Error(`routing.knownPrincipals[${index}].projects must be an array`);
-				}
-				return {
-					email: normalizeAddress(principal.email, `routing.knownPrincipals[${index}].email`),
-					name: principal.name === undefined
-						? undefined
-						: text(principal.name, `routing.knownPrincipals[${index}].name`),
-					projects: projects.map((rawProject, projectIndex) => {
-						const project = object(
-							rawProject,
-							`routing.knownPrincipals[${index}].projects[${projectIndex}]`,
-						);
-						const slug = text(
-							project.slug,
-							`routing.knownPrincipals[${index}].projects[${projectIndex}].slug`,
-						).toLowerCase();
-						if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(slug) || slug === "intake") {
-							throw new Error(`project slug ${slug} is invalid or reserved`);
-						}
-						return {
-							slug,
-							name: text(
-								project.name ?? project.slug,
-								`routing.knownPrincipals[${index}].projects[${projectIndex}].name`,
-							),
-						};
-					}),
-				};
-			}),
+			knownPrincipals: configuredPrincipals,
+			knownPhonePrincipals: configuredPhonePrincipals,
 		},
 		targets,
 		targetsById: new Map(targets.map((target) => [target.id, target])),

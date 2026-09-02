@@ -1,17 +1,65 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const buildScriptPath = "scripts/build-mac-app.sh";
 const runScriptPath = "scripts/run-dev.sh";
+const localRunScriptPath = "scripts/run-local-mac.sh";
 const buildScript = readFileSync(buildScriptPath, "utf8");
 const runScript = readFileSync(runScriptPath, "utf8");
+const localRunScript = readFileSync(localRunScriptPath, "utf8");
 
 test("Mac app scripts are valid Bash", () => {
-	for (const scriptPath of [buildScriptPath, runScriptPath]) {
+	for (const scriptPath of [buildScriptPath, runScriptPath, localRunScriptPath]) {
 		const result = spawnSync("bash", ["-n", scriptPath], { encoding: "utf8" });
 		assert.equal(result.status, 0, result.stderr);
+	}
+});
+
+test("Codex OAuth runtime strips OpenAI API-key authority before launch", () => {
+	assert.match(localRunScript, /MOM_MODEL_PROVIDER/);
+	assert.match(localRunScript, /settings\.defaultProvider/);
+	assert.match(localRunScript, /MODEL_PROVIDER="\$\(selected_model_provider\)"/);
+	assert.match(localRunScript, /if \[ "\$MODEL_PROVIDER" = "openai-codex" \]; then\s+unset OPENAI_API_KEY MOM_OPENAI_API_KEY/);
+	const providerGuard = localRunScript.indexOf('if [ "$MODEL_PROVIDER" = "openai-codex" ]');
+	const apiKeyLoad = localRunScript.indexOf("load_keychain_secret OPENAI_API_KEY", providerGuard);
+	assert.ok(providerGuard >= 0, "missing openai-codex provider guard");
+	assert.ok(apiKeyLoad > providerGuard, "API keys must only load after the openai-codex guard");
+});
+
+test("local model provider resolution honors env precedence and fails closed on malformed settings", () => {
+	const functionStart = localRunScript.indexOf("selected_model_provider() {");
+	const functionEnd = localRunScript.indexOf('\n\nfor arg in "$@"; do', functionStart);
+	assert.ok(functionStart >= 0 && functionEnd > functionStart, "missing provider resolver");
+	const functionSource = localRunScript.slice(functionStart, functionEnd);
+	const workspace = mkdtempSync(join(tmpdir(), "troublemaker-provider-test-"));
+	const settingsPath = join(workspace, "settings.json");
+	const resolveProvider = (provider) => {
+		const env = { ...process.env };
+		if (provider === undefined) delete env.MOM_MODEL_PROVIDER;
+		else env.MOM_MODEL_PROVIDER = provider;
+		const result = spawnSync(
+			"bash",
+			["-c", `set -euo pipefail\nWORKSPACE_DIR="$1"\n${functionSource}\nselected_model_provider`, "provider-test", workspace],
+			{ encoding: "utf8", env },
+		);
+		assert.equal(result.status, 0, result.stderr);
+		return result.stdout;
+	};
+
+	try {
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: " OPENAI-CODEX " }));
+		assert.equal(resolveProvider(undefined), "openai-codex");
+		assert.equal(resolveProvider(" FireWorks "), "fireworks");
+		writeFileSync(settingsPath, "{not-json");
+		assert.equal(resolveProvider(undefined), "");
+		writeFileSync(settingsPath, JSON.stringify({ defaultProvider: 42 }));
+		assert.equal(resolveProvider(undefined), "");
+	} finally {
+		rmSync(workspace, { recursive: true, force: true });
 	}
 });
 

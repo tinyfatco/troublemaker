@@ -39,6 +39,9 @@ export interface ConsoleStatus {
 	workspace_ready: boolean;
 	display_mode: "terminal" | "desktop";
 	agent_name: string;
+	client_preferences: {
+		macos_computer_auto_speech: boolean;
+	};
 	capabilities: Record<string, boolean>;
 }
 

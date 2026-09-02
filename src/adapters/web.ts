@@ -1,11 +1,14 @@
-import { appendFileSync } from "fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import type { IncomingMessage, ServerResponse } from "http";
 import { AsyncLocalStorage } from "async_hooks";
-import { timingSafeEqual } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { join } from "path";
 import { shouldSuppressAssistantSpeechEcho } from "../audio-feedback-guard.js";
+import { projectConversationTurnEvent } from "../console/conversation-projection.js";
+import { parseOwnerPushContext, type OwnerPushContext } from "../console/owner-push.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { WorkspaceDeliveryLedger } from "./workspace-channel-runtime.js";
 import {
 	slashCommandHandled,
 	slashCommandPending,
@@ -45,11 +48,23 @@ interface WebChatPayload {
 	source_event_type?: string;
 	event_type?: string;
 	source?: string;
+	deliveryId?: string;
+	delivery_id?: string;
+	relationshipRoute?: unknown;
+	relationship_route?: unknown;
+	ownerContext?: unknown;
+	owner_context?: unknown;
 	origin?: string;
 	role?: string;
 	speaker?: string;
 	isBot?: boolean;
 	assistant?: boolean;
+}
+
+interface WebRelationshipRoute {
+	relationshipId: string;
+	activeChannelId: string;
+	policy: "strict_active_or_idle_turn";
 }
 
 interface NormalizedWebChatPayload {
@@ -60,10 +75,39 @@ interface NormalizedWebChatPayload {
 	freshContext: boolean;
 	sessionId?: string;
 	sourceEventType?: string;
+	deliveryId?: string;
+	relationshipRoute?: WebRelationshipRoute;
+	ownerContext?: OwnerPushContext;
+	verifiedRelationshipId?: string;
 }
+
+interface WebhookDeliveryRecord {
+	deliveryId: string;
+	bodyDigest: string;
+	status: "processing" | "completed" | "failed";
+	owner: string;
+	pid: number;
+	attempts: number;
+	updatedAt: string;
+	channelId: string;
+	sessionId?: string;
+	suppressed?: boolean;
+	suppressionReason?: string;
+	accepted?: boolean;
+}
+
+interface WebhookDeliveryClaim {
+	path: string;
+	record: WebhookDeliveryRecord;
+	state: "execute" | "duplicate" | "processing";
+}
+
+class WebhookDeliveryConflictError extends Error {}
 
 interface WebStopPayload {
 	channelId?: string;
+	ownerContext?: unknown;
+	owner_context?: unknown;
 }
 
 interface WriterScope {
@@ -89,17 +133,18 @@ class SSEWriter {
 	private closed = false;
 	errorSent = false;
 
-	constructor(res: ServerResponse) {
+	constructor(res: ServerResponse, private readonly conversationSurface = false) {
 		this.res = res;
 	}
 
 	send(event: Record<string, unknown>): void {
 		if (this.closed) return;
-		if (event.type === "error") {
+		const outgoing = this.conversationSurface ? projectConversationTurnEvent(event) : event;
+		if (outgoing.type === "error") {
 			this.errorSent = true;
 		}
 		try {
-			this.res.write(`data: ${JSON.stringify(event)}\n\n`);
+			this.res.write(`data: ${JSON.stringify(outgoing)}\n\n`);
 		} catch {
 			this.closed = true;
 		}
@@ -129,7 +174,9 @@ Keep responses concise and helpful.`;
 	private inputToken?: string;
 	private webhookToken?: string;
 	private allowUnauthenticatedWebhook: boolean;
+	private readonly webhookClaimOwner = randomUUID();
 	private handler!: MomHandler;
+	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	/** Per-channel SSE writer — set in dispatch, read in createContext */
 	private pendingWriters = new Map<string, SSEWriter>();
 	private writerScope = new AsyncLocalStorage<WriterScope>();
@@ -139,6 +186,10 @@ Keep responses concise and helpful.`;
 		this.inputToken = config.inputToken?.trim() || undefined;
 		this.webhookToken = config.webhookToken?.trim() || undefined;
 		this.allowUnauthenticatedWebhook = config.allowUnauthenticatedWebhook === true;
+		this.deliveryLedger = new WorkspaceDeliveryLedger(
+			join(this.workingDir, ".web-deliveries.jsonl"),
+			"Web delivery ledger is unreadable",
+		);
 	}
 
 	setHandler(handler: MomHandler): void {
@@ -182,6 +233,30 @@ Keep responses concise and helpful.`;
 				res.end("Missing required field: message");
 				return;
 			}
+			const verifiedOwnerContext = this.verifiedOwnerContext(req);
+			if (normalized.ownerContext) {
+				if (!verifiedOwnerContext
+					|| !ownerContextsEqual(normalized.ownerContext, verifiedOwnerContext)) {
+					res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+					res.end(JSON.stringify({ ok: false, error: "owner_context_verification_required" }));
+					return;
+				}
+				normalized.relationshipRoute = {
+					relationshipId: verifiedOwnerContext.relationship_id,
+					activeChannelId: verifiedOwnerContext.context_id,
+					policy: "strict_active_or_idle_turn",
+				};
+				normalized.verifiedRelationshipId = verifiedOwnerContext.relationship_id;
+			} else if (verifiedOwnerContext) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "verified_owner_context_without_body" }));
+				return;
+			}
+			const verifiedRelationship = req.headers["x-troublemaker-verified-device-relationship"];
+			if (typeof verifiedRelationship === "string"
+				&& /^[A-Za-z0-9._:-]{1,128}$/.test(verifiedRelationship)) {
+				normalized.verifiedRelationshipId = verifiedRelationship;
+			}
 
 			// Set up SSE response headers — keep connection open for streaming
 			res.writeHead(200, {
@@ -192,8 +267,38 @@ Keep responses concise and helpful.`;
 			});
 			res.flushHeaders?.();
 
-			const writer = new SSEWriter(res);
-			writer.send({ type: "status", status: "accepted", message: "Message accepted" });
+			const conversationSurface = req.headers["x-troublemaker-surface"] === "conversation";
+			const writer = new SSEWriter(res, conversationSurface);
+			if (normalized.deliveryId) {
+				let admitted: boolean;
+				try {
+					admitted = normalized.relationshipRoute
+						? this.deliveryLedger.reserve(normalized.deliveryId)
+						: this.deliveryLedger.claim(normalized.deliveryId);
+				} catch (error) {
+					writer.send({ type: "error", message: error instanceof Error ? error.message : "Delivery ledger failed" });
+					writer.done();
+					return;
+				}
+				if (!admitted) {
+					const receipt = this.deliveryLedger.receipts([normalized.deliveryId])[0];
+					if (receipt) writer.send({
+						type: "delivery",
+						disposition: receipt.state,
+						state: receipt.state,
+						deliveryId: receipt.deliveryId,
+						...(receipt.rejectionReason ? { reason: receipt.rejectionReason } : {}),
+					});
+					writer.done();
+					return;
+				}
+				if (!normalized.relationshipRoute) {
+					writer.send({ type: "delivery", disposition: "accepted", deliveryId: normalized.deliveryId });
+				}
+			}
+			if (!normalized.relationshipRoute) {
+				writer.send({ type: "status", status: "accepted", message: "Message accepted" });
+			}
 
 			this.writerScope.run({ channelId: normalized.channelId, writer }, () => {
 				this.processMessage(normalized, writer).catch((err) => {
@@ -236,7 +341,29 @@ Keep responses concise and helpful.`;
 				}
 			}
 
-			const channelId = payload.channelId || "web";
+			if (payload.ownerContext !== undefined && payload.owner_context !== undefined) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "invalid_owner_context" }));
+				return;
+			}
+			const rawOwnerContext = payload.ownerContext ?? payload.owner_context;
+			const ownerContext = rawOwnerContext === undefined
+				? undefined
+				: parseOwnerPushContext(rawOwnerContext) ?? undefined;
+			const verifiedOwnerContext = this.verifiedOwnerContext(req);
+			if (rawOwnerContext !== undefined
+				&& (!ownerContext || !verifiedOwnerContext
+					|| !ownerContextsEqual(ownerContext, verifiedOwnerContext))) {
+				res.writeHead(403, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "owner_context_verification_required" }));
+				return;
+			}
+			if (rawOwnerContext === undefined && verifiedOwnerContext) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "verified_owner_context_without_body" }));
+				return;
+			}
+			const channelId = ownerContext?.context_id ?? payload.channelId ?? "web";
 			this.handler.handleStop(channelId, this)
 				.then(() => {
 					res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
@@ -268,27 +395,172 @@ Keep responses concise and helpful.`;
 				return;
 			}
 
+			const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+			if (!deliveryId) {
+				res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+				res.end(JSON.stringify({ ok: false, error: "delivery_id_required" }));
+				return;
+			}
+
 			const assistantOrigin = this.isAssistantOriginPayload(payload);
 			const suppression = assistantOrigin
 				? { suppress: true, reason: "assistant_origin_metadata" }
 				: shouldSuppressAssistantSpeechEcho(normalized.message);
-			if (suppression.suppress) {
-				log.logInfo(
-					`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} ` +
-					`(${suppression.reason}${"similarity" in suppression && typeof suppression.similarity === "number" ? `, similarity=${suppression.similarity.toFixed(2)}` : ""})`,
-				);
-				res.writeHead(202, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppression.reason }));
-				return;
-			}
 
-			res.writeHead(202, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId }));
-
-			this.processMessage(normalized).catch((err) => {
-				log.logWarning("Web webhook processing error", err instanceof Error ? err.message : String(err));
+			void this.processIdempotentWebhook(
+				payload,
+				normalized,
+				res,
+				suppression.suppress ? suppression.reason : undefined,
+			).catch((error) => {
+				log.logWarning("Idempotent web webhook processing error", error instanceof Error ? error.message : String(error));
+				if (!res.headersSent) {
+					res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+					res.end(JSON.stringify({ ok: false, error: "processing_failed", retryable: true }));
+				}
 			});
 		});
+	}
+
+	private async processIdempotentWebhook(
+		payload: WebChatPayload,
+		normalized: NormalizedWebChatPayload,
+		res: ServerResponse,
+		suppressionReason?: string,
+	): Promise<void> {
+		let claim: WebhookDeliveryClaim;
+		try {
+			claim = this.claimWebhookDelivery(payload, normalized);
+		} catch (error) {
+			const conflict = error instanceof WebhookDeliveryConflictError;
+			res.writeHead(conflict ? 409 : 400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, error: conflict ? "delivery_id_body_conflict" : "invalid_delivery_id" }));
+			return;
+		}
+		if (claim.state === "duplicate") {
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({
+				ok: true,
+				channelId: normalized.channelId,
+				duplicate: true,
+				...(claim.record.accepted ? { accepted: true } : { processed: true }),
+				...(claim.record.suppressed ? { suppressed: true, reason: claim.record.suppressionReason || "suppressed" } : {}),
+			}));
+			return;
+		}
+		if (claim.state === "processing") {
+			res.writeHead(425, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, state: "processing", retryable: true }));
+			return;
+		}
+		if (suppressionReason) {
+			this.finishWebhookDelivery(claim, "completed", { suppressed: true, suppressionReason });
+			log.logInfo(`[web] Suppressed assistant speech echo from webhook: ${normalized.message.substring(0, 120)} (${suppressionReason})`);
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, suppressed: true, reason: suppressionReason, processed: true }));
+			return;
+		}
+
+		if (this.isVoiceWebhook(normalized)) {
+			void this.processMessage(normalized)
+				.then(() => this.finishWebhookDelivery(claim, "completed", { accepted: true }))
+				.catch((error) => {
+					this.finishWebhookDelivery(claim, "failed");
+					log.logWarning("Accepted voice webhook failed during asynchronous dispatch", error instanceof Error ? error.message : String(error));
+				});
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, accepted: true }));
+			return;
+		}
+
+		try {
+			await this.processMessage(normalized, undefined, true);
+			this.finishWebhookDelivery(claim, "completed");
+			res.writeHead(202, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: true, channelId: normalized.channelId, processed: true }));
+		} catch (error) {
+			this.finishWebhookDelivery(claim, "failed");
+			res.writeHead(500, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ ok: false, error: "processing_failed", retryable: true }));
+		}
+	}
+
+	private claimWebhookDelivery(payload: WebChatPayload, normalized: NormalizedWebChatPayload): WebhookDeliveryClaim {
+		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+		if (deliveryId.length > 200 || !/^[A-Za-z0-9._:-]+$/.test(deliveryId)) {
+			throw new Error("Invalid webhook delivery ID");
+		}
+		const bodyDigest = createHash("sha256").update(JSON.stringify({
+			message: normalized.message,
+			channelId: normalized.channelId,
+			user: normalized.user,
+			userName: normalized.userName,
+			freshContext: normalized.freshContext,
+			sessionId: normalized.sessionId || "",
+			sourceEventType: normalized.sourceEventType || "",
+			assistantOrigin: this.isAssistantOriginPayload(payload),
+		})).digest("hex");
+		const key = createHash("sha256").update(deliveryId).digest("hex");
+		const directory = join(this.workingDir, "awareness", "webhook-deliveries");
+		mkdirSync(directory, { recursive: true, mode: 0o700 });
+		const markerPath = join(directory, `${key}.json`);
+		const createRecord = (attempts: number): WebhookDeliveryRecord => ({
+			deliveryId,
+			bodyDigest,
+			status: "processing",
+			owner: this.webhookClaimOwner,
+			pid: process.pid,
+			attempts,
+			updatedAt: new Date().toISOString(),
+			channelId: normalized.channelId,
+			...(normalized.sessionId ? { sessionId: normalized.sessionId } : {}),
+		});
+		try {
+			const record = createRecord(1);
+			writeFileSync(markerPath, `${JSON.stringify(record)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+			return { path: markerPath, record, state: "execute" };
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+		}
+
+		const existing = JSON.parse(readFileSync(markerPath, "utf8")) as WebhookDeliveryRecord;
+		if (existing.deliveryId !== deliveryId || existing.bodyDigest !== bodyDigest) {
+			throw new WebhookDeliveryConflictError("Webhook delivery ID was reused with a different body");
+		}
+		if (existing.status === "completed") return { path: markerPath, record: existing, state: "duplicate" };
+		if (existing.status === "processing" && this.webhookOwnerMayBeAlive(existing)) {
+			return { path: markerPath, record: existing, state: "processing" };
+		}
+		const retry = createRecord((existing.attempts || 0) + 1);
+		this.writeWebhookDelivery(markerPath, retry);
+		return { path: markerPath, record: retry, state: "execute" };
+	}
+
+	private finishWebhookDelivery(
+		claim: WebhookDeliveryClaim,
+		status: "completed" | "failed",
+		outcome: Pick<WebhookDeliveryRecord, "suppressed" | "suppressionReason" | "accepted"> = {},
+	): void {
+		const current = JSON.parse(readFileSync(claim.path, "utf8")) as WebhookDeliveryRecord;
+		if (current.owner !== claim.record.owner || current.bodyDigest !== claim.record.bodyDigest || current.status !== "processing") return;
+		this.writeWebhookDelivery(claim.path, { ...claim.record, ...outcome, status, updatedAt: new Date().toISOString() });
+	}
+
+	private webhookOwnerMayBeAlive(record: WebhookDeliveryRecord): boolean {
+		if (record.owner === this.webhookClaimOwner || record.pid === process.pid) return true;
+		if (!Number.isSafeInteger(record.pid) || record.pid <= 0) return false;
+		try {
+			process.kill(record.pid, 0);
+			return true;
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code !== "ESRCH";
+		}
+	}
+
+	private writeWebhookDelivery(markerPath: string, record: WebhookDeliveryRecord): void {
+		const temporary = `${markerPath}.${process.pid}.${randomUUID()}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+		renameSync(temporary, markerPath);
 	}
 
 	private readPayload(
@@ -348,9 +620,23 @@ Keep responses concise and helpful.`;
 		const source = typeof payload.source === "string" && payload.source.trim()
 			? payload.source.trim()
 			: "web";
-		const channelId = (this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web";
 		const sessionId = this.firstString(payload.sessionId, payload.session_id).trim();
 		const sourceEventType = this.firstString(payload.sourceEventType, payload.source_event_type).trim();
+		const deliveryId = this.firstString(payload.deliveryId, payload.delivery_id).trim();
+		if (deliveryId && !/^[A-Za-z0-9._:-]{8,128}$/.test(deliveryId)) return null;
+		const rawRelationshipRoute = payload.relationshipRoute ?? payload.relationship_route;
+		const relationshipRoute = this.normalizeRelationshipRoute(rawRelationshipRoute);
+		if (rawRelationshipRoute !== undefined && !relationshipRoute) return null;
+		if (payload.ownerContext !== undefined && payload.owner_context !== undefined) return null;
+		const rawOwnerContext = payload.ownerContext ?? payload.owner_context;
+		const ownerContext = rawOwnerContext === undefined
+			? undefined
+			: parseOwnerPushContext(rawOwnerContext) ?? undefined;
+		if (rawOwnerContext !== undefined && !ownerContext) return null;
+		if (relationshipRoute && ownerContext) return null;
+		if ((relationshipRoute || ownerContext) && !deliveryId) return null;
+		const channelId = ownerContext?.context_id
+			?? ((this.firstString(payload.channelId, payload.channel_id) || source).trim() || "web");
 		const legacyEventType = this.firstString(payload.event_type).trim().toLowerCase();
 		const normalizedSource = source.toLowerCase();
 		const isVoiceSource = ["voice", "web-voice", "realtime-voice"].includes(normalizedSource)
@@ -369,7 +655,40 @@ Keep responses concise and helpful.`;
 				: isVoiceSource
 					? { sourceEventType: "web_voice" }
 					: {}),
+			...(deliveryId ? { deliveryId } : {}),
+			...(relationshipRoute ? { relationshipRoute } : {}),
+			...(ownerContext ? { ownerContext } : {}),
 		};
+	}
+
+	private normalizeRelationshipRoute(value: unknown): WebRelationshipRoute | undefined {
+		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+		const route = value as Record<string, unknown>;
+		const relationshipId = this.firstString(
+			route.relationshipID,
+			route.relationshipId,
+			route.relationship_id,
+		).trim();
+		const activeChannelId = this.firstString(
+			route.activeChannelID,
+			route.activeChannelId,
+			route.active_channel_id,
+		).trim();
+		if (!/^[A-Za-z0-9._:-]{1,128}$/.test(relationshipId)
+			|| !/^[A-Za-z0-9._:-]{1,128}$/.test(activeChannelId)
+			|| route.policy !== "strict_active_or_idle_turn") return undefined;
+		return { relationshipId, activeChannelId, policy: "strict_active_or_idle_turn" };
+	}
+
+	private verifiedOwnerContext(req: IncomingMessage): OwnerPushContext | undefined {
+		const raw = req.headers["x-troublemaker-verified-owner-context"];
+		if (typeof raw !== "string" || !/^[A-Za-z0-9_-]{1,2048}$/.test(raw)) return undefined;
+		try {
+			return parseOwnerPushContext(JSON.parse(Buffer.from(raw, "base64url").toString("utf8")))
+				?? undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	private firstString(...values: unknown[]): string {
@@ -389,15 +708,23 @@ Keep responses concise and helpful.`;
 		return ["assistant", "bot"].includes(source);
 	}
 
+	private isVoiceWebhook(payload: NormalizedWebChatPayload): boolean {
+		const sourceType = payload.sourceEventType?.toLowerCase().replace(/-/g, "_") ?? "";
+		return sourceType.includes("voice")
+			|| payload.channelId === "voice"
+			|| payload.channelId.startsWith("voice-");
+	}
+
 	// ==========================================================================
 	// Message processing
 	// ==========================================================================
 
-	private async processMessage(payload: NormalizedWebChatPayload, writer?: SSEWriter): Promise<void> {
+	private async processMessage(payload: NormalizedWebChatPayload, writer?: SSEWriter, authoritative = false): Promise<void> {
 		const channelId = payload.channelId;
 		const ts = String(Date.now());
 		let ownsWriter = false;
 		let keepalive: ReturnType<typeof setInterval> | undefined;
+		let relationshipHandled = false;
 
 		log.logInfo(`[web] Inbound: ${payload.message.substring(0, 80)}`);
 
@@ -411,6 +738,8 @@ Keep responses concise and helpful.`;
 			freshContext: payload.freshContext,
 			sessionId: payload.sessionId,
 			sourceEventType: payload.sourceEventType,
+			deliveryId: payload.deliveryId,
+			relationshipId: payload.verifiedRelationshipId,
 			directlyAddressed: true,
 		};
 
@@ -430,6 +759,71 @@ Keep responses concise and helpful.`;
 		});
 
 		try {
+			if (payload.relationshipRoute) {
+				relationshipHandled = true;
+				const deliveryId = payload.deliveryId!;
+				const reject = (reason: string) => {
+					this.deliveryLedger.reject(deliveryId, reason);
+					writer?.send({
+						type: "delivery",
+						disposition: "rejected",
+						state: "rejected",
+						deliveryId,
+						reason,
+					});
+				};
+				if (!payload.verifiedRelationshipId) {
+					reject("missing_relationship_authority");
+					return;
+				}
+				if (payload.verifiedRelationshipId !== payload.relationshipRoute.relationshipId) {
+					reject("relationship_mismatch");
+					return;
+				}
+				const admission = this.handler.handleRelationshipBoundEvent(event, this, {
+					relationshipId: payload.verifiedRelationshipId,
+					pairedChannelId: payload.relationshipRoute.activeChannelId,
+				});
+				if (admission.disposition === "rejected") {
+					reject(admission.reason);
+					return;
+				}
+				if (writer) {
+					this.pendingWriters.set(channelId, writer);
+					ownsWriter = true;
+					keepalive = setInterval(() => writer.send({ type: "heartbeat", ts: Date.now() }), 12000);
+				}
+				try {
+					await admission.accepted;
+				} catch {
+					reject("steer_acceptance_failed");
+					return;
+				}
+				if (!this.deliveryLedger.accept(deliveryId)) {
+					throw new Error("Delivery acceptance transition failed");
+				}
+				writer?.send({
+					type: "delivery",
+					disposition: "accepted",
+					state: "accepted",
+					deliveryId,
+				});
+				writer?.send({
+					type: "status",
+					status: admission.disposition === "steered" ? "steering" : "accepted",
+					message: admission.disposition === "steered" ? "Updating active run" : "Message accepted",
+				});
+				await admission.completed;
+				this.deliveryLedger.complete(deliveryId);
+				writer?.send({
+					type: "delivery",
+					disposition: "completed",
+					state: "completed",
+					deliveryId,
+				});
+				return;
+			}
+
 			if (this.handler.resolvePendingInput(channelId, event.text)) {
 				return;
 			}
@@ -456,18 +850,22 @@ Keep responses concise and helpful.`;
 			}
 
 			if (this.handler.isRunning(channelId)) {
-				log.logInfo(`[web] Steering active run for ${channelId}`);
-				if (writer) {
-					this.pendingWriters.set(channelId, writer);
-					ownsWriter = true;
-					keepalive = setInterval(() => {
-						writer.send({ type: "heartbeat", ts: Date.now() });
-					}, 12000);
-					writer.send({ type: "status", status: "steering", message: "Updating active run" });
+				if (authoritative) {
+					await this.waitUntilIdle(channelId);
+				} else {
+					log.logInfo(`[web] Steering active run for ${channelId}`);
+					if (writer) {
+						this.pendingWriters.set(channelId, writer);
+						ownsWriter = true;
+						keepalive = setInterval(() => {
+							writer.send({ type: "heartbeat", ts: Date.now() });
+						}, 12000);
+						writer.send({ type: "status", status: "steering", message: "Updating active run" });
+					}
+					await this.handler.handleSteer(event, this);
+					if (writer) await this.waitForIdle(channelId, writer);
+					return;
 				}
-				this.handler.handleSteer(event, this);
-				if (writer) await this.waitForIdle(channelId, writer);
-				return;
 			}
 
 			if (writer) {
@@ -478,11 +876,18 @@ Keep responses concise and helpful.`;
 				}, 12000);
 			}
 			const result = await this.handler.handleEvent(event, this);
+			if (authoritative && result?.stopReason === "error") {
+				throw new Error(result.errorMessage || "Authoritative webhook run failed");
+			}
 			this.surfaceRunError(result, writer);
 		} finally {
 			if (keepalive) clearInterval(keepalive);
 			if (ownsWriter && this.pendingWriters.get(channelId) === writer) {
 				this.pendingWriters.delete(channelId);
+			}
+			if (payload.deliveryId && !relationshipHandled) {
+				this.deliveryLedger.complete(payload.deliveryId);
+				writer?.send({ type: "delivery", disposition: "completed", deliveryId: payload.deliveryId });
 			}
 			writer?.done();
 		}
@@ -506,6 +911,14 @@ Keep responses concise and helpful.`;
 			.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
 			.replace(/\b(?:sk|sess|ghp|gho|github_pat)_[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
+	}
+
+	private async waitUntilIdle(channelId: string): Promise<void> {
+		const deadline = Date.now() + 10 * 60 * 1000;
+		while (this.handler.isRunning(channelId)) {
+			if (Date.now() > deadline) throw new Error("Timed out waiting to process authoritative webhook");
+			await new Promise((resolve) => setTimeout(resolve, 250));
+		}
 	}
 
 	private async waitForIdle(channelId: string, writer: SSEWriter): Promise<void> {
@@ -620,6 +1033,7 @@ Keep responses concise and helpful.`;
 				sessionId: event.sessionId,
 				eventType: event.type,
 				sourceEventType: event.sourceEventType,
+				deliveryId: event.deliveryId,
 				directlyAddressed: event.directlyAddressed,
 				threadTs: event.threadTs,
 				replyTarget: event.replyTarget,
@@ -663,4 +1077,11 @@ Keep responses concise and helpful.`;
 			},
 		};
 	}
+}
+
+function ownerContextsEqual(left: OwnerPushContext, right: OwnerPushContext): boolean {
+	return left.kind === right.kind
+		&& left.context_id === right.context_id
+		&& left.relationship_id === right.relationship_id
+		&& (left.anchor_id ?? "") === (right.anchor_id ?? "");
 }

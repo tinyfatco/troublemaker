@@ -1,0 +1,24 @@
+{
+  "aps": {
+    "alert": {
+      "title": "Computer",
+      "body": "New private update"
+    },
+    "category": "COMPUTER_OWNER_UPDATE_V1",
+    "thread-id": "binding-example"
+  },
+  "computer_owner_push": {
+    "version": 1,
+    "notification_id": "notification-example",
+    "binding_id": "binding-example",
+    "route_agent_id": "current",
+    "subject_agent_id": "agent-example",
+    "event_id": "event-example",
+    "context": {
+      "kind": "conversation",
+      "context_id": "conversation-example",
+      "relationship_id": "binding-example",
+      "anchor_id": "message-example"
+    }
+  }
+}

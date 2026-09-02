@@ -6,7 +6,7 @@ import {
   normalizeRealtimeVoice,
 } from '../ui/src/console-api.ts';
 
-const voiceMenu = readFileSync('ui/src/components/VoiceSettingsMenu.tsx', 'utf-8');
+const settingsMenu = readFileSync('ui/src/components/SettingsMenu.tsx', 'utf-8');
 const consoleApi = readFileSync('ui/src/console-api.ts', 'utf-8');
 const slashCommands = readFileSync('ui/src/slashCommands.ts', 'utf-8');
 const inputBar = readFileSync('ui/src/components/InputBar.tsx', 'utf-8');
@@ -22,8 +22,8 @@ assert.match(consoleApi, /\/realtime\/voice'\)/, 'console API reads voice settin
 assert.match(consoleApi, /method:\s*'PUT'/, 'console API saves voice settings through Crawdad');
 assert.match(consoleApi, /\/realtime\/voice-preview'/, 'console API brokers voice preview audio');
 assert.match(consoleApi, /realtimeVoicePreviewCache/, 'console API memoizes voice preview blobs per page session');
-assert(voiceMenu.includes('aria-label={previewing ?'), 'preview buttons are accessible');
-assert.match(voiceMenu, /Selected/, 'voice menu marks the selected voice');
+assert(settingsMenu.includes('aria-label={previewing ?'), 'preview buttons are accessible');
+assert.match(settingsMenu, /Selected/, 'voice settings mark the selected voice');
 assert.match(slashCommands, /isVoiceCommand/, 'slash command helper identifies local /voice');
 assert.match(inputBar, /command === '\/settings' \|\| command === '\/voice'/, 'slash picker opens /voice locally');
 

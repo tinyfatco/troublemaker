@@ -81,6 +81,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"spontaneity.quietHours.end",
 	"spontaneity.timezone",
 	"heartbeat.checklist",
+	"computer.macos_auto_speech",
 	"voice.wake_aliases",
 	"voice.webhook_input_mode",
 	"voice",
@@ -89,6 +90,10 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 ]);
 
 const SELF_CONFIGURE_ALIASES: Record<string, string> = {
+	"computer.macosAutoSpeech": "computer.macos_auto_speech",
+	"computer.auto_speech": "computer.macos_auto_speech",
+	"computer.autoSpeech": "computer.macos_auto_speech",
+	"macos_computer.auto_speech": "computer.macos_auto_speech",
 	"voice": "realtime_voice",
 	"voice.aliases": "voice.wake_aliases",
 	"voice.wakeAliases": "voice.wake_aliases",
@@ -997,6 +1002,32 @@ function configureRealtimeVoice(workingDir: string, value: unknown): SelfConfigu
 	};
 }
 
+function configureMacOSComputerAutoSpeech(workingDir: string, value: unknown): SelfConfigureResult {
+	const enabled = parseBoolean(value, "computer.macos_auto_speech");
+	const settings = loadSettingsRaw(workingDir);
+	const previousComputer = settings.computer && typeof settings.computer === "object" && !Array.isArray(settings.computer)
+		? settings.computer as Record<string, unknown>
+		: {};
+	const previousValue = typeof previousComputer.macosAutoSpeech === "boolean"
+		? previousComputer.macosAutoSpeech
+		: true;
+	settings.computer = {
+		...previousComputer,
+		macosAutoSpeech: enabled,
+	};
+	saveSettingsRaw(workingDir, settings);
+
+	return {
+		changed: true,
+		setting: "computer.macos_auto_speech",
+		previousValue,
+		newValue: enabled,
+		note: enabled
+			? "macOS Computer will automatically speak assistant responses after its next preference refresh. Other clients, channels, Realtime voice, and explicit speech are unchanged."
+			: "macOS Computer will keep rendering assistant responses but will not speak them automatically after its next preference refresh. Other clients, channels, Realtime voice, and explicit speech are unchanged.",
+	};
+}
+
 export function applySelfConfiguration(
 	workingDir: string,
 	setting: string,
@@ -1032,6 +1063,7 @@ export function applySelfConfiguration(
 	if (target === "heartbeat.checklist") return configureHeartbeatChecklist(workingDir, value);
 	if (target === "voice.wake_aliases") return configureVoiceWakeAliases(workingDir, value);
 	if (target === "voice.webhook_input_mode") return configureVoiceWebhookInputMode(workingDir, value);
+	if (target === "computer.macos_auto_speech") return configureMacOSComputerAutoSpeech(workingDir, value);
 	if (target === "realtime_voice") return configureRealtimeVoice(workingDir, value);
 	throw new Error(`Unsupported self_configure setting: ${setting}`);
 }
@@ -1060,7 +1092,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 				"follow_ups, follow_ups.enabled, follow_ups.preset, follow_ups.intervals_minutes, follow_ups.cancel, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
 				"spontaneity.quietHours.start, spontaneity.quietHours.end, spontaneity.timezone, " +
-				"heartbeat.checklist, voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
+				"heartbeat.checklist, computer.macos_auto_speech, voice.wake_aliases, voice.webhook_input_mode, voice/realtime_voice.",
 		}),
 		value: Type.Any({ description: "New value. Booleans/numbers may be passed as native JSON values or strings." }),
 	});
@@ -1069,7 +1101,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		name: "self_configure",
 		label: "self_configure",
 		description:
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Microsoft Teams or Mattermost channel attention, coherent Teams or Slack turn placement, selective Teams, Slack, or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Microsoft Teams, Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'teams', channelId:'<conversation ID>'}, {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use teams.channel_attention or mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation while keeping direct mentions and read_thread access. Use teams.response_placement or slack.response_placement to choose inbound threads (the default) or top-level channel delivery; use the platform tool_streaming, tool_stream_presentation, and tool_stream_window_minutes settings to control progress. Slack native_progress controls native task cards. voice.webhook_input_mode chooses interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Microsoft Teams or Mattermost channel attention, coherent Teams or Slack turn placement, selective Teams, Slack, or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, the macOS Computer client’s automatic-speech preference, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use computer.macos_auto_speech only for an explicit request to enable or disable automatic assistant speech in macOS Computer; this client preference never invokes the runtime speak tool or changes iPhone, Watch, CallMe, Realtime voice, manual speech, or another channel. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Microsoft Teams, Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'teams', channelId:'<conversation ID>'}, {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use teams.channel_attention or mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation while keeping direct mentions and read_thread access. Use teams.response_placement or slack.response_placement to choose inbound threads (the default) or top-level channel delivery; use the platform tool_streaming, tool_stream_presentation, and tool_stream_window_minutes settings to control progress. Slack native_progress controls native task cards. voice.webhook_input_mode chooses interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

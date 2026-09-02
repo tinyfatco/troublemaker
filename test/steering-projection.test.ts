@@ -21,6 +21,7 @@ let enqueueCount = 0;
 
 const settlement = tracker.track({
 	id: "steering-example-one",
+	deliveryId: "delivery-example-one",
 	prompt,
 	enqueue: () => {
 		enqueueCount++;
@@ -30,6 +31,7 @@ const settlement = tracker.track({
 });
 const duplicateSettlement = tracker.track({
 	id: "steering-example-one",
+	deliveryId: "delivery-example-one",
 	prompt,
 	enqueue: () => {
 		throw new Error("duplicate delivery must not enqueue again");
@@ -45,6 +47,7 @@ acceptance.resolve();
 await flushMicrotasks();
 assert.deepEqual(emitted.map((event) => event.state), ["accepted"], "accepted steering projects before the run settles");
 assert.equal(emitted[0]?.entries[0]?.text, "use the updated example");
+assert.equal(emitted[0]?.deliveryId, "delivery-example-one", "accepted steering preserves exact transport identity");
 
 tracker.consume(prompt);
 assert.deepEqual(emitted.map((event) => event.state), ["accepted", "consumed"], "model consumption reconciles the pending projection");
@@ -86,16 +89,27 @@ pendingIdle.resolve();
 await pending;
 
 const hub = new RuntimeLiveEventHub();
-const metadata = { runId: "run-example", channelId: "slack:C1111111111", source: "slack" };
+const metadata = {
+	runId: "run-example",
+	channelId: "slack:C1111111111",
+	source: "slack",
+	deliveryId: "delivery-run-example",
+};
 const acceptedEvent: RuntimeSteeringInputEvent = {
 	type: "steering_input",
 	id: "steering-example-live",
+	deliveryId: "delivery-steer-example",
 	state: "accepted",
 	deliveryMode: "steered",
 	acceptedAt: "2026-08-04T12:03:00.000Z",
 	entries: [{ channel: "slack:#example", userName: "Casey", text: "refresh-safe example" }],
 };
 const acceptedEnvelope = hub.publishRuntime(metadata, acceptedEvent);
+assert.equal(
+	acceptedEnvelope.kind === "runtime" ? acceptedEnvelope.deliveryId : undefined,
+	"delivery-run-example",
+	"live run metadata preserves the exact creating delivery",
+);
 hub.publishRuntime(metadata, { type: "status", status: "streaming", message: "Working" });
 
 const freshAttach: string[] = [];
@@ -138,7 +152,7 @@ const busySteeringSource = cliSource.slice(
 	cliSource.indexOf("function steerOrQueueBusyMessage"),
 	cliSource.indexOf("// Handler (shared across all adapters)"),
 );
-assert.match(busySteeringSource, /runner\.steer\(steeringPrompt, \{ projectionId \}\)/, "ordinary busy input carries a stable projection identity into Pi");
+assert.match(busySteeringSource, /runner\.steer\(steeringPrompt, \{[\s\S]*?projectionId,[\s\S]*?deliveryId/, "ordinary busy input carries stable projection and delivery identities into Pi");
 const voiceSteeringSource = cliSource.slice(
 	cliSource.indexOf("function steerOrQueueVoiceWebhook"),
 	cliSource.indexOf("function steerOrQueueBusyMessage"),

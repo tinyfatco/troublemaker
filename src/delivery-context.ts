@@ -1,5 +1,6 @@
 export interface DeliveryContextMessage {
 	sourceEventType?: string;
+	deliveryId?: string;
 	eventType?: "mention" | "dm";
 	directlyAddressed?: boolean;
 	threadTs?: string;
@@ -14,6 +15,7 @@ export interface DeliveryContextMessage {
 export function formatDeliveryContext(message: DeliveryContextMessage): string {
 	const hasActionableDeliveryContext = Boolean(
 		message.sourceEventType
+		|| message.deliveryId
 		|| message.replyTarget
 		|| message.threadTs
 		|| typeof message.directlyAddressed === "boolean",
@@ -22,6 +24,9 @@ export function formatDeliveryContext(message: DeliveryContextMessage): string {
 
 	const lines: string[] = [];
 	if (message.sourceEventType) lines.push(`Source event: ${message.sourceEventType}`);
+	if (message.deliveryId && /^[A-Za-z0-9._:-]{8,128}$/.test(message.deliveryId)) {
+		lines.push(`Delivery ID: ${message.deliveryId}`);
+	}
 	if (message.eventType) lines.push(`Message type: ${message.eventType}`);
 	if (typeof message.directlyAddressed === "boolean") {
 		lines.push(`Directly addressed: ${message.directlyAddressed ? "yes" : "no"}`);
