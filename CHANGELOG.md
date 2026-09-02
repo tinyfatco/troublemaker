@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Generated follow-up checkpoints now occupy one concise terminal transcript line instead of displaying their full internal prompt.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08
