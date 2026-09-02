@@ -36,7 +36,8 @@ async function main(): Promise<void> {
 			assert.equal(platform.name, "follow-up", "the dedicated headless adapter owns generated wakes");
 			const context = platform.createContext(event, {} as any, true);
 			assert.equal(context.message.directlyAddressed, false, "the model sees a non-direct evaluation");
-			assert.equal(context.message.replyTarget, "slack:C0000000000:1000000000.000001");
+			assert.equal(context.message.channel, "follow-up", "the checkpoint uses the internal global lane");
+			assert.equal(context.message.replyTarget, undefined, "the checkpoint inherits no conversation target");
 			await context.setTyping(true);
 			await context.setWorking(true);
 			await context.respond("ordinary working text");
@@ -60,14 +61,11 @@ async function main(): Promise<void> {
 	try {
 		writeFileSync(join(queueDir, "follow-up-synthetic.json"), JSON.stringify({
 			type: "one-shot",
-			channelId: "C0000000000",
+			channelId: "follow-up",
 			at: new Date(Date.now() + 80).toISOString(),
-			text: "Review whether one short check-in is useful.",
+			text: "Review open loops across the agent.",
 			sourceEventType: "follow_up",
-			replyTarget: "slack:C0000000000:1000000000.000001",
-			replyTargetDescription: "synthetic thread",
-			threadTs: "1000000000.000001",
-			followUp: { key: "synthetic-key", generation: "synthetic-generation", ordinal: 0 },
+			followUp: { key: "agent-global", generation: "synthetic-generation", ordinal: 0 },
 		}, null, 2));
 		watcher.start();
 		await Promise.race([
@@ -80,6 +78,8 @@ async function main(): Promise<void> {
 		assert.equal(harnessPosts, 0, "working and final harness output remain headless");
 		assert(adapter.formatInstructions.includes("yield_no_action"), "headless instructions preserve explicit silence");
 		assert(adapter.formatInstructions.includes("send_message"), "headless instructions preserve deliberate delivery");
+		assert(adapter.formatInstructions.includes("list_channels"), "global checkpoints can recover open loops across channels");
+		assert(!adapter.formatInstructions.includes("target supplied"), "headless instructions assume no inherited target");
 		writeFileSync(join(queueDir, "ordinary-synthetic.json"), JSON.stringify({
 			type: "one-shot",
 			channelId: "heartbeat",

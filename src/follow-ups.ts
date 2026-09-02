@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "crypto";
+import { randomUUID } from "crypto";
 import {
 	existsSync,
 	mkdirSync,
@@ -11,22 +11,16 @@ import {
 } from "fs";
 import { join } from "path";
 import type { FollowUpWakeMetadata, MomEvent } from "./adapters/types.js";
-import { formatTeamsTarget } from "./adapters/teams-target.js";
 import { attentionQueueDir } from "./attention/paths.js";
 import { MomSettingsManager, type MomFollowUpSettings } from "./context.js";
+import { isGoalContinuationEvent } from "./goal-continuation.js";
 import * as log from "./log.js";
 
 const FOLLOW_UP_STATE_DIR = join("attention", "follow-ups");
+const FOLLOW_UP_STATE_FILE = "agent-global.json";
+const FOLLOW_UP_STATE_KEY = "agent-global";
 const FOLLOW_UP_FILE_PREFIX = "follow-up-";
 const RESTART_REARM_DELAY_MS = 30_000;
-
-interface FollowUpTarget {
-	adapter: string;
-	channelId: string;
-	replyTarget: string;
-	replyTargetDescription?: string;
-	threadTs?: string;
-}
 
 interface FollowUpWakeRecord extends FollowUpWakeMetadata {
 	intervalMinutes: number;
@@ -37,14 +31,13 @@ interface FollowUpWakeRecord extends FollowUpWakeMetadata {
 }
 
 interface FollowUpState {
-	version: 1;
-	key: string;
+	version: 2;
+	key: typeof FOLLOW_UP_STATE_KEY;
 	generation: string;
 	status: "pending" | "armed";
-	lastActivityTs: string;
-	notedAt: string;
+	lastWakeTs: string;
+	completedAt: string;
 	armedAt?: string;
-	target: FollowUpTarget;
 	wakes: FollowUpWakeRecord[];
 }
 
@@ -69,8 +62,8 @@ function stateDir(workingDir: string): string {
 	return join(workingDir, FOLLOW_UP_STATE_DIR);
 }
 
-function statePath(workingDir: string, key: string): string {
-	return join(stateDir(workingDir), `${key}.json`);
+function statePath(workingDir: string): string {
+	return join(stateDir(workingDir), FOLLOW_UP_STATE_FILE);
 }
 
 function atomicWriteJson(path: string, value: unknown): void {
@@ -82,75 +75,66 @@ function atomicWriteJson(path: string, value: unknown): void {
 function readState(path: string): FollowUpState | null {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as FollowUpState;
-		if (parsed.version !== 1 || !parsed.key || !parsed.generation || !parsed.target?.replyTarget) return null;
+		if (
+			parsed.version !== 2
+			|| parsed.key !== FOLLOW_UP_STATE_KEY
+			|| !parsed.generation
+			|| !parsed.lastWakeTs
+			|| !parsed.completedAt
+			|| !Array.isArray(parsed.wakes)
+		) return null;
 		return parsed;
 	} catch {
 		return null;
 	}
 }
 
-function listStates(workingDir: string): Array<{ path: string; state: FollowUpState }> {
+function currentState(workingDir: string): { path: string; state: FollowUpState } | null {
+	const path = statePath(workingDir);
+	const state = readState(path);
+	return state ? { path, state } : null;
+}
+
+function removeLegacyStateFiles(workingDir: string): void {
 	const dir = stateDir(workingDir);
-	if (!existsSync(dir)) return [];
-	return readdirSync(dir)
-		.filter((filename) => filename.endsWith(".json"))
-		.map((filename) => ({ path: join(dir, filename), state: readState(join(dir, filename)) }))
-		.filter((entry): entry is { path: string; state: FollowUpState } => entry.state !== null);
+	if (!existsSync(dir)) return;
+	for (const filename of readdirSync(dir)) {
+		if (filename === FOLLOW_UP_STATE_FILE || !filename.endsWith(".json")) continue;
+		try { unlinkSync(join(dir, filename)); } catch {}
+	}
 }
 
-function targetKey(replyTarget: string): string {
-	return createHash("sha256").update(replyTarget).digest("hex").slice(0, 20);
-}
-
-function deriveReplyTarget(event: MomEvent, adapter: string): string | null {
-	if (event.replyTarget?.trim()) return event.replyTarget.trim();
-	if (adapter === "slack") return event.threadTs
-		? `slack:${event.channel}:${event.threadTs}`
-		: `slack:${event.channel}`;
-	if (adapter === "teams") return formatTeamsTarget(event.channel, event.threadTs);
-	if (adapter === "mattermost") return `mattermost:${event.channel}`;
-	if (adapter === "rocket-chat") return `rocket-chat:${event.channel}`;
-	if (adapter === "zulip") return `zulip:${event.channel}`;
-	if (adapter === "discord") return `discord:${event.channel}`;
-	if (adapter === "telegram" || adapter === "email" || adapter === "phone") return event.channel;
-	return null;
-}
-
-export function isEligibleFollowUpActivity(event: MomEvent, adapter: string): boolean {
-	if (event.followUp || event.sourceEventType === "follow_up") return false;
-	if (event.user === "EVENT" || event.user === "goal" || event.channel === "heartbeat") return false;
-	if (event.directlyAddressed === false) return false;
-	if (event.text.trim().startsWith("/")) return false;
-	if (["heartbeat", "operator", "form", "web", "voice"].includes(adapter)) return false;
-	return deriveReplyTarget(event, adapter) !== null;
-}
-
-function clearQueueForKey(workingDir: string, key: string): void {
+function clearFollowUpQueue(workingDir: string, keepFilenames: ReadonlySet<string> = new Set()): void {
 	const queueDir = attentionQueueDir(workingDir);
 	if (!existsSync(queueDir)) return;
-	const prefix = `${FOLLOW_UP_FILE_PREFIX}${key}-`;
 	for (const filename of readdirSync(queueDir)) {
-		if (!filename.startsWith(prefix) || !filename.endsWith(".json")) continue;
+		if (!filename.startsWith(FOLLOW_UP_FILE_PREFIX) || !filename.endsWith(".json")) continue;
+		if (keepFilenames.has(filename)) continue;
 		try { unlinkSync(join(queueDir, filename)); } catch {}
 	}
 }
 
+/**
+ * A completed canonical wake is eligible regardless of transport, channel, or
+ * conversation. Only semantically generated internal continuations are
+ * excluded; control-only commands never reach the canonical completion hook.
+ */
+export function isEligibleFollowUpWake(event: MomEvent): boolean {
+	if (event.followUp || event.sourceEventType === "follow_up") return false;
+	if (isGoalContinuationEvent(event)) return false;
+	return true;
+}
+
 export function clearAllFollowUpSchedules(workingDir: string): void {
-	const queueDir = attentionQueueDir(workingDir);
-	if (existsSync(queueDir)) {
-		for (const filename of readdirSync(queueDir)) {
-			if (!filename.startsWith(FOLLOW_UP_FILE_PREFIX) || !filename.endsWith(".json")) continue;
-			try { unlinkSync(join(queueDir, filename)); } catch {}
-		}
-	}
+	clearFollowUpQueue(workingDir);
 	rmSync(stateDir(workingDir), { recursive: true, force: true });
 }
 
 export function getFollowUpRuntimeStatus(workingDir: string): FollowUpRuntimeStatus {
 	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
-	const states = listStates(workingDir);
-	const pendingSequences = states.filter((entry) => entry.state.status === "pending").length;
-	const wakes = states.flatMap((entry) => entry.state.wakes);
+	const current = currentState(workingDir)?.state;
+	const pendingSequences = current?.status === "pending" ? 1 : 0;
+	const wakes = current?.wakes ?? [];
 	const scheduled = wakes.filter((wake) => wake.status === "scheduled");
 	const claimedWakes = wakes.filter((wake) => wake.status === "claimed").length;
 	const nextWakeAt = scheduled
@@ -178,7 +162,7 @@ export function getFollowUpRuntimeStatus(workingDir: string): FollowUpRuntimeSta
 	};
 }
 
-/** Cancel current sequences without changing the enabled preset or intervals. */
+/** Cancel the current agent-global sequence without changing its settings. */
 export function cancelFollowUpSchedules(workingDir: string): FollowUpRuntimeStatus {
 	const previous = getFollowUpRuntimeStatus(workingDir);
 	clearAllFollowUpSchedules(workingDir);
@@ -186,13 +170,12 @@ export function cancelFollowUpSchedules(workingDir: string): FollowUpRuntimeStat
 }
 
 /**
- * Invalidate any prior idle sequence as soon as a new human message reaches
- * the harness. The next completed canonical turn will arm the new sequence.
+ * Replace the one agent-global checkpoint sequence after an eligible canonical
+ * wake completes. No conversation or reply target is retained.
  */
-export function noteFollowUpActivity(
+export function noteCompletedFollowUpWake(
 	workingDir: string,
 	event: MomEvent,
-	adapter: string,
 	now: Date = new Date(),
 ): FollowUpActivityResult {
 	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
@@ -200,59 +183,46 @@ export function noteFollowUpActivity(
 		clearAllFollowUpSchedules(workingDir);
 		return { eligible: false };
 	}
-	if (!isEligibleFollowUpActivity(event, adapter)) return { eligible: false };
+	if (!isEligibleFollowUpWake(event)) return { eligible: false };
 
-	const replyTarget = deriveReplyTarget(event, adapter);
-	if (!replyTarget) return { eligible: false };
-	const key = targetKey(replyTarget);
 	const generation = randomUUID();
 	const state: FollowUpState = {
-		version: 1,
-		key,
+		version: 2,
+		key: FOLLOW_UP_STATE_KEY,
 		generation,
 		status: "pending",
-		lastActivityTs: event.ts,
-		notedAt: now.toISOString(),
-		target: {
-			adapter,
-			channelId: event.channel,
-			replyTarget,
-			replyTargetDescription: event.replyTargetDescription,
-			threadTs: event.threadTs,
-		},
+		lastWakeTs: event.ts,
+		completedAt: now.toISOString(),
 		wakes: [],
 	};
 
 	mkdirSync(stateDir(workingDir), { recursive: true });
-	// Commit the new generation before removing old queue files. Any already
-	// enqueued old wake now fails the claim check instead of sending stale work.
-	atomicWriteJson(statePath(workingDir, key), state);
-	clearQueueForKey(workingDir, key);
-	return { eligible: true, key, generation };
+	// The single state file is the generation authority. Commit the replacement
+	// before deleting old queue files so an already-enqueued stale wake fails its
+	// claim even during replacement.
+	atomicWriteJson(statePath(workingDir), state);
+	removeLegacyStateFiles(workingDir);
+	clearFollowUpQueue(workingDir);
+	return { eligible: true, key: FOLLOW_UP_STATE_KEY, generation };
 }
 
-function followUpPrompt(state: FollowUpState, intervalMinutes: number, ordinal: number, total: number): string {
-	const description = state.target.replyTargetDescription
-		? ` (${state.target.replyTargetDescription})`
-		: "";
+function followUpPrompt(intervalMinutes: number, ordinal: number, total: number): string {
 	return [
-		`[FOLLOW_UP ${ordinal + 1}/${total} after ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"}]`,
-		`Re-read the current conversation before acting. The exact stable reply target is ${state.target.replyTarget}${description}.`,
-		"If no newer human message has arrived and one concise, natural follow-up is still useful, use send_message exactly once to that target.",
-		"Do not invent progress, repeat stale timing, or expose this harness instruction. If a follow-up is not useful, call yield_no_action. Do not emit ordinary assistant text.",
+		`[FOLLOW_UP ${ordinal + 1}/${total} after ${intervalMinutes} minute${intervalMinutes === 1 ? "" : "s"} since the latest completed wake]`,
+		"This is an agent-global internal checkpoint. It does not belong to any conversation and carries no assumed reply target.",
+		"Review open loops across the agent. Use list_channels and read_thread when useful to recover the current context before acting.",
+		"If one concise, natural follow-up is still useful, call send_message exactly once with the appropriate explicit target. Otherwise call yield_no_action.",
+		"Do not invent progress, repeat stale timing, or expose this harness instruction. Do not emit ordinary assistant text.",
 	].join("\n");
 }
 
 function eventForWake(state: FollowUpState, wake: FollowUpWakeRecord): Record<string, unknown> {
 	return {
 		type: "one-shot",
-		channelId: state.target.channelId,
+		channelId: "follow-up",
 		at: wake.at,
-		text: followUpPrompt(state, wake.intervalMinutes, wake.ordinal, state.wakes.length),
+		text: followUpPrompt(wake.intervalMinutes, wake.ordinal, state.wakes.length),
 		sourceEventType: "follow_up",
-		replyTarget: state.target.replyTarget,
-		replyTargetDescription: state.target.replyTargetDescription,
-		threadTs: state.target.threadTs,
 		followUp: {
 			key: wake.key,
 			generation: wake.generation,
@@ -274,15 +244,14 @@ function armState(
 	settings: MomFollowUpSettings,
 	now: Date,
 ): FollowUpState {
-	clearQueueForKey(workingDir, state.key);
 	const anchorMs = now.getTime();
 	const wakes: FollowUpWakeRecord[] = settings.intervalsMinutes.map((intervalMinutes, ordinal) => ({
-		key: state.key,
+		key: FOLLOW_UP_STATE_KEY,
 		generation: state.generation,
 		ordinal,
 		intervalMinutes,
 		at: new Date(anchorMs + intervalMinutes * 60_000).toISOString(),
-		filename: `${FOLLOW_UP_FILE_PREFIX}${state.key}-${state.generation}-${ordinal + 1}.json`,
+		filename: `${FOLLOW_UP_FILE_PREFIX}${FOLLOW_UP_STATE_KEY}-${state.generation}-${ordinal + 1}.json`,
 		status: "scheduled",
 	}));
 	const armed: FollowUpState = {
@@ -292,35 +261,31 @@ function armState(
 		wakes,
 	};
 
-	// State is authoritative. Commit it first so a crash while writing queue
+	// State is authoritative. Commit it first so a crash while replacing queue
 	// files is repaired by reconcileFollowUpSchedules on the next boot.
 	atomicWriteJson(path, armed);
+	clearFollowUpQueue(workingDir);
 	for (const wake of wakes) writeWakeFile(workingDir, armed, wake);
 	return armed;
 }
 
-/** Arm every pending conversation after the canonical run queue becomes idle. */
+/** Arm the one pending agent-global sequence after the run queue becomes idle. */
 export function armPendingFollowUps(workingDir: string, now: Date = new Date()): number {
 	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
 	if (!settings.enabled) {
 		clearAllFollowUpSchedules(workingDir);
 		return 0;
 	}
-	let armed = 0;
-	for (const entry of listStates(workingDir)) {
-		if (entry.state.status !== "pending") continue;
-		armState(workingDir, entry.path, entry.state, settings, now);
-		armed++;
-	}
-	if (armed > 0) log.logInfo(`[follow-ups] Armed ${armed} conversation sequence(s)`);
-	return armed;
+	const current = currentState(workingDir);
+	if (!current || current.state.status !== "pending") return 0;
+	armState(workingDir, current.path, current.state, settings, now);
+	log.logInfo("[follow-ups] Armed the agent-global checkpoint sequence");
+	return 1;
 }
 
 /**
- * Restore queue files from authoritative state after restart. Scheduled wakes
- * remain recoverable regardless of downtime length: an overdue wake is moved a
- * short distance into the future before the watcher scans it. Claimed wakes
- * are never recreated.
+ * Restore the current global generation after restart. Legacy per-conversation
+ * state and queue files are discarded rather than inheriting an old target.
  */
 export function reconcileFollowUpSchedules(workingDir: string, now: Date = new Date()): number {
 	const settings = new MomSettingsManager(workingDir).getFollowUpSettings();
@@ -328,32 +293,42 @@ export function reconcileFollowUpSchedules(workingDir: string, now: Date = new D
 		clearAllFollowUpSchedules(workingDir);
 		return 0;
 	}
+
+	const current = currentState(workingDir);
+	removeLegacyStateFiles(workingDir);
+	const retainedQueueFiles = new Set(
+		(current?.state.wakes ?? [])
+			.filter((wake) => wake.status === "scheduled")
+			.map((wake) => wake.filename),
+	);
+	clearFollowUpQueue(workingDir, retainedQueueFiles);
+	if (!current) {
+		try { unlinkSync(statePath(workingDir)); } catch {}
+		return 0;
+	}
+	if (current.state.status === "pending") {
+		armState(workingDir, current.path, current.state, settings, now);
+		return settings.intervalsMinutes.length;
+	}
+
+	const rearmedOrdinals = new Set<number>();
+	for (const wake of current.state.wakes) {
+		if (wake.status !== "scheduled") continue;
+		const atMs = Date.parse(wake.at);
+		if (!Number.isFinite(atMs) || atMs <= now.getTime()) {
+			wake.at = new Date(now.getTime() + RESTART_REARM_DELAY_MS).toISOString();
+			rearmedOrdinals.add(wake.ordinal);
+		}
+	}
+	if (rearmedOrdinals.size > 0) atomicWriteJson(current.path, current.state);
+
 	let restored = 0;
-	for (const entry of listStates(workingDir)) {
-		if (entry.state.status === "pending") {
-			armState(workingDir, entry.path, entry.state, settings, now);
-			restored += settings.intervalsMinutes.length;
-			continue;
-		}
-
-		const rearmedOrdinals = new Set<number>();
-		for (const wake of entry.state.wakes) {
-			if (wake.status !== "scheduled") continue;
-			const atMs = Date.parse(wake.at);
-			if (!Number.isFinite(atMs) || atMs <= now.getTime()) {
-				wake.at = new Date(now.getTime() + RESTART_REARM_DELAY_MS).toISOString();
-				rearmedOrdinals.add(wake.ordinal);
-			}
-		}
-		if (rearmedOrdinals.size > 0) atomicWriteJson(entry.path, entry.state);
-
-		for (const wake of entry.state.wakes) {
-			if (wake.status !== "scheduled") continue;
-			const wakePath = join(attentionQueueDir(workingDir), wake.filename);
-			if (existsSync(wakePath) && !rearmedOrdinals.has(wake.ordinal)) continue;
-			writeWakeFile(workingDir, entry.state, wake);
-			restored++;
-		}
+	for (const wake of current.state.wakes) {
+		if (wake.status !== "scheduled") continue;
+		const wakePath = join(attentionQueueDir(workingDir), wake.filename);
+		if (existsSync(wakePath) && !rearmedOrdinals.has(wake.ordinal)) continue;
+		writeWakeFile(workingDir, current.state, wake);
+		restored++;
 	}
 	if (restored > 0) log.logInfo(`[follow-ups] Restored ${restored} durable wake(s)`);
 	return restored;
@@ -372,13 +347,13 @@ export function claimFollowUpWake(
 		clearAllFollowUpSchedules(workingDir);
 		return false;
 	}
-	const path = statePath(workingDir, metadata.key);
-	const state = readState(path);
-	if (!state || state.status !== "armed" || state.generation !== metadata.generation) return false;
-	const wake = state.wakes.find((candidate) => candidate.ordinal === metadata.ordinal);
+	if (metadata.key !== FOLLOW_UP_STATE_KEY) return false;
+	const current = currentState(workingDir);
+	if (!current || current.state.status !== "armed" || current.state.generation !== metadata.generation) return false;
+	const wake = current.state.wakes.find((candidate) => candidate.ordinal === metadata.ordinal);
 	if (!wake || wake.status !== "scheduled") return false;
 	wake.status = "claimed";
 	wake.claimedAt = now.toISOString();
-	atomicWriteJson(path, state);
+	atomicWriteJson(current.path, current.state);
 	return true;
 }
