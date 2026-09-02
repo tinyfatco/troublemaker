@@ -17,6 +17,13 @@ export interface LiveEventSubscription {
 	unsubscribe(): void;
 }
 
+export interface RuntimeLiveCursor {
+	sequence: number;
+	streamId: string;
+	id: string;
+	timestamp: string;
+}
+
 /**
  * Small in-process fanout with bounded reconnect replay. It deliberately owns
  * no platform behavior: producers publish sanitized events and transports
@@ -27,6 +34,7 @@ export class RuntimeLiveEventHub {
 	private readonly streamId = randomUUID();
 	private readonly history: RuntimeLiveEvent[] = [];
 	private readonly activeRuns = new Map<string, RuntimeLiveEvent>();
+	private readonly activeAssistantText = new Map<string, RuntimeLiveEvent>();
 	private readonly activeSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly latestSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly subscribers = new Set<(event: RuntimeLiveEvent) => void>();
@@ -49,13 +57,27 @@ export class RuntimeLiveEventHub {
 		return this.publish({ kind: "reset", reason });
 	}
 
+	/** A non-advancing cursor used for ready and heartbeat frames. */
+	cursor(): RuntimeLiveCursor {
+		return {
+			sequence: this.sequence,
+			streamId: this.streamId,
+			id: randomUUID(),
+			timestamp: new Date().toISOString(),
+		};
+	}
+
 	subscribe(listener: (event: RuntimeLiveEvent) => void, afterSequence = 0): LiveEventSubscription {
 		if (afterSequence === 0) {
 			// A newly opened live client can attach in the middle of an external run.
 			// Replay only each active run's latest cumulative state, never stale
 			// completed history from earlier in the resident process.
 			const active = new Map<string, RuntimeLiveEvent>();
-			for (const event of [...this.activeRuns.values(), ...this.activeSteering.values()]) {
+			for (const event of [
+				...this.activeAssistantText.values(),
+				...this.activeRuns.values(),
+				...this.activeSteering.values(),
+			]) {
 				active.set(event.id, event);
 			}
 			for (const event of [...active.values()].sort((a, b) => a.sequence - b.sequence)) {
@@ -92,19 +114,34 @@ export class RuntimeLiveEventHub {
 			timestamp: new Date().toISOString(),
 		} as RuntimeLiveEvent;
 		if (event.kind === "runtime") {
-			if (event.event.type === "run_complete") this.activeRuns.delete(event.runId);
-			else this.activeRuns.set(event.runId, event);
+			if (event.event.type === "run_complete") {
+				this.activeRuns.delete(event.runId);
+				for (const [key, active] of this.activeAssistantText) {
+					if (active.kind === "runtime" && active.runId === event.runId) {
+						this.activeAssistantText.delete(key);
+					}
+				}
+			}
+			else if (event.event.type !== "assistant_text") this.activeRuns.set(event.runId, event);
+			if (event.event.type === "assistant_text") {
+				this.activeAssistantText.set(assistantTextProjectionKey(event), event);
+			}
 			if (event.event.type === "steering_input") {
 				this.latestSteering.set(event.event.id, event);
 				if (event.event.state === "accepted") this.activeSteering.set(event.event.id, event);
 				else this.activeSteering.delete(event.event.id);
 			}
 		}
-		if (event.kind === "runtime" && event.event.type === "assistant_snapshot") {
+		if (
+			event.kind === "runtime"
+			&& (event.event.type === "assistant_snapshot" || event.event.type === "assistant_text")
+		) {
 			const previousSnapshot = this.history.findIndex((candidate) =>
 				candidate.kind === "runtime" &&
 				candidate.runId === event.runId &&
-				candidate.event.type === "assistant_snapshot"
+				candidate.event.type === event.event.type &&
+				(event.event.type !== "assistant_text"
+					|| assistantTextProjectionKey(candidate) === assistantTextProjectionKey(event))
 			);
 			if (previousSnapshot >= 0) this.history.splice(previousSnapshot, 1);
 		}
@@ -163,6 +200,33 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 			},
 		};
 	}
+	if (event.type === "assistant_text") {
+		return {
+			type: "assistant_text",
+			completionId: event.completionId,
+			revision: event.revision,
+			text: event.text,
+			isFinal: event.isFinal,
+			...(event.outcome ? { outcome: event.outcome } : {}),
+			...(event.durableMessageIds ? { durableMessageIds: [...event.durableMessageIds] } : {}),
+			speechEligible: event.speechEligible,
+			...(event.presentationMode ? { presentationMode: event.presentationMode } : {}),
+			...(event.presentationSegment ? {
+				presentationSegment: {
+					id: event.presentationSegment.id,
+					index: event.presentationSegment.index,
+					revision: event.presentationSegment.revision,
+					text: event.presentationSegment.text,
+					isFinal: event.presentationSegment.isFinal,
+					startedAt: event.presentationSegment.startedAt,
+					...(event.presentationSegment.durableMessageIds
+						? { durableMessageIds: [...event.presentationSegment.durableMessageIds] }
+						: {}),
+				},
+			} : {}),
+			...(event.mode ? { mode: event.mode } : {}),
+		};
+	}
 	if (
 		event.type === "toolCall" ||
 		event.type === "toolcall_start" ||
@@ -182,6 +246,15 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 	if (event.type === "thinking_delta") return { ...event, delta: "", thinking: "" };
 	if (event.type === "thinking_patch") return { ...event, thinking: "" };
 	return event;
+}
+
+function assistantTextProjectionKey(event: RuntimeLiveEvent): string {
+	if (event.kind !== "runtime" || event.event.type !== "assistant_text") return "";
+	const segment = event.event.presentationSegment?.id;
+	if (event.event.presentationMode === "ordered_segments") {
+		return `${event.runId}:ordered:${segment ?? "terminal"}`;
+	}
+	return `${event.runId}:legacy`;
 }
 
 function projectSnapshotContent(block: RuntimeAssistantSnapshotContent): RuntimeAssistantSnapshotContent[] {

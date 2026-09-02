@@ -75,6 +75,29 @@ local_realtime_auth() {
 	esac
 }
 
+selected_model_provider() {
+	local configured_provider="${MOM_MODEL_PROVIDER:-}"
+	local settings_path="$WORKSPACE_DIR/settings.json"
+	if [ -z "$configured_provider" ] && [ -r "$settings_path" ]; then
+		configured_provider="$(node --input-type=module - "$settings_path" 2>/dev/null <<'NODE' || true
+import { readFileSync } from "node:fs";
+
+try {
+	const settings = JSON.parse(readFileSync(process.argv[2], "utf8"));
+	if (typeof settings.defaultProvider === "string") {
+		process.stdout.write(settings.defaultProvider);
+	}
+} catch {
+	// The runtime owns settings validation; an unreadable provider is not selected here.
+}
+NODE
+)"
+	fi
+	printf "%s" "$configured_provider" |
+		tr '[:upper:]' '[:lower:]' |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
 for arg in "$@"; do
 	case "$arg" in
 		--no-build)
@@ -124,7 +147,10 @@ load_keychain_secret() {
 }
 
 load_keychain_secret FIREWORKS_API_KEY FIREWORKS_API_KEY
-if [ -n "$CLOUD_AGENT_ID" ] && ! truthy "$ALLOW_LOCAL_OPENAI_KEY" && ! local_realtime_auth "$REALTIME_AUTH_MODE"; then
+MODEL_PROVIDER="$(selected_model_provider)"
+if [ "$MODEL_PROVIDER" = "openai-codex" ]; then
+	unset OPENAI_API_KEY MOM_OPENAI_API_KEY
+elif [ -n "$CLOUD_AGENT_ID" ] && ! truthy "$ALLOW_LOCAL_OPENAI_KEY" && ! local_realtime_auth "$REALTIME_AUTH_MODE"; then
 	unset OPENAI_API_KEY MOM_OPENAI_API_KEY
 	export TROUBLEMAKER_REALTIME_AUTH="${TROUBLEMAKER_REALTIME_AUTH:-broker}"
 else

@@ -17,7 +17,6 @@ const awarenessPane = readFileSync('ui/src/components/AwarenessPane.tsx', 'utf-8
 const chatPane = readFileSync('ui/src/components/ChatPane.tsx', 'utf-8');
 const consoleApi = readFileSync('ui/src/console-api.ts', 'utf-8');
 const settingsMenu = readFileSync('ui/src/components/SettingsMenu.tsx', 'utf-8');
-const voiceSettingsMenu = readFileSync('ui/src/components/VoiceSettingsMenu.tsx', 'utf-8');
 
 for (const [name, source] of [['AwarenessPane', awarenessPane], ['ChatPane', chatPane]] as const) {
   assert(source.includes('SettingsMenu'), `${name} renders the settings menu`);
@@ -33,12 +32,12 @@ assert(settingsMenu.includes('role="combobox"'), 'model input exposes combobox s
 assert(consoleApi.includes('models?: AgentModelOption[]'), 'settings snapshot includes available models');
 assert(settingsMenu.includes('applyLocalSetting'), 'settings writes resolve from the successful write without waiting on a full refresh');
 assert(!settingsMenu.includes('await refresh()'), 'settings writes do not block controls on a post-save describe request');
-assert(awarenessPane.includes('VoiceSettingsMenu'), 'AwarenessPane renders the voice settings menu');
-assert(chatPane.includes('VoiceSettingsMenu'), 'ChatPane renders the voice settings menu');
 assert(awarenessPane.includes('isVoiceCommand'), 'AwarenessPane intercepts /voice locally');
 assert(chatPane.includes('isVoiceCommand'), 'ChatPane intercepts /voice locally');
-assert(voiceSettingsMenu.includes('previewRealtimeVoice'), 'voice settings can preview voices');
-assert(voiceSettingsMenu.includes('setRealtimeVoicePreference'), 'voice settings can save the selected voice');
+assert(awarenessPane.includes("openSettings('voice')"), 'AwarenessPane opens the unified settings menu at voice controls');
+assert(chatPane.includes("openSettings('voice')"), 'ChatPane opens the unified settings menu at voice controls');
+assert(settingsMenu.includes('previewRealtimeVoice'), 'unified settings can preview voices');
+assert(settingsMenu.includes('setRealtimeVoicePreference'), 'unified settings can save the selected voice');
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed > 0 ? 1 : 0);

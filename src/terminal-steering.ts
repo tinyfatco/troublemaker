@@ -1,7 +1,7 @@
 import type { MomEvent } from "./adapters/types.js";
 
 interface SteerableRunner {
-	steer(text: string, options?: { projectionId?: string }): unknown;
+	steer(text: string, options?: { projectionId?: string; deliveryId?: string }): unknown;
 }
 
 export function tryTerminalTuiSoftSteer(
@@ -9,11 +9,12 @@ export function tryTerminalTuiSoftSteer(
 	runner: SteerableRunner,
 	now = new Date(),
 	projectionId?: string,
+	deliveryId?: string,
 ): boolean {
 	if (event.sourceEventType !== "terminal_tui") return false;
 	return Boolean(runner.steer(
 		formatTerminalTuiSteer(event, now),
-		projectionId ? { projectionId } : undefined,
+		projectionId ? { projectionId, ...(deliveryId ? { deliveryId } : {}) } : undefined,
 	));
 }
 

@@ -1,6 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { ToolStreamingMode, WorkingOutputTarget, WorkingStreamPresentation } from "../context.js";
 import type { Attachment, ChannelStore } from "../store.js";
+import type {
+	RelationshipAdmissionRequest,
+	RelationshipAdmissionResult,
+} from "../relationship-bound-admission.js";
 
 // ============================================================================
 // Platform-agnostic types for mom adapters
@@ -30,6 +34,12 @@ export interface MomEvent {
 	/** Client-scoped conversational session id, when the transport has one. */
 	sessionId?: string;
 	sourceEventType?: string;
+	/** Internal prompt projection selected only by a trusted adapter. */
+	contextProjection?: "concise_watch";
+	/** Stable opaque transport identity used only for exact delivery/run reconciliation. */
+	deliveryId?: string;
+	/** Trusted relationship identity supplied only by an authenticated ingress. */
+	relationshipId?: string;
 	directlyAddressed?: boolean;
 	threadTs?: string;
 	replyTarget?: string;
@@ -161,6 +171,8 @@ export interface MomContext {
 			sessionId?: string;
 			eventType?: MomEvent["type"];
 			sourceEventType?: string;
+			contextProjection?: MomEvent["contextProjection"];
+			deliveryId?: string;
 			directlyAddressed?: boolean;
 			threadTs?: string;
 			replyTarget?: string;
@@ -210,6 +222,16 @@ export interface MomHandler {
 	 * Returns true when the message was consumed as a command.
 	 */
 	handleSlashCommand(event: MomEvent, adapter: PlatformAdapter): Promise<SlashCommandResult>;
+
+	/**
+	 * Atomically admit one explicitly relationship-bound input. Exact active
+	 * bindings steer strictly; true idle may start a turn; all other states reject.
+	 */
+	handleRelationshipBoundEvent(
+		event: MomEvent,
+		adapter: PlatformAdapter,
+		request: RelationshipAdmissionRequest,
+	): RelationshipAdmissionResult;
 
 	/**
 	 * Handle a message that arrives while the runtime is busy.

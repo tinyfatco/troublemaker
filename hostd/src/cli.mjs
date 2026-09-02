@@ -81,7 +81,7 @@ async function components(configPath) {
 			label: zulip ? "Zulip" : rocketChat ? "Rocket.Chat" : "Mattermost",
 		})
 		: undefined;
-	const runtime = new RuntimeManager(config, store, { mattermost, rocketChat, zulip });
+	const runtime = new RuntimeManager(config, store, { mattermost, rocketChat, zulip, routingKey });
 	const scheduler = new EventScheduler({ config, store, runtime });
 	const scheduledWakes = new ScheduledWakeManager({ config, store });
 	const daemon = config.gmail

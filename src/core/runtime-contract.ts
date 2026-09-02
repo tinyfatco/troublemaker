@@ -85,6 +85,7 @@ export interface RuntimeToolCallContent {
 	label?: string;
 	arguments: Record<string, unknown>;
 	contentIndex?: number;
+	startedAt?: string;
 }
 
 export type RuntimeToolOutputStream = "stdout" | "stderr" | "system";
@@ -129,6 +130,42 @@ export interface RuntimeAssistantSnapshotEvent {
 	mode?: RuntimeMode;
 }
 
+export type RuntimeAssistantTextOutcome = "completed" | "cancelled" | "failed";
+
+export interface RuntimeAssistantTextPresentationSegment {
+	id: string;
+	index: number;
+	revision: number;
+	text: string;
+	isFinal: boolean;
+	startedAt: string;
+	durableMessageIds?: string[];
+}
+
+/**
+ * Exact public assistant prose for one canonical run. Streaming records are
+ * cumulative patches; the terminal record reconciles them to durable message
+ * identity. It never carries thinking or tool payloads.
+ */
+export interface RuntimeAssistantTextEvent {
+	type: "assistant_text";
+	completionId: string;
+	revision: number;
+	text: string;
+	isFinal: boolean;
+	outcome?: RuntimeAssistantTextOutcome;
+	durableMessageIds?: string[];
+	speechEligible: boolean;
+	/**
+	 * Additive visual projection. A presentation segment is bounded by any
+	 * visible user, tool, or runtime-status event, while completionId remains
+	 * the parent run identity used for delivery and speech reconciliation.
+	 */
+	presentationMode?: "ordered_segments";
+	presentationSegment?: RuntimeAssistantTextPresentationSegment;
+	mode?: RuntimeMode;
+}
+
 export interface RuntimeUserInputEntry {
 	channel: string;
 	userName: string;
@@ -145,6 +182,8 @@ export interface RuntimeUserInputEvent {
 export interface RuntimeSteeringInputEvent {
 	type: "steering_input";
 	id: string;
+	/** Stable transport identity when the steering source supplied one. */
+	deliveryId?: string;
 	state: "accepted" | "consumed" | "dismissed";
 	deliveryMode: "steered";
 	acceptedAt: string;
@@ -230,6 +269,7 @@ export type RuntimeStreamEvent =
 	| RuntimeStatusEvent
 	| RuntimeErrorEvent
 	| RuntimeAssistantSnapshotEvent
+	| RuntimeAssistantTextEvent
 	| RuntimeUserInputEvent
 	| RuntimeSteeringInputEvent
 	| RuntimeTextDeltaEvent
@@ -248,6 +288,8 @@ export interface RuntimeLiveRunMetadata {
 	channelId: string;
 	channelLabel?: string;
 	source?: string;
+	/** Stable transport identity for the input that created this run. */
+	deliveryId?: string;
 }
 
 interface RuntimeLiveEventBase {

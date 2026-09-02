@@ -3,6 +3,11 @@ import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
+import { resolveSiteDeploymentBinding } from "./site-deployment-binding.mjs";
+
+export function siteDeploymentBinding(config, store, target, contextId, routingKey) {
+	return resolveSiteDeploymentBinding(config, store, target, contextId, routingKey);
+}
 
 function safeRuntimeName(contextId) {
 	const normalized = contextId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/-+/g, "-");
@@ -197,12 +202,13 @@ async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
 }
 
 export class RuntimeManager {
-	constructor(config, store, { mattermost, rocketChat, zulip } = {}) {
+	constructor(config, store, { mattermost, rocketChat, zulip, routingKey } = {}) {
 		this.config = config;
 		this.store = store;
 		this.mattermost = mattermost;
 		this.rocketChat = rocketChat;
 		this.zulip = zulip;
+		this.routingKey = routingKey;
 	}
 
 	async acceptEvent(event) {
@@ -502,6 +508,13 @@ export class RuntimeManager {
 			}
 			const envPath = join(contextDirectory, "runtime.env");
 			const scheduledWakesOwned = hostOwnsScheduledWakes(this.config, contextId);
+			const siteDeployment = siteDeploymentBinding(
+				this.config,
+				this.store,
+				target,
+				contextId,
+				this.routingKey,
+			);
 			const env = {
 				HOME: "/data",
 				...(this.config.gmail ? {
@@ -519,6 +532,9 @@ export class RuntimeManager {
 						"scheduled-prompt-inbound",
 						contextId,
 					),
+				} : {}),
+				...(siteDeployment ? {
+					MOM_SITE_DEPLOY_TOKEN: contextCapability(target.outboundToken, "site-deploy", contextId),
 				} : {}),
 				...(mattermost ? {
 					MOM_MATTERMOST_URL: `http://${target.hostGateway}:${this.config.server.port}/v1/mattermost/${encodeURIComponent(contextId)}`,

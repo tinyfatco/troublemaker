@@ -76,6 +76,7 @@ async function run() {
     channelId: "voice",
     channelLabel: "voice",
     source: "voice",
+    deliveryId: "delivery-example-runtime",
   }, {
     type: "user_input",
     entries: [{ channel: "voice", userName: "example-user", text: "Visible webhook input" }],
@@ -103,7 +104,10 @@ async function run() {
   const runtimeEvents = await runtimePromise;
   const inputPayload = runtimeEvents.find((event) => event.includes('"type":"user_input"')) || "";
   const runtimePayload = runtimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
+  const parsedInputPayload = JSON.parse(inputPayload) as { deliveryId?: string; event?: unknown };
   assert(inputPayload.includes("Visible webhook input"), "unified feed carries the sanitized webhook input");
+  assert(parsedInputPayload.deliveryId === "delivery-example-runtime", "unified feed carries bounded opaque delivery correlation");
+  assert(!JSON.stringify(parsedInputPayload.event).includes("delivery-example-runtime"), "delivery identity remains envelope metadata and never enters user-visible runtime content");
   assert(inputEnvelope.sequence < assistantEnvelope.sequence, "webhook input is sequenced before assistant paint events");
   assert(runtimePayload.includes('"kind":"runtime"'), "unified feed identifies runtime events");
   assert(runtimePayload.includes("Checking safely"), "unified feed preserves safe tool labels");

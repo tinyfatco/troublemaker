@@ -2,7 +2,32 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
 import { join, extname, resolve, normalize } from "path";
+import { WorkspaceDeliveryLedger } from "./adapters/workspace-channel-runtime.js";
 import { ConsoleError, ConsoleService } from "./console/service.js";
+import { projectConversationBacklog, projectConversationLine, projectConversationLiveEvent } from "./console/conversation-projection.js";
+import { parseOwnerPushContext, type OwnerPushContext } from "./console/owner-push.js";
+import {
+	CONSOLE_TRANSCRIPTION_CHANNELS,
+	CONSOLE_TRANSCRIPTION_MAX_BYTES,
+	CONSOLE_TRANSCRIPTION_SAMPLE_RATE,
+	ConsoleTranscriptionError,
+	isSafeTranscriptionId,
+	type ConsoleTranscriptionService,
+} from "./console/transcription.js";
+import { ConsoleTranscriptionLedger } from "./console/transcription-ledger.js";
+import { VoiceSessionContractError } from "./console/voice-session-contract.js";
+import {
+	VOICE_RECEIPT_VERSION,
+	isVoiceReceiptAuthorityKey,
+	isVoiceReceiptClaim,
+	isVoiceReceiptLookup,
+	parseVoiceReceiptAuthorityKey,
+	verifyVoiceReceiptAuthorityProof,
+	voiceReceiptAgentCorrelation,
+	voiceReceiptBodyDigest,
+	type VoiceReceiptClaim,
+} from "./console/voice-receipts.js";
+import type { VoiceSessionRuntime } from "./console/voice-session-runtime.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
@@ -99,6 +124,16 @@ export interface GatewayOptions {
 	uiDir?: string;
 	/** Directory to scope file API reads to */
 	workspaceDir?: string;
+	/** Explicit environment seam for deterministic local identity tests. */
+	consoleEnvironment?: Record<string, string | undefined>;
+	/** Optional host-owned speech transcription capability. */
+	transcription?: ConsoleTranscriptionService;
+	/** Optional authenticated incremental voice-session runtime. */
+	voiceSessions?: VoiceSessionRuntime;
+	/** Shared 32-byte secret for authenticated facade receipt claims. */
+	voiceReceiptAuthorityKey?: Uint8Array;
+	/** True only after the guarded owner-push facade and APNs transport are ready. */
+	ownerPushAvailable?: boolean;
 }
 
 export type UpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
@@ -197,6 +232,11 @@ export class Gateway {
 	private workspaceDir: string | null = null;
 	private consoleService: ConsoleService | null = null;
 	private awarenessStore: FilesystemAwarenessStore | null = null;
+	private deliveryLedger: WorkspaceDeliveryLedger | null = null;
+	private transcription: ConsoleTranscriptionService | null = null;
+	private transcriptionLedger: ConsoleTranscriptionLedger | null = null;
+	private voiceSessions: VoiceSessionRuntime | null = null;
+	private readonly voiceReceiptAuthorityKey?: Uint8Array;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
 	private liveClientCount = 0;
@@ -206,14 +246,37 @@ export class Gateway {
 	private awarenessFileIdentity = "";
 
 	constructor(options: GatewayOptions = {}) {
+		this.transcription = options.transcription ?? null;
+		this.voiceSessions = options.voiceSessions ?? null;
+		const authorityKey = options.voiceReceiptAuthorityKey
+			?? parseVoiceReceiptAuthorityKey(process.env.TROUBLEMAKER_VOICE_RECEIPT_AUTHORITY_KEY);
+		if (authorityKey && !isVoiceReceiptAuthorityKey(authorityKey)) {
+			throw new Error("Gateway voice receipt authority key must contain exactly 32 bytes");
+		}
+		this.voiceReceiptAuthorityKey = authorityKey ? new Uint8Array(authorityKey) : undefined;
 		if (options.uiDir && existsSync(options.uiDir)) {
 			this.uiDir = resolve(options.uiDir);
 			log.logInfo(`[gateway] serving UI from ${this.uiDir}`);
 		}
 		if (options.workspaceDir) {
 			this.workspaceDir = resolve(options.workspaceDir);
-			this.consoleService = new ConsoleService(new FilesystemWorkspaceStore(this.workspaceDir));
+			this.consoleService = new ConsoleService(
+				new FilesystemWorkspaceStore(this.workspaceDir),
+				options.consoleEnvironment ?? process.env,
+				this.transcription !== null,
+				this.voiceSessions !== null,
+				options.ownerPushAvailable === true,
+			);
 			this.awarenessStore = new FilesystemAwarenessStore(this.workspaceDir);
+			this.deliveryLedger = new WorkspaceDeliveryLedger(
+				join(this.workspaceDir, ".web-deliveries.jsonl"),
+				"Web delivery ledger is unreadable",
+			);
+			if (this.transcription) {
+				this.transcriptionLedger = new ConsoleTranscriptionLedger(
+					join(this.workspaceDir, ".console-transcriptions.jsonl"),
+				);
+			}
 		}
 	}
 
@@ -388,8 +451,301 @@ export class Gateway {
 		}
 	}
 
+	private handleDeliveryReceipts(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.deliveryLedger) {
+			res.writeHead(500, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ error: "No workspace configured" }));
+			return;
+		}
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const requested = [
+			...url.searchParams.getAll("id"),
+			...(url.searchParams.get("ids") || "").split(","),
+		].map((value) => value.trim()).filter(Boolean);
+		const deliveryIds = [...new Set(requested)];
+		if (deliveryIds.length === 0 || deliveryIds.length > 50 || deliveryIds.some((id) => !/^[A-Za-z0-9._:-]{8,128}$/.test(id))) {
+			res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ error: "Provide between 1 and 50 valid delivery ids" }));
+			return;
+		}
+		try {
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ receipts: this.deliveryLedger.receipts(deliveryIds) }));
+		} catch (err) {
+			this.sendConsoleError(res, err, 503);
+		}
+	}
+
+	private async handleConsoleTranscription(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.transcription) {
+			this.sendTranscriptionResponse(res, 503, {
+				error: "transcription_unavailable",
+				message: "Transcription is unavailable",
+			});
+			return;
+		}
+		const idHeader = Array.isArray(req.headers["x-transcription-id"])
+			? req.headers["x-transcription-id"][0]
+			: req.headers["x-transcription-id"];
+		const transcriptionId = idHeader?.trim() || "";
+		if (!isSafeTranscriptionId(transcriptionId)) {
+			this.sendTranscriptionResponse(res, 400, {
+				error: "invalid_transcription_id",
+				message: "A valid transcription identity is required",
+			});
+			return;
+		}
+		const contentType = String(req.headers["content-type"] || "").toLowerCase().replace(/\s+/g, "");
+		if (contentType !== "audio/l16;rate=16000;channels=1") {
+			this.sendTranscriptionResponse(res, 415, {
+				error: "unsupported_audio_format",
+				message: "Expected 16 kHz mono linear16 audio",
+			});
+			return;
+		}
+		const declaredLength = Number.parseInt(String(req.headers["content-length"] || "0"), 10);
+		if (Number.isFinite(declaredLength) && declaredLength > CONSOLE_TRANSCRIPTION_MAX_BYTES) {
+			this.sendTranscriptionResponse(res, 413, {
+				error: "transcription_audio_too_large",
+				message: "Transcription audio is too large",
+			});
+			return;
+		}
+
+		try {
+			const audio = await readBoundedRequestBody(req, CONSOLE_TRANSCRIPTION_MAX_BYTES);
+			if (audio.length === 0 || audio.length % 2 !== 0) {
+				this.sendTranscriptionResponse(res, 400, {
+					error: "invalid_transcription_audio",
+					message: "Transcription audio is invalid",
+				});
+				return;
+			}
+			const transcribe = () => this.transcription!.transcribe({
+				id: transcriptionId,
+				audio,
+				encoding: "linear16",
+				sampleRate: CONSOLE_TRANSCRIPTION_SAMPLE_RATE,
+				channels: CONSOLE_TRANSCRIPTION_CHANNELS,
+			});
+			const result = this.transcriptionLedger
+				? await this.transcriptionLedger.resolve(transcriptionId, audio, transcribe)
+				: await transcribe();
+			this.sendTranscriptionResponse(res, 200, {
+				transcription_id: transcriptionId,
+				text: result.text,
+			});
+		} catch (error) {
+			if (error instanceof RequestBodyTooLargeError) {
+				this.sendTranscriptionResponse(res, 413, {
+					error: "transcription_audio_too_large",
+					message: "Transcription audio is too large",
+				});
+				return;
+			}
+			if (error instanceof ConsoleTranscriptionError) {
+				this.sendTranscriptionResponse(res, error.status, { error: error.code, message: error.message });
+				return;
+			}
+			this.sendTranscriptionResponse(res, 502, {
+				error: "transcription_failed",
+				message: "Transcription failed",
+			});
+		}
+	}
+
+	private sendTranscriptionResponse(res: ServerResponse, status: number, payload: Record<string, unknown>): void {
+		if (res.writableEnded) return;
+		res.writeHead(status, {
+			"Content-Type": "application/json; charset=utf-8",
+			"Cache-Control": "no-store",
+		});
+		res.end(JSON.stringify(payload));
+	}
+
+	private async handleVoiceSessionRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.voiceSessions || !this.consoleService) {
+			this.sendVoiceSessionResponse(res, 503, { error: "voice_session_unavailable" });
+			return;
+		}
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const route = matchVoiceSessionRoute(url.pathname);
+		if (!route || !this.consoleService.matchesAgentId(route.routeAgentID)) {
+			this.sendVoiceSessionResponse(res, 404, { error: "not_found" });
+			return;
+		}
+		const subjectAgentID = this.consoleService.getStatus().agent_id;
+		try {
+			if (req.method === "POST" && route.action === "open") {
+				const payload = JSON.parse((await readBoundedRequestBody(req, 128_000)).toString("utf8"));
+				const surface = singleGatewayHeader(req, "x-troublemaker-verified-device-surface") || "unspecified";
+				const relationshipId = singleGatewayHeader(req, "x-troublemaker-verified-device-relationship") || undefined;
+				authorizeVoiceResponsePolicy(payload, surface);
+				this.sendVoiceSessionResponse(res, 200, this.voiceSessions.open(subjectAgentID, payload, relationshipId));
+				return;
+			}
+			if (req.method === "GET" && route.action === "events" && route.sessionID) {
+				const after = Number.parseInt(url.searchParams.get("after") || "0", 10);
+				this.sendVoiceSessionResponse(res, 200, this.voiceSessions.poll(route.sessionID, after));
+				return;
+			}
+			if (req.method === "POST" && route.action === "events" && route.sessionID) {
+				const requestBody = await readBoundedRequestBody(req, 128_000);
+				const payload = JSON.parse(requestBody.toString("utf8"));
+				const receiptClaim = (payload as { kind?: unknown })?.kind === "audio"
+					? verifiedVoiceReceiptClaim(
+						req,
+						route.routeAgentID,
+						subjectAgentID,
+						requestBody,
+						this.voiceReceiptAuthorityKey,
+					)
+					: undefined;
+				this.sendVoiceSessionResponse(res, 200, await this.voiceSessions.applyClientEvent(
+					subjectAgentID,
+					route.sessionID,
+					payload,
+					receiptClaim,
+				));
+				return;
+			}
+			if (req.method === "POST" && route.action === "recording" && route.sessionID) {
+				const requestBody = await readBoundedRequestBody(req, 2_700_000);
+				verifiedVoiceReceiptClaim(
+					req,
+					route.routeAgentID,
+					subjectAgentID,
+					requestBody,
+					this.voiceReceiptAuthorityKey,
+				);
+				const payload = JSON.parse(requestBody.toString("utf8"));
+				const surface = singleGatewayHeader(req, "x-troublemaker-verified-device-surface") || "unspecified";
+				const relationshipId = singleGatewayHeader(req, "x-troublemaker-verified-device-relationship") || undefined;
+				authorizeVoiceResponsePolicy(payload, surface);
+				this.sendVoiceSessionResponse(
+					res,
+					200,
+					await this.voiceSessions.applyRecording(subjectAgentID, route.sessionID, payload, relationshipId),
+				);
+				return;
+			}
+			if (req.method === "POST" && route.action === "speech-controls" && route.sessionID) {
+				const payload = JSON.parse((await readBoundedRequestBody(req, 32_768)).toString("utf8"));
+				this.sendVoiceSessionResponse(res, 200, this.voiceSessions.applySpeechControl(subjectAgentID, route.sessionID, payload));
+				return;
+			}
+			if (req.method === "POST" && route.action === "reconcile" && route.sessionID) {
+				const payload = JSON.parse((await readBoundedRequestBody(req, 1_048_576)).toString("utf8"));
+				const surface = singleGatewayHeader(req, "x-troublemaker-verified-device-surface") || "unspecified";
+				authorizeVoiceResponsePolicy(payload, surface);
+				this.sendVoiceSessionResponse(res, 200, this.voiceSessions.reconcile(subjectAgentID, route.sessionID, payload));
+				return;
+			}
+			this.sendVoiceSessionResponse(res, 405, { error: "method_not_allowed" });
+		} catch (error) {
+			if (error instanceof RequestBodyTooLargeError) {
+				this.sendVoiceSessionResponse(res, 413, { error: "voice_session_body_too_large" });
+				return;
+			}
+			if (error instanceof VoiceSessionContractError) {
+				const status = voiceSessionErrorStatus(error.code);
+				this.sendVoiceSessionResponse(res, status, { error: error.code });
+				return;
+			}
+			this.sendVoiceSessionResponse(res, 400, { error: "invalid_voice_session_request" });
+		}
+	}
+
+	private handleVoiceReceiptRequest(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.voiceSessions || !this.consoleService) {
+			this.sendVoiceSessionResponse(res, 503, { error: "voice_receipt_unavailable" });
+			return;
+		}
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const routeAgentID = matchVoiceReceiptRoute(url.pathname);
+		if (req.method !== "GET" || !routeAgentID
+			|| !this.consoleService.matchesAgentId(routeAgentID)) {
+			this.sendVoiceSessionResponse(res, 404, { error: "not_found" });
+			return;
+		}
+		const subjectAgentID = this.consoleService.getStatus().agent_id;
+		if (requestDeclaresBody(req)) {
+			this.sendVoiceSessionResponse(res, 400, { error: "receipt_body_not_allowed" });
+			return;
+		}
+		const agentCorrelation = singleGatewayHeader(
+			req,
+			"x-troublemaker-verified-voice-agent-correlation",
+		);
+		const requestCorrelation = singleGatewayHeader(
+			req,
+			"x-troublemaker-verified-voice-request-correlation",
+		);
+		const proof = singleGatewayHeader(
+			req,
+			"x-troublemaker-internal-voice-receipt-proof",
+		);
+		const authorityClaim = {
+			agent_correlation: agentCorrelation,
+			request_correlation: requestCorrelation,
+		};
+		if (!this.voiceReceiptAuthorityKey
+			|| !isVoiceReceiptClaim(authorityClaim)
+			|| agentCorrelation !== voiceReceiptAgentCorrelation(routeAgentID, subjectAgentID)
+			|| !verifyVoiceReceiptAuthorityProof(this.voiceReceiptAuthorityKey, {
+				method: "GET",
+				path_and_query: `${url.pathname}${url.search}`,
+				body_digest: voiceReceiptBodyDigest(new Uint8Array()),
+				agent_correlation: agentCorrelation,
+				request_correlation: requestCorrelation,
+			}, proof)) {
+			this.sendVoiceSessionResponse(res, 403, { error: "receipt_authority_required" });
+			return;
+		}
+		const keys = [...url.searchParams.keys()].sort();
+		const lookup = {
+			session_correlation: url.searchParams.get("session_correlation"),
+			request_correlation: url.searchParams.get("request_correlation"),
+			client_sequence: parseCanonicalPositiveInteger(
+				url.searchParams.get("client_sequence"),
+			),
+		};
+		if (keys.join(",") !== "client_sequence,request_correlation,session_correlation"
+			|| [...new Set(keys)].length !== 3
+			|| !isVoiceReceiptLookup(lookup)) {
+			this.sendVoiceSessionResponse(res, 400, { error: "invalid_receipt_lookup" });
+			return;
+		}
+		const receipt = this.voiceSessions.lookupVoiceReceipt(
+			subjectAgentID,
+			lookup,
+			agentCorrelation,
+		);
+		if (!receipt) {
+			this.sendVoiceSessionResponse(res, 404, { error: "receipt_not_found" });
+			return;
+		}
+		this.sendVoiceSessionResponse(res, 200, {
+			version: VOICE_RECEIPT_VERSION,
+			receipt,
+		});
+	}
+
+	private sendVoiceSessionResponse(res: ServerResponse, status: number, payload: unknown): void {
+		if (res.writableEnded) return;
+		res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
+		res.end(JSON.stringify(payload));
+	}
+
 	private isConsoleAgentPath(urlPath: string, suffix: string): boolean {
-		return new RegExp(`^/api/v2/agents/[^/]+${suffix}$`).test(urlPath);
+		const match = urlPath.match(new RegExp(`^/api/v2/agents/([^/]+)${suffix}$`));
+		if (!match) return false;
+		if (!this.consoleService) return true;
+		try {
+			return this.consoleService.matchesAgentId(decodeURIComponent(match[1]));
+		} catch {
+			return false;
+		}
 	}
 
 	/** Handle GET /api/files — directory listing */
@@ -527,6 +883,51 @@ export class Gateway {
 		});
 	}
 
+	private verifyOwnerContextQuery(req: IncomingMessage, res: ServerResponse): boolean {
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		const contextKeys = [...url.searchParams.keys()].filter((key) =>
+			key === "context_kind"
+			|| key === "context_id"
+			|| key === "relationship_id"
+			|| key === "anchor_id"
+			|| key.startsWith("context_"));
+		const rawHeader = req.headers["x-troublemaker-verified-owner-context"];
+		if (contextKeys.length === 0 && rawHeader === undefined) return true;
+		const allowed = ["context_kind", "context_id", "relationship_id", "anchor_id"];
+		if (contextKeys.some((key) => !allowed.includes(key))
+			|| allowed.some((key) => url.searchParams.getAll(key).length > 1)
+			|| (contextKeys.length > 0 && url.searchParams.get("surface") !== "conversation")) {
+			this.sendOwnerContextError(res, 400, "invalid_owner_context");
+			return false;
+		}
+		const requested = parseOwnerPushContext({
+			kind: url.searchParams.get("context_kind"),
+			context_id: url.searchParams.get("context_id"),
+			relationship_id: url.searchParams.get("relationship_id"),
+			...(url.searchParams.has("anchor_id")
+				? { anchor_id: url.searchParams.get("anchor_id") }
+				: {}),
+		});
+		let verified: OwnerPushContext | null = null;
+		if (typeof rawHeader === "string" && /^[A-Za-z0-9_-]{1,2048}$/.test(rawHeader)) {
+			try {
+				verified = parseOwnerPushContext(JSON.parse(
+					Buffer.from(rawHeader, "base64url").toString("utf8"),
+				));
+			} catch { /* invalid proof below */ }
+		}
+		if (!requested || !verified || !ownerContextsEqual(requested, verified)) {
+			this.sendOwnerContextError(res, 403, "owner_context_verification_required");
+			return false;
+		}
+		return true;
+	}
+
+	private sendOwnerContextError(res: ServerResponse, status: number, code: string): void {
+		res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+		res.end(JSON.stringify({ error: code }));
+	}
+
 	/** Handle GET /awareness/backlog — returns last N lines of context.jsonl as JSON array.
 	 *
 	 * Tail-first reverse byte read (FAT-352): seeks from the end of the file
@@ -543,6 +944,8 @@ export class Gateway {
 	 * and use file size as a sentinel for whether more history exists.
 	 */
 	private handleAwarenessBacklog(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.verifyOwnerContextQuery(req, res)) return;
+		const ownerContext = verifiedOwnerContextHeader(req);
 		if (!this.awarenessStore) {
 			res.writeHead(500, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ error: "No workspace configured" }));
@@ -556,15 +959,28 @@ export class Gateway {
 		try {
 			const backlog = this.awarenessStore.readBacklog(limit, before);
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify(backlog));
+			res.end(JSON.stringify(
+				url.searchParams.get("surface") === "conversation"
+					? projectConversationBacklog(backlog, ownerContext?.context_id)
+					: backlog,
+			));
 		} catch {
 			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ lines: [], total: 0, offset: 0 }));
+			res.end(JSON.stringify(
+				url.searchParams.get("surface") === "conversation"
+					? { messages: [], total: 0, offset: 0 }
+					: { lines: [], total: 0, offset: 0 },
+			));
 		}
 	}
 
 	/** Handle GET /awareness/stream — SSE endpoint that tails context.jsonl */
-	private handleAwarenessStream(_req: IncomingMessage, res: ServerResponse): void {
+	private handleAwarenessStream(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.verifyOwnerContextQuery(req, res)) return;
+		if (verifiedOwnerContextHeader(req)) {
+			this.sendOwnerContextError(res, 400, "owner_context_requires_unified_live");
+			return;
+		}
 		if (!this.workspaceDir) {
 			res.writeHead(500);
 			res.end("No workspace configured");
@@ -619,6 +1035,8 @@ export class Gateway {
 	 * snapshots. Existing web/console streams stay backward-compatible.
 	 */
 	private handleRuntimeLiveStream(req: IncomingMessage, res: ServerResponse): void {
+		if (!this.verifyOwnerContextQuery(req, res)) return;
+		const ownerContext = verifiedOwnerContextHeader(req);
 		if (!this.workspaceDir) {
 			res.writeHead(500);
 			res.end("No workspace configured");
@@ -646,14 +1064,28 @@ export class Gateway {
 			? req.headers["last-event-id"][0]
 			: req.headers["last-event-id"];
 		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
+		const conversationSurface = url.searchParams.get("surface") === "conversation";
 		this.liveClientCount++;
 		const subscription = this.liveEvents.subscribe((event) => {
+			if (ownerContext && !runtimeEventMatchesOwnerContext(event, ownerContext)) return;
 			try {
-				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`);
+				const payload = conversationSurface ? projectConversationLiveEvent(event) : event;
+				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(payload)}\n\n`);
 			} catch {
 				// The close handler owns cleanup.
 			}
 		}, afterSequence);
+		const writeCursor = () => {
+			if (!conversationSurface) {
+				res.write(": ready\n\n");
+				return;
+			}
+			const cursor = this.liveEvents.cursor();
+			res.write(`id: ${cursor.sequence}\ndata: ${JSON.stringify({ ...cursor, kind: "cursor" })}\n\n`);
+		};
+		// Subscription replay is synchronous. Emit the non-advancing readiness
+		// cursor afterwards so it cannot cause replayed events to be discarded.
+		writeCursor();
 
 		if (!this.awarenessWatcher) {
 			this.awarenessFileSize = currentSize;
@@ -661,7 +1093,10 @@ export class Gateway {
 		}
 
 		const heartbeat = setInterval(() => {
-			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
+			try {
+				if (conversationSurface) writeCursor();
+				else res.write(": heartbeat\n\n");
+			} catch { /* client gone */ }
 		}, 15_000);
 
 		res.on("close", () => {
@@ -777,8 +1212,23 @@ export class Gateway {
 				return;
 			}
 
+			if (matchVoiceReceiptRoute(urlPath)) {
+				this.handleVoiceReceiptRequest(req, res);
+				return;
+			}
+
+			if (matchVoiceSessionRoute(urlPath)) {
+				void this.handleVoiceSessionRequest(req, res);
+				return;
+			}
+
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/status")) {
 				this.handleConsoleStatus(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/deliveries")) {
+				this.handleDeliveryReceipts(req, res);
 				return;
 			}
 
@@ -890,6 +1340,11 @@ export class Gateway {
 					return;
 				}
 				handler(req, res);
+				return;
+			}
+
+			if (req.method === "POST" && this.isConsoleAgentPath(urlPath, "/transcriptions")) {
+				void this.handleConsoleTranscription(req, res);
 				return;
 			}
 
@@ -1062,8 +1517,167 @@ function extractAwarenessEventId(line: string): string | null {
 	}
 }
 
+function ownerContextsEqual(left: OwnerPushContext, right: OwnerPushContext): boolean {
+	return left.kind === right.kind
+		&& left.context_id === right.context_id
+		&& left.relationship_id === right.relationship_id
+		&& (left.anchor_id ?? "") === (right.anchor_id ?? "");
+}
+
+function verifiedOwnerContextHeader(req: IncomingMessage): OwnerPushContext | undefined {
+	const raw = req.headers["x-troublemaker-verified-owner-context"];
+	if (typeof raw !== "string" || !/^[A-Za-z0-9_-]{1,2048}$/.test(raw)) return undefined;
+	try {
+		return parseOwnerPushContext(JSON.parse(Buffer.from(raw, "base64url").toString("utf8")))
+			?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function runtimeEventMatchesOwnerContext(
+	event: RuntimeLiveEvent,
+	context: OwnerPushContext,
+): boolean {
+	if (event.kind === "reset") return true;
+	if (event.kind === "runtime") return event.channelId === context.context_id;
+	return projectConversationLine(event.line)?.channel === context.context_id;
+}
+
 function parseLiveSequence(value: string | null | undefined): number {
 	if (!value) return 0;
 	const parsed = Number.parseInt(value, 10);
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function singleGatewayHeader(req: IncomingMessage, name: string): string {
+	const value = req.headers[name];
+	return String(Array.isArray(value) ? value[0] ?? "" : value ?? "").trim();
+}
+
+function requestDeclaresBody(req: IncomingMessage): boolean {
+	const contentLength = singleGatewayHeader(req, "content-length");
+	return (contentLength !== "" && contentLength !== "0")
+		|| singleGatewayHeader(req, "transfer-encoding") !== "";
+}
+
+function verifiedVoiceReceiptClaim(
+	req: IncomingMessage,
+	routeAgentID: string,
+	subjectAgentID: string,
+	requestBody: Uint8Array,
+	authorityKey?: Uint8Array,
+): VoiceReceiptClaim | undefined {
+	const agentCorrelation = singleGatewayHeader(
+		req,
+		"x-troublemaker-verified-voice-agent-correlation",
+	);
+	const requestCorrelation = singleGatewayHeader(
+		req,
+		"x-troublemaker-verified-voice-request-correlation",
+	);
+	const proof = singleGatewayHeader(
+		req,
+		"x-troublemaker-internal-voice-receipt-proof",
+	);
+	if (!agentCorrelation && !requestCorrelation && !proof) return undefined;
+	const claim = {
+		agent_correlation: agentCorrelation,
+		request_correlation: requestCorrelation,
+	};
+	if (!authorityKey
+		|| !isVoiceReceiptClaim(claim)
+		|| agentCorrelation !== voiceReceiptAgentCorrelation(routeAgentID, subjectAgentID)
+		|| !verifyVoiceReceiptAuthorityProof(authorityKey, {
+			method: "POST",
+			path_and_query: req.url || "/",
+			body_digest: voiceReceiptBodyDigest(requestBody),
+			agent_correlation: agentCorrelation,
+			request_correlation: requestCorrelation,
+		}, proof)) {
+		throw new VoiceSessionContractError("receipt_authority_required");
+	}
+	return claim;
+}
+
+function parseCanonicalPositiveInteger(value: string | null): number {
+	if (!value || !/^[1-9][0-9]*$/.test(value)) return Number.NaN;
+	return Number(value);
+}
+
+function matchVoiceReceiptRoute(pathname: string): string | null {
+	const match = pathname.match(/^\/api\/v2\/agents\/([^/]+)\/voice-receipts$/);
+	if (!match) return null;
+	try {
+		const routeAgentID = decodeURIComponent(match[1]);
+		return /^[A-Za-z0-9._:-]{1,128}$/.test(routeAgentID) ? routeAgentID : null;
+	} catch { return null; }
+}
+
+function authorizeVoiceResponsePolicy(payload: unknown, surface: string): void {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new VoiceSessionContractError("invalid_open");
+	const configuration = (payload as { configuration?: unknown }).configuration;
+	if (!configuration || typeof configuration !== "object" || Array.isArray(configuration)) throw new VoiceSessionContractError("invalid_configuration");
+	const requested = (configuration as { response_policy?: unknown }).response_policy;
+	const authorized = surface === "watch" ? "concise_watch" : "standard";
+	if (requested !== authorized) throw new VoiceSessionContractError("response_policy_not_authorized");
+}
+
+interface VoiceSessionRoute {
+	routeAgentID: string;
+	sessionID?: string;
+	action: "open" | "events" | "recording" | "speech-controls" | "reconcile";
+}
+
+function matchVoiceSessionRoute(pathname: string): VoiceSessionRoute | null {
+	const match = pathname.match(/^\/api\/v2\/agents\/([^/]+)\/voice-sessions(?:\/([^/]+)\/(events|recording|speech-controls|reconcile))?$/);
+	if (!match) return null;
+	try {
+		const routeAgentID = decodeURIComponent(match[1]);
+		const sessionID = match[2] ? decodeURIComponent(match[2]) : undefined;
+		if (!/^[A-Za-z0-9._:-]{1,128}$/.test(routeAgentID)
+			|| (sessionID && !/^[A-Za-z0-9._:-]{1,128}$/.test(sessionID))) return null;
+		return { routeAgentID, ...(sessionID ? { sessionID } : {}), action: (match[3] as "events" | "recording" | "speech-controls" | "reconcile" | undefined) ?? "open" };
+	} catch { return null; }
+}
+
+function voiceSessionErrorStatus(code: string): number {
+	if (code === "session_not_found") return 404;
+	if (code.includes("conflict") || code === "replay_mismatch" || code === "replay_commitment_mismatch") return 409;
+	if (code === "backpressure_exceeded") return 429;
+	if (code.includes("bounds") || code.includes("too_large")) return 413;
+	if (code === "agent_identity_mismatch" || code === "mismatched_identity"
+		|| code === "response_policy_not_authorized" || code === "receipt_authority_required") return 403;
+	return 400;
+}
+
+class RequestBodyTooLargeError extends Error {}
+
+function readBoundedRequestBody(req: IncomingMessage, maximumBytes: number): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		let settled = false;
+		const fail = (error: Error) => {
+			if (settled) return;
+			settled = true;
+			reject(error);
+		};
+		req.on("data", (chunk: Buffer) => {
+			if (settled) return;
+			size += chunk.length;
+			if (size > maximumBytes) {
+				fail(new RequestBodyTooLargeError());
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => {
+			if (settled) return;
+			settled = true;
+			resolve(Buffer.concat(chunks));
+		});
+		req.on("aborted", () => fail(new Error("Request aborted")));
+		req.on("error", (error) => fail(error));
+	});
 }
