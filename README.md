@@ -269,7 +269,7 @@ Event files go in `data/events/`. External systems can also write events here to
 
 ## Natural follow-ups
 
-Follow-up mode lets the harness wake the agent at successive idle checkpoints after a completed, directly addressed human turn. Each wake runs through a non-direct headless adapter, re-reads the conversation, and asks the agent to send at most one concise follow-up with `send_message`, or stay quiet with `yield_no_action`. Ordinary assistant text and working output are discarded. A newer human message immediately invalidates the older sequence.
+Follow-up mode keeps one agent-global sequence of idle checkpoints after the latest eligible completed canonical wake. A later completed wake replaces the prior sequence, regardless of which durable conversation caused it. Each checkpoint is an internal headless wake with no inherited channel, conversation, or reply target: the agent reviews open loops across its channels, sends at most one concise follow-up to an explicitly chosen target with `send_message`, or stays quiet with `yield_no_action`. Ordinary assistant text and working output are discarded, and generated checkpoints never schedule another sequence.
 
 Follow-ups are opt-in for every workspace, including newly seeded ones. The `default` preset enables checkpoints at 1, 3, 5, and 10 minutes and can be selected directly in `settings.json`:
 
