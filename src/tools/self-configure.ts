@@ -691,7 +691,7 @@ function configureFollowUps(workingDir: string, setting: string, value: unknown)
 
 	const newValue = manager.setFollowUps(next);
 	// A configuration change must never leave old checkpoints live. The next
-	// eligible human turn starts a fresh sequence under the new policy.
+	// eligible completed canonical wake starts a fresh global sequence.
 	clearAllFollowUpSchedules(workingDir);
 	return {
 		changed: true,
@@ -699,7 +699,7 @@ function configureFollowUps(workingDir: string, setting: string, value: unknown)
 		previousValue,
 		newValue,
 		note: newValue.enabled
-			? `Natural follow-up checks are enabled at ${newValue.intervalsMinutes.join(", ")} minute(s) after the next completed human turn.`
+			? `Natural follow-up checks are enabled at ${newValue.intervalsMinutes.join(", ")} minute(s) after the next eligible completed wake.`
 			: "Natural follow-up checks are disabled and all pending checkpoints were cancelled.",
 	};
 }

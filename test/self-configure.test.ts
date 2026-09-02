@@ -162,6 +162,8 @@ try {
 	settings = readSettings(workingDir);
 	assert((defaultFollowUps.newValue as any).enabled === true, "default follow-up preset enables the mode");
 	assert(JSON.stringify((defaultFollowUps.newValue as any).intervalsMinutes) === JSON.stringify([1, 3, 5, 10]), "default follow-up preset uses 1/3/5/10-minute checkpoints");
+	assert(defaultFollowUps.note.includes("eligible completed wake"), "follow-up configuration explains the global wake anchor");
+	assert(!defaultFollowUps.note.includes("human turn"), "follow-up configuration no longer promises a human-turn anchor");
 	assert((settings.followUps as any).preset === "default", "default follow-up preset persists in settings.json");
 	const customFollowUps = applySelfConfiguration(workingDir, "followUps.intervalsMinutes", "2, 6, 10");
 	settings = readSettings(workingDir);
