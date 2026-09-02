@@ -152,7 +152,7 @@
 		"prepublishOnly": "pnpm run clean && pnpm run build",
 		"test:google-login-command": "pnpm exec tsx test/google-login-command.test.ts",
 		"test:edge-session-preamble": "pnpm exec tsx test/edge-session-preamble.test.ts",
-		"test:follow-ups": "pnpm exec tsx test/follow-ups.test.ts && pnpm exec tsx test/follow-up-headless.test.ts",
+		"test:follow-ups": "pnpm exec tsx test/follow-ups.test.ts && pnpm exec tsx test/follow-up-headless.test.ts && pnpm exec tsx test/checkpoint-adapters.test.ts",
 		"test:package-manager": "node --test test/package-manager-contract.test.mjs"
 	},
 	"dependencies": {

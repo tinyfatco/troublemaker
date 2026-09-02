@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Heartbeats and natural follow-ups now share one bounded headless checkpoint execution primitive while retaining their independent scheduling, prompt, queue-limit, and restart semantics.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08
