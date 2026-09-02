@@ -1,9 +1,9 @@
 /**
- * FollowUpAdapter — headless adapter for harness-generated idle evaluations.
+ * FollowUpAdapter — headless adapter for agent-global idle evaluations.
  *
- * Follow-up wakes retain an exact send_message target in their event metadata,
- * but ordinary harness output never reaches that target. The model must either
- * call send_message deliberately or record silence with yield_no_action.
+ * Checkpoints carry no conversation or reply target. Ordinary harness output
+ * is discarded; the model must choose an explicit send_message target when a
+ * useful open loop exists or record silence with yield_no_action.
  */
 
 import { appendFileSync } from "fs";
@@ -16,7 +16,7 @@ export class FollowUpAdapter implements PlatformAdapter {
 	readonly name = "follow-up";
 	readonly maxMessageLength = 100_000;
 	readonly formatInstructions = `## Natural Follow-up Evaluation (Internal)
-This is a headless harness evaluation, not a direct user message. Re-read the current conversation with the available conversation tools. If one concise follow-up is still useful, call send_message exactly once with the exact target supplied in the event. Otherwise call yield_no_action. Ordinary assistant text, working output, typing indicators, and harness errors are not delivered.`;
+This is an agent-global headless checkpoint, not a direct user message and not part of any assumed conversation. Review open loops across the agent with list_channels and read_thread when useful. If one concise follow-up is warranted, call send_message exactly once with the appropriate explicit target. Otherwise call yield_no_action. Ordinary assistant text, working output, typing indicators, and harness errors are not delivered.`;
 
 	private handler!: MomHandler;
 	private queue: MomEvent[] = [];

@@ -45,7 +45,7 @@ import {
 	armPendingFollowUps,
 	claimFollowUpWake,
 	getFollowUpRuntimeStatus,
-	noteFollowUpActivity,
+	noteCompletedFollowUpWake,
 	reconcileFollowUpSchedules,
 } from "../../follow-ups.js";
 import { Gateway } from "../../gateway.js";
@@ -1301,6 +1301,9 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 		if (activeDeliveryScope === deliveryScope) activeDeliveryScope = null;
 		state.running = false;
 		state.interruptRequested = false;
+		if (completedCanonicalTurn) {
+			noteCompletedFollowUpWake(workingDir, event);
+		}
 		if (
 			completedCanonicalTurn
 			&& queuedRunCount === 0
@@ -1415,7 +1418,6 @@ const handler: MomHandler = {
 	},
 
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
-		noteFollowUpActivity(workingDir, event, adapter.name);
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
 		}
@@ -1477,7 +1479,6 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: MomEvent, platform: PlatformAdapter, isEvent?: boolean): Promise<RunResult | void> {
-		noteFollowUpActivity(workingDir, event, platform.name);
 		const label = `${platform.name}:${event.channel}`;
 		return withGlobalRunSlot(label, () => runEventInSlot(event, platform, isEvent));
 	},
