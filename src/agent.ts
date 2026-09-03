@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
 import {
@@ -69,6 +69,20 @@ import {
 } from "./claude-cli.js";
 import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
 import { parseVisibleUserInputs } from "./user-input-display.js";
+import {
+	extractStructuredHandoff,
+	handoffInstruction,
+	handoffJournalPath,
+	joinPublicHandoffParts,
+	projectPublicHandoffParts,
+	readHandoffJournal,
+	replayHandoffRotation,
+	sanitizeHandoffMessage,
+	selectCompleteRecentTail,
+	shouldRequestHandoff,
+	writeHandoffJournal,
+	type HandoffRotationJournal,
+} from "./handoff-compaction.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -222,6 +236,25 @@ function normalizeStreamingToolCalls(event: Record<string, unknown>): StreamingT
 
 function cleanToolCallLabel(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function hasContent(message: AgentMessage): message is AgentMessage & { content: Array<Record<string, unknown>> } {
+	return "content" in message && Array.isArray(message.content);
+}
+
+function sanitizeStreamingMessage(message: AgentMessage, terminal: boolean): AgentMessage {
+	if (message.role !== "assistant" || !hasContent(message)) return message;
+	const textParts = message.content
+		.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+		.map((part) => part.text);
+	const projected = projectPublicHandoffParts(textParts, terminal);
+	let textIndex = 0;
+	return {
+		...message,
+		content: message.content.map((part) => part.type === "text" && typeof part.text === "string"
+			? { ...part, text: projected[textIndex++] }
+			: part),
+	} as AgentMessage;
 }
 
 function partialText(event: Record<string, unknown>): string | undefined {
@@ -423,6 +456,16 @@ async function createRunner(
 	const contextFile = join(awarenessDir, "context.jsonl");
 	const workspaceStore = new FilesystemWorkspaceStore(workspaceDir);
 	const settingsManager = new MomSettingsManager(workspaceDir);
+	const rotationJournalPath = handoffJournalPath(awarenessDir);
+	const recoverRotation = async (journal: HandoffRotationJournal): Promise<void> => {
+		await replayHandoffRotation(contextFile, awarenessDir, rotationJournalPath, journal);
+		log.logInfo(`[handoff] Replayed durable rotation ${journal.id}`);
+	};
+	const pendingRotation = readHandoffJournal(rotationJournalPath);
+	if (existsSync(rotationJournalPath) && !pendingRotation) {
+		throw new Error("Invalid handoff rotation journal; refusing to load context until it is repaired");
+	}
+	if (pendingRotation) await recoverRotation(pendingRotation);
 
 	// The canonical model runtime owns credential storage, provider composition,
 	// and request auth. Keep the compatibility registry only for synchronous
@@ -525,19 +568,20 @@ async function createRunner(
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-	// Claude CLI owns its context lifecycle. Other providers use Pi's native
-	// fixed-headroom compaction settings without model-dependent translation.
+	// Claude CLI owns its context lifecycle. Handoff mode also disables only
+	// Pi's automatic semantic compaction; native remains the safe default.
 	const compactionSettingsProxy = new Proxy(settingsManager, {
 		get(target, prop, receiver) {
 			if (prop === "getCompactionEnabled") {
 				return () => isClaudeCliProvider(agent.state.model?.provider)
+					|| target.getCompactionSettings().mode === "handoff"
 					? false
 					: target.getCompactionEnabled();
 			}
 			if (prop === "getCompactionSettings") {
 				return () => {
 					const base = target.getCompactionSettings();
-					if (isClaudeCliProvider(agent.state.model?.provider)) {
+					if (isClaudeCliProvider(agent.state.model?.provider) || base.mode === "handoff") {
 						return { ...base, enabled: false };
 					}
 					return base;
@@ -669,6 +713,8 @@ async function createRunner(
 		completionID: "",
 		runStartLeafID: null as string | null,
 		claimedAssistantMessageIDs: new Set<string>(),
+		handoffRequested: false,
+		capturedHandoff: null as ReturnType<typeof extractStructuredHandoff>,
 	};
 
 	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
@@ -879,9 +925,10 @@ async function createRunner(
 			}
 		} else if (event.type === "message_update") {
 			const agentEvent = event as AgentEvent & { type: "message_update" };
-			runState.liveSnapshot.updateAssistantMessage(agentEvent.message);
+			const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, false) : agentEvent.message;
+			runState.liveSnapshot.updateAssistantMessage(projectedMessage);
 			const assistantText = runState.assistantText.update(
-				agentEvent.message,
+				projectedMessage,
 				agentEvent.assistantMessageEvent?.type,
 			);
 			if (assistantText) {
@@ -891,10 +938,11 @@ async function createRunner(
 		} else if (event.type === "message_start") {
 			const agentEvent = event as AgentEvent & { type: "message_start" };
 			if (agentEvent.message.role === "assistant") {
+				const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, false) : agentEvent.message;
 				closeAssistantPresentation();
 				log.logResponseStart(logCtx);
-				runState.liveSnapshot.beginAssistantMessage(agentEvent.message);
-				const assistantText = runState.assistantText.begin(agentEvent.message);
+				runState.liveSnapshot.beginAssistantMessage(projectedMessage);
+				const assistantText = runState.assistantText.begin(projectedMessage);
 				if (assistantText) {
 					emitAssistantTextEvent(assistantText);
 				}
@@ -923,8 +971,9 @@ async function createRunner(
 		} else if (event.type === "message_end") {
 			const agentEvent = event as AgentEvent & { type: "message_end" };
 			if (agentEvent.message.role === "assistant") {
-				runState.liveSnapshot.endAssistantMessage(agentEvent.message);
-				const assistantText = runState.assistantText.end(agentEvent.message);
+				const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, true) : agentEvent.message;
+				runState.liveSnapshot.endAssistantMessage(projectedMessage);
+				const assistantText = runState.assistantText.end(projectedMessage);
 				if (assistantText) {
 					emitAssistantTextEvent(assistantText);
 				}
@@ -950,7 +999,8 @@ async function createRunner(
 					runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
 				}
 
-				const content = agentEvent.message.content;
+				if (!hasContent(projectedMessage)) return;
+				const content = projectedMessage.content;
 				const thinkingParts: string[] = [];
 				const textParts: string[] = [];
 				for (const part of content) {
@@ -1149,6 +1199,7 @@ async function createRunner(
 			// prompt. Only lightweight routing metadata is appended to the user
 			// transcript, so repeated wakes do not accumulate another memory copy.
 			settingsManager.reload();
+			const compactionSettings = settingsManager.getCompactionSettings();
 			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
 			const sessionContextOptions = {
 				workspaceContext,
@@ -1196,6 +1247,8 @@ async function createRunner(
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
 			runState.claimedAssistantMessageIDs.clear();
+			runState.handoffRequested = false;
+			runState.capturedHandoff = null;
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -1280,6 +1333,28 @@ async function createRunner(
 				log.logInfo(`[gpt-steering] Ack fast path injected for "${ctx.message.text.substring(0, 40)}"`);
 			}
 
+			let handoffRuntimeInstruction = "";
+			if (compactionSettings.enabled && compactionSettings.mode === "handoff" && !isClaudeCliProvider(currentModel.provider)) {
+				let contextTokens = 0;
+				for (let index = currentSession.messages.length - 1; index >= 0; index--) {
+					const usage = (currentSession.messages[index] as any).usage;
+					if (usage) {
+						contextTokens = (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
+						break;
+					}
+				}
+				runState.handoffRequested = shouldRequestHandoff(
+					contextTokens,
+					currentModel.contextWindow || 200_000,
+					compactionSettings.reserveTokens,
+					compactionSettings.keepRecentTokens,
+				);
+				if (runState.handoffRequested) {
+					handoffRuntimeInstruction = handoffInstruction(ctx.message.channel, ctx.message.replyTarget);
+					log.logInfo(`[handoff] Pressure threshold reached; requesting an end-of-turn checkpoint`);
+				}
+			}
+
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
@@ -1299,7 +1374,9 @@ async function createRunner(
 				await resolveApiKey(modelRegistry, currentModel.provider);
 			};
 			const tPrompt = performance.now();
+			const ordinaryRuntimeContext = activeRuntimeContext;
 			try {
+				if (handoffRuntimeInstruction) activeRuntimeContext = `${ordinaryRuntimeContext}\n\n${handoffRuntimeInstruction}`;
 				const gated = await runWithModelCredentialGate({
 					resolveCredential: resolveCurrentModelCredential,
 					prompt: async () => {
@@ -1325,6 +1402,7 @@ async function createRunner(
 				log.logWarning("Model prompt failed", errMsg);
 			} finally {
 				acceptsSteering = false;
+				activeRuntimeContext = ordinaryRuntimeContext;
 			}
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
@@ -1343,7 +1421,7 @@ async function createRunner(
 			// Retry one text-only turn when the active model failed its concrete
 			// action contract. Claude needs an exact deferred MCP selection in
 			// messages-only channels; GPT-5 keeps its planning-only act-now nudge.
-			if (runState.stopReason !== "error" && !wasYielded()) {
+			if (runState.stopReason !== "error" && !wasYielded() && !runState.handoffRequested) {
 				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
 				const assistantText =
@@ -1429,11 +1507,19 @@ async function createRunner(
 				// Final message update
 				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-				const finalText =
-					lastAssistant?.content
+				const rawFinalTextParts = lastAssistant?.content
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
-						.map((c) => c.text)
-						.join("\n") || "";
+						.map((c) => c.text) ?? [];
+				const rawFinalText = rawFinalTextParts.join("");
+				runState.capturedHandoff = runState.handoffRequested
+					? extractStructuredHandoff(rawFinalText, {
+						channel: ctx.message.channel,
+						replyTarget: ctx.message.replyTarget || null,
+					})
+					: null;
+				const finalText = runState.handoffRequested
+					? joinPublicHandoffParts(rawFinalTextParts, true)
+					: rawFinalTextParts.join("\n");
 
 				// Check if yield_no_action was called — skip posting final response
 				if (wasYielded()) {
@@ -1487,6 +1573,31 @@ async function createRunner(
 				const summary = log.logUsageSummary(runState.logCtx, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
 				await queueChain;
+			}
+
+			if (runState.handoffRequested) {
+				if (runState.stopReason === "error" || runState.stopReason === "aborted" || !runState.capturedHandoff) {
+					log.logWarning("[handoff] Terminal checkpoint missing or invalid; preserving the original context without rotation");
+				} else {
+					const id = randomUUID();
+					const date = new Date().toISOString().slice(0, 10);
+					const tail = selectCompleteRecentTail(
+						currentSession.messages.map((message) => sanitizeHandoffMessage(message)),
+						compactionSettings.keepRecentTokens,
+					);
+					const journal: HandoffRotationJournal = {
+						version: 1,
+						id,
+						createdAt: new Date().toISOString(),
+						archivePath: join(awarenessDir, "history", date, `handoff-${id}.jsonl`),
+						handoff: runState.capturedHandoff.handoff,
+						tail,
+					};
+					writeHandoffJournal(rotationJournalPath, journal);
+					resetSessionState();
+					await recoverRotation(journal);
+					log.logInfo(`[handoff] Context rotated with ${tail.length} complete recent messages`);
+				}
 			}
 
 			// Clear run state

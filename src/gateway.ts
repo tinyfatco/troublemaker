@@ -1,6 +1,7 @@
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
+import { sanitizePrivateHandoffSessionLine } from "./handoff-compaction.js";
 import { join, extname, resolve, normalize } from "path";
 import { WorkspaceDeliveryLedger } from "./adapters/workspace-channel-runtime.js";
 import { ConsoleError, ConsoleService } from "./console/service.js";
@@ -1148,12 +1149,13 @@ export class Gateway {
 				const lines = newContent.split("\n").filter(Boolean);
 
 				for (const line of lines) {
-					const id = extractAwarenessEventId(line);
-					const event = `${id ? `id: ${id}\n` : ""}data: ${line}\n\n`;
+					const publicLine = sanitizePrivateHandoffSessionLine(line);
+					const id = extractAwarenessEventId(publicLine);
+					const event = `${id ? `id: ${id}\n` : ""}data: ${publicLine}\n\n`;
 					for (const client of this.awarenessClients) {
 						try { client.write(event); } catch { /* client gone, will be cleaned up */ }
 					}
-					this.liveEvents.publishAwareness(line, id || undefined);
+					this.liveEvents.publishAwareness(publicLine, id || undefined);
 				}
 			} catch {
 				// File gone or read error — skip this tick

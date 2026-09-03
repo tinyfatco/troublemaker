@@ -18,6 +18,8 @@ import type { SettingsStore } from "./storage/settings.js";
 
 export interface MomCompactionSettings {
 	enabled: boolean;
+	/** Native Pi semantic compaction is the safe default; handoff is opt-in per runtime. */
+	mode: "native" | "handoff";
 	reserveTokens: number;
 	keepRecentTokens: number;
 }
@@ -206,6 +208,7 @@ export interface MomSettings {
 
 export const DEFAULT_COMPACTION: MomCompactionSettings = {
 	enabled: true,
+	mode: "native",
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 };
