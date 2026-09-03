@@ -1,0 +1,12 @@
+[
+  {
+    "name": "delimiter split at every byte",
+    "publicText": "Finished the requested work exactly.\n",
+    "handoff": {"version":1,"goal":"Ship the synthetic change","constraints":["No deployment"],"completed":["Updated src/example.ts"],"inProgress":[],"nextSteps":["Open review"],"decisions":[{"decision":"Keep native default","rationale":"Safe rollout"}],"provenance":[{"claim":"Tests passed","source":"pnpm test:example"}],"uncertainties":[],"superseded":[{"previous":"automatic summary","replacement":"terminal handoff"}],"toolReceipts":[{"tool":"apply_patch","result":"src/example.ts updated"}],"routing":{"channel":"C0123456789","replyTarget":"1700000000.000001"}}
+  },
+  {
+    "name": "adversarial delimiter-like ordinary text",
+    "publicText": "Literal tags such as <troublemaker_private_hand and JSON braces remain exact.\n",
+    "handoff": {"version":1,"goal":"Preserve exact output","constraints":[],"completed":["Rendered literal text"],"inProgress":[],"nextSteps":[],"decisions":[],"provenance":[],"uncertainties":["None"],"superseded":[],"toolReceipts":[],"routing":{"channel":"web","replyTarget":null}}
+  }
+]
