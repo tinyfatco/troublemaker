@@ -39,6 +39,22 @@ try {
 	settings = readSettings(workingDir);
 	assert(verbosity.newValue === true, "verbosity result reports full output");
 	assert((settings.verbose as any).default === true, "verbosity writes the durable verbose default");
+	const computerMode = applySelfConfiguration(workingDir, "computer.mode", "cua");
+	settings = readSettings(workingDir);
+	assert(settings.computerMode === "cua", "computer.mode persists the sole backend selector");
+	assert(computerMode.note.includes("runtime restarts"), "computer.mode truthfully reports restart semantics");
+	const savedOverride = process.env.TROUBLEMAKER_COMPUTER_MODE;
+	process.env.TROUBLEMAKER_COMPUTER_MODE = "off";
+	const overriddenMode = applySelfConfiguration(workingDir, "computer.mode", "codex-mcp");
+	if (savedOverride === undefined) delete process.env.TROUBLEMAKER_COMPUTER_MODE;
+	else process.env.TROUBLEMAKER_COMPUTER_MODE = savedOverride;
+	assert(overriddenMode.note.includes("override (off) remains authoritative"), "computer.mode reports an active host override");
+	try {
+		applySelfConfiguration(workingDir, "computer.mode", "both");
+		assert(false, "computer.mode rejects ambiguous selection");
+	} catch (error) {
+		assert(error instanceof Error && error.message.includes("cua, codex-mcp, off"), "computer.mode validates its three values");
+	}
 	const messagesOnly = applySelfConfiguration(workingDir, "verbose", "messages_only");
 	settings = readSettings(workingDir);
 	assert(messagesOnly.newValue === "messages-only", "verbose alias normalizes messages-only");
@@ -242,6 +258,7 @@ try {
 	assert(settingDescription.includes("follow_ups.intervals_minutes"), "self_configure schema exposes natural follow-up checkpoints");
 	assert(settingDescription.includes("follow_ups.cancel"), "self_configure schema exposes explicit follow-up cancellation");
 	assert(settingDescription.includes("computer.macos_auto_speech"), "self_configure schema exposes the bounded macOS Computer preference");
+	assert(settingDescription.includes("computer.mode"), "self_configure schema exposes the exclusive computer backend selector");
 	assert(tool.description.includes("1/3/5/10-minute"), "self_configure metadata explains the default follow-up preset");
 	assert(tool.description.includes("cancel current sequences"), "self_configure metadata explains cancel-without-disable");
 	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");

@@ -100,7 +100,7 @@ echo "Building Troublemaker web UI..."
 (cd "$PROJECT_ROOT/ui" && pnpm build)
 
 echo "Building Troublemaker.app bundle..."
-TROUBLEMAKER_SKIP_INSTALL=1 "$SCRIPT_DIR/build-mac-app.sh"
+"$SCRIPT_DIR/build-mac-app.sh"
 
 echo "Stopping legacy launch agent, if present..."
 launchctl bootout "$GUI_DOMAIN" "$LEGACY_PLIST" >/dev/null 2>&1 || true

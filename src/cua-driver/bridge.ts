@@ -1,12 +1,21 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	CuaDriver,
+	EmbeddedCuaDriverHost,
 	type CuaDriverLike,
 	type DriverMetadata,
+	type EmbeddedCuaDriverHostLike,
 	type ToolResult,
 } from "@trycua/cua-driver";
+import {
+	hasRequiredMacOSPermissions,
+	requestMacOSPermissions,
+	type MacOSPermissionStatus,
+} from "@trycua/cua-driver/electron";
 import type { TSchema } from "typebox";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripToolPresentationArgs } from "../tools/tool-label.js";
@@ -16,6 +25,7 @@ export const CUA_CONTRACT_VERSION = "0.7.0";
 export const CUA_TOOLS_SCHEMA_VERSION = "1";
 export const CUA_CAPABILITY_VERSION = "1";
 export const CUA_TOOL_PREFIX = "cua_";
+export const CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256 = "d03a0b5f820b66d96a40fa2292e122ea06e2d7022ab7b82c768535ef0c0998ca";
 
 export const CUA_DRIVER_020_TOOL_NAMES = [
 	"list_apps", "list_windows", "get_window_state", "verify_state", "launch_app", "kill_app",
@@ -56,8 +66,26 @@ interface RawCuaToolInventory {
 }
 
 export interface CuaDriverBridgeOptions {
-	connect?: () => CuaDriverLike;
+	connect?: (socketPath?: string) => CuaDriverLike;
 	prepareDaemon?: () => Promise<void>;
+	embeddedHost?: (binaryPath: string, bundleId: string) => EmbeddedCuaDriverHostLike;
+	distributable?: boolean;
+	driverCommand?: string;
+	manifestPath?: string;
+	permissionPreflight?: () => MacOSPermissionStatus;
+}
+
+export class CuaDriverPermissionError extends Error {
+	readonly code = "CUA_MACOS_PERMISSIONS_REQUIRED";
+	constructor(readonly missingPermissions: Array<"accessibility" | "screenRecording">, cause?: unknown) {
+		super(
+			cause
+				? "Unable to verify macOS Accessibility and Screen Recording permissions. Open Troublemaker Computer onboarding to review permissions, then restart the runtime."
+				: `Cua Driver requires macOS ${missingPermissions.map((permission) => permission === "screenRecording" ? "Screen Recording" : "Accessibility").join(" and ")} permission. Complete Troublemaker Computer onboarding, then restart the runtime.`,
+			{ cause },
+		);
+		this.name = "CuaDriverPermissionError";
+	}
 }
 
 export interface CuaDriverCommandResult {
@@ -72,6 +100,24 @@ export interface CuaDriverDaemonPreflightOptions {
 	timeoutMs?: number;
 	pollIntervalMs?: number;
 	runCommand?: (command: string, args: string[]) => Promise<CuaDriverCommandResult>;
+	distributable?: boolean;
+	manifestPath?: string;
+}
+
+function verifyPackagedProvenance(command: string, manifestPath: string): { hostBundleId: string } {
+	let manifest: unknown;
+	try {
+		manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	} catch {
+		throw new Error("Packaged Cua Driver provenance manifest is absent or malformed");
+	}
+	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("Packaged Cua Driver provenance manifest is invalid");
+	const candidate = manifest as Record<string, unknown>;
+	const digest = createHash("sha256").update(readFileSync(command)).digest("hex");
+	if (candidate.format !== 1 || candidate.component !== "@trycua/cua-driver-executable" || candidate.version !== CUA_DRIVER_VERSION || candidate.sourceSha256 !== CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256 || candidate.sha256 !== digest || typeof candidate.hostBundleId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*){2,}$/.test(candidate.hostBundleId)) {
+		throw new Error("Packaged Cua Driver provenance verification failed");
+	}
+	return { hostBundleId: candidate.hostBundleId };
 }
 
 function runCommand(command: string, args: string[]): Promise<CuaDriverCommandResult> {
@@ -103,7 +149,16 @@ export async function prepareInstalledCuaDriver(
 ): Promise<void> {
 	const command = options.driverCommand
 		?? (process.env.TROUBLEMAKER_CUA_DRIVER_COMMAND?.trim() || undefined)
-		?? join(homedir(), ".local", "bin", "cua-driver");
+		?? ((options.distributable ?? process.env.TROUBLEMAKER_DISTRIBUTABLE_MAC === "1")
+			? undefined
+			: join(homedir(), ".local", "bin", "cua-driver"));
+	if (!command) throw new Error("Packaged Cua Driver executable is required but was not resolved from the app bundle");
+	const distributable = options.distributable ?? process.env.TROUBLEMAKER_DISTRIBUTABLE_MAC === "1";
+	if (distributable) {
+		const manifestPath = options.manifestPath ?? process.env.TROUBLEMAKER_CUA_DRIVER_MANIFEST?.trim();
+		if (!manifestPath) throw new Error("Packaged Cua Driver provenance manifest is required");
+		verifyPackagedProvenance(command, manifestPath);
+	}
 	const execute = options.runCommand ?? runCommand;
 	const version = await execute(command, ["--version"]);
 	if (version.code !== 0 || version.stdout.trim() !== `cua-driver ${CUA_DRIVER_VERSION}`) {
@@ -223,20 +278,102 @@ function toAgentResult(result: ToolResult) {
 }
 
 export class CuaDriverBridge {
-	private readonly connectClient: () => CuaDriverLike;
+	private readonly connectClient: (socketPath?: string) => CuaDriverLike;
 	private readonly prepareDaemon: () => Promise<void>;
+	private readonly options: CuaDriverBridgeOptions;
 	private client?: CuaDriverLike;
 	private toolDefinitions: AgentTool<any>[] = [];
+	private embeddedHost?: EmbeddedCuaDriverHostLike;
+	private embeddedGeneration?: string;
+	private terminalFault?: Error;
+	private monitorEmbeddedExit(host: EmbeddedCuaDriverHostLike, generation: string): void {
+		host.waitForExit(generation).then(async () => {
+			if (this.embeddedGeneration !== generation) return;
+			this.terminalFault = new Error(`Embedded Cua Driver generation ${generation} exited unexpectedly`);
+			this.embeddedGeneration = undefined;
+			this.toolDefinitions = [];
+			const deadClient = this.client;
+			this.client = undefined;
+			if (deadClient) await deadClient.shutdown().catch(() => undefined);
+			await this.teardownEmbedded();
+		}).catch(async (error) => {
+			if (this.embeddedGeneration !== generation) return;
+			this.terminalFault = new Error(`Embedded Cua Driver liveness failed: ${String(error)}`);
+			this.toolDefinitions = [];
+			const deadClient = this.client;
+			this.client = undefined;
+			if (deadClient) await deadClient.shutdown().catch(() => undefined);
+			await this.teardownEmbedded();
+		});
+	}
+
+	private async teardownEmbedded(): Promise<void> {
+		const host = this.embeddedHost;
+		this.embeddedHost = undefined;
+		this.embeddedGeneration = undefined;
+		if (!host) return;
+		await host.stop().catch(() => undefined);
+		if ("uniffiDestroy" in host) (host as EmbeddedCuaDriverHost).uniffiDestroy();
+	}
 
 	constructor(options: CuaDriverBridgeOptions = {}) {
-		this.connectClient = options.connect ?? (() => CuaDriver.connect(undefined));
+		this.options = options;
+		this.connectClient = options.connect ?? ((socketPath) => CuaDriver.connect(socketPath));
 		this.prepareDaemon = options.prepareDaemon ?? (() => prepareInstalledCuaDriver());
 	}
 
 	async connect(): Promise<void> {
+		if (this.terminalFault) throw this.terminalFault;
 		if (this.client) return;
-		await this.prepareDaemon();
-		const client = this.connectClient();
+		const distributable = this.options.distributable ?? process.env.TROUBLEMAKER_DISTRIBUTABLE_MAC === "1";
+		let client: CuaDriverLike;
+		let committedEmbedded: { host: EmbeddedCuaDriverHostLike; generation: string } | undefined;
+		if (distributable) {
+			const command = this.options.driverCommand ?? process.env.TROUBLEMAKER_CUA_DRIVER_COMMAND?.trim();
+			const manifestPath = this.options.manifestPath ?? process.env.TROUBLEMAKER_CUA_DRIVER_MANIFEST?.trim();
+			if (!command || !manifestPath) throw new Error("Packaged Cua Driver executable and provenance manifest are required");
+			const provenance = verifyPackagedProvenance(command, manifestPath);
+			const launcherBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID?.trim();
+			if (!launcherBundleId || !/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*){2,}$/.test(launcherBundleId) || launcherBundleId !== provenance.hostBundleId) throw new Error("Packaged launcher identity does not match Cua Driver provenance");
+			let permissionStatus: MacOSPermissionStatus;
+			try {
+				permissionStatus = (this.options.permissionPreflight ?? requestMacOSPermissions)();
+			} catch (error) {
+				throw new CuaDriverPermissionError(["accessibility", "screenRecording"], error);
+			}
+			if (!hasRequiredMacOSPermissions(permissionStatus)) {
+				const missing: Array<"accessibility" | "screenRecording"> = [];
+				if (!permissionStatus.accessibility) missing.push("accessibility");
+				if (!permissionStatus.screenRecording) missing.push("screenRecording");
+				throw new CuaDriverPermissionError(missing);
+			}
+			const host = (this.options.embeddedHost ?? ((path, bundleId) => new EmbeddedCuaDriverHost(path, bundleId)))(command, launcherBundleId);
+			this.embeddedHost = host;
+			let connection;
+			try {
+				connection = await host.start();
+			} catch (error) {
+				await this.teardownEmbedded();
+				throw error;
+			}
+			if (connection.driverVersion !== CUA_DRIVER_VERSION || connection.contractVersion !== CUA_CONTRACT_VERSION || !connection.socketPath || !connection.generation) {
+				await host.stop();
+				if ("uniffiDestroy" in host) (host as EmbeddedCuaDriverHost).uniffiDestroy();
+				this.embeddedHost = undefined;
+				throw new Error("Embedded Cua Driver returned an incompatible private endpoint");
+			}
+			this.embeddedGeneration = connection.generation;
+			try {
+				client = this.connectClient(connection.socketPath);
+			} catch (error) {
+				await this.teardownEmbedded();
+				throw error;
+			}
+			committedEmbedded = { host, generation: connection.generation };
+		} else {
+			await this.prepareDaemon();
+			client = this.connectClient();
+		}
 		try {
 			validateMetadata(await client.metadata());
 			const inventory = parseInventory(await client.listToolsJson());
@@ -257,8 +394,10 @@ export class CuaDriverBridge {
 				},
 			}));
 			this.client = client;
+			if (committedEmbedded) this.monitorEmbeddedExit(committedEmbedded.host, committedEmbedded.generation);
 		} catch (error) {
 			await client.shutdown().catch(() => undefined);
+			await this.teardownEmbedded();
 			throw error;
 		}
 	}
@@ -271,6 +410,8 @@ export class CuaDriverBridge {
 		const client = this.client;
 		this.client = undefined;
 		this.toolDefinitions = [];
+		this.embeddedGeneration = undefined;
 		if (client) await client.shutdown();
+		await this.teardownEmbedded();
 	}
 }

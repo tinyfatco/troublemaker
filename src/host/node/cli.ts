@@ -921,6 +921,7 @@ const computerToolMode = resolveComputerToolMode(workingDir);
 const cuaDriverBridge = computerToolMode === "cua" ? new CuaDriverBridge() : undefined;
 const mcpBridge = new McpBridge(workingDir, {
 	excludeComputerUse: computerToolMode !== "codex-mcp",
+	requireComputerUse: computerToolMode === "codex-mcp",
 });
 log.logInfo(`[computer-tools] mode=${computerToolMode}`);
 
@@ -931,12 +932,16 @@ if (cuaDriverBridge) {
 	await cuaDriverBridge.connect();
 	log.logInfo(`[computer-tools] native Cua Driver ready (${cuaDriverBridge.tools().length} deferred tools)`);
 }
+if (computerToolMode === "codex-mcp") {
+	await mcpBridge.connect();
+	log.logInfo(`[computer-tools] Codex Computer Use MCP ready (${mcpBridge.tools().length} tools)`);
+}
 // Fire-and-forget — never block startup on remote MCP connections.
 // Tools attach when connect() resolves. If Emdash or any other server
 // is unreachable, the agent still boots and handles webhooks normally.
 {
 	const t = performance.now();
-	mcpBridge.connect().then(() => {
+	(computerToolMode === "codex-mcp" ? mcpBridge.ready() : mcpBridge.connect()).then(() => {
 		const bridgeTools = mcpBridge.tools();
 		if (bridgeTools.length > 0) {
 			log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
