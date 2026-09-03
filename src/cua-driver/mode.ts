@@ -25,7 +25,7 @@ function readConfiguredMode(workspaceDir: string): ComputerToolMode | undefined 
 	}
 }
 
-/** Explicit environment wins over workspace settings. Generic hosts default off. */
+/** Explicit host policy wins over workspace settings. Generic hosts default off. */
 export function resolveComputerToolMode(
 	workspaceDir: string,
 	environment: NodeJS.ProcessEnv = process.env,

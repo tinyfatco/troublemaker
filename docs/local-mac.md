@@ -10,15 +10,25 @@ Local voice tool
   POST /input/webhook
 Troublemaker
   web adapter, memory, tools, web UI
-Codex Computer Use
-  bundled `SkyComputerUseClient mcp` stdio child process
-SkyComputerUseService
-  macOS accessibility and application-control backend
+Pinned Cua Driver 0.20.0
+  verified private embedded endpoint owned by Troublemaker.app
 ```
 
-## Install Computer Use
+## Computer backend
 
-Computer Use is bundled with Codex.app. Troublemaker starts the bundled
+Distributable builds package the reviewed Cua Driver 0.20.0 universal executable
+inside `Troublemaker.app`. The build validates its SHA-256 and upstream Developer
+ID before copying it; runtime validates the packaged manifest before starting a
+private `EmbeddedCuaDriverHost` generation. Missing or changed bundle bytes fail
+closed and never fall back to a user install or `/Applications`.
+
+Use `self_configure` with setting `computer.mode` and exactly `cua`, `codex-mcp`,
+or `off`. The setting is exclusive and takes effect after runtime restart. The
+packaged launcher seeds `cua` only when the workspace has no selection; an
+explicit `TROUBLEMAKER_COMPUTER_MODE` remains an administrator override. Generic
+non-distribution hosts default to `off`.
+
+Codex Computer Use remains an optional rollback selection. It is bundled with Codex.app. Troublemaker starts the bundled
 `SkyComputerUseClient` through the signed Codex sandbox launcher as a stdio MCP
 child process with the plugin directory as its working directory. The signed
 parent authenticates the client to `SkyComputerUseService`; launching the client
@@ -85,6 +95,7 @@ TROUBLEMAKER_PORT=3003 ./run-dev.sh
 TROUBLEMAKER_WORKSPACE="$HOME/Troublemaker" ./run-dev.sh
 COMPUTER_USE_PLUGIN_DIR="/Applications/Codex.app/Contents/Resources/plugins/openai-bundled/plugins/computer-use" ./run-dev.sh
 COMPUTER_USE_MCP_COMMAND="/absolute/path/to/SkyComputerUseClient" ./run-dev.sh
+TROUBLEMAKER_CUA_DRIVER_SOURCE="/path/to/reviewed/cua-driver" ./run-dev.sh
 ```
 
 ## Doctor

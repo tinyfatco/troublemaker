@@ -213,6 +213,7 @@ if (agentProfile || cloudAgentId || tenantId || appOwnedRuntime === "1" || appOw
 	settings.tenantId = tenantId || settings.tenantId || null;
 	settings.cloudBaseUrl = cloudBaseUrl || settings.cloudBaseUrl || "https://api.example.com";
 	settings.appOwnedRuntime = true;
+	if (settings.computerMode === undefined) settings.computerMode = "cua";
 }
 
 if (computerUseCommand && codexCommand && existsSync(computerUseCommand) && existsSync(computerUseCwd) && existsSync(codexCommand)) {

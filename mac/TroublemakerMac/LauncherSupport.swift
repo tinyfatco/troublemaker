@@ -44,6 +44,11 @@ enum LauncherEnvironment {
 		env["TROUBLEMAKER_LAUNCHED_BY_APP"] = "1"
 		env["TROUBLEMAKER_APP_BUNDLE_ID"] = "com.tinyfatco.troublemaker"
 		env["TROUBLEMAKER_PROJECT_ROOT"] = projectRoot.path
+		if let resources = Bundle.main.resourceURL {
+			env["TROUBLEMAKER_CUA_DRIVER_COMMAND"] = resources.appendingPathComponent("cua-driver").path
+			env["TROUBLEMAKER_CUA_DRIVER_MANIFEST"] = resources.appendingPathComponent("cua-driver.manifest.json").path
+		}
+		env["TROUBLEMAKER_DISTRIBUTABLE_MAC"] = "1"
 		env["PEEKABOO_NO_REMOTE"] = env["PEEKABOO_NO_REMOTE"] ?? "1"
 		env["PEEKABOO_MCP_ARGS"] = env["PEEKABOO_MCP_ARGS"] ?? "mcp --no-remote"
 		return env

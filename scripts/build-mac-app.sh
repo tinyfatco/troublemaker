@@ -18,7 +18,9 @@ SIGNING_IDENTITY="${TROUBLEMAKER_SIGNING_IDENTITY:-}"
 sign_for_local_use() {
 	echo "Using the standard local ad-hoc signature."
 	echo "Warning: macOS privacy permissions may need approval again after a binary rebuild."
-	codesign --force --deep --sign - "$APP_BUNDLE"
+	codesign --force --sign - "$RESOURCES/cua-driver"
+	node "$PROJECT_ROOT/scripts/package-mac-cua-driver.mjs" --finalize "$RESOURCES/cua-driver"
+	codesign --force --sign - "$APP_BUNDLE"
 }
 
 rm -rf "$APP_BUNDLE"
@@ -45,6 +47,19 @@ xcrun swiftc \
 	-o "$EXECUTABLE"
 chmod 755 "$EXECUTABLE"
 printf "%s\n" "$PROJECT_ROOT" > "$RESOURCES/project-root"
+
+CUA_DRIVER_SOURCE="${TROUBLEMAKER_CUA_DRIVER_SOURCE:-}"
+if [ -z "$CUA_DRIVER_SOURCE" ]; then
+	echo "TROUBLEMAKER_CUA_DRIVER_SOURCE must name the pinned Cua Driver executable for a distributable build." >&2
+	exit 1
+fi
+node "$PROJECT_ROOT/scripts/package-mac-cua-driver.mjs" "$CUA_DRIVER_SOURCE" "$RESOURCES/cua-driver"
+NOTICE_SOURCE="$PROJECT_ROOT/packaging/ThirdPartyNotices-CuaDriver.txt"
+if [ ! -f "$NOTICE_SOURCE" ]; then
+	echo "Cua Driver ThirdPartyNotices source is required." >&2
+	exit 1
+fi
+cp "$NOTICE_SOURCE" "$RESOURCES/ThirdPartyNotices-CuaDriver.txt"
 
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
@@ -162,7 +177,9 @@ if [ -z "$SIGNING_IDENTITY" ]; then
 	sign_for_local_use
 else
 	echo "Trying code-signing identity: $SIGNING_IDENTITY"
-	if ! CODESIGN_RESULT="$(codesign --force --deep --sign "$SIGNING_IDENTITY" "$APP_BUNDLE" 2>&1)"; then
+	codesign --force --sign "$SIGNING_IDENTITY" "$RESOURCES/cua-driver"
+	node "$PROJECT_ROOT/scripts/package-mac-cua-driver.mjs" --finalize "$RESOURCES/cua-driver"
+	if ! CODESIGN_RESULT="$(codesign --force --sign "$SIGNING_IDENTITY" "$APP_BUNDLE" 2>&1)"; then
 		echo "Warning: code signing with that identity failed:"
 		echo "         $CODESIGN_RESULT"
 		echo "         Falling back to a local signature."

@@ -8,14 +8,47 @@ import test from "node:test";
 const buildScriptPath = "scripts/build-mac-app.sh";
 const runScriptPath = "scripts/run-dev.sh";
 const localRunScriptPath = "scripts/run-local-mac.sh";
+const packageDriverScriptPath = "scripts/package-mac-cua-driver.mjs";
 const buildScript = readFileSync(buildScriptPath, "utf8");
 const runScript = readFileSync(runScriptPath, "utf8");
 const localRunScript = readFileSync(localRunScriptPath, "utf8");
+const packageDriverScript = readFileSync(packageDriverScriptPath, "utf8");
 
 test("Mac app scripts are valid Bash", () => {
 	for (const scriptPath of [buildScriptPath, runScriptPath, localRunScriptPath]) {
 		const result = spawnSync("bash", ["-n", scriptPath], { encoding: "utf8" });
 		assert.equal(result.status, 0, result.stderr);
+	}
+});
+
+test("packaged computer backend is pinned, self-contained, and rollback-safe", () => {
+	assert.match(buildScript, /TROUBLEMAKER_CUA_DRIVER_SOURCE/);
+	assert.match(buildScript, /ThirdPartyNotices-CuaDriver/);
+	assert.match(packageDriverScript, /cua-driver-artifacts\.json/);
+	assert.match(packageDriverScript, /isSymbolicLink\(\)/);
+	assert.match(packageDriverScript, /TeamIdentifier/);
+	assert.match(packageDriverScript, /sourceSha256/);
+	assert.match(packageDriverScript, /renameSync\(temporary, destination\)/);
+	const launcher = readFileSync("mac/TroublemakerMac/LauncherSupport.swift", "utf8");
+	assert.match(launcher, /Resources.*cua-driver|resourceURL/);
+	assert.match(launcher, /TROUBLEMAKER_DISTRIBUTABLE_MAC/);
+	assert.doesNotMatch(launcher, /TROUBLEMAKER_COMPUTER_MODE/);
+	assert.match(localRunScript, /settings\.computerMode === undefined\) settings\.computerMode = "cua"/);
+	const notice = readFileSync("packaging/ThirdPartyNotices-CuaDriver.txt", "utf8");
+	assert.match(notice, /MIT AND MPL-2\.0/);
+	assert.match(notice, /Mozilla Public License Version 2\.0/);
+
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-package-rollback-"));
+	try {
+		const destination = join(dir, "cua-driver");
+		const invalid = join(dir, "invalid-driver");
+		writeFileSync(destination, "last-good");
+		writeFileSync(invalid, "not executable");
+		const failedUpgrade = spawnSync(process.execPath, [packageDriverScriptPath, invalid, destination], { encoding: "utf8" });
+		assert.notEqual(failedUpgrade.status, 0);
+		assert.equal(readFileSync(destination, "utf8"), "last-good");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 

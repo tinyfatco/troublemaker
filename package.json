@@ -157,6 +157,7 @@
 		"test:package-manager": "node --test test/package-manager-contract.test.mjs",
 		"test:macos-resident-updater": "node --test test/macos-resident-updater.test.mjs",
 		"test:cua-driver": "pnpm exec tsx --test test/cua-driver.test.ts",
+		"test:mac-app-scripts": "node --test test/mac-app-scripts.test.mjs",
 		"test:tenant-console-identity": "pnpm exec tsx test/tenant-console-identity.test.ts",
 		"test:context-pressure": "pnpm exec tsx test/context-pressure.test.ts",
 		"test:assistant-text-projection": "pnpm exec tsx test/assistant-text-projection.test.ts",

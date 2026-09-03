@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { CuaDriverLike, DriverMetadata, ToolResult } from "@trycua/cua-driver";
+import type { EmbeddedCuaDriverHostLike } from "@trycua/cua-driver";
 import {
 	CUA_DRIVER_020_TOOL_NAMES,
+	CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256,
 	CuaDriverBridge,
 	prepareInstalledCuaDriver,
 } from "../src/cua-driver/bridge.js";
@@ -69,6 +72,96 @@ test("computer mode is explicit, exclusive, and fails closed", () => {
 		writeFileSync(join(dir, "settings.json"), "{");
 		assert.throws(() => resolveComputerToolMode(dir, {}), /malformed settings/);
 	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+function packagedFixture(dir: string): { driverCommand: string; manifestPath: string } {
+	const command = join(dir, "cua-driver");
+	writeFileSync(command, "synthetic packaged driver");
+	chmodSync(command, 0o755);
+	const sha256 = createHash("sha256").update(readFileSync(command)).digest("hex");
+	const manifest = join(dir, "cua-driver.manifest.json");
+	writeFileSync(manifest, JSON.stringify({ format: 1, component: "@trycua/cua-driver-executable", version: "0.20.0", sourceSha256: CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256, sha256, hostBundleId: "com.example.synthetic" }));
+	return { driverCommand: command, manifestPath: manifest };
+}
+
+function fakeEmbeddedHost(exit: Promise<unknown>, events: string[]): EmbeddedCuaDriverHostLike {
+	return {
+		connection: () => undefined,
+		restart: async () => { throw new Error("unused"); },
+		start: async () => ({ socketPath: "/private/synthetic.sock", pid: 7, generation: "generation-1", driverVersion: "0.20.0", contractVersion: "0.7.0", mcpProtocolVersion: "2025-06-18", mcp: { command: "x", args: [], env: [] } }),
+		state: () => 2,
+		stop: async () => { events.push("stop"); },
+		waitForExit: async () => { await exit; return { generation: "generation-1", success: false, code: 1 }; },
+		uniffiDestroy: () => { events.push("destroy"); },
+	} as unknown as EmbeddedCuaDriverHostLike;
+}
+
+test("packaged embedded host binds the private endpoint and shuts down cleanly", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-packaged-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		const events: string[] = [];
+		let socketPath: string | undefined;
+		const never = new Promise<never>(() => undefined);
+		const bridge = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, events), connect: (socket) => { socketPath = socket; return fakeClient(); } });
+		await bridge.connect();
+		assert.equal(socketPath, "/private/synthetic.sock");
+		assert.equal(bridge.tools().length, 56);
+		await bridge.disconnect();
+		assert.deepEqual(events, ["stop", "destroy"]);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged embedded failures and unexpected exits invalidate the bridge terminally", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-fault-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		const validationEvents: string[] = [];
+		const never = new Promise<never>(() => undefined);
+		const invalid = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, validationEvents), connect: () => fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }) });
+		await assert.rejects(invalid.connect(), /Incompatible/);
+		assert.deepEqual(validationEvents, ["stop", "destroy"]);
+
+		const startEvents: string[] = [];
+		const startHost = fakeEmbeddedHost(never, startEvents) as unknown as { start: () => Promise<never> };
+		startHost.start = async () => { throw new Error("synthetic start failure"); };
+		const startFailure = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => startHost as unknown as EmbeddedCuaDriverHostLike });
+		await assert.rejects(startFailure.connect(), /start failure/);
+		assert.deepEqual(startEvents, ["stop", "destroy"]);
+
+		const connectEvents: string[] = [];
+		const connectFailure = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, connectEvents), connect: () => { throw new Error("synthetic connect failure"); } });
+		await assert.rejects(connectFailure.connect(), /connect failure/);
+		assert.deepEqual(connectEvents, ["stop", "destroy"]);
+
+		let releaseExit!: () => void;
+		const exit = new Promise<void>((resolve) => { releaseExit = resolve; });
+		const exitEvents: string[] = [];
+		const exited = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(exit, exitEvents), connect: () => fakeClient() });
+		await exited.connect();
+		releaseExit();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(exited.tools(), []);
+		await assert.rejects(exited.connect(), /exited unexpectedly/);
+		assert.deepEqual(exitEvents, ["stop", "destroy"]);
+
+		const immediateEvents: string[] = [];
+		const immediate = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(Promise.resolve(), immediateEvents), connect: () => fakeClient() });
+		await immediate.connect();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(immediate.tools(), []);
+		await assert.rejects(immediate.connect(), /exited unexpectedly/);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
 		rmSync(dir, { recursive: true, force: true });
 	}
 });

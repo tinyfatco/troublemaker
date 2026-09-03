@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "component": "@trycua/cua-driver-executable",
+  "hostBundleId": "com.tinyfatco.troublemaker",
+  "artifacts": [
+    {
+      "version": "0.20.0",
+      "platform": "darwin-universal",
+      "sha256": "d03a0b5f820b66d96a40fa2292e122ea06e2d7022ab7b82c768535ef0c0998ca",
+      "identifier": "com.trycua.driver",
+      "teamIdentifier": "YCK386LBJ7",
+      "authority": "Developer ID Application: Cua AI, Inc. (YCK386LBJ7)"
+    }
+  ]
+}
