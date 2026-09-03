@@ -103,19 +103,36 @@ test("local model provider resolution honors env precedence and fails closed on 
 	}
 });
 
-test("Mac app build rejects bad identities before local fallback", () => {
+test("Mac app build preserves a successful Developer ID signature before notarization", () => {
 	assert.match(buildScript, /TROUBLEMAKER_SIGNING_IDENTITY/);
 	assert.match(buildScript, /security find-identity -v -p codesigning/);
 	assert.match(buildScript, /spctl --assess --type execute/);
 	assert.match(buildScript, /CODESIGN_RESULT/);
 	assert.match(buildScript, /sign_for_local_use/);
+	assert.match(buildScript, /Gatekeeper assessment is awaiting notarization/);
+	assert.match(buildScript, /Preserving the requested Developer ID signature/);
+	const gatekeeperBranch = buildScript.slice(buildScript.indexOf("elif ! GATEKEEPER_RESULT"), buildScript.indexOf("fi\nfi", buildScript.indexOf("elif ! GATEKEEPER_RESULT")));
+	assert.doesNotMatch(gatekeeperBranch, /sign_for_local_use/);
 	assert.match(buildScript, /codesign --verify --deep --strict/);
 	assert.match(buildScript, /com\.apple\.quarantine/);
 	assert.match(buildScript, /com\.apple\.provenance/);
 });
 
+test("Mac app build is build-only by default", () => {
+	assert.match(buildScript, /if \[ "\$\{TROUBLEMAKER_INSTALL_APP:-0\}" = "1" \]; then/);
+	assert.doesNotMatch(buildScript, /TROUBLEMAKER_SKIP_INSTALL/);
+	assert.match(buildScript, /Build-only mode/);
+});
+
+test("Mac app installation requires the explicit affirmative flag", () => {
+	const installGate = buildScript.indexOf('if [ "${TROUBLEMAKER_INSTALL_APP:-0}" = "1" ]; then');
+	const installCopy = buildScript.indexOf('ditto "$APP_BUNDLE" "$INSTALL_APP"');
+	assert.ok(installGate >= 0 && installCopy > installGate);
+	assert.match(buildScript.slice(installGate, installCopy), /TROUBLEMAKER_INSTALL_APP/);
+});
+
 test("Mac app install is transactional and verifies the exact launched binary", () => {
-	assert.match(runScript, /TROUBLEMAKER_SKIP_INSTALL=1/);
+	assert.doesNotMatch(runScript, /TROUBLEMAKER_INSTALL_APP=1/);
 	assert.match(runScript, /mktemp -d \/tmp\/troublemaker-install/);
 	assert.match(runScript, /Troublemaker\.app\.previous/);
 	assert.match(runScript, /rollback_install/);

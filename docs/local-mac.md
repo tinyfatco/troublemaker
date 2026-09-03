@@ -68,9 +68,14 @@ verifies the installed signature, host architecture, and exact running
 executable before keeping the update; a failed launch restores the previous
 bundle.
 
-When a usable Keychain identity is available, the build tries it and checks the
-result with Gatekeeper. A rejected or revoked identity falls back to a standard
-local ad-hoc signature before launch. Ad-hoc builds start through a user
+`pnpm build:mac-app` only creates `build/Troublemaker.app`. It never changes
+`/Applications` unless `TROUBLEMAKER_INSTALL_APP=1` is explicitly supplied.
+The normal `run-dev.sh` flow performs its own transactional install and rollback.
+
+When a usable Keychain identity is available, the build tries it and verifies
+the resulting signature. A successful Developer ID signature is preserved when
+pre-notary Gatekeeper assessment reports that notarization is still required;
+only a signing failure falls back to a standard local ad-hoc signature. Ad-hoc builds start through a user
 `launchctl` job so stale Launch Services malware decisions do not select or
 block an older bundle. Because local ad-hoc identity changes with rebuilt
 binaries, macOS may ask for privacy permissions again after an update.
