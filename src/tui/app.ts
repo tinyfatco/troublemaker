@@ -32,6 +32,7 @@ import type {
 } from "../core/runtime-contract.js";
 import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
+import { formatWaitingInputStatus } from "./waiting-input.js";
 import {
 	assistantContentDelta,
 	isAssistantContentCoveredBySnapshot,
@@ -781,10 +782,21 @@ class TroublemakerTuiApp {
 
 	private syncExternalWorking(status: TuiRunStatus): void {
 		const queued = status.queuedInputCount || status.queuedRuns;
-		const queuedSuffix = queued > 0 ? ` · ${queued} input${queued === 1 ? "" : "s"} queued` : "";
-		const message = status.phase === "compacting"
-			? `${status.compactionAbortRequested ? "Stopping stalled compaction" : "Compacting context"} · ${formatElapsed(status.phaseElapsedMs)}${queuedSuffix}`
-			: `Working${queuedSuffix}...`;
+		this.prunePendingEchoes();
+		const localPrompts = this.activeAbort
+			? this.pendingLocalEchoes
+				.filter((entry) => entry.channel === this.profile.channelId)
+				.map((entry) => entry.text)
+			: [];
+		const baseStatus = status.phase === "compacting"
+			? `${status.compactionAbortRequested ? "Stopping stalled compaction" : "Compacting context"} · ${formatElapsed(status.phaseElapsedMs)}`
+			: "Working...";
+		const message = formatWaitingInputStatus(
+			baseStatus,
+			queued,
+			localPrompts,
+			Math.max(1, this.terminal.columns - 4),
+		);
 
 		if (this.activeAbort) {
 			if (status.phase === "compacting") this.showLoader(message);

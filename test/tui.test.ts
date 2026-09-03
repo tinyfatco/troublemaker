@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { TroublemakerTuiClient } from "../src/tui/client.js";
 import {
 	installTuiProfile,
@@ -22,6 +23,11 @@ import {
 	safeToolLabel,
 } from "../src/tui/protocol.js";
 import { parseVisibleUserInputs } from "../src/user-input-display.js";
+import {
+	formatWaitingInputStatus,
+	sanitizeWaitingPrompt,
+	selectWaitingPrompt,
+} from "../src/tui/waiting-input.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -29,6 +35,44 @@ try {
 	const appSource = await readFile(new URL("../src/tui/app.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(appSource, /command === "\/clear"/, "TUI forwards /clear to the resident instead of clearing only its display");
 	assert.match(appSource, /\/clear  archive and reset agent context/, "TUI help describes the resident-side clear behavior");
+	assert.match(appSource, /const localPrompts = this\.activeAbort[\s\S]*?this\.pendingLocalEchoes[\s\S]*?formatWaitingInputStatus\(/, "queued status uses only the active terminal request's local prompt ledger");
+
+	const queuedPrompts = ["active prompt", "first waiting prompt", "second waiting prompt"];
+	assert.equal(selectWaitingPrompt(queuedPrompts, 2), "first waiting prompt", "waiting preview follows FIFO after the active prompt");
+	assert.deepEqual(queuedPrompts, ["active prompt", "first waiting prompt", "second waiting prompt"], "preview selection never consumes or reorders queued input");
+	assert.equal(
+		formatWaitingInputStatus("Compacting context · 12s", 1, ["check the latest result"], 80),
+		"Compacting context · 12s · Waiting: check the latest result",
+		"one queued terminal prompt replaces the opaque count",
+	);
+	const multipleWaiting = formatWaitingInputStatus(
+		"Compacting context · 12s",
+		3,
+		["first queued prompt", "second queued prompt", "third queued prompt"],
+		72,
+	);
+	assert.match(multipleWaiting, /Waiting: first queued prompt/);
+	assert.match(multipleWaiting, /\(\+2 more\)$/);
+	assert(visibleWidth(multipleWaiting) <= 72, "multi-input preview stays within the available terminal width");
+	const narrowWaiting = formatWaitingInputStatus("Compacting context · 12s", 3, ["review results", "second", "third"], 16);
+	assert.match(narrowWaiting, /^Waiting: re/);
+	assert.match(narrowWaiting, /\(\+2\)$/);
+	assert.equal(visibleWidth(narrowWaiting), 16, "narrow terminals prioritize the real prompt and compact remaining count");
+	const privateWaiting = formatWaitingInputStatus(
+		"Working...",
+		1,
+		["<session_context>private model state</session_context>\n<delivery_context>private route</delivery_context>\n\u001b]0;unsafe title\u0007\u001b[31mreview café 漢字 results\u001b[0m"],
+		32,
+	);
+	assert.doesNotMatch(privateWaiting, /private model state|private route|unsafe title|\u001b\]|\u001b\[31m/);
+	assert.match(privateWaiting, /Waiting: review/);
+	assert(visibleWidth(privateWaiting) <= 32, "Unicode waiting preview uses display width rather than code-unit width");
+	assert.equal(sanitizeWaitingPrompt("line one\nline two\tline three"), "line one line two line three");
+	assert.equal(
+		formatWaitingInputStatus("Working...", 2, [], 80),
+		"Working... · 2 inputs queued",
+		"non-local queued work remains count-only instead of leaking another channel's prompt",
+	);
 
 	const executablePath = join(tempRoot, "dist", "tui.js");
 	const configPath = join(tempRoot, "config", "tui.json");
