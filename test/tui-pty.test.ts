@@ -121,7 +121,7 @@ const goalContinuationLine = JSON.stringify({
 	timestamp: "2026-01-02T03:04:11Z",
 	message: {
 		role: "user",
-		content: [{ type: "text", text: "<session_context>private runtime context</session_context>\n\n[2026-01-02 03:04:11+00:00] [terminal:ghost] [goal]: [GOAL CONTINUATION]\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
+		content: [{ type: "text", text: "<session_context>private runtime context</session_context>\n\n[2026-01-02 03:04:11+00:00] [terminal:ghost] [goal]: [GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
 	},
 });
 const webhookSteerLine = JSON.stringify({
@@ -294,7 +294,7 @@ const server = createServer(async (req, res) => {
 		const goalInputTimer = setTimeout(() => {
 			emitRuntime("goal-run", "terminal:ghost", {
 				type: "user_input",
-				entries: [{ channel: "terminal:ghost", userName: "goal", text: "[GOAL CONTINUATION]\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
+				entries: [{ channel: "terminal:ghost", userName: "goal", text: "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nContinue working toward the active goal.\n\nAutomatic goal turn: 1" }],
 			}, "goal");
 		}, 1_880);
 		const goalOutputTimer = setTimeout(() => {
@@ -469,7 +469,7 @@ expect {
   eof { puts stderr "TUI exited before webhook steering output"; exit 29 }
 }
 expect {
-  {GOAL CONTINUATION} {}
+  {Goal · turn 1} {}
   timeout { puts stderr "Goal continuation input paint timeout"; exit 30 }
   eof { puts stderr "TUI exited before goal continuation input"; exit 31 }
 }
@@ -543,7 +543,8 @@ expect eof
 	assert.match(rendered, /TERMINAL_INTERPOLATED_OUTPUT/);
 	assert.match(rendered, /WEBHOOK_STEER_INPUT/);
 	assert.match(rendered, /WEBHOOK_SECOND_OUTPUT/);
-	assert.match(rendered, /GOAL CONTINUATION/);
+	assert.match(rendered, /Goal · turn 1/);
+	assert.doesNotMatch(rendered, /GOAL CONTINUATION/);
 	assert.match(rendered, /GOAL_CONTINUED_OUTPUT/);
 	assert.match(rendered, /Robin: ambient during active turn @observer/);
 	assert.doesNotMatch(rendered, /<@U456>/);

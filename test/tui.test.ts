@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { buildGoalContinuationPrompt } from "../src/goal-continuation.js";
 import { TroublemakerTuiClient } from "../src/tui/client.js";
 import {
 	installTuiProfile,
@@ -13,6 +14,7 @@ import {
 } from "../src/tui/config.js";
 import {
 	assistantContentDelta,
+	compactGoalContinuationForTui,
 	getAmbientDisplayLines,
 	isAssistantContentCoveredBySnapshot,
 	normalizeChannelLabel,
@@ -96,11 +98,32 @@ try {
 		userName: "Alex",
 		text: "@**Batman** report exact source state",
 	}], "Zulip mention inputs are projected before their assistant output");
-	assert.deepEqual(parseVisibleUserInputs("<session_context>private runtime context</session_context>\n\n[2026-07-25 19:47:18-05:00] [terminal:ghost] [goal]: [GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nAutomatic goal turn: 1"), [{
+	const generatedGoalPrompt = buildGoalContinuationPrompt(1);
+	assert.deepEqual(parseVisibleUserInputs(`<session_context>private runtime context</session_context>\n\n[2026-07-25 19:47:18-05:00] [terminal:ghost] [goal]: ${generatedGoalPrompt}`), [{
 		channel: "terminal:ghost",
 		userName: "goal",
-		text: "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nAutomatic goal turn: 1",
-	}], "automatic goal continuation is projected as ordered visible input");
+		text: generatedGoalPrompt,
+	}], "the shared runtime event retains the complete automatic goal continuation");
+	assert.equal(compactGoalContinuationForTui("goal", generatedGoalPrompt), "Goal · turn 1");
+	assert.equal(compactGoalContinuationForTui("goal", buildGoalContinuationPrompt(2, true)), "Goal · turn 2");
+	assert.equal(
+		compactGoalContinuationForTui("Casey", generatedGoalPrompt),
+		generatedGoalPrompt,
+		"a user-authored copy outside the internal goal identity remains verbatim",
+	);
+	assert.equal(
+		compactGoalContinuationForTui("goal", "[GOAL CONTINUATION]\nordinary user text\n\nAutomatic goal turn: 9"),
+		"[GOAL CONTINUATION]\nordinary user text\n\nAutomatic goal turn: 9",
+		"a malformed lookalike under the same display name remains verbatim",
+	);
+	const parsedGoalHistory = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "goal-history",
+		timestamp: "2026-07-26T00:47:18Z",
+		message: { role: "user", content: [{ type: "text", text: `[2026-07-25 19:47:18-05:00] [terminal:ghost] [goal]: ${generatedGoalPrompt}` }] },
+	}));
+	assert.equal(parsedGoalHistory?.text, "Goal · turn 1", "durable terminal history uses the compact goal display");
+	assert.match(appSource, /text: compactGoalContinuationForTui\(entry\.userName, entry\.text\)/, "live terminal input uses the same compact projection");
 	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nCasey (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nObserver (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [#general] [ambient]: ${ambientPrompt}`), [], "ambient evaluation scaffolding never enters the live input feed");
 	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Casey: ship the fix <@U456>", "Observer: on it"]);

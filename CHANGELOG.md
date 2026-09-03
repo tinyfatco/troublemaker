@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Generated goal-continuation turns now use a concise terminal transcript label instead of displaying their full internal instruction.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08

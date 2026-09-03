@@ -31,6 +31,15 @@ export interface TuiBatchedUserEntry {
 	text: string;
 }
 
+const GOAL_CONTINUATION_DISPLAY_RE = /^\[GOAL CONTINUATION\]\r?\n(?:The previous turn became idle while this goal remained active\.|The runtime restarted while this goal was active\.)\r?\n\r?\n[\s\S]*\r?\n\r?\nAutomatic goal turn: ([1-9]\d*)\s*$/;
+
+/** Collapse only the exact generated goal wake; ordinary lookalike text stays verbatim. */
+export function compactGoalContinuationForTui(userName: string, text: string): string {
+	if (userName !== "goal") return text;
+	const match = text.match(GOAL_CONTINUATION_DISPLAY_RE);
+	return match ? `Goal · turn ${match[1]}` : text;
+}
+
 export async function* readRuntimeSse(response: Response): AsyncGenerator<RuntimeStreamEvent> {
 	for await (const data of readSseData(response)) {
 		if (data === "[DONE]") return;
@@ -99,6 +108,7 @@ export function parseContextLine(line: string): TuiHistoryEntry | null {
 				const inputs = parseVisibleUserInputs(text.text).map((input) => ({
 					...input,
 					channel: normalizeChannelLabel(input.channel),
+					text: compactGoalContinuationForTui(input.userName, input.text),
 				}));
 				if (inputs.length > 1) entry.batchedUserEntries = inputs;
 				else if (inputs[0]) {

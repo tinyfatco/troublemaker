@@ -34,6 +34,7 @@ import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from ".
 import type { TuiAgentProfile } from "./config.js";
 import {
 	assistantContentDelta,
+	compactGoalContinuationForTui,
 	isAssistantContentCoveredBySnapshot,
 	normalizeChannelLabel,
 	parseContextLine,
@@ -406,6 +407,7 @@ class TroublemakerTuiApp {
 		const entries = rawEntries.map((entry) => ({
 			...entry,
 			channel: normalizeChannelLabel(entry.channel),
+			text: compactGoalContinuationForTui(entry.userName, entry.text),
 		}));
 		const visible: RuntimeUserInputEntry[] = [];
 		let matchedLocalEcho: PendingInputEcho | null = null;
