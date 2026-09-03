@@ -53,7 +53,7 @@ if [ -z "$CUA_DRIVER_SOURCE" ]; then
 	echo "TROUBLEMAKER_CUA_DRIVER_SOURCE must name the pinned Cua Driver executable for a distributable build." >&2
 	exit 1
 fi
-node "$PROJECT_ROOT/scripts/package-mac-cua-driver.mjs" "$CUA_DRIVER_SOURCE" "$RESOURCES/cua-driver"
+node "$PROJECT_ROOT/scripts/package-mac-cua-driver.mjs" "$CUA_DRIVER_SOURCE" "$RESOURCES/cua-driver" "com.tinyfatco.troublemaker"
 NOTICE_SOURCE="$PROJECT_ROOT/packaging/ThirdPartyNotices-CuaDriver.txt"
 if [ ! -f "$NOTICE_SOURCE" ]; then
 	echo "Cua Driver ThirdPartyNotices source is required." >&2

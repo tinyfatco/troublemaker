@@ -1,7 +1,6 @@
 {
   "format": 1,
   "component": "@trycua/cua-driver-executable",
-  "hostBundleId": "com.tinyfatco.troublemaker",
   "artifacts": [
     {
       "version": "0.20.0",

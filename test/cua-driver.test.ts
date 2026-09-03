@@ -9,6 +9,7 @@ import type { EmbeddedCuaDriverHostLike } from "@trycua/cua-driver";
 import {
 	CUA_DRIVER_020_TOOL_NAMES,
 	CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256,
+	CuaDriverPermissionError,
 	CuaDriverBridge,
 	prepareInstalledCuaDriver,
 } from "../src/cua-driver/bridge.js";
@@ -98,6 +99,8 @@ function fakeEmbeddedHost(exit: Promise<unknown>, events: string[]): EmbeddedCua
 	} as unknown as EmbeddedCuaDriverHostLike;
 }
 
+const grantedPermissions = () => ({ accessibility: true, screenRecording: true });
+
 test("packaged embedded host binds the private endpoint and shuts down cleanly", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-packaged-"));
 	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
@@ -107,12 +110,56 @@ test("packaged embedded host binds the private endpoint and shuts down cleanly",
 		const events: string[] = [];
 		let socketPath: string | undefined;
 		const never = new Promise<never>(() => undefined);
-		const bridge = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, events), connect: (socket) => { socketPath = socket; return fakeClient(); } });
+		const bridge = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, events), connect: (socket) => { socketPath = socket; return fakeClient(); } });
 		await bridge.connect();
 		assert.equal(socketPath, "/private/synthetic.sock");
 		assert.equal(bridge.tools().length, 56);
 		await bridge.disconnect();
 		assert.deepEqual(events, ["stop", "destroy"]);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged permission preflight fails closed before host spawn", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-permission-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		let spawns = 0;
+		const hostFactory = () => { spawns += 1; return fakeEmbeddedHost(new Promise<never>(() => undefined), []); };
+		for (const permissionPreflight of [
+			() => ({ accessibility: false, screenRecording: true }),
+			() => ({ accessibility: true, screenRecording: false }),
+		]) {
+			const bridge = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight, embeddedHost: hostFactory });
+			await assert.rejects(bridge.connect(), (error) => error instanceof CuaDriverPermissionError && error.code === "CUA_MACOS_PERMISSIONS_REQUIRED" && error.message.includes("onboarding"));
+		}
+		const probeError = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: () => { throw new Error("probe failed"); }, embeddedHost: hostFactory });
+		await assert.rejects(probeError.connect(), (error) => error instanceof CuaDriverPermissionError && error.cause instanceof Error);
+		assert.equal(spawns, 0);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged host identity is required, validated, and matched before spawn", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-identity-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	try {
+		const packaged = packagedFixture(dir);
+		let spawns = 0;
+		const options = { ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => { spawns += 1; return fakeEmbeddedHost(new Promise<never>(() => undefined), []); } };
+		delete process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.wrong";
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		process.env.TROUBLEMAKER_APP_BUNDLE_ID = "not a bundle id";
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		assert.equal(spawns, 0);
 	} finally {
 		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
 		rmSync(dir, { recursive: true, force: true });
@@ -127,26 +174,26 @@ test("packaged embedded failures and unexpected exits invalidate the bridge term
 		const packaged = packagedFixture(dir);
 		const validationEvents: string[] = [];
 		const never = new Promise<never>(() => undefined);
-		const invalid = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, validationEvents), connect: () => fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }) });
+		const invalid = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, validationEvents), connect: () => fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }) });
 		await assert.rejects(invalid.connect(), /Incompatible/);
 		assert.deepEqual(validationEvents, ["stop", "destroy"]);
 
 		const startEvents: string[] = [];
 		const startHost = fakeEmbeddedHost(never, startEvents) as unknown as { start: () => Promise<never> };
 		startHost.start = async () => { throw new Error("synthetic start failure"); };
-		const startFailure = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => startHost as unknown as EmbeddedCuaDriverHostLike });
+		const startFailure = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => startHost as unknown as EmbeddedCuaDriverHostLike });
 		await assert.rejects(startFailure.connect(), /start failure/);
 		assert.deepEqual(startEvents, ["stop", "destroy"]);
 
 		const connectEvents: string[] = [];
-		const connectFailure = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(never, connectEvents), connect: () => { throw new Error("synthetic connect failure"); } });
+		const connectFailure = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, connectEvents), connect: () => { throw new Error("synthetic connect failure"); } });
 		await assert.rejects(connectFailure.connect(), /connect failure/);
 		assert.deepEqual(connectEvents, ["stop", "destroy"]);
 
 		let releaseExit!: () => void;
 		const exit = new Promise<void>((resolve) => { releaseExit = resolve; });
 		const exitEvents: string[] = [];
-		const exited = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(exit, exitEvents), connect: () => fakeClient() });
+		const exited = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(exit, exitEvents), connect: () => fakeClient() });
 		await exited.connect();
 		releaseExit();
 		await new Promise((resolve) => setImmediate(resolve));
@@ -155,7 +202,7 @@ test("packaged embedded failures and unexpected exits invalidate the bridge term
 		assert.deepEqual(exitEvents, ["stop", "destroy"]);
 
 		const immediateEvents: string[] = [];
-		const immediate = new CuaDriverBridge({ ...packaged, distributable: true, embeddedHost: () => fakeEmbeddedHost(Promise.resolve(), immediateEvents), connect: () => fakeClient() });
+		const immediate = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(Promise.resolve(), immediateEvents), connect: () => fakeClient() });
 		await immediate.connect();
 		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepEqual(immediate.tools(), []);

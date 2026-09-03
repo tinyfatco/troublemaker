@@ -7,6 +7,11 @@ import {
 	type EmbeddedCuaDriverHostLike,
 	type ToolResult,
 } from "@trycua/cua-driver";
+import {
+	hasRequiredMacOSPermissions,
+	requestMacOSPermissions,
+	type MacOSPermissionStatus,
+} from "@trycua/cua-driver/electron";
 import type { TSchema } from "typebox";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -67,6 +72,20 @@ export interface CuaDriverBridgeOptions {
 	distributable?: boolean;
 	driverCommand?: string;
 	manifestPath?: string;
+	permissionPreflight?: () => MacOSPermissionStatus;
+}
+
+export class CuaDriverPermissionError extends Error {
+	readonly code = "CUA_MACOS_PERMISSIONS_REQUIRED";
+	constructor(readonly missingPermissions: Array<"accessibility" | "screenRecording">, cause?: unknown) {
+		super(
+			cause
+				? "Unable to verify macOS Accessibility and Screen Recording permissions. Open Troublemaker Computer onboarding to review permissions, then restart the runtime."
+				: `Cua Driver requires macOS ${missingPermissions.map((permission) => permission === "screenRecording" ? "Screen Recording" : "Accessibility").join(" and ")} permission. Complete Troublemaker Computer onboarding, then restart the runtime.`,
+			{ cause },
+		);
+		this.name = "CuaDriverPermissionError";
+	}
 }
 
 export interface CuaDriverCommandResult {
@@ -95,7 +114,7 @@ function verifyPackagedProvenance(command: string, manifestPath: string): { host
 	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("Packaged Cua Driver provenance manifest is invalid");
 	const candidate = manifest as Record<string, unknown>;
 	const digest = createHash("sha256").update(readFileSync(command)).digest("hex");
-	if (candidate.format !== 1 || candidate.component !== "@trycua/cua-driver-executable" || candidate.version !== CUA_DRIVER_VERSION || candidate.sourceSha256 !== CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256 || candidate.sha256 !== digest || typeof candidate.hostBundleId !== "string" || !candidate.hostBundleId) {
+	if (candidate.format !== 1 || candidate.component !== "@trycua/cua-driver-executable" || candidate.version !== CUA_DRIVER_VERSION || candidate.sourceSha256 !== CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256 || candidate.sha256 !== digest || typeof candidate.hostBundleId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*){2,}$/.test(candidate.hostBundleId)) {
 		throw new Error("Packaged Cua Driver provenance verification failed");
 	}
 	return { hostBundleId: candidate.hostBundleId };
@@ -315,7 +334,19 @@ export class CuaDriverBridge {
 			if (!command || !manifestPath) throw new Error("Packaged Cua Driver executable and provenance manifest are required");
 			const provenance = verifyPackagedProvenance(command, manifestPath);
 			const launcherBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID?.trim();
-			if (!launcherBundleId || launcherBundleId !== provenance.hostBundleId) throw new Error("Packaged launcher identity does not match Cua Driver provenance");
+			if (!launcherBundleId || !/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*){2,}$/.test(launcherBundleId) || launcherBundleId !== provenance.hostBundleId) throw new Error("Packaged launcher identity does not match Cua Driver provenance");
+			let permissionStatus: MacOSPermissionStatus;
+			try {
+				permissionStatus = (this.options.permissionPreflight ?? requestMacOSPermissions)();
+			} catch (error) {
+				throw new CuaDriverPermissionError(["accessibility", "screenRecording"], error);
+			}
+			if (!hasRequiredMacOSPermissions(permissionStatus)) {
+				const missing: Array<"accessibility" | "screenRecording"> = [];
+				if (!permissionStatus.accessibility) missing.push("accessibility");
+				if (!permissionStatus.screenRecording) missing.push("screenRecording");
+				throw new CuaDriverPermissionError(missing);
+			}
 			const host = (this.options.embeddedHost ?? ((path, bundleId) => new EmbeddedCuaDriverHost(path, bundleId)))(command, launcherBundleId);
 			this.embeddedHost = host;
 			let connection;

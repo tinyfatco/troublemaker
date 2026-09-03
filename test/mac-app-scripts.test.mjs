@@ -44,9 +44,16 @@ test("packaged computer backend is pinned, self-contained, and rollback-safe", (
 		const invalid = join(dir, "invalid-driver");
 		writeFileSync(destination, "last-good");
 		writeFileSync(invalid, "not executable");
-		const failedUpgrade = spawnSync(process.execPath, [packageDriverScriptPath, invalid, destination], { encoding: "utf8" });
+		const failedUpgrade = spawnSync(process.execPath, [packageDriverScriptPath, invalid, destination, "com.example.synthetic"], { encoding: "utf8" });
 		assert.notEqual(failedUpgrade.status, 0);
 		assert.equal(readFileSync(destination, "utf8"), "last-good");
+		for (const hostId of [undefined, "invalid", "bad bundle id"]) {
+			const args = [packageDriverScriptPath, invalid, destination];
+			if (hostId !== undefined) args.push(hostId);
+			const invalidHost = spawnSync(process.execPath, args, { encoding: "utf8" });
+			assert.notEqual(invalidHost.status, 0);
+			assert.match(invalidHost.stderr, /bundle ID|required/);
+		}
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

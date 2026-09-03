@@ -5,9 +5,9 @@ import { basename, dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const VERSION = "0.20.0";
-const [sourceArg, destinationArg] = process.argv.slice(2);
+const [sourceArg, destinationArg, hostBundleIdArg] = process.argv.slice(2);
 if (!sourceArg || !destinationArg) {
-	console.error("usage: package-mac-cua-driver.mjs <source executable> <bundle destination>");
+	console.error("usage: package-mac-cua-driver.mjs <source executable> <bundle destination> <host bundle ID>");
 	process.exit(2);
 }
 const source = resolve(sourceArg);
@@ -33,6 +33,12 @@ if (sourceArg === "--finalize") {
 	renameSync(next, packagedManifest);
 	console.log(`Finalized packaged Cua Driver ${VERSION} integrity (${current.sha256})`);
 	process.exit(0);
+}
+
+const hostBundleId = hostBundleIdArg?.trim();
+if (!hostBundleId || !/^[A-Za-z0-9][A-Za-z0-9-]*(?:\.[A-Za-z0-9][A-Za-z0-9-]*){2,}$/.test(hostBundleId)) {
+	console.error("A valid reverse-DNS host bundle ID is required");
+	process.exit(2);
 }
 
 function verifyExecutable(path) {
@@ -67,7 +73,7 @@ try {
 	chmodSync(temporary, 0o755);
 	verifyCopiedBytes(temporary);
 	const sha256 = createHash("sha256").update(readFileSync(temporary)).digest("hex");
-	writeFileSync(temporaryManifest, `${JSON.stringify({ format: 1, component: "@trycua/cua-driver-executable", version: VERSION, sourceSha256: trusted.sha256, sha256, hostBundleId: trust.hostBundleId }, null, 2)}\n`, { mode: 0o644 });
+	writeFileSync(temporaryManifest, `${JSON.stringify({ format: 1, component: "@trycua/cua-driver-executable", version: VERSION, sourceSha256: trusted.sha256, sha256, hostBundleId }, null, 2)}\n`, { mode: 0o644 });
 	// Commit only after both staged artifacts validate; retain paired last-good bytes until both renames finish.
 	if (existsSync(destination)) renameSync(destination, rollback);
 	if (existsSync(manifest)) renameSync(manifest, rollbackManifest);
