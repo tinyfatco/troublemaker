@@ -74,6 +74,9 @@ assert.match(cliSource, /Stale compaction detected[\s\S]*?abortCompaction\(\)/, 
 
 const tuiSource = await readFile(new URL("../src/tui/app.ts", import.meta.url), "utf8");
 assert.match(tuiSource, /Compacting context[\s\S]*?formatElapsed\(status\.phaseElapsedMs\)/, "TUI continuously labels compaction with elapsed time");
-assert.match(tuiSource, /input.*queued/, "TUI surfaces queued input count");
+assert.match(tuiSource, /pendingLocalEchoes[\s\S]*?formatWaitingInputStatus/, "TUI surfaces the next local waiting prompt during compaction");
+const waitingInputSource = await readFile(new URL("../src/tui/waiting-input.ts", import.meta.url), "utf8");
+assert.match(waitingInputSource, /count-only privacy fallback/, "non-local queued work remains private");
+assert.match(waitingInputSource, /truncateToWidth/, "waiting prompts respect terminal display width");
 
 console.log("compaction QoL: ok");

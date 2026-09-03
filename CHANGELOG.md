@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The terminal status now shows the next locally queued prompt, with a compact remaining-input count, instead of only an opaque queue total.
+
 ## [0.52.10] - 2026-02-12
 
 ## [0.52.9] - 2026-02-08
