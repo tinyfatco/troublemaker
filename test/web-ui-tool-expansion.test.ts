@@ -21,7 +21,8 @@ function assert(condition: boolean, msg: string) {
 assert(shouldAutoOpenToolDetails(true, true), "running tool with details auto-opens");
 assert(!shouldAutoOpenToolDetails(false, true), "running tool without visible details stays collapsed");
 assert(!shouldAutoOpenToolDetails(true, false), "settled tool does not auto-open from scratch");
-assert(shouldAutoCollapseToolDetails(true, false), "auto-opened tool schedules collapse after completion");
+assert(!shouldAutoCollapseToolDetails(true, false, false), "auto-opened tool stays visible until its stream requests collapse");
+assert(shouldAutoCollapseToolDetails(true, false, true), "auto-opened tool schedules collapse after the completion request");
 assert(!shouldAutoCollapseToolDetails(false, false), "manual-only open does not auto-collapse");
 assert(isToolDetailsExpanded(true, false, true), "auto-open state expands details");
 assert(isToolDetailsExpanded(true, true, false), "manual-open state expands details");

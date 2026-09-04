@@ -15,10 +15,19 @@ interface ConnectedServer {
 	tools: AgentTool<any>[];
 }
 
+const COMPUTER_USE_MCP_ALIASES = new Set(["computer-use", "codex-computer-use", "cua-driver"]);
+
+export function isComputerUseMcpServer(config: ResolvedMcpServer): boolean {
+	return COMPUTER_USE_MCP_ALIASES.has(config.alias) || config.scopes.includes("computer:use");
+}
+
 function isLocalComputerUseServer(config: ResolvedMcpServer): boolean {
-	return config.alias === "computer-use"
-		&& config.transport === "stdio"
-		&& config.scopes.includes("computer:use");
+	return isComputerUseMcpServer(config) && config.transport === "stdio";
+}
+
+export interface McpBridgeOptions {
+	excludeComputerUse?: boolean;
+	requireComputerUse?: boolean;
 }
 
 export function isComputerUseAppApproval(params: unknown): boolean {
@@ -46,9 +55,11 @@ export class McpBridge {
 	private workspaceDir: string;
 	private connected = false;
 	private connectPromise: Promise<void> | null = null;
+	private readonly options: McpBridgeOptions;
 
-	constructor(workspaceDir: string) {
+	constructor(workspaceDir: string, options: McpBridgeOptions = {}) {
 		this.workspaceDir = workspaceDir;
+		this.options = options;
 	}
 
 	/**
@@ -69,7 +80,17 @@ export class McpBridge {
 	private async doConnect(): Promise<void> {
 		if (this.connected) return;
 
-		const configs = loadMcpConfigs(this.workspaceDir);
+		const configured = loadMcpConfigs(this.workspaceDir);
+		const configs = this.options.excludeComputerUse
+			? configured.filter((config) => !isComputerUseMcpServer(config))
+			: configured;
+		const selectedComputerConfigs = configs.filter(isComputerUseMcpServer);
+		if (this.options.requireComputerUse && selectedComputerConfigs.length !== 1) {
+			throw new Error(`codex-mcp mode requires exactly one configured computer-use MCP server; found ${selectedComputerConfigs.length}`);
+		}
+		if (configs.length !== configured.length) {
+			log.logInfo(`[mcp-client] Native Cua mode excluded ${configured.length - configs.length} computer-use MCP server(s)`);
+		}
 		if (configs.length === 0) {
 			log.logInfo("[mcp-client] No MCP servers configured");
 			this.connected = true;
@@ -93,6 +114,14 @@ export class McpBridge {
 					`[mcp-client] Failed to connect to "${config.alias}" (${source})`,
 					String(result.reason),
 				);
+				if (this.options.requireComputerUse && isComputerUseMcpServer(config)) throw result.reason;
+			}
+		}
+		if (this.options.requireComputerUse) {
+			const selectedAlias = selectedComputerConfigs[0].alias;
+			const connectedComputer = this.servers.filter((server) => server.alias === selectedAlias);
+			if (connectedComputer.length !== 1 || connectedComputer[0].tools.length === 0) {
+				throw new Error("codex-mcp mode did not produce one non-empty computer-use tool surface");
 			}
 		}
 

@@ -33,6 +33,9 @@ assert(prompt.includes("previews are not enough to choose"), "system prompt tell
 assert(prompt.includes("email-thread:<id>"), "system prompt names email thread targets");
 assert(prompt.includes("self_configure"), "system prompt names self_configure");
 assert(prompt.includes("working-output routing"), "system prompt advertises working-output routing");
+assert(prompt.includes("computer.macos_auto_speech"), "system prompt names the bounded macOS Computer preference");
+assert(prompt.includes("does not invoke speech in this runtime"), "system prompt keeps Computer automatic speech client-owned");
+assert(prompt.includes("iPhone, Watch, CallMe, Realtime voice, manual speech"), "system prompt preserves unrelated speech surfaces");
 assert(prompt.includes("mode `fixed` with target `here`"), "system prompt explains fixed current-locus working output");
 assert(prompt.includes("independent from messages-only user delivery"), "system prompt separates working labels from user delivery");
 assert(prompt.includes("set_goal"), "system prompt names persistent goal tools");

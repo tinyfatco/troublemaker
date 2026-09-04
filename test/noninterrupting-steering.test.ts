@@ -15,6 +15,7 @@ const event: MomEvent = {
 	text: "fold this into what you are doing",
 	rawText: "<@U3333333333> fold this into what you are doing",
 	sourceEventType: "slack_app_mention",
+	deliveryId: "delivery-steer-one",
 	directlyAddressed: true,
 	threadTs: "1780000000.000100",
 	replyTarget: "slack:C1111111111:1780000000.000100",
@@ -28,6 +29,7 @@ const receivedAt = Date.parse("2026-07-19T17:00:00.000Z");
 const prompt = formatBusyMessageSteer(event, adapter, "slack:#agents", receivedAt);
 
 assert.match(prompt, /Source event: slack_app_mention/);
+assert.match(prompt, /Delivery ID: delivery-steer-one/);
 assert.match(prompt, /Message type: mention/);
 assert.match(prompt, /Directly addressed: yes/);
 assert.match(prompt, /Suggested reply target: slack:C1111111111:1780000000\.000100/);

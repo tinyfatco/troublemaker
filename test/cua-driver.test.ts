@@ -1,0 +1,360 @@
+import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+import type { CuaDriverLike, DriverMetadata, ToolResult } from "@trycua/cua-driver";
+import type { EmbeddedCuaDriverHostLike } from "@trycua/cua-driver";
+import {
+	CUA_DRIVER_020_TOOL_NAMES,
+	CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256,
+	CuaDriverPermissionError,
+	CuaDriverBridge,
+	prepareInstalledCuaDriver,
+} from "../src/cua-driver/bridge.js";
+import { resolveComputerToolMode } from "../src/cua-driver/mode.js";
+import { isComputerUseMcpServer } from "../src/mcp-client/bridge.js";
+
+const metadata: DriverMetadata = {
+	driverVersion: "0.20.0",
+	contractVersion: "0.7.0",
+	toolsListSchemaVersion: "1",
+	capabilityVersion: "1",
+	mcpProtocolVersion: "2025-06-18",
+	pid: 123,
+	embedded: false,
+};
+
+function inventory(overrides: { names?: readonly string[]; schema?: string; camelCaseSchema?: boolean } = {}): string {
+	return JSON.stringify({
+		schema_version: overrides.schema ?? "1",
+		capability_version: "1",
+		tools: (overrides.names ?? CUA_DRIVER_020_TOOL_NAMES).map((name) => ({
+			name,
+			description: `Native ${name}`,
+			[overrides.camelCaseSchema ? "inputSchema" : "input_schema"]: { type: "object", properties: {}, additionalProperties: false },
+		})),
+	});
+}
+
+function fakeClient(options: {
+	metadata?: DriverMetadata;
+	inventory?: string;
+	result?: ToolResult;
+	onCall?: (name: string, args: string, signal?: AbortSignal) => void;
+	onShutdown?: () => void;
+} = {}): CuaDriverLike {
+	return {
+		metadata: async () => options.metadata ?? metadata,
+		listToolsJson: async () => options.inventory ?? inventory(),
+		callTool: async (name: string, args: string, asyncOptions?: { signal: AbortSignal }) => {
+			options.onCall?.(name, args, asyncOptions?.signal);
+			return options.result ?? {
+				text: "ok",
+				images: [],
+				isError: false,
+				degraded: false,
+				rawJson: "{}",
+			};
+		},
+		shutdown: async () => options.onShutdown?.(),
+	} as unknown as CuaDriverLike;
+}
+
+test("computer mode is explicit, exclusive, and fails closed", () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-mode-"));
+	try {
+		assert.equal(resolveComputerToolMode(dir, {}), "off");
+		writeFileSync(join(dir, "settings.json"), JSON.stringify({ computerMode: "cua" }));
+		assert.equal(resolveComputerToolMode(dir, {}), "cua");
+		assert.equal(resolveComputerToolMode(dir, { TROUBLEMAKER_COMPUTER_MODE: "codex-mcp" }), "codex-mcp");
+		assert.throws(() => resolveComputerToolMode(dir, { TROUBLEMAKER_COMPUTER_MODE: "both" }), /must be one of/);
+		writeFileSync(join(dir, "settings.json"), "{");
+		assert.throws(() => resolveComputerToolMode(dir, {}), /malformed settings/);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+function packagedFixture(dir: string): { driverCommand: string; manifestPath: string } {
+	const command = join(dir, "cua-driver");
+	writeFileSync(command, "synthetic packaged driver");
+	chmodSync(command, 0o755);
+	const sha256 = createHash("sha256").update(readFileSync(command)).digest("hex");
+	const manifest = join(dir, "cua-driver.manifest.json");
+	writeFileSync(manifest, JSON.stringify({ format: 1, component: "@trycua/cua-driver-executable", version: "0.20.0", sourceSha256: CUA_DRIVER_DARWIN_UNIVERSAL_SOURCE_SHA256, sha256, hostBundleId: "com.example.synthetic" }));
+	return { driverCommand: command, manifestPath: manifest };
+}
+
+function fakeEmbeddedHost(exit: Promise<unknown>, events: string[]): EmbeddedCuaDriverHostLike {
+	return {
+		connection: () => undefined,
+		restart: async () => { throw new Error("unused"); },
+		start: async () => ({ socketPath: "/private/synthetic.sock", pid: 7, generation: "generation-1", driverVersion: "0.20.0", contractVersion: "0.7.0", mcpProtocolVersion: "2025-06-18", mcp: { command: "x", args: [], env: [] } }),
+		state: () => 2,
+		stop: async () => { events.push("stop"); },
+		waitForExit: async () => { await exit; return { generation: "generation-1", success: false, code: 1 }; },
+		uniffiDestroy: () => { events.push("destroy"); },
+	} as unknown as EmbeddedCuaDriverHostLike;
+}
+
+const grantedPermissions = () => ({ accessibility: true, screenRecording: true });
+
+test("packaged embedded host binds the private endpoint and shuts down cleanly", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-packaged-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		const events: string[] = [];
+		let socketPath: string | undefined;
+		const never = new Promise<never>(() => undefined);
+		const bridge = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, events), connect: (socket) => { socketPath = socket; return fakeClient(); } });
+		await bridge.connect();
+		assert.equal(socketPath, "/private/synthetic.sock");
+		assert.equal(bridge.tools().length, 56);
+		await bridge.disconnect();
+		assert.deepEqual(events, ["stop", "destroy"]);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged permission preflight fails closed before host spawn", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-permission-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		let spawns = 0;
+		const hostFactory = () => { spawns += 1; return fakeEmbeddedHost(new Promise<never>(() => undefined), []); };
+		for (const permissionPreflight of [
+			() => ({ accessibility: false, screenRecording: true }),
+			() => ({ accessibility: true, screenRecording: false }),
+		]) {
+			const bridge = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight, embeddedHost: hostFactory });
+			await assert.rejects(bridge.connect(), (error) => error instanceof CuaDriverPermissionError && error.code === "CUA_MACOS_PERMISSIONS_REQUIRED" && error.message.includes("onboarding"));
+		}
+		const probeError = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: () => { throw new Error("probe failed"); }, embeddedHost: hostFactory });
+		await assert.rejects(probeError.connect(), (error) => error instanceof CuaDriverPermissionError && error.cause instanceof Error);
+		assert.equal(spawns, 0);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged host identity is required, validated, and matched before spawn", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-identity-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	try {
+		const packaged = packagedFixture(dir);
+		let spawns = 0;
+		const options = { ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => { spawns += 1; return fakeEmbeddedHost(new Promise<never>(() => undefined), []); } };
+		delete process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.wrong";
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		process.env.TROUBLEMAKER_APP_BUNDLE_ID = "not a bundle id";
+		await assert.rejects(new CuaDriverBridge(options).connect(), /launcher identity/);
+		assert.equal(spawns, 0);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("packaged embedded failures and unexpected exits invalidate the bridge terminally", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "troublemaker-cua-fault-"));
+	const savedBundleId = process.env.TROUBLEMAKER_APP_BUNDLE_ID;
+	process.env.TROUBLEMAKER_APP_BUNDLE_ID = "com.example.synthetic";
+	try {
+		const packaged = packagedFixture(dir);
+		const validationEvents: string[] = [];
+		const never = new Promise<never>(() => undefined);
+		const invalid = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, validationEvents), connect: () => fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }) });
+		await assert.rejects(invalid.connect(), /Incompatible/);
+		assert.deepEqual(validationEvents, ["stop", "destroy"]);
+
+		const startEvents: string[] = [];
+		const startHost = fakeEmbeddedHost(never, startEvents) as unknown as { start: () => Promise<never> };
+		startHost.start = async () => { throw new Error("synthetic start failure"); };
+		const startFailure = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => startHost as unknown as EmbeddedCuaDriverHostLike });
+		await assert.rejects(startFailure.connect(), /start failure/);
+		assert.deepEqual(startEvents, ["stop", "destroy"]);
+
+		const connectEvents: string[] = [];
+		const connectFailure = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, connectEvents), connect: () => { throw new Error("synthetic connect failure"); } });
+		await assert.rejects(connectFailure.connect(), /connect failure/);
+		assert.deepEqual(connectEvents, ["stop", "destroy"]);
+
+		let releaseExit!: () => void;
+		const exit = new Promise<void>((resolve) => { releaseExit = resolve; });
+		const exitEvents: string[] = [];
+		const exited = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(exit, exitEvents), connect: () => fakeClient() });
+		await exited.connect();
+		releaseExit();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(exited.tools(), []);
+		await assert.rejects(exited.connect(), /exited unexpectedly/);
+		assert.deepEqual(exitEvents, ["stop", "destroy"]);
+
+		const immediateEvents: string[] = [];
+		const immediate = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(Promise.resolve(), immediateEvents), connect: () => fakeClient() });
+		await immediate.connect();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(immediate.tools(), []);
+		await assert.rejects(immediate.connect(), /exited unexpectedly/);
+	} finally {
+		if (savedBundleId === undefined) delete process.env.TROUBLEMAKER_APP_BUNDLE_ID; else process.env.TROUBLEMAKER_APP_BUNDLE_ID = savedBundleId;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("computer MCP detection covers aliases and capability scope", () => {
+	assert.equal(isComputerUseMcpServer({ alias: "computer-use", transport: "stdio", command: "x", args: [], scopes: [] }), true);
+	assert.equal(isComputerUseMcpServer({ alias: "anything", transport: "stdio", command: "x", args: [], scopes: ["computer:use"] }), true);
+	assert.equal(isComputerUseMcpServer({ alias: "github", transport: "stdio", command: "x", args: [], scopes: ["repo:read"] }), false);
+});
+
+test("daemon preflight never launches when the pinned daemon is already running", async () => {
+	const calls: Array<[string, string[]]> = [];
+	await prepareInstalledCuaDriver({
+		driverCommand: "/synthetic/cua-driver",
+		runCommand: async (command, args) => {
+			calls.push([command, args]);
+			return args[0] === "--version"
+				? { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" }
+				: { code: 0, stdout: "Cua Driver daemon is running\n", stderr: "" };
+		},
+	});
+	assert.deepEqual(calls, [
+		["/synthetic/cua-driver", ["--version"]],
+		["/synthetic/cua-driver", ["status"]],
+	]);
+});
+
+test("daemon preflight launches only a definitely stopped signed macOS app", async () => {
+	const calls: Array<[string, string[]]> = [];
+	let statusChecks = 0;
+	await prepareInstalledCuaDriver({
+		driverCommand: "/synthetic/cua-driver",
+		platform: "darwin",
+		pollIntervalMs: 0,
+		runCommand: async (command, args) => {
+			calls.push([command, args]);
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" };
+			if (command === "/usr/bin/open") return { code: 0, stdout: "", stderr: "" };
+			statusChecks += 1;
+			return statusChecks < 2
+				? { code: 1, stdout: "", stderr: "Cua Driver daemon is not running\n" }
+				: { code: 0, stdout: "Cua Driver daemon is running\n", stderr: "" };
+		},
+	});
+	assert.deepEqual(calls[2], ["/usr/bin/open", ["-n", "-g", "-a", "CuaDriver", "--args", "serve"]]);
+});
+
+test("daemon preflight fails closed without launching on version or status ambiguity", async () => {
+	let launched = false;
+	await assert.rejects(prepareInstalledCuaDriver({
+		runCommand: async (_command, args) => {
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.19.0\n", stderr: "" };
+			launched = true;
+			return { code: 0, stdout: "", stderr: "" };
+		},
+	}), /0\.20\.0 is required/);
+	assert.equal(launched, false);
+
+	await assert.rejects(prepareInstalledCuaDriver({
+		runCommand: async (command, args) => {
+			if (args[0] === "--version") return { code: 0, stdout: "cua-driver 0.20.0\n", stderr: "" };
+			if (command === "/usr/bin/open") launched = true;
+			return { code: 2, stdout: "unexpected", stderr: "" };
+		},
+	}), /status probe failed closed/);
+	assert.equal(launched, false);
+});
+
+test("native inventory becomes namespaced deferred Pi tools and forwards exact arguments", async () => {
+	let call: { name: string; args: string; signal?: AbortSignal } | undefined;
+	const result: ToolResult = {
+		text: "captured",
+		images: [{ mimeType: "image/png", dataBase64: "aW1hZ2U=" }],
+		structuredJson: "{\"window\":1}",
+		isError: false,
+		degraded: false,
+		rawJson: "{}",
+	};
+	const bridge = new CuaDriverBridge({
+		prepareDaemon: async () => undefined,
+		connect: () => fakeClient({
+			result,
+			onCall: (name, args, signal) => { call = { name, args, signal }; },
+		}),
+	});
+	await bridge.connect();
+	const tools = bridge.tools();
+	assert.equal(tools.length, 56);
+	assert.equal(new Set(tools.map((tool) => tool.name)).size, 56);
+	assert.ok(tools.some((tool) => tool.name === "cua_check_for_update"));
+	const click = tools.find((tool) => tool.name === "cua_click");
+	assert.ok(click);
+	const controller = new AbortController();
+	const output = await click.execute("call-1", { label: "Click safely", show: true, x: 4, y: 9 }, controller.signal);
+	assert.deepEqual(call, { name: "click", args: "{\"x\":4,\"y\":9}", signal: controller.signal });
+	assert.deepEqual(output.content, [
+		{ type: "text", text: "captured" },
+		{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" },
+	]);
+	assert.deepEqual((output.details as { structured: unknown }).structured, { window: 1 });
+	await bridge.disconnect();
+});
+
+test("adapter also accepts the same-process SDK camelCase inventory shape", async () => {
+	const bridge = new CuaDriverBridge({
+		prepareDaemon: async () => undefined,
+		connect: () => fakeClient({ inventory: inventory({ camelCaseSchema: true }) }),
+	});
+	await bridge.connect();
+	assert.equal(bridge.tools().length, 56);
+});
+
+test("Cua refusal stays prominent while retaining image evidence", async () => {
+	const bridge = new CuaDriverBridge({ prepareDaemon: async () => undefined, connect: () => fakeClient({ result: {
+		text: "approval required",
+		images: [{ mimeType: "image/jpeg", dataBase64: "eA==" }],
+		isError: true,
+		errorCode: "policy_denied",
+		degraded: false,
+		rawJson: "{}",
+	} }) });
+	await bridge.connect();
+	const output = await bridge.tools()[0].execute("call-2", { label: "Inspect" });
+	assert.match((output.content[0] as { text: string }).text, /^Cua Driver refused or failed \(policy_denied\):/);
+	assert.equal(output.content[1].type, "image");
+});
+
+test("version, schema, duplicates, and exact surface mismatches fail closed", async () => {
+	for (const client of [
+		fakeClient({ metadata: { ...metadata, embedded: true } }),
+		fakeClient({ metadata: { ...metadata, driverVersion: "0.19.0" } }),
+		fakeClient({ inventory: inventory({ schema: "2" }) }),
+		fakeClient({ inventory: inventory({ names: [...CUA_DRIVER_020_TOOL_NAMES, "click"] }) }),
+		fakeClient({ inventory: inventory({ names: CUA_DRIVER_020_TOOL_NAMES.slice(1) }) }),
+	]) {
+		let shutdown = false;
+		const originalShutdown = client.shutdown.bind(client);
+		client.shutdown = async () => { shutdown = true; await originalShutdown(); };
+		const bridge = new CuaDriverBridge({ prepareDaemon: async () => undefined, connect: () => client });
+		await assert.rejects(bridge.connect());
+		assert.equal(shutdown, true);
+		assert.deepEqual(bridge.tools(), []);
+	}
+});
+
+test("adapter has no model, MCP, or API-key execution path", async () => {
+	const source = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/cua-driver/bridge.ts", import.meta.url), "utf8"));
+	assert.doesNotMatch(source, /OPENAI_API_KEY|McpBridge|streamSimple|responses\.create|chat\.completions/);
+});

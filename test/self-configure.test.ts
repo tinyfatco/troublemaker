@@ -39,6 +39,22 @@ try {
 	settings = readSettings(workingDir);
 	assert(verbosity.newValue === true, "verbosity result reports full output");
 	assert((settings.verbose as any).default === true, "verbosity writes the durable verbose default");
+	const computerMode = applySelfConfiguration(workingDir, "computer.mode", "cua");
+	settings = readSettings(workingDir);
+	assert(settings.computerMode === "cua", "computer.mode persists the sole backend selector");
+	assert(computerMode.note.includes("runtime restarts"), "computer.mode truthfully reports restart semantics");
+	const savedOverride = process.env.TROUBLEMAKER_COMPUTER_MODE;
+	process.env.TROUBLEMAKER_COMPUTER_MODE = "off";
+	const overriddenMode = applySelfConfiguration(workingDir, "computer.mode", "codex-mcp");
+	if (savedOverride === undefined) delete process.env.TROUBLEMAKER_COMPUTER_MODE;
+	else process.env.TROUBLEMAKER_COMPUTER_MODE = savedOverride;
+	assert(overriddenMode.note.includes("override (off) remains authoritative"), "computer.mode reports an active host override");
+	try {
+		applySelfConfiguration(workingDir, "computer.mode", "both");
+		assert(false, "computer.mode rejects ambiguous selection");
+	} catch (error) {
+		assert(error instanceof Error && error.message.includes("cua, codex-mcp, off"), "computer.mode validates its three values");
+	}
 	const messagesOnly = applySelfConfiguration(workingDir, "verbose", "messages_only");
 	settings = readSettings(workingDir);
 	assert(messagesOnly.newValue === "messages-only", "verbose alias normalizes messages-only");
@@ -214,6 +230,25 @@ try {
 	assert(webhookInterrupt.newValue === "interrupt", "voice webhook mode alias normalizes restart to interrupt");
 	assert((settings.voice as any).webhookInputMode === "interrupt", "voice webhook mode alias updates the durable setting");
 
+	const disabledComputerSpeech = applySelfConfiguration(workingDir, "computer.macos_auto_speech", false);
+	settings = readSettings(workingDir);
+	assert(disabledComputerSpeech.previousValue === true, "macOS Computer auto speech defaults enabled for compatibility");
+	assert(disabledComputerSpeech.newValue === false, "macOS Computer auto speech can be disabled explicitly");
+	assert((settings.computer as any).macosAutoSpeech === false, "macOS Computer auto speech persists outside legacy speak settings");
+	assert(settings.speak === undefined, "macOS Computer preference does not configure runtime speech");
+	const enabledComputerSpeech = applySelfConfiguration(workingDir, "computer.autoSpeech", "on");
+	settings = readSettings(workingDir);
+	assert(enabledComputerSpeech.setting === "computer.macos_auto_speech", "macOS Computer auto-speech alias reports its canonical setting");
+	assert((settings.computer as any).macosAutoSpeech === true, "macOS Computer auto-speech alias persists a bounded boolean");
+	try {
+		applySelfConfiguration(workingDir, "computer.macos_auto_speech", "sometimes");
+		assert(false, "invalid macOS Computer auto-speech values fail closed");
+	} catch (err) {
+		assert(err instanceof Error && err.message.includes("true or false"), "invalid macOS Computer auto-speech values explain the boolean boundary");
+	}
+	settings = readSettings(workingDir);
+	assert((settings.computer as any).macosAutoSpeech === true, "failed macOS Computer preference changes leave durable state unchanged");
+
 	const tool = createSelfConfigureTool(workingDir);
 	const settingDescription = (tool.parameters as any).properties.setting.description as string;
 	assert(settingDescription.includes("voice.wake_aliases"), "self_configure schema exposes compact wake aliases");
@@ -222,10 +257,14 @@ try {
 	assert(settingDescription.includes("mattermost.channel_attention"), "self_configure schema exposes per-channel Mattermost attention");
 	assert(settingDescription.includes("follow_ups.intervals_minutes"), "self_configure schema exposes natural follow-up checkpoints");
 	assert(settingDescription.includes("follow_ups.cancel"), "self_configure schema exposes explicit follow-up cancellation");
+	assert(settingDescription.includes("computer.macos_auto_speech"), "self_configure schema exposes the bounded macOS Computer preference");
+	assert(settingDescription.includes("computer.mode"), "self_configure schema exposes the exclusive computer backend selector");
 	assert(tool.description.includes("1/3/5/10-minute"), "self_configure metadata explains the default follow-up preset");
 	assert(tool.description.includes("cancel current sequences"), "self_configure metadata explains cancel-without-disable");
 	assert(tool.description.includes("target:'here'"), "self_configure metadata explains current-locus working output");
 	assert(tool.description.includes("mentions-only"), "self_configure metadata explains mentions-only Mattermost attention");
+	assert(tool.description.includes("never invokes the runtime speak tool"), "self_configure metadata keeps automatic speech client-owned");
+	assert(tool.description.includes("iPhone, Watch, CallMe, Realtime voice, manual speech"), "self_configure metadata bounds unaffected speech surfaces");
 	assert(!settingDescription.includes("speak.auto"), "self_configure schema does not expose speak.auto");
 	assert(!tool.description.toLowerCase().includes("automatic local sag"), "self_configure metadata does not advertise automatic SAG speech");
 

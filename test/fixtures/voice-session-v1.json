@@ -1,0 +1,145 @@
+{
+  "version": "computer.voice-session.v1",
+  "identity": {
+    "session_id": "voice-session-fixture-0001",
+    "capture_id": "voice-capture-fixture-0001",
+    "delivery_id": "voice-delivery-fixture-0001",
+    "subject_agent_id": "agent-fixture"
+  },
+  "events": [
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 1,
+      "event_id": "voice-event-0001",
+      "kind": "ready",
+      "acknowledged_client_sequence": 0,
+      "maximum_in_flight_audio_events": 4
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 2,
+      "event_id": "voice-event-0002",
+      "kind": "audio_accepted",
+      "acknowledged_client_sequence": 1,
+      "maximum_in_flight_audio_events": 4
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 3,
+      "event_id": "voice-event-0003",
+      "kind": "speech_started"
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 4,
+      "event_id": "voice-event-0004",
+      "kind": "transcript_partial",
+      "text": "show my"
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 5,
+      "event_id": "voice-event-0005",
+      "kind": "end_of_utterance"
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 6,
+      "event_id": "voice-event-0006",
+      "kind": "transcript_final",
+      "text": "show my active tasks"
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 7,
+      "event_id": "voice-event-0007",
+      "kind": "send_accepted",
+      "completion_id": "completion-fixture-0001"
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 8,
+      "event_id": "voice-event-0008",
+      "kind": "assistant_partial",
+      "text": "You have",
+      "completion_id": "completion-fixture-0001",
+      "is_speech_eligible": true
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 9,
+      "event_id": "voice-event-0009",
+      "kind": "assistant_final",
+      "text": "You have two active tasks.",
+      "completion_id": "completion-fixture-0001",
+      "is_speech_eligible": true
+    },
+    {
+      "version": "computer.voice-session.v1",
+      "identity": {
+        "session_id": "voice-session-fixture-0001",
+        "capture_id": "voice-capture-fixture-0001",
+        "delivery_id": "voice-delivery-fixture-0001",
+        "subject_agent_id": "agent-fixture"
+      },
+      "sequence": 10,
+      "event_id": "voice-event-0010",
+      "kind": "completed",
+      "completion_id": "completion-fixture-0001"
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, openSync, readFileSync, readSync, closeSync, statSync } from "fs";
 import { resolve } from "path";
 import type { AwarenessBacklog, AwarenessStore } from "../awareness.js";
+import { sanitizePrivateHandoffSessionLine } from "../../handoff-compaction.js";
 
 export class FilesystemAwarenessStore implements AwarenessStore {
 	readonly contextPath: string;
@@ -33,7 +34,7 @@ export class FilesystemAwarenessStore implements AwarenessStore {
 		const total = allLines.length;
 		const endIndex = Math.min(before, total);
 		const startIndex = Math.max(0, endIndex - safeLimit);
-		return { lines: allLines.slice(startIndex, endIndex), total, offset: startIndex };
+		return { lines: allLines.slice(startIndex, endIndex).map(sanitizePrivateHandoffSessionLine), total, offset: startIndex };
 	}
 
 	private readTail(limit: number, fileSize: number): AwarenessBacklog {
@@ -61,7 +62,7 @@ export class FilesystemAwarenessStore implements AwarenessStore {
 			const offset = position > 0
 				? Math.max(1, allLines.length - slice.length)
 				: Math.max(0, allLines.length - slice.length);
-			return { lines: slice, total: allLines.length, offset };
+			return { lines: slice.map(sanitizePrivateHandoffSessionLine), total: allLines.length, offset };
 		} finally {
 			closeSync(fd);
 		}

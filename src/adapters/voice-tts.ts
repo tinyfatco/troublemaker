@@ -70,12 +70,13 @@ export async function textToSpeech(text: string, config: TtsConfig): Promise<Tts
 		});
 
 		ws.on("message", (data) => {
+			if (resolved) return;
 			try {
 				const msg = JSON.parse(data.toString());
 				if (msg.audio) {
 					audioChunks.push(msg.audio);
 				}
-				if (msg.isFinal) {
+				if (msg.isFinal === true) {
 					clearTimeout(timeout);
 					resolved = true;
 					ws.close();
@@ -117,47 +118,72 @@ export async function textToSpeechStreaming(
 	text: string,
 	config: TtsConfig,
 	onChunk: (base64Audio: string) => void,
+	signal?: AbortSignal,
+	streamOptions: { requireFinal?: boolean; timeoutMs?: number; socketFactory?: (url: string, options: { headers: Record<string,string> }) => WebSocket } = {},
 ): Promise<void> {
 	const modelId = config.modelId || "eleven_turbo_v2_5";
 	const voiceId = config.voiceId;
 	const outputFormat = config.outputFormat || "ulaw_8000";
+	const timeoutMs = Number.isSafeInteger(streamOptions.timeoutMs) && streamOptions.timeoutMs! >= 1_000
+		? streamOptions.timeoutMs! : 30_000;
 
 	const url = `wss://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream-input?model_id=${modelId}&output_format=${outputFormat}`;
 
 	return new Promise<void>((resolve, reject) => {
 		let resolved = false;
 
-		const ws = new WebSocket(url, {
-			headers: { "xi-api-key": config.apiKey },
-		});
+		const socketOptions = { headers: { "xi-api-key": config.apiKey } };
+		const ws = streamOptions.socketFactory?.(url, socketOptions) ?? new WebSocket(url, socketOptions);
+		const closeSocket = () => { try { ws.close(); } catch { /* best-effort transport cleanup */ } };
 
+		const abort = () => {
+			if (resolved) return;
+			resolved = true;
+			clearTimeout(timeout);
+			closeSocket();
+			resolve();
+		};
 		const timeout = setTimeout(() => {
 			if (!resolved) {
 				resolved = true;
-				ws.close();
-				reject(new Error("TTS streaming WebSocket timeout (30s)"));
+				signal?.removeEventListener("abort", abort);
+				closeSocket();
+				reject(new Error("TTS streaming WebSocket timeout"));
 			}
-		}, 30000);
+		}, timeoutMs);
+		if (signal?.aborted) abort();
+		else signal?.addEventListener("abort", abort, { once: true });
 
 		ws.on("open", () => {
+			if (resolved) { closeSocket(); return; }
 			log.logInfo(`[voice-tts] WebSocket open, sending text: "${text.substring(0, 50)}"`);
-			ws.send(JSON.stringify({
-				text: " ",
-				voice_settings: {
-					stability: 0.5,
-					similarity_boost: 0.8,
-					use_speaker_boost: false,
-				},
-				generation_config: {
-					chunk_length_schedule: [120, 160, 250, 290],
-				},
-			}));
-
-			ws.send(JSON.stringify({ text: text + " " }));
-			ws.send(JSON.stringify({ text: "" }));
+			try {
+				ws.send(JSON.stringify({
+					text: " ",
+					voice_settings: {
+						stability: 0.5,
+						similarity_boost: 0.8,
+						use_speaker_boost: false,
+					},
+					generation_config: {
+						chunk_length_schedule: [120, 160, 250, 290],
+					},
+				}));
+				ws.send(JSON.stringify({ text: text + " " }));
+				ws.send(JSON.stringify({ text: "" }));
+			} catch {
+				if (!resolved) {
+					clearTimeout(timeout);
+					resolved = true;
+					signal?.removeEventListener("abort", abort);
+					closeSocket();
+					reject(new Error("TTS streaming provider send failed"));
+				}
+			}
 		});
 
 		ws.on("message", (data) => {
+			if (resolved) return;
 			try {
 				const msg = JSON.parse(data.toString());
 				// Log first message and any errors for debugging
@@ -167,14 +193,21 @@ export async function textToSpeechStreaming(
 				if (msg.audio) {
 					onChunk(msg.audio);
 				}
-				if (msg.isFinal) {
+				if (msg.isFinal === true) {
 					clearTimeout(timeout);
 					resolved = true;
-					ws.close();
+					signal?.removeEventListener("abort", abort);
+					closeSocket();
 					resolve();
 				}
-			} catch (err) {
-				log.logWarning(`[voice-tts] Failed to parse streaming message: ${err}`);
+			} catch {
+				if (!resolved) {
+					clearTimeout(timeout);
+					resolved = true;
+					signal?.removeEventListener("abort", abort);
+					closeSocket();
+					reject(new Error("TTS streaming provider returned an invalid response"));
+				}
 			}
 		});
 
@@ -183,6 +216,7 @@ export async function textToSpeechStreaming(
 			if (!resolved) {
 				clearTimeout(timeout);
 				resolved = true;
+				signal?.removeEventListener("abort", abort);
 				reject(new Error(`TTS streaming WebSocket error: ${err.message}`));
 			}
 		});
@@ -192,7 +226,9 @@ export async function textToSpeechStreaming(
 			if (!resolved) {
 				clearTimeout(timeout);
 				resolved = true;
-				resolve();
+				signal?.removeEventListener("abort", abort);
+				if (streamOptions.requireFinal) reject(new Error("TTS streaming provider closed before final"));
+				else resolve();
 			}
 		});
 	});

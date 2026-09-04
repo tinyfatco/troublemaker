@@ -45,7 +45,8 @@ import { MomSettingsManager, type WorkingOutputTarget } from "../../context.js";
 import { downloadChannel } from "../../download.js";
 import { buildAmbientEvaluationText, cancelPendingAmbientEvaluations, markAmbientMessagesIncluded, type PendingAmbientEvaluation, partitionAmbientMessagesForThread, resolveAmbientDeliveryContext, selectUnseenAmbientMessages } from "../../engagement/ambient-context.js";
 import { ChannelPulse, type PulseEntry } from "../../engagement/channel-pulse.js";
-import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR, LEGACY_EVENTS_DIR } from "../../attention/paths.js";
+import { ATTENTION_HISTORY_DIR, ATTENTION_QUEUE_DIR } from "../../attention/paths.js";
+import { removeUnconditionalCompactionSchedules } from "../../compaction-schedule.js";
 import { computeWorkspaceWakeManifest, createEventsWatcher } from "../../events.js";
 import {
 	armPendingFollowUps,
@@ -59,6 +60,8 @@ import * as log from "../../log.js";
 import { createExecutor, parseSandboxArg, withExecutorCwd, type SandboxConfig, validateSandbox } from "../../sandbox.js";
 import { ChannelStore } from "../../store.js";
 import { McpBridge } from "../../mcp-client/bridge.js";
+import { CuaDriverBridge } from "../../cua-driver/bridge.js";
+import { resolveComputerToolMode } from "../../cua-driver/mode.js";
 import { getAssistantSpeechGuardState } from "../../audio-feedback-guard.js";
 import { createHostBashRoute, createHostToolDefinitionsRoute, createHostToolExecuteRoute } from "../../modes/host/index.js";
 import { createMomTools } from "../../tools/index.js";
@@ -79,6 +82,7 @@ import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
 import { formatBusyMessageSteer, formatLocalTimestamp, routeBusyMessageWithoutInterrupt } from "../../noninterrupting-steering.js";
+import { admitRelationshipBoundMessage } from "../../relationship-bound-admission.js";
 import {
 	applyGoalContinuationIdentity,
 	createGoalContinuationEvent,
@@ -89,6 +93,12 @@ import {
 import { blockActiveGoal, readGoalState } from "../../goal-state.js";
 import { FirstClassVoiceContract } from "../../voice-contract.js";
 import { readProtectedTokenFile } from "../../protected-token-file.js";
+import { createDeepgramConsoleTranscriptionService } from "./deepgram-transcription.js";
+import { createDeepgramVoiceTranscriptionProvider } from "./deepgram-voice-session.js";
+import { createElevenLabsVoiceSessionSpeechProvider } from "./elevenlabs-voice-session-speech.js";
+import { ComputerVoiceCanonicalSubmitter } from "../../console/voice-session-canonical.js";
+import { VoiceSessionRuntime } from "../../console/voice-session-runtime.js";
+import { VoiceSessionStore } from "../../console/voice-session-store.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -564,32 +574,32 @@ function createAdapter(name: string): AdapterWithHandler {
 				process.exit(1);
 			}
 			const store = new ChannelStore({ workingDir, botToken });
-				return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
-			}
+			return new SlackWebhookAdapter({ botToken, workingDir, store, signingSecret, upstreamToken, pulse, allowedDmUserIds, onAmbientMessage: handleAmbientMessage });
+		}
 		case "teams":
 		case "teams:webhook": {
-				const result = readTeamsEnvironment(process.env);
-				if (!result.enabled) throw new Error(result.reason);
-				const config = result.config;
-				const store = new ChannelStore({ workingDir, botToken: "" });
-				return new TeamsWebhookAdapter({
-					clientId: config.clientId,
-					clientSecret: config.clientSecret,
-					managedIdentityClientId: config.managedIdentityClientId,
-					tenantId: config.tenantId,
-					serviceUrl: config.serviceUrl,
-					cloud: config.cloud,
-					workingDir,
-					store,
-					pulse,
-					allowedTenantIds: config.allowedTenantIds,
-					allowedTeamIds: config.allowedTeamIds,
-					allowedConversationIds: config.allowedConversationIds,
-					allowedDmUsers: config.allowedDmUsers,
-					directChannelMessages: config.directChannelMessages,
-					onAmbientMessage: handleAmbientMessage,
-				});
-			}
+			const result = readTeamsEnvironment(process.env);
+			if (!result.enabled) throw new Error(result.reason);
+			const config = result.config;
+			const store = new ChannelStore({ workingDir, botToken: "" });
+			return new TeamsWebhookAdapter({
+				clientId: config.clientId,
+				clientSecret: config.clientSecret,
+				managedIdentityClientId: config.managedIdentityClientId,
+				tenantId: config.tenantId,
+				serviceUrl: config.serviceUrl,
+				cloud: config.cloud,
+				workingDir,
+				store,
+				pulse,
+				allowedTenantIds: config.allowedTenantIds,
+				allowedTeamIds: config.allowedTeamIds,
+				allowedConversationIds: config.allowedConversationIds,
+				allowedDmUsers: config.allowedDmUsers,
+				directChannelMessages: config.directChannelMessages,
+				onAmbientMessage: handleAmbientMessage,
+			});
+		}
 		case "mattermost":
 		case "mattermost:socket": {
 			const url = process.env.MOM_MATTERMOST_URL;
@@ -907,13 +917,31 @@ const goalWorkspace = new FilesystemWorkspaceStore(workingDir);
 // MCP Client Bridge — connect to remote MCP servers (Emdash, etc.)
 // ============================================================================
 
-const mcpBridge = new McpBridge(workingDir);
+const computerToolMode = resolveComputerToolMode(workingDir);
+const cuaDriverBridge = computerToolMode === "cua" ? new CuaDriverBridge() : undefined;
+const mcpBridge = new McpBridge(workingDir, {
+	excludeComputerUse: computerToolMode !== "codex-mcp",
+	requireComputerUse: computerToolMode === "codex-mcp",
+});
+log.logInfo(`[computer-tools] mode=${computerToolMode}`);
+
+// Native Cua is a required local capability when explicitly enabled. Complete
+// its version and tool-contract handshake before opening the health listener so
+// a guarded resident updater can fail closed and retain the last-good release.
+if (cuaDriverBridge) {
+	await cuaDriverBridge.connect();
+	log.logInfo(`[computer-tools] native Cua Driver ready (${cuaDriverBridge.tools().length} deferred tools)`);
+}
+if (computerToolMode === "codex-mcp") {
+	await mcpBridge.connect();
+	log.logInfo(`[computer-tools] Codex Computer Use MCP ready (${mcpBridge.tools().length} tools)`);
+}
 // Fire-and-forget — never block startup on remote MCP connections.
 // Tools attach when connect() resolves. If Emdash or any other server
 // is unreachable, the agent still boots and handles webhooks normally.
 {
 	const t = performance.now();
-	mcpBridge.connect().then(() => {
+	(computerToolMode === "codex-mcp" ? mcpBridge.ready() : mcpBridge.connect()).then(() => {
 		const bridgeTools = mcpBridge.tools();
 		if (bridgeTools.length > 0) {
 			log.logInfo(`[perf] MCP bridge connected (${bridgeTools.length} tools): ${(performance.now() - t).toFixed(0)}ms`);
@@ -969,8 +997,10 @@ interface ActiveRun {
 }
 
 interface ActiveDeliveryScope {
+	runId: string;
 	adapter: PlatformAdapter;
 	channelId: string;
+	relationshipId?: string;
 	teamId?: string;
 	threadTs?: string;
 }
@@ -1099,6 +1129,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			formatInstructions,
 			parsedArgs.skillsDirs,
 			extraTools,
+			cuaDriverBridge?.tools() ?? [],
 		);
 
 		awareness = {
@@ -1255,8 +1286,10 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 	clearStopResponse(state);
 	state.interruptRequested = false;
 	const deliveryScope: ActiveDeliveryScope = {
+		runId: randomUUID(),
 		adapter: platform,
 		channelId: event.channel,
+		relationshipId: event.relationshipId,
 		teamId: event.teamId,
 		threadTs: event.threadTs,
 	};
@@ -1315,6 +1348,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				channelId: turnEvent.channel,
 				channelLabel,
 				source: platform.name,
+				...(turnEvent.deliveryId ? { deliveryId: turnEvent.deliveryId } : {}),
 			};
 			gateway.publishRuntimeEvent(liveMetadata, {
 				type: "status",
@@ -1329,6 +1363,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					undefined,
 					platform.formatInstructions,
 					(runtimeEvent) => { gateway.publishRuntimeEvent(liveMetadata, runtimeEvent); },
+					liveMetadata.runId,
 				);
 			} finally {
 				try {
@@ -1469,7 +1504,10 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Pro
 		prompt,
 		canSteer: awareness?.running === true,
 		steer: (steeringPrompt) => {
-			steering = awareness?.runner.steer(steeringPrompt, { projectionId }) ?? null;
+			steering = awareness?.runner.steer(steeringPrompt, {
+				projectionId,
+				...(event.deliveryId ? { deliveryId: event.deliveryId } : {}),
+			}) ?? null;
 			return steering !== null;
 		},
 		enqueue: () => {
@@ -1525,6 +1563,44 @@ const handler: MomHandler = {
 		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
 	},
 
+	handleRelationshipBoundEvent(event: MomEvent, adapter: PlatformAdapter, request) {
+		const scope = activeDeliveryScope;
+		const activeRuns = isRunBusy() ? [{
+			runId: scope?.runId ?? "active-unbound",
+			relationshipId: scope?.relationshipId,
+			channelId: scope?.channelId,
+		}] : [];
+		return admitRelationshipBoundMessage({
+			request,
+			activeRuns,
+			strictSteer: () => {
+				if (!awareness?.running) return null;
+				const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
+				let resolveAccepted!: () => void;
+				let rejectAccepted!: (error: unknown) => void;
+				const accepted = new Promise<void>((resolve, reject) => {
+					resolveAccepted = resolve;
+					rejectAccepted = reject;
+				});
+				const completed = awareness.runner.steer(prompt, {
+					projectionId: steeringProjectionId(event, adapter),
+					...(event.deliveryId ? { deliveryId: event.deliveryId } : {}),
+					onAccepted: resolveAccepted,
+				});
+				if (!completed) return null;
+				void completed.catch(rejectAccepted);
+				return { accepted, completed };
+			},
+			admitIdle: () => {
+				if (isRunBusy()) return null;
+				return withGlobalRunSlot(
+					`relationship:${adapter.name}:${event.channel}`,
+					() => runEventInSlot(event, adapter, false),
+				).then(() => undefined);
+			},
+		});
+	},
+
 	handleSteer(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 		if (!isRunBusy()) {
 			log.logInfo(`[steer:${event.channel}] Busy state cleared before delivery; queuing a fresh turn`);
@@ -1534,7 +1610,13 @@ const handler: MomHandler = {
 		if (
 			sameTerminalRun
 			&& awareness
-			&& tryTerminalTuiSoftSteer(event, awareness.runner, new Date(), steeringProjectionId(event, adapter))
+			&& tryTerminalTuiSoftSteer(
+				event,
+				awareness.runner,
+				new Date(),
+				steeringProjectionId(event, adapter),
+				event.deliveryId,
+			)
 		) {
 			log.logInfo(`[terminal:${event.channel}] Soft-steered active run`);
 			return Promise.resolve();
@@ -1615,6 +1697,32 @@ voiceContract = new FirstClassVoiceContract({
 	},
 });
 
+const voiceRuntimeIdentity = `runtime-${randomUUID()}`;
+const voiceSourceIdentity = /^[0-9a-f]{40,64}$/i.test(process.env.TROUBLEMAKER_SOURCE_REVISION?.trim() || "")
+	? process.env.TROUBLEMAKER_SOURCE_REVISION!.trim().toLowerCase()
+	: "unknown";
+const incrementalVoiceTranscription = createDeepgramVoiceTranscriptionProvider(process.env, {
+	runtimeIdentity: voiceRuntimeIdentity,
+	sourceIdentity: voiceSourceIdentity,
+	onHandshakeDiagnostic: (diagnostic) => log.logWarning(
+		"[voice-provider-handshake] Provider connection outcome",
+		JSON.stringify(diagnostic),
+	),
+});
+const incrementalVoiceSessions = incrementalVoiceTranscription
+	? new VoiceSessionRuntime({
+		transcription: incrementalVoiceTranscription,
+		canonical: new ComputerVoiceCanonicalSubmitter(handler, workingDir),
+		speech: createElevenLabsVoiceSessionSpeechProvider(process.env),
+		store: new VoiceSessionStore(join(workingDir, "awareness", "voice-sessions")),
+		runtimeIdentity: voiceRuntimeIdentity,
+		sourceIdentity: voiceSourceIdentity,
+		onTimingDiagnostic: (diagnostic) => log.logInfo(
+			`[voice-session-timing] ${JSON.stringify(diagnostic)}`,
+		),
+	})
+	: undefined;
+
 // ============================================================================
 // Start
 // ============================================================================
@@ -1634,6 +1742,13 @@ for (const adapter of adapters) {
 const gateway = new Gateway({
 	uiDir: parsedArgs.uiDir,
 	workspaceDir: workingDir,
+	transcription: createDeepgramConsoleTranscriptionService(process.env),
+	voiceSessions: incrementalVoiceSessions,
+	// This standalone node entry point does not compose the owner-push facade or
+	// authoritative producer route, so it must never advertise owner_push_v1.
+	// A deployment that composes the complete guarded handoff constructs its
+	// Gateway with ownerPushAvailable:true only after that path is ready.
+	ownerPushAvailable: false,
 });
 
 const hostOwnsDelayedSchedules = process.env.MOM_HOSTD_SCHEDULE_OWNER === "host";
@@ -2397,29 +2512,16 @@ To change these, edit \`settings.json\` directly.
 	syncHeartbeatFromSpontaneity(workingDir, settings.getSpontaneitySettings());
 }
 
-// Seed auto-compaction event — runs at 4am daily, cleans up context
+// Semantic compaction is pressure-driven or explicitly requested. Remove old
+// clock-driven jobs instead of summarizing a healthy context on a schedule.
 {
-	const { existsSync: existsCompaction, unlinkSync: unlinkCompaction, writeFileSync: writeCompaction } = await import("fs");
-	const compactionFile = join(workingDir, ATTENTION_QUEUE_DIR, "compaction.json");
-	const legacyCompactionFile = join(workingDir, LEGACY_EVENTS_DIR, "compaction.json");
-	const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-	const compactionEvent = {
-		type: "periodic",
-		schedule: "0 10 * * *",
-		timezone: tz,
-		text: "auto-compaction",
-		action: "compact",
-	};
-	writeCompaction(compactionFile, JSON.stringify(compactionEvent, null, 2), "utf-8");
-	if (existsCompaction(legacyCompactionFile)) {
-		try {
-			unlinkCompaction(legacyCompactionFile);
-			log.logInfo("Removed legacy events/compaction.json after attention queue migration");
-		} catch (err) {
-			log.logWarning("Failed to remove legacy events/compaction.json", err instanceof Error ? err.message : String(err));
-		}
+	const cleanup = removeUnconditionalCompactionSchedules(workingDir);
+	for (const removed of cleanup.removed) {
+		log.logInfo(`Removed unconditional scheduled compaction file ${removed}`);
 	}
-	log.logInfo(`Wrote ${ATTENTION_QUEUE_DIR}/compaction.json (daily 4am, tz=${tz})`);
+	for (const failure of cleanup.failures) {
+		log.logWarning(`Failed to remove scheduled compaction file ${failure.path}`, failure.error);
+	}
 }
 
 // Restore any follow-up queue files interrupted between authoritative state
@@ -2447,6 +2549,7 @@ async function shutdown(): Promise<void> {
 	log.logInfo("Shutting down...");
 	eventsWatcher.stop();
 	const cleanup = Promise.allSettled([
+		cuaDriverBridge?.disconnect() ?? Promise.resolve(),
 		mcpBridge.disconnect(),
 		gateway.stop(),
 		...adapters.map((adapter) => adapter.stop()),

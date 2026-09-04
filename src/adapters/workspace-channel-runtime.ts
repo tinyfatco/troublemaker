@@ -44,13 +44,29 @@ export class WorkspaceChannelQueue {
 	}
 }
 
+export type WorkspaceDeliveryState = "pending" | "accepted" | "completed" | "rejected";
+
+export interface WorkspaceDeliveryReceipt {
+	deliveryId: string;
+	state: WorkspaceDeliveryState;
+	reservedAt?: string;
+	acceptedAt?: string;
+	claimedAt?: string;
+	completedAt?: string;
+	rejectedAt?: string;
+	rejectionReason?: string;
+}
+
+type StoredWorkspaceDelivery = Omit<WorkspaceDeliveryReceipt, "deliveryId">;
+
 /**
- * Host-owned replay guard used by webhook transports. A durable claim prevents
- * an accepted agent turn from being launched twice across a resident restart;
- * completion remains separately auditable after the event router returns.
+ * Host-owned replay guard used by inbound transports. A pending reservation is
+ * durable dedupe authority only; it is not delivery success. Acceptance and
+ * completion are explicit monotonic transitions, and rejection is terminal for
+ * the exact delivery identity.
  */
 export class WorkspaceDeliveryLedger {
-	private deliveries?: Map<string, "claimed" | "completed">;
+	private deliveries?: Map<string, StoredWorkspaceDelivery>;
 
 	constructor(
 		private readonly path: string,
@@ -61,33 +77,84 @@ export class WorkspaceDeliveryLedger {
 		return this.load().has(deliveryId);
 	}
 
+	receipt(deliveryId: string): WorkspaceDeliveryReceipt | undefined {
+		const stored = this.load().get(deliveryId);
+		return stored ? { deliveryId, ...stored } : undefined;
+	}
+
+	receipts(deliveryIds: readonly string[]): WorkspaceDeliveryReceipt[] {
+		// Receipt readers may be distinct from the adapter that owns transitions.
+		// Reload so reconnect reconciliation observes durable cross-reader changes.
+		this.deliveries = undefined;
+		const deliveries = this.load();
+		return deliveryIds.flatMap((deliveryId) => {
+			const stored = deliveries.get(deliveryId);
+			return stored ? [{ deliveryId, ...stored }] : [];
+		});
+	}
+
+	/** Reserve an identity before asynchronous admission without claiming success. */
+	reserve(deliveryId: string): boolean {
+		const deliveries = this.load();
+		if (deliveries.has(deliveryId)) return false;
+		const reservedAt = new Date().toISOString();
+		this.append({ deliveryId, reservedAt });
+		deliveries.set(deliveryId, { state: "pending", reservedAt });
+		return true;
+	}
+
+	/** Mark an exact pending reservation accepted by its authoritative route. */
+	accept(deliveryId: string): boolean {
+		const deliveries = this.load();
+		const existing = deliveries.get(deliveryId);
+		if (existing?.state !== "pending") return false;
+		const acceptedAt = new Date().toISOString();
+		this.append({ deliveryId, acceptedAt });
+		deliveries.set(deliveryId, { ...existing, state: "accepted", acceptedAt });
+		return true;
+	}
+
+	/** Terminally reject one pending reservation; its identity can never be reused. */
+	reject(deliveryId: string, reason: string): boolean {
+		const deliveries = this.load();
+		const existing = deliveries.get(deliveryId);
+		if (existing?.state !== "pending") return false;
+		const rejectedAt = new Date().toISOString();
+		const rejectionReason = safeRejectionReason(reason);
+		this.append({ deliveryId, rejectedAt, rejectionReason });
+		deliveries.set(deliveryId, {
+			...existing,
+			state: "rejected",
+			rejectedAt,
+			rejectionReason,
+		});
+		return true;
+	}
+
 	/**
-	 * Durably claim a delivery before the transport acknowledges it. Agent turns
-	 * can survive a resident restart independently, so replaying an accepted turn
-	 * is more dangerous than retaining an incomplete claim for reconciliation.
+	 * Backward-compatible one-step acceptance for transports whose durable claim
+	 * is already their authoritative admission boundary.
 	 */
 	claim(deliveryId: string): boolean {
 		const deliveries = this.load();
 		if (deliveries.has(deliveryId)) return false;
-		this.append({
-			deliveryId,
-			claimedAt: new Date().toISOString(),
-		});
-		deliveries.set(deliveryId, "claimed");
+		const claimedAt = new Date().toISOString();
+		this.append({ deliveryId, claimedAt });
+		deliveries.set(deliveryId, { state: "accepted", claimedAt, acceptedAt: claimedAt });
 		return true;
 	}
 
+	/** Record completion only for a previously accepted delivery. */
 	complete(deliveryId: string): void {
 		const deliveries = this.load();
-		if (deliveries.get(deliveryId) === "completed") return;
-		this.append({
-			deliveryId,
-			completedAt: new Date().toISOString(),
-		});
-		deliveries.set(deliveryId, "completed");
+		const existing = deliveries.get(deliveryId);
+		if (existing?.state !== "accepted") return;
+		const completedAt = new Date().toISOString();
+		this.append({ deliveryId, completedAt });
+		deliveries.set(deliveryId, { ...existing, state: "completed", completedAt });
 	}
 
-	private append(record: { deliveryId: string; claimedAt?: string; completedAt?: string }): void {
+	private append(record: DeliveryLedgerRecord): void {
 		const descriptor = openSync(this.path, "a", 0o600);
 		try {
 			writeSync(descriptor, `${JSON.stringify(record)}\n`);
@@ -97,22 +164,52 @@ export class WorkspaceDeliveryLedger {
 		}
 	}
 
-	private load(): Map<string, "claimed" | "completed"> {
+	private load(): Map<string, StoredWorkspaceDelivery> {
 		if (this.deliveries) return this.deliveries;
-		const deliveries = new Map<string, "claimed" | "completed">();
+		const deliveries = new Map<string, StoredWorkspaceDelivery>();
 		try {
 			for (const line of readFileSync(this.path, "utf8").split("\n")) {
 				if (!line.trim()) continue;
-				const record = JSON.parse(line) as {
-					deliveryId?: unknown;
-					claimedAt?: unknown;
-					completedAt?: unknown;
-				};
-				if (typeof record.deliveryId === "string" && record.deliveryId) {
-					deliveries.set(
-						record.deliveryId,
-						typeof record.completedAt === "string" ? "completed" : "claimed",
-					);
+				const record = JSON.parse(line) as DeliveryLedgerRecord;
+				if (typeof record.deliveryId !== "string" || !record.deliveryId) continue;
+				const existing = deliveries.get(record.deliveryId);
+				if (typeof record.reservedAt === "string" && !existing) {
+					deliveries.set(record.deliveryId, { state: "pending", reservedAt: record.reservedAt });
+					continue;
+				}
+				if (typeof record.claimedAt === "string" && !existing) {
+					deliveries.set(record.deliveryId, {
+						state: "accepted",
+						claimedAt: record.claimedAt,
+						acceptedAt: record.claimedAt,
+					});
+					continue;
+				}
+				if (typeof record.acceptedAt === "string" && existing?.state === "pending") {
+					deliveries.set(record.deliveryId, {
+						...existing,
+						state: "accepted",
+						acceptedAt: record.acceptedAt,
+					});
+					continue;
+				}
+				if (typeof record.rejectedAt === "string" && existing?.state === "pending") {
+					deliveries.set(record.deliveryId, {
+						...existing,
+						state: "rejected",
+						rejectedAt: record.rejectedAt,
+						...(typeof record.rejectionReason === "string"
+							? { rejectionReason: safeRejectionReason(record.rejectionReason) }
+							: {}),
+					});
+					continue;
+				}
+				if (typeof record.completedAt === "string" && existing?.state === "accepted") {
+					deliveries.set(record.deliveryId, {
+						...existing,
+						state: "completed",
+						completedAt: record.completedAt,
+					});
 				}
 			}
 		} catch (error) {
@@ -123,6 +220,20 @@ export class WorkspaceDeliveryLedger {
 		this.deliveries = deliveries;
 		return deliveries;
 	}
+}
+
+interface DeliveryLedgerRecord {
+	deliveryId: string;
+	reservedAt?: string;
+	acceptedAt?: string;
+	claimedAt?: string;
+	completedAt?: string;
+	rejectedAt?: string;
+	rejectionReason?: string;
+}
+
+function safeRejectionReason(reason: string): string {
+	return /^[a-z0-9_:-]{1,64}$/.test(reason) ? reason : "rejected";
 }
 
 export async function routeWorkspaceChannelEvent({
