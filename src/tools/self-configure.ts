@@ -36,6 +36,7 @@ import {
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { cancelFollowUpSchedules, clearAllFollowUpSchedules, getFollowUpRuntimeStatus } from "../follow-ups.js";
+import { refreshLiveModelCatalog } from "../model-catalog-refresh.js";
 import { findModel } from "../model-config.js";
 import {
 	DEFAULT_REALTIME_VOICE,
@@ -1134,6 +1135,8 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 			if (value === undefined) {
 				throw new Error("self_configure requires a value.");
 			}
+			const target = SELF_CONFIGURE_ALIASES[setting] ?? setting;
+			if (target === "model") await refreshLiveModelCatalog(workingDir);
 
 			const result = applySelfConfiguration(workingDir, setting, value, options);
 			log.logInfo(`[self_configure] ${setting} -> ${JSON.stringify(result.newValue)}`);

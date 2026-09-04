@@ -6,8 +6,8 @@ import {
 
 const calls: string[] = [];
 const modelRegistry = {
-	async refresh() {
-		calls.push("reload");
+	async refresh(options: { allowNetwork?: boolean; providers?: string[] }) {
+		calls.push(`reload:${options.allowNetwork}:${options.providers?.join(",")}`);
 	},
 	async getApiKeyForProvider(provider: string) {
 		calls.push(`getApiKey:${provider}`);
@@ -18,7 +18,7 @@ const modelRegistry = {
 const key = await resolveApiKey(modelRegistry as any, "openai-codex");
 
 assert.equal(key, "token");
-assert.deepEqual(calls, ["reload", "getApiKey:openai-codex"]);
+assert.deepEqual(calls, ["reload:false:openai-codex", "getApiKey:openai-codex"]);
 
 await assert.rejects(
 	resolveApiKey({
