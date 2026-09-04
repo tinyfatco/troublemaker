@@ -129,7 +129,13 @@ function formatLifecycle(state: ToolLifecycleState, maxMessageLength: number): s
 	const labelLimit = Math.min(512, Math.max(32, Math.floor(maxMessageLength * 0.2)));
 	const detailBudget = Math.max(0, maxMessageLength - labelLimit - LIFECYCLE_OVERHEAD);
 	const detailLimit = detailCount > 0 ? Math.max(64, Math.floor(detailBudget / detailCount)) : 0;
-	const lines = [`*${icon} ${boundInline(state.label, labelLimit)}*`, `_${status}_`];
+	const toolName = state.details?.toolName
+		? boundInline(state.details.toolName.replace(/`/g, "'"), 128)
+		: "";
+	const lines = [
+		`*${icon} ${boundInline(state.label, labelLimit)}*`,
+		toolName ? `_${status}_ · \`${toolName}\`` : `_${status}_`,
+	];
 	if (state.details?.invocation?.text) {
 		lines.push(formatDetail("Input", state.details.invocation, detailLimit));
 	}
