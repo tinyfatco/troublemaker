@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from "url";
-import { installTuiProfile, loadTuiProfiles, resolveInvokedAgent } from "./tui/config.js";
+import { installTuiProfile, loadTuiProfiles, resolveInvokedAgent, type TuiPresentation } from "./tui/config.js";
 import { runTroublemakerTui } from "./tui/app.js";
 
 interface ParsedInstallArgs {
@@ -9,6 +9,7 @@ interface ParsedInstallArgs {
 	name?: string;
 	baseUrl: string;
 	channelId?: string;
+	presentation?: TuiPresentation;
 	binDir?: string;
 }
 
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
 			name: parsed.name,
 			baseUrl: parsed.baseUrl,
 			channelId: parsed.channelId,
+			presentation: parsed.presentation,
 			binDir: parsed.binDir,
 			executablePath: fileURLToPath(import.meta.url),
 		});
@@ -73,10 +75,11 @@ async function openAgent(command: string): Promise<void> {
 
 function parseInstallArgs(args: string[]): ParsedInstallArgs {
 	const command = args.shift();
-	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>]");
+	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>] [--presentation compact|pi]");
 	let name: string | undefined;
 	let baseUrl: string | undefined;
 	let channelId: string | undefined;
+	let presentation: TuiPresentation | undefined;
 	let binDir: string | undefined;
 	while (args.length > 0) {
 		const flag = args.shift();
@@ -85,24 +88,29 @@ function parseInstallArgs(args: string[]): ParsedInstallArgs {
 		if (flag === "--name") name = value;
 		else if (flag === "--url") baseUrl = value;
 		else if (flag === "--channel") channelId = value;
+		else if (flag === "--presentation") {
+			if (value !== "compact" && value !== "pi") throw new Error("Presentation must be compact or pi");
+			presentation = value;
+		}
 		else if (flag === "--bin-dir") binDir = value;
 		else throw new Error(`Unknown install option: ${flag}`);
 	}
 	if (!baseUrl) throw new Error("Missing required option: --url");
-	return { command, name, baseUrl, channelId, binDir };
+	return { command, name, baseUrl, channelId, presentation, binDir };
 }
 
 function printHelp(): void {
 	console.log(`Troublemaker terminal UI
 
 Usage:
-  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>]
+  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi]
   troublemaker-tui open <agent>
   troublemaker-tui list
   <agent-command>
 
 Installed agent commands open a Pi-styled terminal client against that agent's
-canonical Troublemaker console session.`);
+canonical Troublemaker console session. Compact presentation is the default;
+use --presentation pi for bounded, redacted live tool detail.`);
 }
 
 main().catch((error) => {

@@ -12,6 +12,7 @@ import {
 	CombinedAutocompleteProvider,
 	Container,
 	Editor,
+	isKeyRelease,
 	Key,
 	Loader,
 	ProcessTerminal,
@@ -42,6 +43,12 @@ import {
 	toAssistantSnapshot,
 	type TuiHistoryEntry,
 } from "./protocol.js";
+import {
+	TerminalToolCallRegistry,
+	TerminalToolCallStream,
+	ToolSelectorSequence,
+	type TerminalToolCallView,
+} from "./tool-inspector.js";
 
 const HISTORY_LIMIT = 60;
 const HISTORY_RENDER_LIMIT = 30;
@@ -96,6 +103,9 @@ class TroublemakerTuiApp {
 	private readonly editorContainer = new Container();
 	private readonly footer = new Container();
 	private readonly editor: Editor;
+	private readonly piPresentation: boolean;
+	private readonly toolCalls: TerminalToolCallRegistry | null;
+	private readonly toolSelectorInput: ToolSelectorSequence | null;
 	private status: TuiAgentStatus;
 	private activeAbort: AbortController | null = null;
 	private activeTurn: Container | null = null;
@@ -155,6 +165,13 @@ class TroublemakerTuiApp {
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
+		this.piPresentation = profile.presentation === "pi";
+		this.toolCalls = this.piPresentation ? new TerminalToolCallRegistry() : null;
+		this.toolSelectorInput = this.toolCalls
+			? new ToolSelectorSequence((selector) => {
+				if (this.toolCalls?.toggle(selector)) this.ui.requestRender(true);
+			})
+			: null;
 	}
 
 	async run(historyLines: string[]): Promise<void> {
@@ -185,6 +202,8 @@ class TroublemakerTuiApp {
 	}
 
 	private handleGlobalInput(data: string): { consume?: boolean } | undefined {
+		if (this.toolSelectorInput?.handleInput(data)) return { consume: true };
+		if (this.toolSelectorInput && isKeyRelease(data)) return undefined;
 		if (matchesKey(data, Key.ctrl("c"))) {
 			if (this.activeAbort) void this.requestStop();
 			else void this.shutdown();
@@ -254,7 +273,10 @@ class TroublemakerTuiApp {
 			return true;
 		}
 		if (command === "/help") {
-			this.addNotice("/clear  archive and reset agent context\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.");
+			const toolHelp = this.piPresentation
+				? "Pi presentation: tool calls show a number such as [12]. Press Ctrl+T, release it, type the number, and pause briefly to expand or close bounded safe details.\n\n"
+				: "";
+			this.addNotice(`${toolHelp}/clear  archive and reset agent context\n/reload  reload recent awareness\n/status  refresh the agent connection\n/stop  stop the active turn\n/quit  exit\n\nOther slash commands are sent to the agent.`);
 			return true;
 		}
 		if (command === "/reload") {
@@ -682,10 +704,14 @@ class TroublemakerTuiApp {
 		precedingContent: TranscriptContentKind | null = null,
 	): TranscriptContentKind | null {
 		target.clear();
+		const piToolViews = this.piPresentation && !historical && this.toolCalls
+			? this.toolCalls.updateSnapshot(snapshot, false)
+			: null;
 		const results = new Map(snapshot.content
 			.filter((block) => block.type === "toolResult")
 			.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
 		let textGroup: TextContent[] = [];
+		let toolGroup: TerminalToolCallView[] = [];
 		let previousKind = precedingContent;
 		let renderedKind: TranscriptContentKind | null = null;
 		const flushText = () => {
@@ -701,14 +727,28 @@ class TroublemakerTuiApp {
 			previousKind = "text";
 			renderedKind = "text";
 		};
+		const flushTools = () => {
+			if (toolGroup.length === 0) return;
+			if (previousKind !== "tool") target.addChild(new Spacer(1));
+			target.addChild(new TerminalToolCallStream(toolGroup));
+			toolGroup = [];
+			previousKind = "tool";
+			renderedKind = "tool";
+		};
 
-		for (const block of snapshot.content) {
+		for (const [contentIndex, block] of snapshot.content.entries()) {
 			if (block.type === "text" && block.text.trim()) {
+				flushTools();
 				textGroup.push({ type: "text", text: block.text });
 				continue;
 			}
 			if (block.type !== "toolCall") continue;
 			flushText();
+			if (piToolViews) {
+				const view = piToolViews.get(contentIndex);
+				if (view) toolGroup.push(view);
+				continue;
+			}
 			const label = safeToolLabel(block);
 			if (!label) continue;
 			if (previousKind !== "tool") target.addChild(new Spacer(1));
@@ -718,6 +758,7 @@ class TroublemakerTuiApp {
 			previousKind = "tool";
 			renderedKind = "tool";
 		}
+		flushTools();
 		flushText();
 		return renderedKind;
 	}
@@ -1054,7 +1095,8 @@ class TroublemakerTuiApp {
 		this.header.addChild(new Spacer(1));
 		this.header.addChild(new Text(`${chalk.bold(this.status.agentName)}  ${chalk.dim("Troublemaker")}`, 1, 0));
 		const awareness = this.awarenessState === "live" ? chalk.green("awareness live") : chalk.yellow(`awareness ${this.awarenessState}`);
-		this.header.addChild(new Text(chalk.dim(`${this.profile.channelId} · ${this.status.runtime} · ${this.status.mode} · ${awareness}`), 1, 0));
+		const presentation = this.piPresentation ? " · pi live" : "";
+		this.header.addChild(new Text(chalk.dim(`${this.profile.channelId} · ${this.status.runtime} · ${this.status.mode}${presentation} · ${awareness}`), 1, 0));
 		this.header.addChild(new DynamicBorder((value) => chalk.dim(value)));
 		this.ui.requestRender();
 	}
@@ -1077,6 +1119,7 @@ class TroublemakerTuiApp {
 	private async shutdown(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.toolSelectorInput?.dispose();
 		this.awarenessAbort.abort();
 		for (const controller of this.steeringAborts) controller.abort();
 		this.steeringAborts.clear();

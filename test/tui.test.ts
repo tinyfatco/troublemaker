@@ -37,6 +37,8 @@ try {
 	const appSource = await readFile(new URL("../src/tui/app.ts", import.meta.url), "utf8");
 	assert.doesNotMatch(appSource, /command === "\/clear"/, "TUI forwards /clear to the resident instead of clearing only its display");
 	assert.match(appSource, /\/clear  archive and reset agent context/, "TUI help describes the resident-side clear behavior");
+	assert.match(appSource, /profile\.presentation === "pi"/, "Pi presentation requires explicit profile opt-in");
+	assert.match(appSource, /this\.piPresentation && !historical/, "Pi tool details remain live-only while durable history stays compact");
 
 	const executablePath = join(tempRoot, "dist", "tui.js");
 	const configPath = join(tempRoot, "config", "tui.json");
@@ -55,9 +57,21 @@ try {
 	assert.equal(installed.profile.command, "example-agent");
 	assert.equal(installed.profile.channelId, "terminal:example-agent");
 	assert.equal(installed.profile.baseUrl, "http://127.0.0.1:43123");
+	assert.equal(installed.profile.presentation, "compact", "compact presentation remains the install default");
 	assert.equal(resolve(dirname(installed.commandPath), await readlink(installed.commandPath)), resolve(executablePath));
 	assert.equal((await stat(configPath)).mode & 0o777, 0o600);
 	assert.deepEqual(loadTuiProfiles(configPath)["example-agent"], installed.profile);
+	const piInstalled = installTuiProfile({
+		command: "pi-agent",
+		name: "Pi Agent",
+		baseUrl: "http://127.0.0.1:43125",
+		presentation: "pi",
+		executablePath,
+		configPath,
+		binDir,
+	});
+	assert.equal(piInstalled.profile.presentation, "pi", "Pi live presentation requires an explicit profile opt-in");
+	assert.equal(loadTuiProfiles(configPath)["pi-agent"]?.presentation, "pi");
 	assert.equal(resolveInvokedAgent("/tmp/example-agent"), "example-agent");
 	assert.equal(resolveInvokedAgent("/tmp/troublemaker-tui"), undefined);
 	assert.equal(normalizeTuiCommand(" Example-Agent "), "example-agent");
@@ -68,6 +82,9 @@ try {
 	const stored = JSON.parse(await readFile(configPath, "utf8"));
 	assert.equal(stored.version, 1);
 	assert.equal(stored.agents["example-agent"].name, "Example Agent");
+	delete stored.agents["example-agent"].presentation;
+	await writeFile(configPath, `${JSON.stringify(stored, null, 2)}\n`);
+	assert.equal(loadTuiProfiles(configPath)["example-agent"]?.presentation, "compact", "existing profiles remain compact without a new field");
 	await writeFile(join(binDir, "blocked-agent"), "existing command\n");
 	assert.throws(() => installTuiProfile({
 		command: "blocked-agent",
@@ -405,6 +422,7 @@ try {
 
 	let receivedMessage: Record<string, unknown> | undefined;
 	let receivedStop: Record<string, unknown> | undefined;
+	const receivedLiveUrls: string[] = [];
 	const server = createServer(async (req, res) => {
 		if (req.url === "/health") {
 			res.writeHead(200);
@@ -429,6 +447,12 @@ try {
 		if (req.url === "/awareness/stream") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
 			res.end(`id: message-1\ndata: ${historyLine}\n\n`);
+			return;
+		}
+		if (req.url?.startsWith("/api/v2/agents/current/live")) {
+			receivedLiveUrls.push(req.url);
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.end('data: {"kind":"reset","reason":"replay_gap","sequence":1,"streamId":"stream-example","id":"event-example","timestamp":"2026-01-02T03:04:06Z"}\n\n');
 			return;
 		}
 		if (req.url === "/api/v2/agents/current/messages") {
@@ -472,6 +496,22 @@ try {
 		);
 		assert.equal(awarenessConnected, true);
 		assert.deepEqual(awarenessLines, [historyLine]);
+
+		const compactLiveEvents: string[] = [];
+		await client.streamLive((event) => compactLiveEvents.push(event.kind));
+		const piClient = new TroublemakerTuiClient({
+			command: "pi-agent",
+			name: "Pi Agent",
+			baseUrl: `http://127.0.0.1:${address.port}`,
+			channelId: "terminal:pi-agent",
+			presentation: "pi",
+		});
+		const piLiveEvents: string[] = [];
+		await piClient.streamLive((event) => piLiveEvents.push(event.kind), undefined, undefined, 42);
+		assert.deepEqual(compactLiveEvents, ["reset"]);
+		assert.deepEqual(piLiveEvents, ["reset"]);
+		assert.equal(receivedLiveUrls[0], "/api/v2/agents/current/live", "compact default adds no presentation query");
+		assert.equal(receivedLiveUrls[1], "/api/v2/agents/current/live?presentation=pi&after=42", "Pi mode explicitly opts into safe detail");
 
 		const events: string[] = [];
 		await client.streamMessage("hello", (event) => events.push(event.type));

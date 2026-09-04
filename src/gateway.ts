@@ -1068,6 +1068,9 @@ export class Gateway {
 			: req.headers["last-event-id"];
 		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
 		const conversationSurface = url.searchParams.get("surface") === "conversation";
+		const presentation = !conversationSurface && url.searchParams.get("presentation") === "pi"
+			? "pi"
+			: "compact";
 		this.liveClientCount++;
 		const subscription = this.liveEvents.subscribe((event) => {
 			if (ownerContext && !runtimeEventMatchesOwnerContext(event, ownerContext)) return;
@@ -1081,7 +1084,7 @@ export class Gateway {
 			} catch {
 				// The close handler owns cleanup.
 			}
-		}, afterSequence);
+		}, afterSequence, { presentation });
 		const writeCursor = () => {
 			if (!conversationSurface) {
 				res.write(": ready\n\n");
