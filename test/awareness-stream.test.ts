@@ -25,6 +25,10 @@ const followUpHarness = "[ATTENTION:follow-up-agent-global-example-1.json:one-sh
 const followUpLine = JSON.stringify({ type: "message", id: "follow-up-1", timestamp: "2026-01-01T00:10:00Z", message: { role: "user", content: [{ type: "text", text: `<session_context>private state</session_context>\n\n<delivery_context>private route</delivery_context>\n\n[2026-01-01 00:10:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
 const followUpLiveLine = JSON.stringify({ type: "message", id: "follow-up-2", timestamp: "2026-01-01T00:20:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:20:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
 const malformedFollowUpLine = JSON.stringify({ type: "message", id: "follow-up-malformed", timestamp: "2026-01-01T00:11:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:11:00+00:00] [follow-up] [follow-up]: [ATTENTION:follow-up-broken] [FOLLOW_UP broken] PRIVATE MALFORMED HARNESS` }] } });
+const heartbeatHarness = "[ATTENTION:example-daily-check.json:periodic:30 10 * * *] INTERNAL HEARTBEAT HARNESS THAT MUST NOT REACH A DISPLAY\n\n## Heartbeat Checklist\n- Review safely.";
+const heartbeatLine = JSON.stringify({ type: "message", id: "heartbeat-1", timestamp: "2026-01-01T00:12:00Z", message: { role: "user", content: [{ type: "text", text: `<session_context>private heartbeat state</session_context>\n\n[2026-01-01 00:12:00+00:00] [heartbeat] [heartbeat]: ${heartbeatHarness}` }] } });
+const heartbeatLiveLine = JSON.stringify({ type: "message", id: "heartbeat-2", timestamp: "2026-01-01T00:22:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:22:00+00:00] [heartbeat:heartbeat] [heartbeat]: ${heartbeatHarness}` }] } });
+const malformedHeartbeatLine = JSON.stringify({ type: "message", id: "heartbeat-malformed", timestamp: "2026-01-01T00:13:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:13:00+00:00] [heartbeat] [heartbeat]: [ATTENTION:heartbeat-broken] PRIVATE HEARTBEAT HARNESS` }] } });
 const rotatedLine = JSON.stringify({ type: "message", id: "voice-after-compaction", timestamp: "2026-01-01T00:03:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:03:00+00:00] [voice] [user]: continue" }] } });
 
 let passed = 0;
@@ -43,7 +47,7 @@ function assert(condition: boolean, msg: string) {
 async function run() {
   // Setup temp workspace with existing context
   mkdirSync(AWARENESS_DIR, { recursive: true });
-  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n" + followUpLine + "\n" + malformedFollowUpLine + "\n");
+  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n" + followUpLine + "\n" + malformedFollowUpLine + "\n" + heartbeatLine + "\n" + malformedHeartbeatLine + "\n");
 
   PORT = await getFreePort();
 
@@ -65,6 +69,13 @@ async function run() {
   const redactedBacklogFollowUp = backlog.lines.find((line) => line.includes("troublemaker.generated-follow-up-redacted")) || "";
   assert(Boolean(redactedBacklogFollowUp), "backlog redacts malformed valid-JSON internal follow-ups");
   assert(!backlog.lines.some((line) => line.includes("PRIVATE MALFORMED HARNESS")), "backlog never returns a malformed internal follow-up harness");
+  const projectedBacklogHeartbeat = backlog.lines.find((line) => line.includes('"heartbeat-1"')) || "";
+  assert(projectedBacklogHeartbeat.includes("[heartbeat] [heartbeat]: Heartbeat"), "backlog compacts a generated heartbeat for stale terminal clients");
+  assert(!projectedBacklogHeartbeat.includes("INTERNAL HEARTBEAT HARNESS"), "backlog never exposes the generated heartbeat harness");
+  assert(!projectedBacklogHeartbeat.includes("private heartbeat state"), "backlog removes generated heartbeat context scaffolding");
+  const redactedBacklogHeartbeat = backlog.lines.find((line) => line.includes("troublemaker.generated-heartbeat-redacted")) || "";
+  assert(Boolean(redactedBacklogHeartbeat), "backlog redacts malformed valid-JSON internal heartbeats");
+  assert(!backlog.lines.some((line) => line.includes("PRIVATE HEARTBEAT HARNESS")), "backlog never returns a malformed internal heartbeat harness");
 
   console.log("\nTest 2: Live update delivery");
 
@@ -85,6 +96,14 @@ async function run() {
   const projectedLiveFollowUp = followUpLiveEvents.find((event) => event.includes('"follow-up-2"')) || "";
   assert(projectedLiveFollowUp.includes("Follow-up 1/1 · 10m"), "live awareness compacts a generated follow-up for stale terminal clients");
   assert(!projectedLiveFollowUp.includes("INTERNAL FOLLOW-UP HARNESS"), "live awareness never exposes the generated follow-up harness");
+
+  const heartbeatLivePromise = collectEvents(1, 5000);
+  await sleep(200);
+  appendFileSync(CONTEXT_FILE, heartbeatLiveLine + "\n");
+  const heartbeatLiveEvents = await heartbeatLivePromise;
+  const projectedLiveHeartbeat = heartbeatLiveEvents.find((event) => event.includes('"heartbeat-2"')) || "";
+  assert(projectedLiveHeartbeat.includes("[heartbeat:heartbeat] [heartbeat]: Heartbeat"), "live awareness compacts a generated heartbeat for stale terminal clients");
+  assert(!projectedLiveHeartbeat.includes("INTERNAL HEARTBEAT HARNESS"), "live awareness never exposes the generated heartbeat harness");
 
   console.log("\nTest 3: Unified runtime event delivery is sanitized");
 

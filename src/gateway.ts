@@ -32,7 +32,7 @@ import type { VoiceSessionRuntime } from "./console/voice-session-runtime.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
-import { sanitizeGeneratedFollowUpSessionLine } from "./user-input-display.js";
+import { sanitizeGeneratedTerminalSessionLine } from "./user-input-display.js";
 import { validatePreviewPort } from "./preview/ports.js";
 import { FilesystemAwarenessStore } from "./storage/node/filesystem-awareness.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
@@ -965,7 +965,7 @@ export class Gateway {
 			res.end(JSON.stringify(
 				conversationSurface
 					? projectConversationBacklog(backlog, ownerContext?.context_id)
-					: { ...backlog, lines: backlog.lines.map(sanitizeGeneratedFollowUpSessionLine) },
+					: { ...backlog, lines: backlog.lines.map(sanitizeGeneratedTerminalSessionLine) },
 			));
 		} catch {
 			res.writeHead(200, { "Content-Type": "application/json" });
@@ -1075,7 +1075,7 @@ export class Gateway {
 				const payload = conversationSurface
 					? projectConversationLiveEvent(event)
 					: event.kind === "awareness"
-						? { ...event, line: sanitizeGeneratedFollowUpSessionLine(event.line) }
+						? { ...event, line: sanitizeGeneratedTerminalSessionLine(event.line) }
 						: event;
 				res.write(`id: ${event.sequence}\ndata: ${JSON.stringify(payload)}\n\n`);
 			} catch {
@@ -1156,7 +1156,7 @@ export class Gateway {
 
 				for (const line of lines) {
 					const publicLine = sanitizePrivateHandoffSessionLine(line);
-					const terminalLine = sanitizeGeneratedFollowUpSessionLine(publicLine);
+					const terminalLine = sanitizeGeneratedTerminalSessionLine(publicLine);
 					const id = extractAwarenessEventId(publicLine);
 					const event = `${id ? `id: ${id}\n` : ""}data: ${terminalLine}\n\n`;
 					for (const client of this.awarenessClients) {

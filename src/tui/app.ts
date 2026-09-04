@@ -30,7 +30,7 @@ import type {
 	RuntimeStreamEvent,
 	RuntimeUserInputEntry,
 } from "../core/runtime-contract.js";
-import { isCompactFollowUpInput } from "../user-input-display.js";
+import { isCompactGeneratedInput } from "../user-input-display.js";
 import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
 import {
@@ -66,7 +66,7 @@ interface LiveRunView {
 	segmentBaseline: RuntimeAssistantSnapshotContent[];
 	precedingContent: TranscriptContentKind | null;
 	inputSegments: number;
-	generatedFollowUps: Set<string>;
+	generatedInputs: Set<string>;
 }
 
 interface PendingInputEcho {
@@ -413,7 +413,7 @@ class TroublemakerTuiApp {
 		let matchedLocalEcho: PendingInputEcho | null = null;
 		const liveView = this.liveRuns.get(envelope.runId);
 		for (const entry of entries) {
-			if (isCompactFollowUpInput(entry) && liveView?.generatedFollowUps.has(entry.text)) continue;
+			if (isCompactGeneratedInput(entry) && liveView?.generatedInputs.has(entry.text)) continue;
 			const awarenessEcho = this.consumeAwarenessInputEntry(entry.channel, entry.text);
 			if (awarenessEcho) {
 				if (awarenessEcho.target) matchedLocalEcho ||= awarenessEcho;
@@ -451,7 +451,7 @@ class TroublemakerTuiApp {
 		if (existing?.inputSegments === 0) this.chat.removeChild(existing.target);
 
 		const baseline = existing?.latestSnapshot?.content || [];
-		const generatedFollowUps = entries.filter(isCompactFollowUpInput).map((entry) => entry.text);
+		const generatedInputs = entries.filter(isCompactGeneratedInput).map((entry) => entry.text);
 		for (const entry of entries) this.addUserMessage(entry.channel, entry.userName, entry.text);
 
 		if (!existing) {
@@ -465,12 +465,12 @@ class TroublemakerTuiApp {
 				segmentBaseline: [],
 				precedingContent: this.lastTranscriptContent,
 				inputSegments: 1,
-				generatedFollowUps: new Set(generatedFollowUps),
+				generatedInputs: new Set(generatedInputs),
 			});
 			return;
 		}
 
-		for (const text of generatedFollowUps) existing.generatedFollowUps.add(text);
+		for (const text of generatedInputs) existing.generatedInputs.add(text);
 
 		if (existing.inputSegments === 0) {
 			this.chat.addChild(existing.target);
@@ -528,7 +528,7 @@ class TroublemakerTuiApp {
 			segmentBaseline: terminalTarget ? [...this.activeSegmentBaseline] : [],
 			precedingContent: terminalTarget ? this.activeSegmentPrecedingContent : this.lastTranscriptContent,
 			inputSegments: terminalTarget ? 1 : 0,
-			generatedFollowUps: new Set(),
+			generatedInputs: new Set(),
 		};
 		this.liveRuns.set(envelope.runId, view);
 		return view;
@@ -724,7 +724,7 @@ class TroublemakerTuiApp {
 
 	private addUserMessage(channel: string, user: string, text: string): void {
 		this.chat.addChild(new Spacer(1));
-		if (isCompactFollowUpInput({ channel, userName: user, text })) {
+		if (isCompactGeneratedInput({ channel, userName: user, text })) {
 			this.chat.addChild(new Text(chalk.dim(text), 1, 0));
 		} else {
 			this.chat.addChild(new Text(chalk.dim(`[${channel}] ${user}`), 1, 0));
