@@ -66,6 +66,13 @@ export function isCompactFollowUpInput(input: VisibleUserInput): boolean {
  * already painted the compact live input.
  */
 export function sanitizeGeneratedFollowUpSessionLine(line: string): string {
+	const redacted = () => JSON.stringify({
+		type: "custom",
+		customType: "troublemaker.generated-follow-up-redacted",
+		display: false,
+	});
+	const hasInternalLane = (text: string) => /\[[^\]\r\n]+\]\s+\[follow-up\]\s+\[follow-up\]:/.test(text);
+
 	try {
 		const entry = JSON.parse(line) as {
 			type?: unknown;
@@ -73,30 +80,46 @@ export function sanitizeGeneratedFollowUpSessionLine(line: string): string {
 		};
 		if (entry.type !== "message" || entry.message?.role !== "user") return line;
 
-		const compactText = (text: string): string | null => {
-			const envelope = parseUserPromptEnvelope(text);
-			if (!envelope || envelope.channel !== "follow-up" || envelope.userName !== "follow-up") return null;
-			const compact = compactFollowUpCheckpoint(envelope.text);
-			if (compact === envelope.text) return null;
-			return `[${envelope.timestamp}] [follow-up] [follow-up]: ${compact}`;
-		};
-
 		const content = entry.message.content;
-		const compact = typeof content === "string"
-			? compactText(content)
+		const textBlocks = typeof content === "string"
+			? [content]
 			: Array.isArray(content)
 				? content.flatMap((block) => block && typeof block === "object"
 					&& (block as { type?: unknown }).type === "text"
 					&& typeof (block as { text?: unknown }).text === "string"
-						? [compactText((block as { text: string }).text)]
-						: []).find((value): value is string => value !== null)
+						? [(block as { text: string }).text]
+						: [])
+				: [];
+		const combined = textBlocks.join("\n");
+		const combinedEnvelope = parseUserPromptEnvelope(combined);
+		const internalCandidate = combinedEnvelope
+			? combinedEnvelope.channel === "follow-up" && combinedEnvelope.userName === "follow-up"
+			: hasInternalLane(combined);
+		if (!internalCandidate) return line;
+
+		// A generated checkpoint is canonical only as one complete text value.
+		// Any split, extra, or malformed internal shape is hidden rather than
+		// returning its harness to an older client.
+		const canonicalText = typeof content === "string"
+			? content
+			: Array.isArray(content) && content.length === 1 && textBlocks.length === 1
+				? textBlocks[0]
 				: null;
-		if (!compact) return line;
-		const sanitizedContent = typeof content === "string" ? compact : [{ type: "text", text: compact }];
+		if (!canonicalText) return redacted();
+		const envelope = parseUserPromptEnvelope(canonicalText);
+		if (!envelope || envelope.channel !== "follow-up" || envelope.userName !== "follow-up") return redacted();
+		const compact = compactFollowUpCheckpoint(envelope.text);
+		if (compact === envelope.text || !isCompactFollowUpInput({
+			channel: envelope.channel,
+			userName: envelope.userName,
+			text: compact,
+		})) return redacted();
+		const projectedText = `[${envelope.timestamp}] [follow-up] [follow-up]: ${compact}`;
+		const sanitizedContent = typeof content === "string" ? projectedText : [{ type: "text", text: projectedText }];
 		return JSON.stringify({ ...entry, message: { ...entry.message, content: sanitizedContent } });
 	} catch {
-		return line.includes("[ATTENTION:follow-up-") && line.includes("[FOLLOW_UP ")
-			? JSON.stringify({ type: "custom", customType: "troublemaker.generated-follow-up-redacted", display: false })
+		return hasInternalLane(line)
+			? redacted()
 			: line;
 	}
 }

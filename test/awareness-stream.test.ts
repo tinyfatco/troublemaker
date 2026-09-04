@@ -24,6 +24,7 @@ const line3 = JSON.stringify({ type: "message", id: "m2", timestamp: "2026-01-01
 const followUpHarness = "[ATTENTION:follow-up-agent-global-example-1.json:one-shot:2026-01-01T00:10:00.000Z] [FOLLOW_UP 1/1 after 10 minutes since the latest completed wake]\nINTERNAL FOLLOW-UP HARNESS THAT MUST NOT REACH A DISPLAY";
 const followUpLine = JSON.stringify({ type: "message", id: "follow-up-1", timestamp: "2026-01-01T00:10:00Z", message: { role: "user", content: [{ type: "text", text: `<session_context>private state</session_context>\n\n<delivery_context>private route</delivery_context>\n\n[2026-01-01 00:10:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
 const followUpLiveLine = JSON.stringify({ type: "message", id: "follow-up-2", timestamp: "2026-01-01T00:20:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:20:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
+const malformedFollowUpLine = JSON.stringify({ type: "message", id: "follow-up-malformed", timestamp: "2026-01-01T00:11:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:11:00+00:00] [follow-up] [follow-up]: [ATTENTION:follow-up-broken] [FOLLOW_UP broken] PRIVATE MALFORMED HARNESS` }] } });
 const rotatedLine = JSON.stringify({ type: "message", id: "voice-after-compaction", timestamp: "2026-01-01T00:03:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:03:00+00:00] [voice] [user]: continue" }] } });
 
 let passed = 0;
@@ -42,7 +43,7 @@ function assert(condition: boolean, msg: string) {
 async function run() {
   // Setup temp workspace with existing context
   mkdirSync(AWARENESS_DIR, { recursive: true });
-  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n" + followUpLine + "\n");
+  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n" + followUpLine + "\n" + malformedFollowUpLine + "\n");
 
   PORT = await getFreePort();
 
@@ -61,6 +62,9 @@ async function run() {
   assert(projectedBacklogFollowUp.includes("Follow-up 1/1 · 10m"), "backlog compacts a generated follow-up for stale terminal clients");
   assert(!projectedBacklogFollowUp.includes("INTERNAL FOLLOW-UP HARNESS"), "backlog never exposes the generated follow-up harness");
   assert(!projectedBacklogFollowUp.includes("private state") && !projectedBacklogFollowUp.includes("private route"), "backlog removes generated follow-up context scaffolding");
+  const redactedBacklogFollowUp = backlog.lines.find((line) => line.includes("troublemaker.generated-follow-up-redacted")) || "";
+  assert(Boolean(redactedBacklogFollowUp), "backlog redacts malformed valid-JSON internal follow-ups");
+  assert(!backlog.lines.some((line) => line.includes("PRIVATE MALFORMED HARNESS")), "backlog never returns a malformed internal follow-up harness");
 
   console.log("\nTest 2: Live update delivery");
 

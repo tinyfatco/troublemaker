@@ -163,18 +163,46 @@ try {
 		}),
 		"user-authored lookalikes outside the internal follow-up lane remain byte-identical",
 	);
+	const redactedFollowUpLine = JSON.stringify({
+		type: "custom",
+		customType: "troublemaker.generated-follow-up-redacted",
+		display: false,
+	});
 	assert.equal(sanitizeGeneratedFollowUpSessionLine("not json"), "not json", "unrelated malformed lines remain unchanged");
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(`not json ${followUpPrompt}`),
-		JSON.stringify({ type: "custom", customType: "troublemaker.generated-follow-up-redacted", display: false }),
+		sanitizeGeneratedFollowUpSessionLine(`not json [2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}`),
+		redactedFollowUpLine,
 		"malformed generated follow-up candidates fail closed without exposing the harness",
 	);
-	const multiBlockFollowUp = JSON.parse(persistedFollowUpLine);
-	multiBlockFollowUp.message.content.push({ type: "text", text: "PRIVATE EXTRA BLOCK" });
-	assert.deepEqual(
-		JSON.parse(sanitizeGeneratedFollowUpSessionLine(JSON.stringify(multiBlockFollowUp))).message.content,
-		[{ type: "text", text: "[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: Follow-up 1/4 · 1m" }],
-		"recognized generated follow-ups project one bounded text block only",
+	const unterminatedContextFollowUp = JSON.stringify({
+		type: "message",
+		message: { role: "user", content: [{ type: "text", text: `<session_context>unterminated private state\n[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}` }] },
+	});
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(unterminatedContextFollowUp),
+		redactedFollowUpLine,
+		"valid JSON with an unterminated context block redacts the internal follow-up",
+	);
+	const malformedCheckpointFollowUp = JSON.stringify({
+		type: "message",
+		message: { role: "user", content: [{ type: "text", text: "[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: [ATTENTION:follow-up-broken] [FOLLOW_UP broken] PRIVATE HARNESS" }] },
+	});
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(malformedCheckpointFollowUp),
+		redactedFollowUpLine,
+		"valid JSON with a malformed internal checkpoint redacts rather than returning the harness",
+	);
+	const splitBlockFollowUp = JSON.stringify({
+		type: "message",
+		message: { role: "user", content: [
+			{ type: "text", text: "[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]:" },
+			{ type: "text", text: followUpPrompt },
+		] },
+	});
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(splitBlockFollowUp),
+		redactedFollowUpLine,
+		"valid JSON with a split internal checkpoint redacts rather than returning either block",
 	);
 	assert.equal(isCompactFollowUpInput({ channel: "follow-up", userName: "follow-up", text: "Follow-up 1/4 · 1m" }), true);
 	assert.equal(isCompactFollowUpInput({ channel: "terminal:example-agent", userName: "Casey", text: "Follow-up 1/4 · 1m" }), false);
