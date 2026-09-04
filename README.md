@@ -116,10 +116,13 @@ adapters: the message soft-steers an accepting model at its next safe boundary,
 or queues as a fresh canonical turn. Ordinary user input never aborts an active
 tool or run; `stop` remains the explicit cancellation control.
 
-When working output is fixed to a dedicated Slack channel, each surfaced tool
-gets its own top-level progress message. Bounded redacted invocation and result
-details reconcile as replies in that tool's thread, so unrelated tools and
-separately authorized channel updates never share a catch-all subthread.
+When working output is fixed to a dedicated Slack channel, the existing rolling
+window still owns one compact top-level batch. Each surfaced tool gets exactly
+one reply under that batch root; the reply is edited from running invocation to
+bounded redacted result or error. Parallel and long-running tools retain their
+original batch/reply identity, while the first tool after a configured rollover
+opens the next batch. Separately authorized channel updates remain outside the
+batch thread.
 
 ## Environment Variables
 

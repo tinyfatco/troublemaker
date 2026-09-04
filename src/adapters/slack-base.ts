@@ -7,7 +7,7 @@ import * as log from "../log.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import { createTwoMessageContext } from "./context.js";
 import { SlackNativeProgress } from "./slack-native-progress.js";
-import { SlackThreadedToolProgress } from "./slack-threaded-tool-progress.js";
+import { SlackBatchedToolProgress } from "./slack-batched-tool-progress.js";
 import { normalizeSlackEmojiName, parseSlackMessageTarget } from "./slack-reactions.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, SlackThreadTargetInfo, ThreadTranscriptMessage, UserInfo, WorkingOutputContextOptions } from "./types.js";
 import { markdownToSlackMrkdwn } from "./slack-format.js";
@@ -512,6 +512,9 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			replyTargetDescription: "Configured Slack working-output destination",
 			attachments: [],
 		};
+		let currentBatchRootTs: string | undefined;
+		let batchRootRevision = 0;
+		const batchRootIds = new Set<string>();
 		const context = createTwoMessageContext(
 			{
 				post: (channel, text) => this.postMessage(channel, text),
@@ -532,21 +535,30 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 				workingStreamPresentation: options.presentation,
 				workingStreamWindowMs: options.windowMinutes * 60_000,
 			},
+			{
+				onWorkingUpdate: (id) => {
+					currentBatchRootTs = id;
+					batchRootIds.add(id);
+					batchRootRevision++;
+				},
+			},
 		);
 		if (/^D/i.test(target.channelId) || options.toolStreaming === "off") {
 			return { ...context, workingReplyTarget: target.channelId };
 		}
 
-		const toolProgress = new SlackThreadedToolProgress({
+		const toolProgress = new SlackBatchedToolProgress({
 			api: {
-				postRoot: (channel, text) => this.postMessage(channel, text),
+				surfaceBatchRoot: async (update) => {
+					const previousRevision = batchRootRevision;
+					await context.respond(`_→ ${update.label}_`, false, { show: update.show });
+					return batchRootRevision > previousRevision ? currentBatchRootTs : undefined;
+				},
 				updateMessage: (channel, ts, text) => this.updateMessage(channel, ts, text),
 				postReply: (channel, threadTs, text) => this.postInThread(channel, threadTs, text),
 				deleteMessage: (channel, ts) => this.deleteMessage(channel, ts),
 			},
 			channel: target.channelId,
-			mode: options.toolStreaming,
-			verbose: false,
 			maxMessageLength: this.maxMessageLength,
 			warn: (message, error) => log.logWarning(message, error instanceof Error ? error.message : String(error)),
 		});
@@ -554,9 +566,28 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			...context,
 			workingReplyTarget: target.channelId,
 			updateToolProgress: (update) => toolProgress.update(update),
+			restartWorking: async (headerLine?: string) => {
+				await context.restartWorking(headerLine);
+				currentBatchRootTs = undefined;
+			},
 			deleteMessage: async () => {
 				await toolProgress.deleteAll();
-				await context.deleteMessage();
+				const currentRoot = currentBatchRootTs;
+				try {
+					await context.deleteMessage();
+				} catch (error) {
+					log.logWarning("Failed to delete current Slack tool batch root", error instanceof Error ? error.message : String(error));
+				}
+				for (const rootTs of batchRootIds) {
+					if (rootTs === currentRoot) continue;
+					try {
+						await this.deleteMessage(target.channelId, rootTs);
+					} catch (error) {
+						log.logWarning("Failed to delete prior Slack tool batch root", error instanceof Error ? error.message : String(error));
+					}
+				}
+				batchRootIds.clear();
+				currentBatchRootTs = undefined;
 			},
 		};
 	}
