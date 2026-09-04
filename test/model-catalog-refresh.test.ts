@@ -20,7 +20,7 @@ function model(id: string, extra: Record<string, unknown> = {}): Model<Api> {
 		provider: "openai-codex",
 		id,
 		name: id === "gpt-6-astra" ? "GPT-6 Astra" : id,
-		baseUrl: "https://models.example.com/v1",
+		baseUrl: "https://chatgpt.com/backend-api",
 		...extra,
 	} as Model<Api>;
 }
@@ -131,12 +131,24 @@ try {
 	const malformedWorkspace = workspace("malformed");
 	const malformedRegistry = new FakeRegistry([
 		model("gpt-6-astra\ncontrol"),
-		{ ...model("gpt-6-astra"), baseUrl: "http://models.example.com/v1" },
+		{ ...model("gpt-6-astra"), baseUrl: "http://chatgpt.com/backend-api" },
+		{ ...model("gpt-6-astra"), baseUrl: "https://models.example.com/backend-api" },
+		{ ...model("gpt-6-astra"), baseUrl: `https://user:pass${String.fromCharCode(64)}chatgpt.com/backend-api` },
+		{ ...model("gpt-6-astra"), baseUrl: "https://chatgpt.com/backend-api/v1" },
+		{ ...model("gpt-6-astra"), baseUrl: "https://chatgpt.com/backend-api?route=other" },
+		{ ...model("gpt-6-astra"), baseUrl: "https://chatgpt.com/backend-api#other" },
+		{ ...model("gpt-6-astra"), api: "openai-responses" },
 		{ ...model("gpt-6-astra"), provider: "example-provider" },
 	]);
 	const malformed = startLiveModelCatalogRefresh(malformedWorkspace, malformedRegistry as any, { schedule: false });
-	assert.equal(getLiveModelCatalogSnapshot(malformedWorkspace).length, 0, "malformed, insecure, and out-of-scope catalog entries are rejected");
+	assert.equal(getLiveModelCatalogSnapshot(malformedWorkspace).length, 0, "malformed IDs and wrong scheme, host, userinfo, path, query, hash, API, or provider are rejected");
 	malformed.stop();
+
+	const normalizedWorkspace = workspace("normalized");
+	const normalizedRegistry = new FakeRegistry([{ ...model("gpt-6-astra"), baseUrl: "https://chatgpt.com/backend-api/" }]);
+	const normalized = startLiveModelCatalogRefresh(normalizedWorkspace, normalizedRegistry as any, { schedule: false });
+	assert.equal(getLiveModelCatalogSnapshot(normalizedWorkspace)[0]?.baseUrl, "https://chatgpt.com/backend-api", "trusted trailing slash normalizes to the exact Codex base URL");
+	normalized.stop();
 
 	const failureWorkspace = workspace("failure");
 	const warnings: string[] = [];

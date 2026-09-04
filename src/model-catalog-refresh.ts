@@ -4,6 +4,8 @@ import { resolve } from "node:path";
 import * as log from "./log.js";
 
 const LIVE_PROVIDER = "openai-codex";
+const TRUSTED_CODEX_API = "openai-codex-responses";
+const TRUSTED_CODEX_BASE_URL = "https://chatgpt.com/backend-api";
 export const LIVE_MODEL_CATALOG_INITIAL_DELAY_MS = 5 * 60_000;
 export const LIVE_MODEL_CATALOG_REFRESH_INTERVAL_MS = 60 * 60_000;
 export const LIVE_MODEL_CATALOG_REFRESH_TIMEOUT_MS = 10_000;
@@ -151,18 +153,19 @@ export function startLiveModelCatalogRefresh(
 }
 
 function safeCatalogModel(model: Model<Api>): Model<Api>[] {
-	if (model.provider !== LIVE_PROVIDER) return [];
-	if (!safeCatalogText(model.id, 256) || !safeCatalogText(model.name, 256) || !safeCatalogText(model.api, 128)) return [];
-	if (!safeCatalogUrl(model.baseUrl)) return [];
+	if (model.provider !== LIVE_PROVIDER || model.api !== TRUSTED_CODEX_API) return [];
+	if (!safeCatalogText(model.id, 256) || !safeCatalogText(model.name, 256)) return [];
+	const baseUrl = trustedCodexBaseUrl(model.baseUrl);
+	if (!baseUrl) return [];
 	if (!Array.isArray(model.input) || !model.input.every((value) => value === "text" || value === "image")) return [];
 	if (!finiteNonnegative(model.contextWindow) || !finiteNonnegative(model.maxTokens)) return [];
 	if (!safeCost(model.cost)) return [];
 	const clone: Model<Api> = {
 		id: model.id,
 		name: model.name,
-		api: model.api,
+		api: TRUSTED_CODEX_API,
 		provider: LIVE_PROVIDER,
-		baseUrl: model.baseUrl,
+		baseUrl,
 		reasoning: model.reasoning === true,
 		input: [...model.input],
 		cost: {
@@ -191,13 +194,20 @@ function safeCatalogText(value: unknown, maxLength: number): value is string {
 		&& !/[\u0000-\u001f\u007f]/.test(value);
 }
 
-function safeCatalogUrl(value: unknown): value is string {
-	if (!safeCatalogText(value, 2_048)) return false;
+function trustedCodexBaseUrl(value: unknown): string | undefined {
+	if (!safeCatalogText(value, 2_048)) return undefined;
 	try {
 		const url = new URL(value);
-		return url.protocol === "https:" && !url.username && !url.password;
+		const normalizedPath = url.pathname.replace(/\/+$/, "") || "/";
+		if (url.origin !== "https://chatgpt.com"
+			|| normalizedPath !== "/backend-api"
+			|| url.username
+			|| url.password
+			|| url.search
+			|| url.hash) return undefined;
+		return TRUSTED_CODEX_BASE_URL;
 	} catch {
-		return false;
+		return undefined;
 	}
 }
 
