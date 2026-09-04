@@ -59,6 +59,48 @@ export function isCompactFollowUpInput(input: VisibleUserInput): boolean {
 		&& /^Follow-up \d+\/\d+ · \d+m$/.test(input.text);
 }
 
+/**
+ * Keep the persisted model prompt intact on disk while projecting only the
+ * compact checkpoint through awareness APIs. This protects older terminal
+ * clients that do their own durable-history rendering after a newer server has
+ * already painted the compact live input.
+ */
+export function sanitizeGeneratedFollowUpSessionLine(line: string): string {
+	try {
+		const entry = JSON.parse(line) as {
+			type?: unknown;
+			message?: { role?: unknown; content?: unknown };
+		};
+		if (entry.type !== "message" || entry.message?.role !== "user") return line;
+
+		const compactText = (text: string): string | null => {
+			const envelope = parseUserPromptEnvelope(text);
+			if (!envelope || envelope.channel !== "follow-up" || envelope.userName !== "follow-up") return null;
+			const compact = compactFollowUpCheckpoint(envelope.text);
+			if (compact === envelope.text) return null;
+			return `[${envelope.timestamp}] [follow-up] [follow-up]: ${compact}`;
+		};
+
+		const content = entry.message.content;
+		const compact = typeof content === "string"
+			? compactText(content)
+			: Array.isArray(content)
+				? content.flatMap((block) => block && typeof block === "object"
+					&& (block as { type?: unknown }).type === "text"
+					&& typeof (block as { text?: unknown }).text === "string"
+						? [compactText((block as { text: string }).text)]
+						: []).find((value): value is string => value !== null)
+				: null;
+		if (!compact) return line;
+		const sanitizedContent = typeof content === "string" ? compact : [{ type: "text", text: compact }];
+		return JSON.stringify({ ...entry, message: { ...entry.message, content: sanitizedContent } });
+	} catch {
+		return line.includes("[ATTENTION:follow-up-") && line.includes("[FOLLOW_UP ")
+			? JSON.stringify({ type: "custom", customType: "troublemaker.generated-follow-up-redacted", display: false })
+			: line;
+	}
+}
+
 export function parseInterruptBatchMessages(text: string): VisibleUserInput[] {
 	if (!text.startsWith("Recent messages:\n")) return [];
 	const body = text.slice("Recent messages:\n".length);

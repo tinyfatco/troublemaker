@@ -21,6 +21,9 @@ let PORT = 0;
 const line1 = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-01-01T00:00:00Z" });
 const line2 = JSON.stringify({ type: "message", id: "m1", timestamp: "2026-01-01T00:01:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:01:00+00:00] [web] [testuser]: hello" }] } });
 const line3 = JSON.stringify({ type: "message", id: "m2", timestamp: "2026-01-01T00:02:00Z", message: { role: "assistant", content: [{ type: "text", text: "hi there" }] } });
+const followUpHarness = "[ATTENTION:follow-up-agent-global-example-1.json:one-shot:2026-01-01T00:10:00.000Z] [FOLLOW_UP 1/1 after 10 minutes since the latest completed wake]\nINTERNAL FOLLOW-UP HARNESS THAT MUST NOT REACH A DISPLAY";
+const followUpLine = JSON.stringify({ type: "message", id: "follow-up-1", timestamp: "2026-01-01T00:10:00Z", message: { role: "user", content: [{ type: "text", text: `<session_context>private state</session_context>\n\n<delivery_context>private route</delivery_context>\n\n[2026-01-01 00:10:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
+const followUpLiveLine = JSON.stringify({ type: "message", id: "follow-up-2", timestamp: "2026-01-01T00:20:00Z", message: { role: "user", content: [{ type: "text", text: `[2026-01-01 00:20:00+00:00] [follow-up] [follow-up]: ${followUpHarness}` }] } });
 const rotatedLine = JSON.stringify({ type: "message", id: "voice-after-compaction", timestamp: "2026-01-01T00:03:00Z", message: { role: "user", content: [{ type: "text", text: "[2026-01-01 00:03:00+00:00] [voice] [user]: continue" }] } });
 
 let passed = 0;
@@ -39,7 +42,7 @@ function assert(condition: boolean, msg: string) {
 async function run() {
   // Setup temp workspace with existing context
   mkdirSync(AWARENESS_DIR, { recursive: true });
-  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n");
+  writeFileSync(CONTEXT_FILE, line1 + "\n" + line2 + "\n" + followUpLine + "\n");
 
   PORT = await getFreePort();
 
@@ -54,6 +57,10 @@ async function run() {
   assert(backlog.lines.length >= 2, `got ${backlog.lines.length} backlog lines (expected ≥2)`);
   assert(backlog.lines[0]?.includes('"s1"') || false, "first backlog line is session s1");
   assert(backlog.lines[1]?.includes('"m1"') || false, "second backlog line is message m1");
+  const projectedBacklogFollowUp = backlog.lines.find((line) => line.includes('"follow-up-1"')) || "";
+  assert(projectedBacklogFollowUp.includes("Follow-up 1/1 · 10m"), "backlog compacts a generated follow-up for stale terminal clients");
+  assert(!projectedBacklogFollowUp.includes("INTERNAL FOLLOW-UP HARNESS"), "backlog never exposes the generated follow-up harness");
+  assert(!projectedBacklogFollowUp.includes("private state") && !projectedBacklogFollowUp.includes("private route"), "backlog removes generated follow-up context scaffolding");
 
   console.log("\nTest 2: Live update delivery");
 
@@ -66,6 +73,14 @@ async function run() {
   const liveEvents = await livePromise;
   assert(liveEvents.length >= 1, `got ${liveEvents.length} live events (expected ≥1)`);
   assert(liveEvents[0]?.includes('"m2"') || false, "live event contains message m2");
+
+  const followUpLivePromise = collectEvents(1, 5000);
+  await sleep(200);
+  appendFileSync(CONTEXT_FILE, followUpLiveLine + "\n");
+  const followUpLiveEvents = await followUpLivePromise;
+  const projectedLiveFollowUp = followUpLiveEvents.find((event) => event.includes('"follow-up-2"')) || "";
+  assert(projectedLiveFollowUp.includes("Follow-up 1/1 · 10m"), "live awareness compacts a generated follow-up for stale terminal clients");
+  assert(!projectedLiveFollowUp.includes("INTERNAL FOLLOW-UP HARNESS"), "live awareness never exposes the generated follow-up harness");
 
   console.log("\nTest 3: Unified runtime event delivery is sanitized");
 

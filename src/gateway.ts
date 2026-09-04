@@ -32,6 +32,7 @@ import type { VoiceSessionRuntime } from "./console/voice-session-runtime.js";
 import type { RuntimeLiveEvent, RuntimeLiveRunMetadata, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "./live-events.js";
 import * as log from "./log.js";
+import { sanitizeGeneratedFollowUpSessionLine } from "./user-input-display.js";
 import { validatePreviewPort } from "./preview/ports.js";
 import { FilesystemAwarenessStore } from "./storage/node/filesystem-awareness.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
@@ -1149,7 +1150,7 @@ export class Gateway {
 				const lines = newContent.split("\n").filter(Boolean);
 
 				for (const line of lines) {
-					const publicLine = sanitizePrivateHandoffSessionLine(line);
+					const publicLine = sanitizeGeneratedFollowUpSessionLine(sanitizePrivateHandoffSessionLine(line));
 					const id = extractAwarenessEventId(publicLine);
 					const event = `${id ? `id: ${id}\n` : ""}data: ${publicLine}\n\n`;
 					for (const client of this.awarenessClients) {

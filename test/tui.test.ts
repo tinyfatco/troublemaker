@@ -21,7 +21,12 @@ import {
 	readRuntimeSse,
 	safeToolLabel,
 } from "../src/tui/protocol.js";
-import { compactFollowUpCheckpoint, isCompactFollowUpInput, parseVisibleUserInputs } from "../src/user-input-display.js";
+import {
+	compactFollowUpCheckpoint,
+	isCompactFollowUpInput,
+	parseVisibleUserInputs,
+	sanitizeGeneratedFollowUpSessionLine,
+} from "../src/user-input-display.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -124,6 +129,53 @@ try {
 		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}` }] },
 	}));
 	assert.equal(parsedFollowUpHistory?.text, "Follow-up 1/4 · 1m", "durable follow-up history uses the same compact display");
+	const persistedFollowUpLine = JSON.stringify({
+		type: "message",
+		id: "follow-up-history",
+		timestamp: "2026-01-02T03:04:05Z",
+		message: {
+			role: "user",
+			content: [{
+				type: "text",
+				text: `<session_context>private current state</session_context>\n\n<delivery_context>private route</delivery_context>\n\n[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}`,
+			}],
+		},
+	});
+	const projectedFollowUpLine = sanitizeGeneratedFollowUpSessionLine(persistedFollowUpLine);
+	assert.equal(
+		JSON.parse(projectedFollowUpLine).message.content[0].text,
+		"[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: Follow-up 1/4 · 1m",
+		"server-side awareness projection protects stale terminal clients from the full generated prompt",
+	);
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(historyLine),
+		historyLine,
+		"ordinary user history remains byte-identical",
+	);
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(JSON.stringify({
+			type: "message",
+			message: { role: "user", content: `[2026-01-02 03:04:05+00:00] [terminal:example-agent] [Casey]: ${followUpPrompt}` },
+		})),
+		JSON.stringify({
+			type: "message",
+			message: { role: "user", content: `[2026-01-02 03:04:05+00:00] [terminal:example-agent] [Casey]: ${followUpPrompt}` },
+		}),
+		"user-authored lookalikes outside the internal follow-up lane remain byte-identical",
+	);
+	assert.equal(sanitizeGeneratedFollowUpSessionLine("not json"), "not json", "unrelated malformed lines remain unchanged");
+	assert.equal(
+		sanitizeGeneratedFollowUpSessionLine(`not json ${followUpPrompt}`),
+		JSON.stringify({ type: "custom", customType: "troublemaker.generated-follow-up-redacted", display: false }),
+		"malformed generated follow-up candidates fail closed without exposing the harness",
+	);
+	const multiBlockFollowUp = JSON.parse(persistedFollowUpLine);
+	multiBlockFollowUp.message.content.push({ type: "text", text: "PRIVATE EXTRA BLOCK" });
+	assert.deepEqual(
+		JSON.parse(sanitizeGeneratedFollowUpSessionLine(JSON.stringify(multiBlockFollowUp))).message.content,
+		[{ type: "text", text: "[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: Follow-up 1/4 · 1m" }],
+		"recognized generated follow-ups project one bounded text block only",
+	);
 	assert.equal(isCompactFollowUpInput({ channel: "follow-up", userName: "follow-up", text: "Follow-up 1/4 · 1m" }), true);
 	assert.equal(isCompactFollowUpInput({ channel: "terminal:example-agent", userName: "Casey", text: "Follow-up 1/4 · 1m" }), false);
 	assert.match(
