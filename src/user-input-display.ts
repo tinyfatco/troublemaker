@@ -52,6 +52,13 @@ export function compactFollowUpCheckpoint(text: string): string {
 	return `Follow-up ${match[1]}/${match[2]} · ${match[3]}m`;
 }
 
+/** Exact terminal-only shape produced for an internal follow-up checkpoint. */
+export function isCompactFollowUpInput(input: VisibleUserInput): boolean {
+	return input.channel === "follow-up"
+		&& input.userName === "follow-up"
+		&& /^Follow-up \d+\/\d+ · \d+m$/.test(input.text);
+}
+
 export function parseInterruptBatchMessages(text: string): VisibleUserInput[] {
 	if (!text.startsWith("Recent messages:\n")) return [];
 	const body = text.slice("Recent messages:\n".length);

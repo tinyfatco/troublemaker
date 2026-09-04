@@ -4,7 +4,7 @@
 
 ### Changed
 
-- Generated follow-up checkpoints now occupy one concise terminal transcript line instead of displaying their full internal prompt.
+- Generated follow-up checkpoints now occupy one subdued terminal transcript line, without the full internal prompt or a repeated channel/user header.
 
 ## [0.52.10] - 2026-02-12
 

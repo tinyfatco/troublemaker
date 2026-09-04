@@ -21,7 +21,7 @@ import {
 	readRuntimeSse,
 	safeToolLabel,
 } from "../src/tui/protocol.js";
-import { compactFollowUpCheckpoint, parseVisibleUserInputs } from "../src/user-input-display.js";
+import { compactFollowUpCheckpoint, isCompactFollowUpInput, parseVisibleUserInputs } from "../src/user-input-display.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -124,6 +124,14 @@ try {
 		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}` }] },
 	}));
 	assert.equal(parsedFollowUpHistory?.text, "Follow-up 1/4 · 1m", "durable follow-up history uses the same compact display");
+	assert.equal(isCompactFollowUpInput({ channel: "follow-up", userName: "follow-up", text: "Follow-up 1/4 · 1m" }), true);
+	assert.equal(isCompactFollowUpInput({ channel: "terminal:example-agent", userName: "Casey", text: "Follow-up 1/4 · 1m" }), false);
+	assert.match(
+		appSource,
+		/if \(isCompactFollowUpInput\(\{ channel, userName: user, text \}\)\) \{[\s\S]*?new Text\(chalk\.dim\(text\)/,
+		"generated follow-ups render as one dim terminal line without a repeated channel/user header",
+	);
+	assert.match(appSource, /liveView\?\.generatedFollowUps\.has\(entry\.text\)/, "one live run cannot repaint the same generated follow-up");
 	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nCasey (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nObserver (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [#general] [ambient]: ${ambientPrompt}`), [], "ambient evaluation scaffolding never enters the live input feed");
 	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Casey: ship the fix <@U456>", "Observer: on it"]);
