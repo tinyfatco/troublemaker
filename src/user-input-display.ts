@@ -1,5 +1,6 @@
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
+const FOLLOW_UP_CHECKPOINT_RE = /^\[ATTENTION:follow-up-[^\]\n]+:one-shot:[^\]\n]+\]\s+\[FOLLOW_UP\s+(\d+)\/(\d+)\s+after\s+(\d+)\s+minutes?\s+since the latest completed wake\]/;
 
 export interface VisibleUserInput {
 	channel: string;
@@ -35,7 +36,20 @@ export function parseVisibleUserInputs(prompt: string): VisibleUserInput[] {
 	const batched = parseInterruptBatchMessages(envelope.text);
 	if (batched.length > 0) return batched;
 	if (!envelope.text) return [];
-	return [{ channel: envelope.channel, userName: envelope.userName, text: envelope.text }];
+	return [{
+		channel: envelope.channel,
+		userName: envelope.userName,
+		text: envelope.channel === "follow-up" && envelope.userName === "follow-up"
+			? compactFollowUpCheckpoint(envelope.text)
+			: envelope.text,
+	}];
+}
+
+/** Keep generated follow-up wakes visible without painting their full model prompt. */
+export function compactFollowUpCheckpoint(text: string): string {
+	const match = text.match(FOLLOW_UP_CHECKPOINT_RE);
+	if (!match) return text;
+	return `Follow-up ${match[1]}/${match[2]} · ${match[3]}m`;
 }
 
 export function parseInterruptBatchMessages(text: string): VisibleUserInput[] {

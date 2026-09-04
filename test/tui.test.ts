@@ -21,7 +21,7 @@ import {
 	readRuntimeSse,
 	safeToolLabel,
 } from "../src/tui/protocol.js";
-import { parseVisibleUserInputs } from "../src/user-input-display.js";
+import { compactFollowUpCheckpoint, parseVisibleUserInputs } from "../src/user-input-display.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
 
@@ -101,6 +101,29 @@ try {
 		userName: "goal",
 		text: "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\nAutomatic goal turn: 1",
 	}], "automatic goal continuation is projected as ordered visible input");
+	const followUpPrompt = "[ATTENTION:follow-up-agent-global-00000000-0000-0000-0000-000000000000-1.json:one-shot:2040-01-01T00:01:00.000Z] [FOLLOW_UP 1/4 after 1 minute since the latest completed wake]\nThis is an agent-global internal checkpoint. It does not belong to any conversation and carries no assumed reply target.\nReview open loops across the agent. Use list_channels and read_thread when useful to recover the current context before acting.\nIf one concise, natural follow-up is still useful, call send_message exactly once with the appropriate explicit target. Otherwise call yield_no_action.\nDo not emit ordinary assistant text.";
+	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}`), [{
+		channel: "follow-up",
+		userName: "follow-up",
+		text: "Follow-up 1/4 · 1m",
+	}], "generated follow-up prompts collapse to one terminal line");
+	assert.equal(
+		compactFollowUpCheckpoint("[FOLLOW_UP 1/4 after 1 minute since the latest completed wake] user-authored text"),
+		"[FOLLOW_UP 1/4 after 1 minute since the latest completed wake] user-authored text",
+		"ordinary text that resembles a follow-up marker is preserved",
+	);
+	assert.equal(
+		parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [terminal:example-agent] [Casey]: ${followUpPrompt}`)[0]?.text,
+		followUpPrompt,
+		"a user pasting the complete marker outside the internal follow-up lane is preserved",
+	);
+	const parsedFollowUpHistory = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "follow-up-history",
+		timestamp: "2026-01-02T03:04:05Z",
+		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}` }] },
+	}));
+	assert.equal(parsedFollowUpHistory?.text, "Follow-up 1/4 · 1m", "durable follow-up history uses the same compact display");
 	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nCasey (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nObserver (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [#general] [ambient]: ${ambientPrompt}`), [], "ambient evaluation scaffolding never enters the live input feed");
 	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Casey: ship the fix <@U456>", "Observer: on it"]);
