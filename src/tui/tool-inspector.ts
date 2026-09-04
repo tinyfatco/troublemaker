@@ -34,7 +34,7 @@ const LEGACY_CTRL_DIGITS = new Map([
 	["\x7f", "8"],
 ]);
 
-export type TerminalToolState = "pending" | "success" | "error";
+export type TerminalToolState = "pending" | "success" | "error" | "cancelled" | "unknown";
 
 export interface TerminalToolCallView {
 	selector: number;
@@ -61,7 +61,7 @@ export class TerminalToolCallRegistry {
 
 	updateSnapshot(
 		snapshot: RuntimeAssistantSnapshotEntry,
-		historical: boolean,
+		_historical: boolean,
 	): Map<number, TerminalToolCallView> {
 		const results = new Map(snapshot.content
 			.filter((block): block is RuntimeToolResultContent => block.type === "toolResult")
@@ -90,9 +90,7 @@ export class TerminalToolCallRegistry {
 			let details = mergeToolExecutionDetails(existing?.details, block.displayDetails);
 			for (const output of currentOutputs) details = mergeToolExecutionDetails(details, output.displayDetails);
 			details = mergeToolExecutionDetails(details, result?.displayDetails);
-			const state: TerminalToolState = result
-				? result.isError ? "error" : "success"
-				: historical || snapshot.isStreaming === false ? "success" : "pending";
+			const state = terminalToolState(snapshot, result);
 			const view: TerminalToolCallView = existing || {
 				selector,
 				identity,
@@ -220,9 +218,30 @@ export class ToolSelectorSequence {
 	}
 }
 
+function terminalToolState(
+	snapshot: RuntimeAssistantSnapshotEntry,
+	result: RuntimeToolResultContent | undefined,
+): TerminalToolState {
+	if (result) return result.isError ? "error" : "success";
+	if (snapshot.isStreaming !== false) return "pending";
+	return snapshot.stopReason === "aborted" ? "cancelled" : "unknown";
+}
+
 export function formatToolLabel(call: TerminalToolCallView): string {
-	const color = call.state === "error" ? chalk.red : call.state === "success" ? chalk.green : chalk.yellow;
-	const icon = call.state === "error" ? "×" : call.state === "success" ? "✓" : "→";
+	const color = call.state === "error"
+		? chalk.red
+		: call.state === "success"
+			? chalk.green
+			: call.state === "pending"
+				? chalk.yellow
+				: chalk.dim;
+	const icon = call.state === "error"
+		? "×"
+		: call.state === "success"
+			? "✓"
+			: call.state === "pending"
+				? "→"
+				: call.state === "cancelled" ? "−" : "?";
 	const disclosure = call.expanded ? "▾" : "▸";
 	const label = oneLine(call.label) || oneLine(call.name) || "tool";
 	return `${chalk.dim(`[${call.selector}]`)} ${chalk.dim(disclosure)} ${color(icon)} ${chalk.bold(label)}`;

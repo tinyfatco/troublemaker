@@ -93,6 +93,8 @@ assert.equal(completedViews.get(0), first, "cumulative snapshots retain the moun
 assert.equal(completedViews.get(2), second, "a stable tool id retains its session selector");
 assert.equal(completedViews.get(2)?.expanded, true, "expansion survives cumulative snapshot repaint");
 assert.equal(completedViews.get(2)?.state, "success");
+assert.equal(completedViews.get(0)?.state, "unknown", "a final snapshot without a matching result never implies success");
+assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] ▸ \? Inspecting files$/, "final no-result state is visibly unknown");
 assert.match(stripTerminalSequences(formatToolDetails(second)), /VISIBLE_RESULT/);
 assert.doesNotMatch(stripTerminalSequences(formatToolDetails(second)), /RAW_RESULT_MUST_NOT_RENDER/);
 
@@ -103,6 +105,35 @@ assert.match(expandedDetails, /example.txt/);
 assert.match(expandedDetails, /stdout · pid 1234/);
 assert.match(expandedDetails, /VISIBLE_OUTPUT/);
 assert.doesNotMatch(expandedDetails, /RAW_ARGUMENT_MUST_NOT_RENDER|RAW_OUTPUT_MUST_NOT_RENDER/);
+
+const interruptedRegistry = new TerminalToolCallRegistry();
+const interruptedStart: RuntimeAssistantSnapshotEntry = {
+	id: "assistant-interrupted",
+	type: "message",
+	timestamp: "2026-01-02T03:04:06Z",
+	role: "assistant",
+	isStreaming: true,
+	content: [{ type: "toolCall", id: "tool-interrupted", name: "read", label: "Interrupted operation", arguments: {} }],
+};
+const interruptedView = interruptedRegistry.updateSnapshot(interruptedStart, false).get(0);
+assert.equal(interruptedView?.state, "pending");
+const interruptedFinal = interruptedRegistry.updateSnapshot({ ...interruptedStart, isStreaming: false }, false).get(0);
+assert.equal(interruptedFinal, interruptedView, "interrupted final snapshots retain the same mounted tool view");
+assert.equal(interruptedFinal?.state, "unknown", "an interrupted final snapshot without an abort reason stays explicitly unknown");
+assert.match(stripTerminalSequences(formatToolLabel(interruptedFinal!)), /^\[1\] ▸ \? Interrupted operation$/);
+assert.doesNotMatch(stripTerminalSequences(formatToolLabel(interruptedFinal!)), /✓/);
+
+const abortedRegistry = new TerminalToolCallRegistry();
+const abortedView = abortedRegistry.updateSnapshot({
+	...interruptedStart,
+	id: "assistant-aborted",
+	stopReason: "aborted",
+	isStreaming: false,
+	content: [{ type: "toolCall", id: "tool-aborted", name: "read", label: "Aborted operation", arguments: {} }],
+}, false).get(0);
+assert.equal(abortedView?.state, "cancelled", "an aborted no-result tool is explicitly cancelled");
+assert.match(stripTerminalSequences(formatToolLabel(abortedView!)), /^\[1\] ▸ − Aborted operation$/);
+assert.doesNotMatch(stripTerminalSequences(formatToolLabel(abortedView!)), /✓/);
 
 const boundedRegistry = new TerminalToolCallRegistry();
 for (let index = 1; index <= 129; index++) {

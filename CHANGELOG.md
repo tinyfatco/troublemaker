@@ -4,7 +4,7 @@
 
 ### Added
 
-- Terminal profiles can opt into a Pi-style live tool stream with numbered, collapsed calls and bounded redacted invocation, output, and result details; compact presentation remains the default and durable history stays compact.
+- Terminal profiles can opt into a Pi-style live tool stream with numbered, collapsed calls and bounded redacted invocation, output, and result details; compact presentation remains the default, durable history stays compact, and final calls without a matching result remain visibly unknown or cancelled rather than being reported as successful.
 
 ### Changed
 
