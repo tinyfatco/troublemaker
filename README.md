@@ -116,6 +116,11 @@ adapters: the message soft-steers an accepting model at its next safe boundary,
 or queues as a fresh canonical turn. Ordinary user input never aborts an active
 tool or run; `stop` remains the explicit cancellation control.
 
+When working output is fixed to a dedicated Slack channel, each surfaced tool
+gets its own top-level progress message. Bounded redacted invocation and result
+details reconcile as replies in that tool's thread, so unrelated tools and
+separately authorized channel updates never share a catch-all subthread.
+
 ## Environment Variables
 
 | Variable | Required For | Description |

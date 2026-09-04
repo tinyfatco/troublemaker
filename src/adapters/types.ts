@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { ToolStreamingMode, WorkingOutputTarget, WorkingStreamPresentation } from "../context.js";
+import type { ConversationToolExecutionDetails } from "../console/tool-detail-projection.js";
 import type { Attachment, ChannelStore } from "../store.js";
 import type {
 	RelationshipAdmissionRequest,
@@ -99,6 +100,8 @@ export interface ToolProgressUpdate {
 	status: "in_progress" | "complete" | "error";
 	/** Whether the tool explicitly opted into the selective important stream. */
 	show?: boolean;
+	/** Optional bounded, redacted detail projection. Never a raw tool payload. */
+	details?: ConversationToolExecutionDetails;
 }
 
 export interface WorkingOutputContextOptions {

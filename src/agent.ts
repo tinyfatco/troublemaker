@@ -21,6 +21,10 @@ import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
+import {
+	projectToolInvocationDetails,
+	projectToolResultDetails,
+} from "./console/tool-detail-projection.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
 	buildConciseWatchRuntimeContext,
@@ -858,7 +862,13 @@ async function createRunner(
 			if (!silentChannelTool) {
 				const displayBarrier = queue.enqueue(
 					() => ctx.updateToolProgress
-						? ctx.updateToolProgress({ id: agentEvent.toolCallId, label, status: "in_progress", show })
+						? ctx.updateToolProgress({
+							id: agentEvent.toolCallId,
+							label,
+							status: "in_progress",
+							show,
+							details: projectToolInvocationDetails({ name: agentEvent.toolName, arguments: args }),
+						})
 						: ctx.respond(`_→ ${label}_`, false, { show }),
 					"tool label",
 				);
@@ -900,6 +910,12 @@ async function createRunner(
 							label: pending.label,
 							status: agentEvent.isError ? "error" : "complete",
 							show: pending.show,
+							details: projectToolResultDetails({
+								name: agentEvent.toolName,
+								result: resultStr,
+								isError: agentEvent.isError === true,
+								durationMs,
+							}),
 						}),
 						"tool progress completion",
 					);

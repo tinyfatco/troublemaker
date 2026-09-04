@@ -39,7 +39,16 @@ function createHarness(options: { mode?: "off" | "important" | "all"; verbose?: 
 	await h.progress.update({ id: "hidden", label: "Routine work", status: "in_progress" });
 	assert.equal(h.starts.length, 0, "important mode fails closed without show:true");
 
-	await h.progress.update({ id: "visible", label: "Checking deployment health", status: "in_progress", show: true });
+	await h.progress.update({
+		id: "visible",
+		label: "Checking deployment health",
+		status: "in_progress",
+		show: true,
+		details: {
+			invocation: { text: "SAFE_DETAIL_MUST_NOT_ENTER_NATIVE_TASK", format: "text", isTruncated: false },
+			artifacts: [],
+		},
+	});
 	assert.deepEqual(h.starts, [{
 		channel: "C123",
 		thread_ts: "1700000000.000000",
