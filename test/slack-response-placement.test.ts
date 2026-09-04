@@ -4,16 +4,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SlackBase, type SlackBaseConfig } from "../src/adapters/slack-base.js";
 import type { MomEvent } from "../src/adapters/types.js";
+import {
+	projectToolInvocationDetails,
+	projectToolResultDetails,
+} from "../src/console/tool-detail-projection.js";
+import { routeWorkingOutputContext } from "../src/streaming/working-output.js";
 import type { ChannelStore } from "../src/store.js";
 
 type PostedMessage = {
 	channel: string;
 	text: string;
 	thread_ts?: string;
+	ts?: string;
 };
 
 class TestSlackAdapter extends SlackBase {
 	posted: PostedMessage[] = [];
+	messageUpdates: Array<{ channel: string; ts: string; text: string }> = [];
+	deletedMessages: Array<{ channel: string; ts: string }> = [];
 	fileUploads: any[] = [];
 	nativeStarts: any[] = [];
 	nativeAppends: any[] = [];
@@ -26,11 +34,12 @@ class TestSlackAdapter extends SlackBase {
 		this.webClient = {
 			chat: {
 				postMessage: async (payload: PostedMessage) => {
-					this.posted.push(payload);
-					return { ts: `posted-${this.posted.length}` };
+					const recorded = { ...payload, ts: `posted-${this.posted.length + 1}` };
+					this.posted.push(recorded);
+					return { ts: recorded.ts };
 				},
-				update: async () => {},
-				delete: async () => {},
+				update: async (payload: { channel: string; ts: string; text: string }) => { this.messageUpdates.push(payload); },
+				delete: async (payload: { channel: string; ts: string }) => { this.deletedMessages.push(payload); },
 				startStream: async (payload: any) => {
 					this.nativeStarts.push(payload);
 					return { ts: `native-${this.nativeStarts.length}` };
@@ -156,6 +165,77 @@ try {
 	assert.equal(fixedDestination.posted[0]?.thread_ts, undefined, "fixed working output is stable top-level channel output, not a transient thread");
 	assert.match(fixedDestination.posted[0]?.text || "", /Fixed cross-channel label/, "fixed working output preserves the standard label renderer");
 	assert.doesNotMatch(fixedDestination.posted[0]?.text || "", /raw fixed detail|ordinary fixed final/, "fixed working output preserves the messages-only detail boundary");
+	const fixedDmContext = new TestSlackAdapter(workingDir).createWorkingOutputContext(
+		{ platform: "slack", channelId: "D9999999999" },
+		{} as ChannelStore,
+		{ toolStreaming: "all", presentation: "split", windowMinutes: 5 },
+	);
+	assert.equal(fixedDmContext.updateToolProgress, undefined, "fixed Slack DMs preserve the existing compact renderer");
+	const fixedOffContext = new TestSlackAdapter(workingDir).createWorkingOutputContext(
+		{ platform: "slack", channelId: "C9999999999" },
+		{} as ChannelStore,
+		{ toolStreaming: "off", presentation: "split", windowMinutes: 5 },
+	);
+	assert.equal(fixedOffContext.updateToolProgress, undefined, "fixed Slack output avoids detail projection when tool streaming is off");
+
+	const multiplayer = new TestSlackAdapter(workingDir);
+	const sourceContext = multiplayer.createContext(event({ channel: "C123", threadTs: "1710000000.000001" }), {} as ChannelStore);
+	const routed = routeWorkingOutputContext({
+		policy: { mode: "fixed", target: { platform: "slack", channelId: "C9999999999" } },
+		sourceContext,
+		adapters: [multiplayer],
+		store: {} as ChannelStore,
+		presentation: { toolStreaming: "all", presentation: "split", windowMinutes: 5 },
+	});
+	assert.equal(routed.message.channel, "C123", "the addressed source channel remains the turn identity");
+	assert.equal(routed.workingReplyTarget, "C9999999999", "the dedicated Slack channel remains the working-output locus");
+	assert(routed.updateToolProgress, "fixed Slack channels expose per-tool progress lifecycle");
+	await routed.updateToolProgress?.({
+		id: "tool-one",
+		label: "Inspecting first artifact",
+		status: "in_progress",
+		details: projectToolInvocationDetails({ name: "read", arguments: { path: "/tmp/example-one.txt", apiKey: "SYNTHETIC_SECRET_VALUE" } }),
+	});
+	const explicitStatusTs = await multiplayer.postMessage("C9999999999", "Authorized cross-channel status");
+	await routed.updateToolProgress?.({
+		id: "tool-one",
+		label: "Inspecting first artifact",
+		status: "complete",
+		details: projectToolResultDetails({ name: "read", result: "FIRST_RESULT person@example.com" }),
+	});
+	await routed.updateToolProgress?.({
+		id: "tool-two",
+		label: "Inspecting second artifact",
+		status: "in_progress",
+		details: projectToolInvocationDetails({ name: "read", arguments: { path: "/tmp/example-two.txt" } }),
+	});
+	await routed.updateToolProgress?.({
+		id: "tool-two",
+		label: "Inspecting second artifact",
+		status: "complete",
+		details: projectToolResultDetails({ name: "read", result: "SECOND_RESULT" }),
+	});
+	const toolRoots = multiplayer.posted.filter((message) => !message.thread_ts && /Inspecting .* artifact/.test(message.text));
+	assert.equal(toolRoots.length, 2, "each visible fixed-channel tool gets one top-level root");
+	assert(toolRoots.every((message) => message.channel === "C9999999999"), "tool roots stay in the dedicated channel");
+	assert.deepEqual(
+		multiplayer.posted.filter((message) => !message.thread_ts).map((message) => message.text),
+		["_→ Inspecting first artifact_", "Authorized cross-channel status", "_→ Inspecting second artifact_"],
+		"tool roots preserve chronology around explicitly authorized cross-channel status",
+	);
+	const firstReplies = multiplayer.posted.filter((message) => message.thread_ts === toolRoots[0]?.ts);
+	const secondReplies = multiplayer.posted.filter((message) => message.thread_ts === toolRoots[1]?.ts);
+	assert.equal(firstReplies.length, 2, "first tool owns only its invocation and result replies");
+	assert.equal(secondReplies.length, 2, "second tool owns only its invocation and result replies");
+	assert(!multiplayer.posted.some((message) => message.thread_ts === explicitStatusTs), "explicit cross-channel status never becomes a catch-all tool thread");
+	assert.equal(multiplayer.posted.find((message) => message.ts === explicitStatusTs)?.thread_ts, undefined, "authorized status keeps its explicit top-level placement");
+	assert(multiplayer.messageUpdates.some((update) => update.ts === toolRoots[0]?.ts && update.text.includes("✓")), "first completion reconciles its own root");
+	assert(multiplayer.messageUpdates.some((update) => update.ts === toolRoots[1]?.ts && update.text.includes("✓")), "second completion reconciles its own root");
+	assert.doesNotMatch(JSON.stringify(multiplayer.posted), /person@example\.com|SYNTHETIC_SECRET_VALUE/, "fixed-channel detail replies use the existing redaction boundary");
+	await routed.deleteMessage();
+	const toolMessageIds = [...toolRoots, ...firstReplies, ...secondReplies].flatMap((message) => message.ts ? [message.ts] : []).sort();
+	assert.deepEqual(multiplayer.deletedMessages.map((message) => message.ts).sort(), toolMessageIds, "cleanup deletes only the agent-owned tool roots and replies");
+	assert(!multiplayer.deletedMessages.some((message) => message.ts === explicitStatusTs), "cleanup never deletes separately authorized status messages");
 
 	const realDateNow = Date.now;
 	let fakeNow = 1_000_000;
