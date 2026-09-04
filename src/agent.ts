@@ -38,6 +38,7 @@ import {
 } from "./core/prompt.js";
 import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
 import * as log from "./log.js";
+import { startLiveModelCatalogRefresh } from "./model-catalog-refresh.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { runWithModelCredentialGate } from "./model-auth-gate.js";
 import {
@@ -482,7 +483,9 @@ async function createRunner(
 	await registerClaudeCliRuntimeAuth(modelRuntime);
 	const modelRegistry = new ModelRegistry(modelRuntime);
 
-	// Resolve model: env vars > settings.json > defaults
+	// Resolve model before starting catalog refresh so discovery can never
+	// mutate the resident's active choice. Refreshed models become eligible only
+	// through the existing explicit setting and next-turn resolution path.
 	const model = resolveModelWithAuth(workspaceDir, modelRegistry);
 
 	// FAT-275: read thinking_level from settings.json and clamp it to the
@@ -1806,6 +1809,7 @@ async function createRunner(
 			return result;
 		},
 		};
+	startLiveModelCatalogRefresh(workspaceDir, modelRegistry);
 	return runner;
 }
 

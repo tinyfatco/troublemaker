@@ -23,6 +23,7 @@ import {
 } from "./claude-cli.js";
 import { DEFAULT_FIREWORKS_MODEL_ID, getFireworksModel, GLM_5P2_MODEL_ID, listBuiltinFireworksModels } from "./fireworks-models.js";
 import * as log from "./log.js";
+import { getLiveModelCatalogSnapshot } from "./model-catalog-refresh.js";
 
 const DEFAULT_PROVIDER = "fireworks";
 const DEFAULT_MODEL_ID = DEFAULT_FIREWORKS_MODEL_ID;
@@ -161,11 +162,14 @@ const MODEL_PROVIDER_RANK: Record<string, number> = {
 	openai: 4,
 };
 
-function getRegistryModels(_workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
+function getRegistryModels(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api>[] {
 	const models = modelRegistry
 		? modelRegistry.getAll()
 		: getBuiltinProviders().flatMap((provider) => getBuiltinModels(provider)) as Model<Api>[];
-	return mergeBuiltinModels(models);
+	const live = workingDir ? getLiveModelCatalogSnapshot(workingDir) : [];
+	// A live cache is discovery metadata only. The resident registry or newer
+	// bundled catalog remains authoritative when it has the same model key.
+	return mergeBuiltinModels([...live, ...models]);
 }
 
 function mergeBuiltinModels(models: Model<Api>[]): Model<Api>[] {
@@ -395,6 +399,9 @@ export function listModels(
 			);
 		}
 	}
+	if (workingDir) {
+		for (const model of getLiveModelCatalogSnapshot(workingDir)) addModel(model);
+	}
 	for (const option of CURATED_MODEL_OPTIONS) addOption(option);
 	if (isClaudeCliAuthenticated()) {
 		for (const model of listClaudeCliModels()) addModel(model);
@@ -496,7 +503,10 @@ export function isModelCredentialUnavailableError(error: unknown): error is Mode
  * provider-specific ambient credentials without exposing stored secrets.
  */
 export async function resolveApiKey(modelRegistry: ModelRegistry, provider: string): Promise<string> {
-	await modelRegistry.refresh();
+	// Credential reload must never turn an inference request into an unbounded
+	// catalog network operation. The dedicated live-catalog refresher owns that
+	// separately; this path only reconciles cached provider/auth state.
+	await modelRegistry.refresh({ allowNetwork: false, providers: [provider] });
 	const key = await modelRegistry.getApiKeyForProvider(provider);
 	if (!key) throw new ModelCredentialUnavailableError(provider);
 	return key;

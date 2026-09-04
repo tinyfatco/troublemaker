@@ -218,6 +218,10 @@ When a public key is present and Gateway opt-in is absent, existing signed
 shard per process with both `MOM_DISCORD_GATEWAY_SHARD_ID` and
 `MOM_DISCORD_GATEWAY_SHARD_COUNT`.
 
+### Live model catalogs
+
+Troublemaker restores Pi's cached provider catalogs at startup without network access. A long-running resident refreshes the authenticated `openai-codex` catalog in a bounded background pass, and explicit `/model list` or `/model <name>` requests await the same coalesced refresh. Successful public model metadata becomes discoverable immediately without changing the active model; selection still requires the existing explicit command or setting and takes effect on the next turn. `PI_OFFLINE` disables catalog network work while retaining Pi's already-restored cache.
+
 ### Claude Code CLI Models
 
 An existing Claude Code login can provide subscription-backed inference through

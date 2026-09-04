@@ -50,6 +50,7 @@ import type {
 	PlatformAdapter,
 	UserInfo,
 } from "./types.js";
+import { refreshLiveModelCatalog } from "../model-catalog-refresh.js";
 import { findModel, listModels } from "../model-config.js";
 import {
 	DEFAULT_REALTIME_VOICE,
@@ -511,6 +512,7 @@ Replies to the operator happen through whatever channel you were already using w
 			return this.configureThinkingLevel(originalTarget, body.value, res);
 		}
 		if (target === "model") {
+			await refreshLiveModelCatalog(this.workingDir);
 			return this.configureModel(originalTarget, body.value, res);
 		}
 		if (target === REALTIME_VOICE_TARGET) {
@@ -1039,7 +1041,8 @@ Replies to the operator happen through whatever channel you were already using w
 	// /operator/describe
 	// ------------------------------------------------------------------------
 
-	private handleDescribe(res: ServerResponse): void {
+	private async handleDescribe(res: ServerResponse): Promise<void> {
+		await refreshLiveModelCatalog(this.workingDir);
 		const manager = new MomSettingsManager(this.workingDir);
 		const spontaneity = manager.getSpontaneitySettings();
 		const raw = manager.getRawSettings();

@@ -11,6 +11,7 @@ import { dirname, join } from "path";
 import { randomUUID } from "crypto";
 import type { PlatformAdapter, SlashCommandResult } from "./adapters/types.js";
 import type { AgentRunner } from "./agent.js";
+import { refreshLiveModelCatalog } from "./model-catalog-refresh.js";
 import { findModel, getCurrentModelSelection, listModels, resolveModel } from "./model-config.js";
 import {
 	DEFAULT_REALTIME_VOICE,
@@ -285,6 +286,7 @@ async function handleModelCommand(
 
 	// /model list — show all available models
 	if (args[0] === "list") {
+		await refreshLiveModelCatalog(workingDir);
 		const models = listModels(workingDir);
 		const currentModel = resolveModel(workingDir);
 
@@ -311,8 +313,10 @@ async function handleModelCommand(
 		return;
 	}
 
-	// /model <query> — switch model
+	// /model <query> — refresh discovery, then switch only through the existing
+	// explicit settings path when the requested model resolves.
 	const query = args.join(" ");
+	await refreshLiveModelCatalog(workingDir);
 	const match = findModel(query, workingDir);
 
 	if (!match) {
