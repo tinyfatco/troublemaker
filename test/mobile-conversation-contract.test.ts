@@ -113,6 +113,18 @@ const heartbeatLine = JSON.stringify({
 		}],
 	},
 });
+const generatedHeartbeatLine = JSON.stringify({
+	type: "message",
+	id: "heartbeat-generated",
+	timestamp: "2026-01-01T00:03:30Z",
+	message: {
+		role: "user",
+		content: [{
+			type: "text",
+			text: "[2026-01-01] [heartbeat] [heartbeat]: [ATTENTION:example-check.json:periodic:30 10 * * *] Review the checklist.",
+		}],
+	},
+});
 const goalContinuationLine = JSON.stringify({
 	type: "message",
 	id: "goal-one",
@@ -219,6 +231,13 @@ const projectedHeartbeat = projectConversationLine(heartbeatLine);
 assert.equal(projectedHeartbeat?.awarenessKind, "heartbeat");
 assert.equal(projectedHeartbeat?.text, "Reflect on the safe checklist.");
 assert.doesNotMatch(JSON.stringify(projectedHeartbeat), /PRIVATE_HEARTBEAT_CONTEXT/);
+const projectedGeneratedHeartbeat = projectConversationLine(generatedHeartbeatLine);
+assert.equal(projectedGeneratedHeartbeat?.awarenessKind, "heartbeat");
+assert.equal(
+	projectedGeneratedHeartbeat?.text,
+	"[ATTENTION:example-check.json:periodic:30 10 * * *] Review the checklist.",
+	"terminal-only compaction leaves the native conversation projection unchanged",
+);
 
 const projectedGoal = projectConversationLine(goalContinuationLine);
 assert.equal(projectedGoal?.awarenessKind, "goal_continuation");

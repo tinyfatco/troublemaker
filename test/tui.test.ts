@@ -23,9 +23,12 @@ import {
 } from "../src/tui/protocol.js";
 import {
 	compactFollowUpCheckpoint,
+	compactHeartbeatCheckpoint,
 	isCompactFollowUpInput,
+	isCompactGeneratedInput,
+	isCompactHeartbeatInput,
 	parseVisibleUserInputs,
-	sanitizeGeneratedFollowUpSessionLine,
+	sanitizeGeneratedTerminalSessionLine,
 } from "../src/user-input-display.js";
 
 const tempRoot = await mkdtemp(join(tmpdir(), "troublemaker-tui-test-"));
@@ -141,19 +144,19 @@ try {
 			}],
 		},
 	});
-	const projectedFollowUpLine = sanitizeGeneratedFollowUpSessionLine(persistedFollowUpLine);
+	const projectedFollowUpLine = sanitizeGeneratedTerminalSessionLine(persistedFollowUpLine);
 	assert.equal(
 		JSON.parse(projectedFollowUpLine).message.content[0].text,
 		"[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: Follow-up 1/4 · 1m",
 		"server-side awareness projection protects stale terminal clients from the full generated prompt",
 	);
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(historyLine),
+		sanitizeGeneratedTerminalSessionLine(historyLine),
 		historyLine,
 		"ordinary user history remains byte-identical",
 	);
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(JSON.stringify({
+		sanitizeGeneratedTerminalSessionLine(JSON.stringify({
 			type: "message",
 			message: { role: "user", content: `[2026-01-02 03:04:05+00:00] [terminal:example-agent] [Casey]: ${followUpPrompt}` },
 		})),
@@ -168,9 +171,9 @@ try {
 		customType: "troublemaker.generated-follow-up-redacted",
 		display: false,
 	});
-	assert.equal(sanitizeGeneratedFollowUpSessionLine("not json"), "not json", "unrelated malformed lines remain unchanged");
+	assert.equal(sanitizeGeneratedTerminalSessionLine("not json"), "not json", "unrelated malformed lines remain unchanged");
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(`not json [2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}`),
+		sanitizeGeneratedTerminalSessionLine(`not json [2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}`),
 		redactedFollowUpLine,
 		"malformed generated follow-up candidates fail closed without exposing the harness",
 	);
@@ -179,7 +182,7 @@ try {
 		message: { role: "user", content: [{ type: "text", text: `<session_context>unterminated private state\n[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: ${followUpPrompt}` }] },
 	});
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(unterminatedContextFollowUp),
+		sanitizeGeneratedTerminalSessionLine(unterminatedContextFollowUp),
 		redactedFollowUpLine,
 		"valid JSON with an unterminated context block redacts the internal follow-up",
 	);
@@ -188,7 +191,7 @@ try {
 		message: { role: "user", content: [{ type: "text", text: "[2026-01-02 03:04:05+00:00] [follow-up] [follow-up]: [ATTENTION:follow-up-broken] [FOLLOW_UP broken] PRIVATE HARNESS" }] },
 	});
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(malformedCheckpointFollowUp),
+		sanitizeGeneratedTerminalSessionLine(malformedCheckpointFollowUp),
 		redactedFollowUpLine,
 		"valid JSON with a malformed internal checkpoint redacts rather than returning the harness",
 	);
@@ -200,7 +203,7 @@ try {
 		] },
 	});
 	assert.equal(
-		sanitizeGeneratedFollowUpSessionLine(splitBlockFollowUp),
+		sanitizeGeneratedTerminalSessionLine(splitBlockFollowUp),
 		redactedFollowUpLine,
 		"valid JSON with a split internal checkpoint redacts rather than returning either block",
 	);
@@ -208,10 +211,94 @@ try {
 	assert.equal(isCompactFollowUpInput({ channel: "terminal:example-agent", userName: "Casey", text: "Follow-up 1/4 · 1m" }), false);
 	assert.match(
 		appSource,
-		/if \(isCompactFollowUpInput\(\{ channel, userName: user, text \}\)\) \{[\s\S]*?new Text\(chalk\.dim\(text\)/,
-		"generated follow-ups render as one dim terminal line without a repeated channel/user header",
+		/if \(isCompactGeneratedInput\(\{ channel, userName: user, text \}\)\) \{[\s\S]*?new Text\(chalk\.dim\(text\)/,
+		"generated wakes render as one dim terminal line without a repeated channel/user header",
 	);
-	assert.match(appSource, /liveView\?\.generatedFollowUps\.has\(entry\.text\)/, "one live run cannot repaint the same generated follow-up");
+	assert.match(appSource, /liveView\?\.generatedInputs\.has\(entry\.text\)/, "one live run cannot repaint the same generated wake");
+
+	const heartbeatPrompt = "[ATTENTION:example-daily-check.json:periodic:30 10 * * *] Review open work.\n\n## Heartbeat Checklist\n- Act only when useful.";
+	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}`), [{
+		channel: "heartbeat",
+		userName: "heartbeat",
+		text: "Heartbeat",
+	}], "generated heartbeat prompts collapse to one terminal line");
+	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [heartbeat:heartbeat] [heartbeat]: ${heartbeatPrompt}`), [{
+		channel: "heartbeat:heartbeat",
+		userName: "heartbeat",
+		text: "Heartbeat",
+	}], "legacy heartbeat channel labels use the same compact terminal line");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:immediate:immediate] Run once."), "Heartbeat");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:one-shot:2040-01-01T00:00:00Z] Run later."), "Heartbeat");
+	assert.equal(
+		compactHeartbeatCheckpoint("[ATTENTION:example.json:periodic] user-authored text"),
+		"[ATTENTION:example.json:periodic] user-authored text",
+		"malformed text that resembles a heartbeat marker is preserved",
+	);
+	assert.equal(
+		parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [terminal:example-agent] [Casey]: ${heartbeatPrompt}`)[0]?.text,
+		heartbeatPrompt,
+		"a user pasting the complete heartbeat marker outside the internal lane is preserved",
+	);
+	const parsedHeartbeatHistory = parseContextLine(JSON.stringify({
+		type: "message",
+		id: "heartbeat-history",
+		timestamp: "2026-01-02T03:04:05Z",
+		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}` }] },
+	}));
+	assert.equal(parsedHeartbeatHistory?.text, "Heartbeat", "durable heartbeat history uses the same compact display");
+	const persistedHeartbeatLine = JSON.stringify({
+		type: "message",
+		id: "heartbeat-history",
+		timestamp: "2026-01-02T03:04:05Z",
+		message: {
+			role: "user",
+			content: [{
+				type: "text",
+				text: `<session_context>private current state</session_context>\n\n<delivery_context>private route</delivery_context>\n\n[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}`,
+			}],
+		},
+	});
+	const projectedHeartbeatLine = sanitizeGeneratedTerminalSessionLine(persistedHeartbeatLine);
+	assert.equal(
+		JSON.parse(projectedHeartbeatLine).message.content[0].text,
+		"[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: Heartbeat",
+		"server-side awareness projection protects stale terminal clients from the full heartbeat prompt",
+	);
+	const redactedHeartbeatLine = JSON.stringify({
+		type: "custom",
+		customType: "troublemaker.generated-heartbeat-redacted",
+		display: false,
+	});
+	assert.equal(
+		sanitizeGeneratedTerminalSessionLine(`not json [2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}`),
+		redactedHeartbeatLine,
+		"malformed generated heartbeat candidates fail closed without exposing the harness",
+	);
+	assert.equal(
+		sanitizeGeneratedTerminalSessionLine(JSON.stringify({
+			type: "message",
+			message: { role: "user", content: "[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: [ATTENTION:broken] PRIVATE HEARTBEAT HARNESS" },
+		})),
+		redactedHeartbeatLine,
+		"valid JSON with a malformed internal heartbeat redacts rather than returning the harness",
+	);
+	assert.equal(
+		sanitizeGeneratedTerminalSessionLine(JSON.stringify({
+			type: "message",
+			message: { role: "user", content: [
+				{ type: "text", text: "[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]:" },
+				{ type: "text", text: heartbeatPrompt },
+			] },
+		})),
+		redactedHeartbeatLine,
+		"valid JSON with a split internal heartbeat redacts rather than returning either block",
+	);
+	assert.equal(isCompactHeartbeatInput({ channel: "heartbeat", userName: "heartbeat", text: "Heartbeat" }), true);
+	assert.equal(isCompactHeartbeatInput({ channel: "heartbeat:heartbeat", userName: "heartbeat", text: "Heartbeat" }), true);
+	assert.equal(isCompactHeartbeatInput({ channel: "terminal:example-agent", userName: "Casey", text: "Heartbeat" }), false);
+	assert.equal(isCompactGeneratedInput({ channel: "heartbeat", userName: "heartbeat", text: "Heartbeat" }), true);
+	assert.equal(isCompactGeneratedInput({ channel: "follow-up", userName: "follow-up", text: "Follow-up 1/4 · 1m" }), true);
+
 	const ambientPrompt = `[AMBIENT] A conversation is happening in slack:#biz. New unseen, complete messages since your last ambient wake:\n\n<ambient_messages>\nCasey (U123) [Reply target: slack:C123:1; message_ts: 2; thread_ts: 1]: ship the fix <@U456>\nObserver (U456): on it\n</ambient_messages>\n\nChannel pulse: 2 messages in last 15min.\n\nYou're observing this conversation naturally.`;
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [#general] [ambient]: ${ambientPrompt}`), [], "ambient evaluation scaffolding never enters the live input feed");
 	assert.deepEqual(getAmbientDisplayLines(ambientPrompt), ["Casey: ship the fix <@U456>", "Observer: on it"]);

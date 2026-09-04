@@ -1,6 +1,7 @@
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 const FOLLOW_UP_CHECKPOINT_RE = /^\[ATTENTION:follow-up-[^\]\n]+:one-shot:[^\]\n]+\]\s+\[FOLLOW_UP\s+(\d+)\/(\d+)\s+after\s+(\d+)\s+minutes?\s+since the latest completed wake\]/;
+const HEARTBEAT_CHECKPOINT_RE = /^\[ATTENTION:[^\]\r\n]+:(?:immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$/;
 
 export interface VisibleUserInput {
 	channel: string;
@@ -36,12 +37,15 @@ export function parseVisibleUserInputs(prompt: string): VisibleUserInput[] {
 	const batched = parseInterruptBatchMessages(envelope.text);
 	if (batched.length > 0) return batched;
 	if (!envelope.text) return [];
+	const lane = generatedInputLane(envelope.channel, envelope.userName);
 	return [{
 		channel: envelope.channel,
 		userName: envelope.userName,
-		text: envelope.channel === "follow-up" && envelope.userName === "follow-up"
+		text: lane === "follow-up"
 			? compactFollowUpCheckpoint(envelope.text)
-			: envelope.text,
+			: lane === "heartbeat"
+				? compactHeartbeatCheckpoint(envelope.text)
+				: envelope.text,
 	}];
 }
 
@@ -59,20 +63,58 @@ export function isCompactFollowUpInput(input: VisibleUserInput): boolean {
 		&& /^Follow-up \d+\/\d+ · \d+m$/.test(input.text);
 }
 
+/** Keep a generated heartbeat visible without painting its schedule or checklist. */
+export function compactHeartbeatCheckpoint(text: string): string {
+	return HEARTBEAT_CHECKPOINT_RE.test(text) ? "Heartbeat" : text;
+}
+
+/** Exact terminal-only shape produced for an internal heartbeat wake. */
+export function isCompactHeartbeatInput(input: VisibleUserInput): boolean {
+	return generatedInputLane(input.channel, input.userName) === "heartbeat"
+		&& input.text === "Heartbeat";
+}
+
+export function isCompactGeneratedInput(input: VisibleUserInput): boolean {
+	return isCompactFollowUpInput(input) || isCompactHeartbeatInput(input);
+}
+
+type GeneratedInputLane = "follow-up" | "heartbeat";
+
+function generatedInputLane(channel: string, userName: string): GeneratedInputLane | null {
+	if (channel === "follow-up" && userName === "follow-up") return "follow-up";
+	if ((channel === "heartbeat" || channel === "heartbeat:heartbeat") && userName === "heartbeat") return "heartbeat";
+	return null;
+}
+
+function embeddedGeneratedInputLane(text: string): GeneratedInputLane | null {
+	if (/\[[^\]\r\n]+\]\s+\[follow-up\]\s+\[follow-up\]:/.test(text)) return "follow-up";
+	if (/\[[^\]\r\n]+\]\s+\[heartbeat(?::heartbeat)?\]\s+\[heartbeat\]:/.test(text)) return "heartbeat";
+	return null;
+}
+
+function redactedGeneratedSessionLine(lane: GeneratedInputLane): string {
+	return JSON.stringify({
+		type: "custom",
+		customType: lane === "follow-up"
+			? "troublemaker.generated-follow-up-redacted"
+			: "troublemaker.generated-heartbeat-redacted",
+		display: false,
+	});
+}
+
+function compactGeneratedCheckpoint(lane: GeneratedInputLane, text: string): string {
+	return lane === "follow-up"
+		? compactFollowUpCheckpoint(text)
+		: compactHeartbeatCheckpoint(text);
+}
+
 /**
  * Keep the persisted model prompt intact on disk while projecting only the
- * compact checkpoint through awareness APIs. This protects older terminal
+ * compact generated wake through awareness APIs. This protects older terminal
  * clients that do their own durable-history rendering after a newer server has
  * already painted the compact live input.
  */
-export function sanitizeGeneratedFollowUpSessionLine(line: string): string {
-	const redacted = () => JSON.stringify({
-		type: "custom",
-		customType: "troublemaker.generated-follow-up-redacted",
-		display: false,
-	});
-	const hasInternalLane = (text: string) => /\[[^\]\r\n]+\]\s+\[follow-up\]\s+\[follow-up\]:/.test(text);
-
+export function sanitizeGeneratedTerminalSessionLine(line: string): string {
 	try {
 		const entry = JSON.parse(line) as {
 			type?: unknown;
@@ -92,35 +134,35 @@ export function sanitizeGeneratedFollowUpSessionLine(line: string): string {
 				: [];
 		const combined = textBlocks.join("\n");
 		const combinedEnvelope = parseUserPromptEnvelope(combined);
-		const internalCandidate = combinedEnvelope
-			? combinedEnvelope.channel === "follow-up" && combinedEnvelope.userName === "follow-up"
-			: hasInternalLane(combined);
-		if (!internalCandidate) return line;
+		const candidateLane = combinedEnvelope
+			? generatedInputLane(combinedEnvelope.channel, combinedEnvelope.userName)
+			: embeddedGeneratedInputLane(combined);
+		if (!candidateLane) return line;
 
-		// A generated checkpoint is canonical only as one complete text value.
-		// Any split, extra, or malformed internal shape is hidden rather than
+		// A generated wake is canonical only as one complete text value. Any
+		// split, extra, or malformed internal shape is hidden rather than
 		// returning its harness to an older client.
 		const canonicalText = typeof content === "string"
 			? content
 			: Array.isArray(content) && content.length === 1 && textBlocks.length === 1
 				? textBlocks[0]
 				: null;
-		if (!canonicalText) return redacted();
+		if (!canonicalText) return redactedGeneratedSessionLine(candidateLane);
 		const envelope = parseUserPromptEnvelope(canonicalText);
-		if (!envelope || envelope.channel !== "follow-up" || envelope.userName !== "follow-up") return redacted();
-		const compact = compactFollowUpCheckpoint(envelope.text);
-		if (compact === envelope.text || !isCompactFollowUpInput({
+		const lane = envelope ? generatedInputLane(envelope.channel, envelope.userName) : null;
+		if (!envelope || lane !== candidateLane) return redactedGeneratedSessionLine(candidateLane);
+		const compact = compactGeneratedCheckpoint(lane, envelope.text);
+		if (compact === envelope.text || !isCompactGeneratedInput({
 			channel: envelope.channel,
 			userName: envelope.userName,
 			text: compact,
-		})) return redacted();
-		const projectedText = `[${envelope.timestamp}] [follow-up] [follow-up]: ${compact}`;
+		})) return redactedGeneratedSessionLine(lane);
+		const projectedText = `[${envelope.timestamp}] [${envelope.channel}] [${envelope.userName}]: ${compact}`;
 		const sanitizedContent = typeof content === "string" ? projectedText : [{ type: "text", text: projectedText }];
 		return JSON.stringify({ ...entry, message: { ...entry.message, content: sanitizedContent } });
 	} catch {
-		return hasInternalLane(line)
-			? redacted()
-			: line;
+		const lane = embeddedGeneratedInputLane(line);
+		return lane ? redactedGeneratedSessionLine(lane) : line;
 	}
 }
 

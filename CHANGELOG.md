@@ -4,6 +4,7 @@
 
 ### Changed
 
+- Generated heartbeat turns now occupy one subdued `Heartbeat` terminal transcript line across live and durable awareness projection, including already-running terminal clients, without exposing their schedule, task prompt, checklist, or repeated channel/user header.
 - Generated follow-up checkpoints now occupy one subdued terminal transcript line across live and durable awareness projection, including already-running terminal clients, without the full internal prompt or a repeated channel/user header.
 
 ## [0.52.10] - 2026-02-12
