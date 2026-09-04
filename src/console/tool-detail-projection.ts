@@ -1,32 +1,14 @@
-export type ConversationToolDetailFormat = "json" | "shell" | "diff" | "code" | "error" | "text";
+import type {
+	RuntimeToolArtifactReference,
+	RuntimeToolDetailContent,
+	RuntimeToolDetailFormat,
+	RuntimeToolExecutionDetails,
+} from "../core/runtime-contract.js";
 
-export interface ConversationToolDetailContent {
-	text: string;
-	format: ConversationToolDetailFormat;
-	language?: string;
-	isTruncated: boolean;
-}
-
-export interface ConversationToolArtifactReference {
-	id: string;
-	label: string;
-	reference: string;
-	mediaType?: string;
-}
-
-/**
- * Bounded, display-only tool detail shared by portable native clients.
- * Every field is derived through this module; raw runtime payloads never cross
- * the conversation boundary.
- */
-export interface ConversationToolExecutionDetails {
-	toolName?: string;
-	invocation?: ConversationToolDetailContent;
-	result?: ConversationToolDetailContent;
-	exitStatus?: number;
-	durationMilliseconds?: number;
-	artifacts: ConversationToolArtifactReference[];
-}
+export type ConversationToolDetailFormat = RuntimeToolDetailFormat;
+export type ConversationToolDetailContent = RuntimeToolDetailContent;
+export type ConversationToolArtifactReference = RuntimeToolArtifactReference;
+export type ConversationToolExecutionDetails = RuntimeToolExecutionDetails;
 
 const REDACTED = "[REDACTED]";
 const STRUCTURAL_TRUNCATION = "[TRUNCATED]";

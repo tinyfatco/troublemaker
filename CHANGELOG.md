@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Terminal profiles can opt into a Pi-style live tool stream with numbered, collapsed calls and bounded redacted invocation, output, and result details; compact presentation remains the default and durable history stays compact.
+
 ### Changed
 
 - Generated heartbeat turns now occupy one subdued `Heartbeat` terminal transcript line across live and durable awareness projection, including already-running terminal clients, without exposing their schedule, task prompt, checklist, or repeated channel/user header.

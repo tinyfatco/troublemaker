@@ -108,6 +108,7 @@ async function run() {
   console.log("\nTest 3: Unified runtime event delivery is sanitized");
 
   const runtimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live");
+  const piRuntimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live?presentation=pi");
   await sleep(200);
   const inputEnvelope = gw.publishRuntimeEvent({
     runId: "external-run",
@@ -134,26 +135,66 @@ async function run() {
       isStreaming: true,
       content: [
         { type: "thinking", thinking: "PRIVATE_THINKING" },
-        { type: "toolCall", id: "tool-1", name: "bash", label: "Checking safely", arguments: { command: "PRIVATE_ARGUMENT" } },
-        { type: "toolResult", toolCallId: "tool-1", result: "PRIVATE_RESULT", isError: false },
+        { type: "toolCall", id: "tool-1", name: "bash", label: "Checking safely", arguments: { command: "echo VISIBLE_ARGUMENT", apiKey: "SYNTHETIC_SECRET_VALUE" }, displayDetails: { invocation: { text: "UNTRUSTED_DETAIL", format: "text", isTruncated: false }, artifacts: [] } },
+        { type: "toolResult", toolCallId: "tool-1", result: "VISIBLE_RESULT person@example.com", isError: false, displayDetails: { result: { text: "UNTRUSTED_RESULT_DETAIL", format: "text", isTruncated: false }, artifacts: [] } },
       ],
     },
   });
   const runtimeEvents = await runtimePromise;
+  const piRuntimeEvents = await piRuntimePromise;
   const inputPayload = runtimeEvents.find((event) => event.includes('"type":"user_input"')) || "";
   const runtimePayload = runtimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
+  const piRuntimePayload = piRuntimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
   const parsedInputPayload = JSON.parse(inputPayload) as { deliveryId?: string; event?: unknown };
+  const parsedRuntimePayload = JSON.parse(runtimePayload) as { id?: string; sequence?: number; event?: unknown };
+  const parsedPiRuntimePayload = JSON.parse(piRuntimePayload) as { id?: string; sequence?: number; event?: unknown };
   assert(inputPayload.includes("Visible webhook input"), "unified feed carries the sanitized webhook input");
   assert(parsedInputPayload.deliveryId === "delivery-example-runtime", "unified feed carries bounded opaque delivery correlation");
   assert(!JSON.stringify(parsedInputPayload.event).includes("delivery-example-runtime"), "delivery identity remains envelope metadata and never enters user-visible runtime content");
   assert(inputEnvelope.sequence < assistantEnvelope.sequence, "webhook input is sequenced before assistant paint events");
   assert(runtimePayload.includes('"kind":"runtime"'), "unified feed identifies runtime events");
   assert(runtimePayload.includes("Checking safely"), "unified feed preserves safe tool labels");
-  assert(!runtimePayload.includes("PRIVATE_ARGUMENT"), "unified feed removes raw tool arguments");
-  assert(!runtimePayload.includes("PRIVATE_RESULT"), "unified feed removes raw tool results");
-  assert(!runtimePayload.includes("PRIVATE_THINKING"), "unified feed removes thinking content");
+  assert(!runtimePayload.includes("VISIBLE_ARGUMENT"), "compact live feed removes tool arguments");
+  assert(!runtimePayload.includes("VISIBLE_RESULT"), "compact live feed removes tool results");
+  assert(!runtimePayload.includes("SYNTHETIC_SECRET_VALUE"), "compact live feed removes credential-shaped input");
+  assert(!runtimePayload.includes("PRIVATE_THINKING"), "compact live feed removes thinking content");
+  assert(!runtimePayload.includes("UNTRUSTED_DETAIL"), "compact live feed strips producer-supplied display detail");
+  assert(piRuntimePayload.includes("VISIBLE_ARGUMENT"), "explicit Pi presentation receives bounded invocation detail");
+  assert(piRuntimePayload.includes("VISIBLE_RESULT"), "explicit Pi presentation receives bounded result detail");
+  assert(piRuntimePayload.includes("[REDACTED]"), "explicit Pi presentation redacts sensitive argument keys");
+  assert(!piRuntimePayload.includes("SYNTHETIC_SECRET_VALUE"), "explicit Pi presentation never receives the credential value");
+  assert(!piRuntimePayload.includes("person@example.com"), "explicit Pi presentation redacts email output");
+  assert(!piRuntimePayload.includes("PRIVATE_THINKING"), "thinking remains absent in explicit Pi presentation");
+  assert(!piRuntimePayload.includes("UNTRUSTED_DETAIL") && !piRuntimePayload.includes("UNTRUSTED_RESULT_DETAIL"), "Pi presentation recomputes safe detail instead of trusting producer fields");
+  assert(parsedPiRuntimePayload.id === parsedRuntimePayload.id && parsedPiRuntimePayload.sequence === parsedRuntimePayload.sequence, "compact and Pi projections share one event identity and ordered cursor");
+  assert(!JSON.stringify(assistantEnvelope).includes("VISIBLE_ARGUMENT") && !JSON.stringify(assistantEnvelope).includes("VISIBLE_RESULT"), "publish receipts remain compact even with a Pi subscriber");
+  await sleep(50);
+  const latePiReplay = await collectEvents(1, 5000, `/api/v2/agents/current/live?presentation=pi&after=${inputEnvelope.sequence}`);
+  assert(!latePiReplay.some((event) => event.includes("VISIBLE_ARGUMENT") || event.includes("VISIBLE_RESULT")), "safe detail is released when the last Pi client disconnects instead of becoming durable history");
 
-  const runtimeSequence = Number((JSON.parse(runtimePayload) as { sequence: number }).sequence);
+  const boundedPiPromise = collectEvents(1, 5000, `/api/v2/agents/current/live?presentation=pi&after=${assistantEnvelope.sequence}`);
+  await sleep(100);
+  gw.publishRuntimeEvent({ runId: "bounded-run", channelId: "terminal:example", source: "terminal" }, {
+    type: "assistant_snapshot",
+    entry: {
+      id: "bounded-assistant",
+      type: "message",
+      timestamp: "2026-01-01T00:03:02Z",
+      role: "assistant",
+      isStreaming: true,
+      content: [{ type: "toolCall", id: "tool-bounded", name: "read", label: "Reading safely", arguments: { content: "x".repeat(200_000) } }],
+    },
+  });
+  const boundedPiEvents = await boundedPiPromise;
+  const boundedPiPayload = boundedPiEvents[0] || "";
+  assert(boundedPiPayload.includes('"isTruncated":true'), "Pi detail marks oversized values as truncated");
+  assert(boundedPiPayload.length < 20_000, "Pi detail is bounded before entering replay memory");
+  const boundedComplete = gw.publishRuntimeEvent({ runId: "bounded-run", channelId: "terminal:example", source: "terminal" }, {
+    type: "run_complete",
+    channelId: "terminal:example",
+  });
+
+  const runtimeSequence = boundedComplete.sequence;
   const statusEnvelope = gw.publishRuntimeEvent({ runId: "external-run", channelId: "voice", source: "voice" }, {
     type: "status",
     status: "streaming",

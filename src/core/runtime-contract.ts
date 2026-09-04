@@ -78,6 +78,32 @@ export interface RuntimeThinkingContent {
 	contentIndex?: number;
 }
 
+export type RuntimeToolDetailFormat = "json" | "shell" | "diff" | "code" | "error" | "text";
+
+export interface RuntimeToolDetailContent {
+	text: string;
+	format: RuntimeToolDetailFormat;
+	language?: string;
+	isTruncated: boolean;
+}
+
+export interface RuntimeToolArtifactReference {
+	id: string;
+	label: string;
+	reference: string;
+	mediaType?: string;
+}
+
+/** Bounded, sanitized, display-only tool detail. Never contains a raw runtime payload. */
+export interface RuntimeToolExecutionDetails {
+	toolName?: string;
+	invocation?: RuntimeToolDetailContent;
+	result?: RuntimeToolDetailContent;
+	exitStatus?: number;
+	durationMilliseconds?: number;
+	artifacts: RuntimeToolArtifactReference[];
+}
+
 export interface RuntimeToolCallContent {
 	type: "toolCall";
 	id: string;
@@ -86,6 +112,7 @@ export interface RuntimeToolCallContent {
 	arguments: Record<string, unknown>;
 	contentIndex?: number;
 	startedAt?: string;
+	displayDetails?: RuntimeToolExecutionDetails;
 }
 
 export type RuntimeToolOutputStream = "stdout" | "stderr" | "system";
@@ -97,6 +124,7 @@ export interface RuntimeToolOutputContent {
 	text: string;
 	pid?: number;
 	sequence?: number;
+	displayDetails?: RuntimeToolExecutionDetails;
 }
 
 export interface RuntimeToolResultContent {
@@ -104,6 +132,7 @@ export interface RuntimeToolResultContent {
 	toolCallId: string;
 	result: string;
 	isError?: boolean;
+	displayDetails?: RuntimeToolExecutionDetails;
 }
 
 export type RuntimeAssistantSnapshotContent =
@@ -224,22 +253,8 @@ export interface RuntimeToolCallEvent {
 	arguments?: Record<string, unknown>;
 	contentIndex?: number;
 	delta?: string;
-	toolCall?: {
-		type: "toolCall";
-		id: string;
-		name: string;
-		label?: string;
-		arguments: Record<string, unknown>;
-		contentIndex?: number;
-	};
-	toolCalls?: Array<{
-		type: "toolCall";
-		id: string;
-		name: string;
-		label?: string;
-		arguments: Record<string, unknown>;
-		contentIndex?: number;
-	}>;
+	toolCall?: RuntimeToolCallContent;
+	toolCalls?: RuntimeToolCallContent[];
 }
 
 export interface RuntimeToolResultEvent {

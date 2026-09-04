@@ -2,11 +2,14 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync
 import { homedir } from "os";
 import { basename, dirname, join, resolve } from "path";
 
+export type TuiPresentation = "compact" | "pi";
+
 export interface TuiAgentProfile {
 	command: string;
 	name: string;
 	baseUrl: string;
 	channelId: string;
+	presentation?: TuiPresentation;
 }
 
 interface TuiConfigFile {
@@ -19,6 +22,7 @@ export interface InstallTuiProfileOptions {
 	name?: string;
 	baseUrl: string;
 	channelId?: string;
+	presentation?: TuiPresentation;
 	executablePath: string;
 	configPath?: string;
 	binDir?: string;
@@ -90,7 +94,8 @@ export function loadTuiProfiles(configPath = defaultTuiConfigPath()): Record<str
 			const channelId = typeof raw.channelId === "string" && raw.channelId.trim()
 				? raw.channelId.trim()
 				: `terminal:${command}`;
-			profiles[command] = { command, name, baseUrl, channelId };
+			const presentation: TuiPresentation = raw.presentation === "pi" ? "pi" : "compact";
+			profiles[command] = { command, name, baseUrl, channelId, presentation };
 		} catch {
 			// One stale profile should not make every installed agent unusable.
 		}
@@ -105,6 +110,7 @@ export function installTuiProfile(options: InstallTuiProfileOptions): InstalledT
 		name: options.name?.trim() || titleCase(command),
 		baseUrl: normalizeTuiBaseUrl(options.baseUrl),
 		channelId: options.channelId?.trim() || `terminal:${command}`,
+		presentation: options.presentation === "pi" ? "pi" : "compact",
 	};
 	const configPath = options.configPath || defaultTuiConfigPath();
 	const binDir = options.binDir || defaultTuiBinDir();

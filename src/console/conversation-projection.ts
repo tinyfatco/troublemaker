@@ -280,7 +280,7 @@ function projectConversationRuntimeAwareness(
 				toolDisplayLabel(call),
 				"started",
 				undefined,
-				projectToolInvocationDetails(call),
+				projectToolInvocationDetails(call as unknown as Record<string, unknown>),
 			)]
 			: []);
 	}
