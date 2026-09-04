@@ -179,7 +179,8 @@ try {
 	assert.equal(fixedOffContext.updateToolProgress, undefined, "fixed Slack output avoids detail projection when tool streaming is off");
 
 	const multiplayer = new TestSlackAdapter(workingDir);
-	const sourceContext = multiplayer.createContext(event({ channel: "C123", threadTs: "1710000000.000001" }), {} as ChannelStore);
+	const requestRootTs = "1710000000.000001";
+	const sourceContext = multiplayer.createContext(event({ channel: "C123", threadTs: requestRootTs }), {} as ChannelStore);
 	const routed = routeWorkingOutputContext({
 		policy: { mode: "fixed", target: { platform: "slack", channelId: "C9999999999" } },
 		sourceContext,
@@ -189,53 +190,88 @@ try {
 	});
 	assert.equal(routed.message.channel, "C123", "the addressed source channel remains the turn identity");
 	assert.equal(routed.workingReplyTarget, "C9999999999", "the dedicated Slack channel remains the working-output locus");
-	assert(routed.updateToolProgress, "fixed Slack channels expose per-tool progress lifecycle");
+	assert(routed.updateToolProgress, "fixed Slack channels expose batched per-tool lifecycle updates");
 	await routed.updateToolProgress?.({
 		id: "tool-one",
-		label: "Inspecting first artifact",
+		label: "Reading the project package.json",
 		status: "in_progress",
 		details: projectToolInvocationDetails({ name: "read", arguments: { path: "/tmp/example-one.txt", apiKey: "SYNTHETIC_SECRET_VALUE" } }),
 	});
-	const explicitStatusTs = await multiplayer.postMessage("C9999999999", "Authorized cross-channel status");
 	await routed.updateToolProgress?.({
 		id: "tool-one",
-		label: "Inspecting first artifact",
+		label: "Reading the project package.json",
 		status: "complete",
 		details: projectToolResultDetails({ name: "read", result: "FIRST_RESULT person@example.com" }),
 	});
 	await routed.updateToolProgress?.({
 		id: "tool-two",
-		label: "Inspecting second artifact",
+		label: "Checking the working tree",
 		status: "in_progress",
-		details: projectToolInvocationDetails({ name: "read", arguments: { path: "/tmp/example-two.txt" } }),
+		details: projectToolInvocationDetails({ name: "bash", arguments: { command: "git status --short" } }),
 	});
 	await routed.updateToolProgress?.({
 		id: "tool-two",
-		label: "Inspecting second artifact",
-		status: "complete",
-		details: projectToolResultDetails({ name: "read", result: "SECOND_RESULT" }),
+		label: "Checking the working tree",
+		status: "error",
+		details: projectToolResultDetails({ name: "bash", result: "SECOND_ERROR", isError: true }),
 	});
-	const toolRoots = multiplayer.posted.filter((message) => !message.thread_ts && /Inspecting .* artifact/.test(message.text));
-	assert.equal(toolRoots.length, 2, "each visible fixed-channel tool gets one top-level root");
-	assert(toolRoots.every((message) => message.channel === "C9999999999"), "tool roots stay in the dedicated channel");
+	await routed.updateToolProgress?.({
+		id: "tool-report",
+		label: "Reporting check result",
+		status: "in_progress",
+		details: projectToolInvocationDetails({ name: "send_message", arguments: { target: `slack:C123:${requestRootTs}` } }),
+	});
+	const explicitFinalTs = await multiplayer.postInThread("C123", requestRootTs, "No.");
+	await routed.updateToolProgress?.({
+		id: "tool-report",
+		label: "Reporting check result",
+		status: "complete",
+		details: projectToolResultDetails({ name: "send_message", result: "Delivered", durationMs: 50 }),
+	});
+	await routed.setWorking(false);
+
+	const fixedRoots = multiplayer.posted.filter((message) => message.channel === "C9999999999" && !message.thread_ts);
+	assert.equal(fixedRoots.length, 1, "two checks plus final reporting stay in one rolling-window batch root");
+	const batchRoot = fixedRoots[0];
+	const batchReplies = multiplayer.posted.filter((message) => message.channel === "C9999999999" && message.thread_ts === batchRoot?.ts);
+	assert.equal(batchReplies.length, 3, "three tool calls create exactly three lifecycle replies");
+	assert.deepEqual(batchReplies.map((message) => message.ts), ["posted-2", "posted-3", "posted-4"], "lifecycle replies retain tool start order");
+	const finalBatchRoot = multiplayer.messageUpdates.filter((update) => update.ts === batchRoot?.ts).at(-1)?.text || "";
+	assert.match(finalBatchRoot, /Reading the project package\.json/);
+	assert.match(finalBatchRoot, /Checking the working tree/);
+	assert.match(finalBatchRoot, /Reporting check result/);
+	assert.doesNotMatch(finalBatchRoot, /\.\.\.$/, "turn finalization removes the batch spinner");
+	assert(multiplayer.messageUpdates.some((update) => update.ts === "posted-2" && /✓ Reading[\s\S]*FIRST_RESULT/.test(update.text)), "first lifecycle reply coheres from input to result");
+	assert(multiplayer.messageUpdates.some((update) => update.ts === "posted-3" && /✗ Checking[\s\S]*SECOND_ERROR/.test(update.text)), "failed lifecycle reply coheres in place");
+	assert(multiplayer.messageUpdates.some((update) => update.ts === "posted-4" && /✓ Reporting[\s\S]*Delivered/.test(update.text)), "report lifecycle reply coheres in place");
+	assert.doesNotMatch(JSON.stringify({ posted: multiplayer.posted, updates: multiplayer.messageUpdates }), /person@example\.com|SYNTHETIC_SECRET_VALUE/, "batch lifecycle replies retain the existing redaction boundary");
+	const explicitFinal = multiplayer.posted.find((message) => message.ts === explicitFinalTs);
 	assert.deepEqual(
-		multiplayer.posted.filter((message) => !message.thread_ts).map((message) => message.text),
-		["_→ Inspecting first artifact_", "Authorized cross-channel status", "_→ Inspecting second artifact_"],
-		"tool roots preserve chronology around explicitly authorized cross-channel status",
+		{ channel: explicitFinal?.channel, threadTs: explicitFinal?.thread_ts, text: explicitFinal?.text },
+		{ channel: "C123", threadTs: requestRootTs, text: "No." },
+		"authorized final output remains in the owner request thread",
 	);
-	const firstReplies = multiplayer.posted.filter((message) => message.thread_ts === toolRoots[0]?.ts);
-	const secondReplies = multiplayer.posted.filter((message) => message.thread_ts === toolRoots[1]?.ts);
-	assert.equal(firstReplies.length, 2, "first tool owns only its invocation and result replies");
-	assert.equal(secondReplies.length, 2, "second tool owns only its invocation and result replies");
-	assert(!multiplayer.posted.some((message) => message.thread_ts === explicitStatusTs), "explicit cross-channel status never becomes a catch-all tool thread");
-	assert.equal(multiplayer.posted.find((message) => message.ts === explicitStatusTs)?.thread_ts, undefined, "authorized status keeps its explicit top-level placement");
-	assert(multiplayer.messageUpdates.some((update) => update.ts === toolRoots[0]?.ts && update.text.includes("✓")), "first completion reconciles its own root");
-	assert(multiplayer.messageUpdates.some((update) => update.ts === toolRoots[1]?.ts && update.text.includes("✓")), "second completion reconciles its own root");
-	assert.doesNotMatch(JSON.stringify(multiplayer.posted), /person@example\.com|SYNTHETIC_SECRET_VALUE/, "fixed-channel detail replies use the existing redaction boundary");
 	await routed.deleteMessage();
-	const toolMessageIds = [...toolRoots, ...firstReplies, ...secondReplies].flatMap((message) => message.ts ? [message.ts] : []).sort();
-	assert.deepEqual(multiplayer.deletedMessages.map((message) => message.ts).sort(), toolMessageIds, "cleanup deletes only the agent-owned tool roots and replies");
-	assert(!multiplayer.deletedMessages.some((message) => message.ts === explicitStatusTs), "cleanup never deletes separately authorized status messages");
+	const ownedBatchIds = [batchRoot?.ts, ...batchReplies.map((message) => message.ts)].filter((value): value is string => Boolean(value)).sort();
+	assert.deepEqual(multiplayer.deletedMessages.map((message) => message.ts).sort(), ownedBatchIds, "cleanup deletes the current batch root and its agent-owned lifecycle replies");
+	assert(!multiplayer.deletedMessages.some((message) => message.ts === explicitFinalTs), "cleanup never deletes the separately authorized final reply");
+
+	const boundary = new TestSlackAdapter(workingDir);
+	const boundaryContext = boundary.createWorkingOutputContext(
+		{ platform: "slack", channelId: "C9999999999" },
+		{} as ChannelStore,
+		{ toolStreaming: "all", presentation: "split", windowMinutes: 5 },
+	);
+	await boundaryContext.updateToolProgress?.({ id: "send-tool", label: "Posting status", status: "in_progress" });
+	await boundary.postMessage("C9999999999", "Authorized visible status");
+	await boundaryContext.updateToolProgress?.({ id: "send-tool", label: "Posting status", status: "complete", details: projectToolResultDetails({ name: "send_message", result: "Delivered" }) });
+	await boundaryContext.restartWorking();
+	await boundaryContext.updateToolProgress?.({ id: "after-send", label: "Work after status", status: "in_progress" });
+	assert.deepEqual(
+		boundary.posted.filter((message) => !message.thread_ts).map((message) => message.text),
+		["_→ Posting status_ ...", "Authorized visible status", "_→ Work after status_ ..."],
+		"an explicit-send rollover keeps later batch work below the authorized message",
+	);
 
 	const realDateNow = Date.now;
 	let fakeNow = 1_000_000;
@@ -256,6 +292,51 @@ try {
 		await splitContext.respond("_→ Third split label_", false);
 		assert.equal(split.posted.length, 2, "the first real tool label after a minute opens a fresh working message");
 		assert.match(split.posted[1]?.text || "", /Third split label/, "the boundary event becomes the first label in the fresh window");
+
+		fakeNow = 2_000_000;
+		const rolling = new TestSlackAdapter(workingDir);
+		const rollingContext = rolling.createWorkingOutputContext(
+			{ platform: "slack", channelId: "C9999999999" },
+			{} as ChannelStore,
+			{ toolStreaming: "all", presentation: "split", windowMinutes: 1 },
+		);
+		await rollingContext.updateToolProgress?.({ id: "long-a", label: "Long A", status: "in_progress" });
+		fakeNow += 30_000;
+		await rollingContext.updateToolProgress?.({ id: "parallel-b", label: "Parallel B", status: "in_progress" });
+		fakeNow += 30_000;
+		await rollingContext.updateToolProgress?.({ id: "next-c", label: "Next C", status: "in_progress" });
+		await rollingContext.updateToolProgress?.({ id: "parallel-b", label: "Parallel B", status: "complete", details: projectToolResultDetails({ name: "read", result: "B_DONE" }) });
+		await rollingContext.updateToolProgress?.({ id: "long-a", label: "Long A", status: "complete", details: projectToolResultDetails({ name: "read", result: "A_DONE" }) });
+		await rollingContext.updateToolProgress?.({ id: "next-c", label: "Next C", status: "complete", details: projectToolResultDetails({ name: "read", result: "C_DONE" }) });
+		const rollingRoots = rolling.posted.filter((message) => !message.thread_ts);
+		assert.equal(rollingRoots.length, 2, "the first tool at the minute boundary opens exactly one new batch root");
+		const firstWindowReplies = rolling.posted.filter((message) => message.thread_ts === rollingRoots[0]?.ts);
+		const secondWindowReplies = rolling.posted.filter((message) => message.thread_ts === rollingRoots[1]?.ts);
+		assert.equal(firstWindowReplies.length, 2, "parallel tools inside the first window share one root");
+		assert.equal(secondWindowReplies.length, 1, "the boundary tool owns one lifecycle reply under the second root");
+		assert(rolling.messageUpdates.some((update) => update.ts === firstWindowReplies[0]?.ts && update.text.includes("A_DONE")), "long-running A completes in its original batch after rollover");
+		assert(rolling.messageUpdates.some((update) => update.ts === firstWindowReplies[1]?.ts && update.text.includes("B_DONE")), "parallel B can complete before A without changing ownership");
+		await rollingContext.deleteMessage();
+		const rollingOwned = [...rollingRoots, ...firstWindowReplies, ...secondWindowReplies].flatMap((message) => message.ts ? [message.ts] : []).sort();
+		assert.deepEqual(rolling.deletedMessages.map((message) => message.ts).sort(), rollingOwned, "cleanup retains ownership across rolling batch roots");
+
+		fakeNow = 3_000_000;
+		const sevenPlusOne = new TestSlackAdapter(workingDir);
+		const sevenPlusOneContext = sevenPlusOne.createWorkingOutputContext(
+			{ platform: "slack", channelId: "C9999999999" },
+			{} as ChannelStore,
+			{ toolStreaming: "all", presentation: "split", windowMinutes: 1 },
+		);
+		for (let index = 1; index <= 7; index++) {
+			await sevenPlusOneContext.updateToolProgress?.({ id: `window-${index}`, label: `Window ${index}`, status: "in_progress" });
+			fakeNow += 5_000;
+		}
+		fakeNow = 3_060_000;
+		await sevenPlusOneContext.updateToolProgress?.({ id: "window-8", label: "Window 8", status: "in_progress" });
+		const sevenPlusOneRoots = sevenPlusOne.posted.filter((message) => !message.thread_ts);
+		assert.equal(sevenPlusOneRoots.length, 2, "seven calls inside one minute create one root and the eighth after rollover creates the next");
+		assert.equal(sevenPlusOne.posted.filter((message) => message.thread_ts === sevenPlusOneRoots[0]?.ts).length, 7);
+		assert.equal(sevenPlusOne.posted.filter((message) => message.thread_ts === sevenPlusOneRoots[1]?.ts).length, 1);
 
 		writeFileSync(join(workingDir, "settings.json"), JSON.stringify({
 			verbose: { slack: "messages-only" },

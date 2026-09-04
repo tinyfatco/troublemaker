@@ -8,7 +8,7 @@
 
 ### Changed
 
-- Fixed Slack working-output channels now give every surfaced tool its own progress root and reconcile bounded redacted invocation/result replies only inside that tool's thread; direct messages, ordinary Slack turns, and non-Slack output keep their existing compact behavior.
+- Fixed Slack working-output channels now keep the existing rolling-window batch root and reconcile each surfaced tool through one bounded redacted lifecycle reply under that root; direct messages, ordinary Slack turns, and non-Slack output keep their existing compact behavior.
 - Generated heartbeat turns now occupy one subdued `Heartbeat` terminal transcript line across live and durable awareness projection, including already-running terminal clients, without exposing their schedule, task prompt, checklist, or repeated channel/user header.
 - Generated follow-up checkpoints now occupy one subdued terminal transcript line across live and durable awareness projection, including already-running terminal clients, without the full internal prompt or a repeated channel/user header.
 
