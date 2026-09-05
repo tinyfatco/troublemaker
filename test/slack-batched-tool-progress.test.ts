@@ -66,7 +66,7 @@ function harness(maxMessageLength = 40_000) {
 	assert.deepEqual(h.replies[0], {
 		channel: "C9999999999",
 		threadTs: "batch-1",
-		text: "*→ Inspecting first file*\n\n_Running_\n\n*Input*\n```\n{\n  \"path\": \"/tmp/example-one.txt\"\n}\n```",
+		text: "*→ Inspecting first file*\n\n_Running_ · `read`\n\n*Input*\n```\n{\n  \"path\": \"/tmp/example-one.txt\"\n}\n```",
 		ts: "reply-1",
 	});
 
@@ -83,7 +83,7 @@ function harness(maxMessageLength = 40_000) {
 	assert.equal(h.replies.length, 2, "completion does not create a separate result reply");
 	assert.equal(h.updates[0]?.ts, "reply-1", "completion edits the first tool's exact lifecycle reply");
 	assert.match(h.updates[0]?.text || "", /✓ Inspecting first file/);
-	assert.match(h.updates[0]?.text || "", /Complete/);
+	assert.match(h.updates[0]?.text || "", /Complete.*`read`/s, "the lifecycle identifies the actual tool beside its status");
 	assert.match(h.updates[0]?.text || "", /Input[\s\S]*example-one[\s\S]*Output[\s\S]*FIRST_RESULT/);
 
 	await h.progress.update({ id: "tool-1", label: "Inspecting first file", status: "complete", show: true, details: result("FIRST_RESULT_CORRECTED") });
