@@ -51,6 +51,8 @@ import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
 import { AssistantTextProjection } from "./streaming/assistant-text-projection.js";
 import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
+import { UserInputProvenance } from "./streaming/user-input-provenance.js";
+import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sender-identity.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
 import type { ChannelStore } from "./store.js";
@@ -73,7 +75,6 @@ import {
 	resetClaudeCliSession,
 } from "./claude-cli.js";
 import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
-import { parseVisibleUserInputs } from "./user-input-display.js";
 import {
 	extractStructuredHandoff,
 	handoffInstruction,
@@ -157,6 +158,7 @@ export interface AgentRunner {
 	steer(text: string, options?: {
 		projectionId?: string;
 		deliveryId?: string;
+		senderIdentity?: VerifiedSenderIdentity;
 		onAccepted?: () => void | Promise<void>;
 	}): Promise<void> | null;
 	/** Describe an in-progress context compaction for status surfaces. */
@@ -641,6 +643,7 @@ async function createRunner(
 	};
 
 	const resetSessionState = () => {
+		userInputProvenance.clear();
 		unsubscribeSession?.();
 		unsubscribeSession = null;
 		session?.dispose();
@@ -775,6 +778,7 @@ async function createRunner(
 		}));
 	};
 	const steeringProjections = new SteeringProjectionTracker(emitLiveEvent);
+	const userInputProvenance = new UserInputProvenance();
 
 	// Activity callback for external watchdog
 	let onActivity: (() => void) | undefined;
@@ -971,7 +975,7 @@ async function createRunner(
 				const promptText = typeof messageContent === "string"
 					? messageContent
 					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
-				const entries = parseVisibleUserInputs(promptText);
+				const entries = userInputProvenance.apply(agentEvent.message);
 				steeringProjections.consume(promptText);
 				if (entries.length > 0) {
 					closeAssistantPresentation();
@@ -1393,6 +1397,7 @@ async function createRunner(
 				await resolveApiKey(modelRegistry, currentModel.provider);
 			};
 			const tPrompt = performance.now();
+			userInputProvenance.track(finalUserMessage, readVerifiedSenderIdentity(ctx.message.senderIdentity, ctx.message.user));
 			const ordinaryRuntimeContext = activeRuntimeContext;
 			try {
 				if (handoffRuntimeInstruction) activeRuntimeContext = `${ordinaryRuntimeContext}\n\n${handoffRuntimeInstruction}`;
@@ -1621,6 +1626,7 @@ async function createRunner(
 
 			// Clear run state
 			steeringProjections.dismissAll();
+			userInputProvenance.clear();
 			runState.ctx = null;
 			runState.logCtx = null;
 			runState.queue = null;
@@ -1641,6 +1647,7 @@ async function createRunner(
 
 		abort(): void {
 			acceptsSteering = false;
+			userInputProvenance.clear();
 			if (!session) return;
 			requestCompactionAbort();
 			const cleared = session.clearQueue();
@@ -1657,28 +1664,37 @@ async function createRunner(
 		steer(text: string, options?: {
 			projectionId?: string;
 			deliveryId?: string;
+			senderIdentity?: VerifiedSenderIdentity;
 			onAccepted?: () => void | Promise<void>;
 		}): Promise<void> | null {
 			if (!session || !acceptsSteering) return null;
 			const activeSession = session;
 			if (options?.projectionId) {
+				let forgetSender = () => {};
 				const settlement = steeringProjections.track({
 					id: options.projectionId,
 					deliveryId: options.deliveryId,
+					senderIdentity: options.senderIdentity,
 					prompt: text,
-					enqueue: () => activeSession.steer(text),
+					enqueue: () => {
+						forgetSender = userInputProvenance.track(text, options.senderIdentity);
+						return activeSession.steer(text);
+					},
 					onAccepted: options.onAccepted,
 					waitForIdle: () => activeSession.waitForIdle(),
 				});
 				void settlement.catch((err: Error) => {
+					forgetSender();
 					log.logWarning(`[awareness] steer failed`, err.message);
 				});
 				return settlement;
 			}
+			const forgetSender = userInputProvenance.track(text, options?.senderIdentity);
 			const settlement = activeSession.steer(text).then(async () => {
 				await activeSession.waitForIdle();
 			});
 			void settlement.catch((err: Error) => {
+				forgetSender();
 				log.logWarning(`[awareness] steer failed`, err.message);
 			});
 			return settlement;

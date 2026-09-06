@@ -22,9 +22,10 @@ const privateUserLine = JSON.stringify({
 	timestamp: "2026-01-01T00:00:00Z",
 	message: {
 		role: "user",
+		senderIdentity: { source: "verified_ingress", userId: "8", userName: "user0008@example.com", displayName: "Casey" },
 		content: [{
 			type: "text",
-			text: "<session_context>PRIVATE_SESSION</session_context>\n\n<delivery_context>\nSource event: ios_conversation\nDelivery ID: mobile-delivery-projected\nMessage type: dm\n</delivery_context>\n\n[2026-01-01] [voice] [Casey]: Exact human text",
+			text: "<session_context>PRIVATE_SESSION</session_context>\n\n<delivery_context>\nSource event: ios_conversation\nDelivery ID: mobile-delivery-projected\nMessage type: dm\n</delivery_context>\n\n[2026-01-01] [voice] [user0008@example.com]: Exact human text",
 		}],
 	},
 });
@@ -175,7 +176,9 @@ const exactErrorLine = JSON.stringify({
 const projectedUser = projectConversationLine(privateUserLine);
 assert.equal(projectedUser?.text, "Exact human text");
 assert.equal(projectedUser?.channel, "voice");
-assert.equal(projectedUser?.userName, "Casey");
+assert.equal(projectedUser?.userName, "user0008@example.com");
+assert.equal(projectedUser?.displayName, "Casey");
+assert.equal(projectedUser?.userId, "8");
 assert.equal(projectedUser?.deliveryId, "mobile-delivery-projected");
 assert.equal(JSON.stringify(projectedUser).includes("PRIVATE_SESSION"), false);
 
@@ -623,6 +626,10 @@ try {
 			assert.match(body, /Exact human text/);
 			assert.match(body, /Exact assistant text/);
 			assert.match(body, /"deliveryId":"mobile-delivery-projected"/);
+			assert.match(body, /"userName":"user0008@example.com"/);
+			assert.match(body, /"displayName":"Casey"/);
+			assert.match(body, /"userId":"8"/);
+			assert.doesNotMatch(body, /senderIdentity|verified_ingress/, "internal provenance is not part of the native display payload");
 			assert.match(body, /"label":"Checking safely"/);
 			assert.match(body, /"state":"failed"/);
 			assert.match(body, /"details":\{/);

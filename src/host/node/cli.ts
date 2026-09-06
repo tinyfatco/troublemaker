@@ -82,6 +82,7 @@ import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
 import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
 import { formatBusyMessageSteer, formatLocalTimestamp, routeBusyMessageWithoutInterrupt } from "../../noninterrupting-steering.js";
+import { readVerifiedSenderIdentity } from "../../sender-identity.js";
 import { admitRelationshipBoundMessage } from "../../relationship-bound-admission.js";
 import {
 	applyGoalContinuationIdentity,
@@ -1477,7 +1478,9 @@ function isConfigurableVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): 
 
 function steerOrQueueVoiceWebhook(event: MomEvent, adapter: PlatformAdapter): Promise<void> {
 	const prompt = formatBusyMessageSteer(event, adapter, getChannelLabel(event.channel, [adapter]));
-	const steering = awareness?.running ? awareness.runner.steer(prompt) : null;
+	const steering = awareness?.running ? awareness.runner.steer(prompt, {
+		senderIdentity: readVerifiedSenderIdentity(event.senderIdentity, event.user),
+	}) : null;
 	if (steering) {
 		log.logInfo(`[voice-webhook:${event.channel}] Soft-steered transcript into the active run`);
 		return steering;
@@ -1506,6 +1509,7 @@ function steerOrQueueBusyMessage(event: MomEvent, adapter: PlatformAdapter): Pro
 		steer: (steeringPrompt) => {
 			steering = awareness?.runner.steer(steeringPrompt, {
 				projectionId,
+				senderIdentity: readVerifiedSenderIdentity(event.senderIdentity, event.user),
 				...(event.deliveryId ? { deliveryId: event.deliveryId } : {}),
 			}) ?? null;
 			return steering !== null;
@@ -1584,6 +1588,7 @@ const handler: MomHandler = {
 				});
 				const completed = awareness.runner.steer(prompt, {
 					projectionId: steeringProjectionId(event, adapter),
+					senderIdentity: readVerifiedSenderIdentity(event.senderIdentity, event.user),
 					...(event.deliveryId ? { deliveryId: event.deliveryId } : {}),
 					onAccepted: resolveAccepted,
 				});

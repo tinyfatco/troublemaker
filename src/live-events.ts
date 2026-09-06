@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readVerifiedSenderIdentity } from "./sender-identity.js";
 import {
 	projectToolInvocationDetails,
 	projectToolResultDetails,
@@ -237,11 +238,15 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 			...event,
 			entries: event.entries
 				.filter((entry) => entry.channel.trim() && entry.text.trim())
-				.map((entry) => ({
-					channel: entry.channel.trim(),
-					userName: entry.userName.trim() || "user",
-					text: entry.text,
-				})),
+				.map((entry) => {
+					const sender = readVerifiedSenderIdentity({ source: "verified_ingress", ...entry });
+					return {
+						channel: entry.channel.trim(),
+						userName: entry.userName.trim() || "user",
+						...(sender ? { userId: sender.userId, displayName: sender.displayName } : {}),
+						text: entry.text,
+					};
+				}),
 		};
 	}
 	if (event.type === "assistant_snapshot") {

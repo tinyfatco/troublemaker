@@ -198,6 +198,9 @@ export interface RuntimeAssistantTextEvent {
 export interface RuntimeUserInputEntry {
 	channel: string;
 	userName: string;
+	/** Exact transport ID and optional verified display attribution; never replace userName. */
+	userId?: string;
+	displayName?: string;
 	text: string;
 }
 

@@ -1,4 +1,5 @@
 import type { RuntimeLiveEvent, RuntimeStreamEvent } from "../core/runtime-contract.js";
+import { readVerifiedSenderIdentity } from "../sender-identity.js";
 import {
 	mergeToolExecutionDetails,
 	projectToolInvocationDetails,
@@ -17,6 +18,8 @@ export interface ConversationMessage {
 	text: string;
 	channel?: string;
 	userName?: string;
+	userId?: string;
+	displayName?: string;
 	completionId?: string;
 	deliveryId?: string;
 	awarenessKind?: ConversationAwarenessKind;
@@ -132,6 +135,8 @@ export function projectConversationLine(line: string): ConversationMessage | nul
 	const id = stringValue(raw.id) || `message-${stringValue(raw.timestamp) || "unknown"}`;
 	const stopReason = stringValue(raw.message.stopReason) || stringValue(raw.stopReason);
 	const isError = role === "assistant" && stopReason === "error";
+	const sender = role === "user" ? readVerifiedSenderIdentity(raw.message.senderIdentity) : undefined;
+	const verifiedSender = sender?.userName === userName ? sender : undefined;
 	return {
 		id,
 		timestamp: stringValue(raw.timestamp),
@@ -139,6 +144,7 @@ export function projectConversationLine(line: string): ConversationMessage | nul
 		text,
 		...(channel ? { channel } : {}),
 		...(userName ? { userName } : {}),
+		...(verifiedSender ? { userId: verifiedSender.userId, displayName: verifiedSender.displayName } : {}),
 		...(deliveryId ? { deliveryId } : {}),
 		...(awarenessKind ? { awarenessKind } : {}),
 		...(role === "assistant" ? { completionId: id } : {}),

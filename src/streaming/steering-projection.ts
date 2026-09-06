@@ -4,10 +4,13 @@ import type {
 	RuntimeUserInputEntry,
 } from "../core/runtime-contract.js";
 import { parseVisibleUserInputs } from "../user-input-display.js";
+import type { VerifiedSenderIdentity } from "../sender-identity.js";
+import { projectVerifiedUserInputs } from "./user-input-provenance.js";
 
 export interface SteeringProjectionRequest {
 	id: string;
 	deliveryId?: string;
+	senderIdentity?: VerifiedSenderIdentity;
 	prompt: string;
 	enqueue: () => Promise<void>;
 	onAccepted?: () => void | Promise<void>;
@@ -42,7 +45,7 @@ export class SteeringProjectionTracker {
 			id: request.id,
 			deliveryId: request.deliveryId,
 			prompt: request.prompt,
-			entries: parseVisibleUserInputs(request.prompt),
+			entries: projectVerifiedUserInputs(request.prompt, request.senderIdentity),
 			acceptedAt: "",
 			accepted: false,
 			consumed: false,

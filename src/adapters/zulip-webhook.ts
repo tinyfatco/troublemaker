@@ -7,6 +7,7 @@ import type { WorkingOutputTarget } from "../context.js";
 import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pulse.js";
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
+import { verifiedIngressSender } from "../sender-identity.js";
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
 import type {
 	ChannelInfo,
@@ -558,6 +559,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			channel,
 			ts,
 			user: senderId,
+			senderIdentity: verifiedIngressSender(senderId, message.sender_email, message.sender_full_name),
 			text,
 			rawText,
 			attachments: [],
