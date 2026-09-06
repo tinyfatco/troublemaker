@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/schemas/owner-review-v1.schema.json",
+  "title": "Owner review v1 (frozen)",
+  "description": "Wire shapes plus the normative state, authentication, hash and durability rules in owner-review-v1.md. The root is an authenticated GET work item response. Request/response definitions are independently addressable.",
+  "$ref": "#/$defs/work_item",
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "minLength": 64,
+      "maxLength": 64
+    },
+    "OwnerReviewArtifactVersion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "work_item_id",
+        "revision_id",
+        "media_id",
+        "media_sha256",
+        "text_sha256",
+        "action",
+        "account_id"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "work_item_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "revision_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "media_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "media_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "text_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "action": {
+          "const": "publish"
+        },
+        "account_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "OwnerReviewApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "approval_id",
+        "artifact_approval_digest"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "approval_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact_approval_digest": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "media_type": {
+      "enum": [
+        "image/png",
+        "image/jpeg",
+        "video/mp4",
+        "application/pdf",
+        "text/plain"
+      ]
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "approval"
+      ],
+      "properties": {
+        "decision": {
+          "enum": [
+            "approved",
+            "rejected"
+          ]
+        },
+        "approval": {
+          "$ref": "#/$defs/OwnerReviewApproval"
+        }
+      }
+    },
+    "execution": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt_id",
+            "approval_id",
+            "state"
+          ],
+          "properties": {
+            "attempt_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "approval_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "state": {
+              "const": "uncertain"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt_id",
+            "approval_id",
+            "state",
+            "reconciliation_id"
+          ],
+          "properties": {
+            "attempt_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "approval_id": {
+              "$ref": "#/$defs/identifier"
+            },
+            "state": {
+              "enum": [
+                "completed",
+                "not_completed"
+              ]
+            },
+            "reconciliation_id": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        }
+      ]
+    },
+    "work_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "binding_id",
+        "route_agent_id",
+        "subject_agent_id",
+        "artifact",
+        "artifact_approval_digest",
+        "text",
+        "media_type",
+        "media_byte_length",
+        "state"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "binding_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "route_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "subject_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact": {
+          "$ref": "#/$defs/OwnerReviewArtifactVersion"
+        },
+        "artifact_approval_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 131072,
+          "description": "Well-formed Unicode; maximum 131072 UTF-8 bytes. Exact bytes must hash to artifact.text_sha256; no normalization."
+        },
+        "media_type": {
+          "$ref": "#/$defs/media_type"
+        },
+        "media_byte_length": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8388608
+        },
+        "state": {
+          "enum": [
+            "pending_review",
+            "approved",
+            "rejected",
+            "uncertain",
+            "completed",
+            "not_completed"
+          ]
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "execution": {
+          "$ref": "#/$defs/execution"
+        }
+      }
+    },
+    "put_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "binding_id",
+        "route_agent_id",
+        "subject_agent_id",
+        "expected_revision_id",
+        "artifact",
+        "text",
+        "media_type",
+        "media_base64"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "binding_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "route_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "subject_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "expected_revision_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/identifier"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifact": {
+          "$ref": "#/$defs/OwnerReviewArtifactVersion"
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 131072,
+          "description": "Well-formed Unicode; maximum 131072 UTF-8 bytes. Exact bytes must hash to artifact.text_sha256; no normalization."
+        },
+        "media_type": {
+          "$ref": "#/$defs/media_type"
+        },
+        "media_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 11184812,
+          "pattern": "^[A-Za-z0-9+/]*={0,2}$",
+          "contentEncoding": "base64",
+          "description": "Canonical padded base64, 1..8388608 decoded bytes, hash equals artifact.media_sha256. Whitespace and alternate encodings are rejected."
+        }
+      }
+    },
+    "execution_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "binding_id",
+        "route_agent_id",
+        "subject_agent_id",
+        "work_item_id",
+        "attempt_id",
+        "approval"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "binding_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "route_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "subject_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "work_item_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "approval": {
+          "$ref": "#/$defs/OwnerReviewApproval"
+        }
+      }
+    },
+    "reconciliation_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "binding_id",
+        "route_agent_id",
+        "subject_agent_id",
+        "work_item_id",
+        "attempt_id",
+        "artifact_approval_digest",
+        "reconciliation_id",
+        "outcome"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "binding_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "route_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "subject_agent_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "work_item_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "artifact_approval_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "reconciliation_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "not_completed"
+          ]
+        }
+      }
+    },
+    "mutation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "work_item"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "accepted",
+            "duplicate"
+          ]
+        },
+        "work_item": {
+          "$ref": "#/$defs/work_item"
+        }
+      }
+    },
+    "decision_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "disposition",
+        "decision",
+        "work_item"
+      ],
+      "properties": {
+        "disposition": {
+          "enum": [
+            "accepted",
+            "duplicate"
+          ]
+        },
+        "decision": {
+          "$ref": "#/$defs/decision"
+        },
+        "work_item": {
+          "$ref": "#/$defs/work_item"
+        }
+      }
+    },
+    "execution_result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "disposition",
+            "may_execute",
+            "work_item"
+          ],
+          "properties": {
+            "disposition": {
+              "const": "claimed"
+            },
+            "may_execute": {
+              "const": true
+            },
+            "work_item": {
+              "$ref": "#/$defs/work_item"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "disposition",
+            "may_execute",
+            "work_item"
+          ],
+          "properties": {
+            "disposition": {
+              "const": "reconcile_required"
+            },
+            "may_execute": {
+              "const": false
+            },
+            "work_item": {
+              "$ref": "#/$defs/work_item"
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ export const DEVICE_GRANT_SCOPES = [
 	"transcriptions",
 	"voice_sessions",
 	"voice_receipts",
+	"owner_review",
 	"messages",
 	"stop",
 ] as const;
@@ -81,6 +82,7 @@ export function canonicalDeviceRequest(input: CanonicalDeviceRequestInput): stri
 
 export function deviceRequestScope(method: string, pathname: string): DeviceGrantScope | null {
 	const normalizedMethod = method.toUpperCase();
+	if (ownerReviewDeviceRoute(normalizedMethod, pathname)) return "owner_review";
 	if (!/^\/api\/v2\/agents\/[^/]+\/.+$/.test(pathname)) return null;
 	const agentRoute = "^/api/v2/agents/[^/]+";
 	if (normalizedMethod === "GET" && new RegExp(`${agentRoute}/status$`).test(pathname)) return "status";
@@ -116,4 +118,20 @@ export function normalizeDeviceGrantScopes(value: unknown): DeviceGrantScope[] |
 	if (!Array.isArray(value) || value.length === 0 || value.length > DEVICE_GRANT_SCOPES.length) return null;
 	if (!value.every(isDeviceGrantScope)) return null;
 	return [...new Set(value)].sort();
+}
+
+/** Only these exact paths enter review authority; identifiers use the existing device subset. */
+export function ownerReviewDeviceRoute(method: string, pathname: string): {
+	workItemId: string; revisionId?: string; operation: "get" | "media" | "approved" | "rejected";
+} | null {
+	const match = pathname.match(/^\/api\/v2\/agents\/[^/]+\/owner-review-items\/([^/]+)(?:\/(approvals|rejections)|\/revisions\/([^/]+)\/media)?$/);
+	if (!match) return null;
+	try {
+		const workItemId = decodeURIComponent(match[1]);
+		const revisionId = match[3] ? decodeURIComponent(match[3]) : undefined;
+		if (!isSafeDeviceIdentifier(workItemId) || (revisionId !== undefined && !isSafeDeviceIdentifier(revisionId))) return null;
+		if (method === "GET" && !match[2]) return { workItemId, ...(revisionId ? { revisionId } : {}), operation: revisionId ? "media" : "get" };
+		if (method === "POST" && match[2]) return { workItemId, operation: match[2] === "approvals" ? "approved" : "rejected" };
+	} catch { /* Unsafe encodings never reach the store. */ }
+	return null;
 }
