@@ -1,5 +1,6 @@
 import type { ToolStreamingMode, VerbosityLevel, WorkingStreamPresentation } from "../context.js";
 import type { MomContext, MomEvent, RespondOptions, UserInfo, ChannelInfo } from "./types.js";
+import { readVerifiedSenderIdentity } from "../sender-identity.js";
 
 // ============================================================================
 // Shared two-message context for chat adapters (Telegram, Slack)
@@ -77,6 +78,7 @@ export function createTwoMessageContext(
 	},
 ): MomContext {
 	const { event, channels, users, channelName } = config;
+	const senderIdentity = readVerifiedSenderIdentity(event.senderIdentity, event.user);
 
 	let workingMessageId: string | null = null;
 	let finalMessageId: string | null = null;
@@ -200,7 +202,8 @@ export function createTwoMessageContext(
 			text: event.text,
 			rawText: event.rawText ?? event.text,
 			user: event.user,
-			userName: config.user?.userName,
+			userName: senderIdentity?.userName ?? config.user?.userName,
+			...(senderIdentity ? { senderIdentity } : {}),
 			channel: event.channel,
 			ts: event.ts,
 			eventType: event.type,

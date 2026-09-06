@@ -216,6 +216,21 @@ arbitrary user text that resembles a marker is not reclassified.
 The durable event stream remains the source of truth. Optimistic chat entries
 are UI affordances, not persistent state.
 
+User conversation messages and runtime `user_input`/`steering_input` entries
+may include `displayName` and `userId`. `userName` retains the transport's
+original identifier, including opaque usernames; `userId` retains the exact
+transport ID as a string. Clients may prefer `displayName` for attribution and
+fall back to their existing `userName` label when it is absent.
+
+Display attribution comes only from a verified ingress snapshot. The runtime
+stores `senderIdentity` metadata (`source: "verified_ingress"`, `userId`,
+`userName`, `displayName`) on the exact canonical user message, outside model
+text. Authenticated Zulip ingress supplies this snapshot; other adapters can
+opt in at their own verified identity boundary. Backlog and live replay use the
+same persisted snapshot, without profile lookups or email-derived names.
+Legacy, malformed, mismatched, or unverified metadata omits both additive
+fields. Message text and assistant output cannot supply display attribution.
+
 `GET /api/v2/agents/:id/live` is the ordered in-flight companion stream. It
 replays server-accepted steering input while that input is pending and emits a
 consumed or dismissed lifecycle update before removing the projection. These

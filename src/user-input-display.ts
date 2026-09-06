@@ -6,6 +6,8 @@ const HEARTBEAT_CHECKPOINT_RE = /^\[ATTENTION:[^\]\r\n]+:(?:immediate|one-shot|p
 export interface VisibleUserInput {
 	channel: string;
 	userName: string;
+	userId?: string;
+	displayName?: string;
 	text: string;
 }
 

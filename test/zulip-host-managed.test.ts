@@ -7,6 +7,9 @@ import { join } from "node:path";
 import { WorkspaceDeliveryLedger } from "../src/adapters/workspace-channel-runtime.js";
 import { ZulipWebhookAdapter } from "../src/adapters/zulip-webhook.js";
 import { ChannelStore } from "../src/store.js";
+import { formatBusyMessageSteer } from "../src/noninterrupting-steering.js";
+import { UserInputProvenance } from "../src/streaming/user-input-provenance.js";
+import { projectConversationLine } from "../src/console/conversation-projection.js";
 
 const CHANNEL_ID = "4";
 const OTHER_CHANNEL_ID = "5";
@@ -165,6 +168,15 @@ try {
 		/requires a topic target/,
 	);
 
+	const unauthenticated = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ message: { id: 87, sender_id: 8, sender_email: "user0008@example.com", sender_full_name: "Unverified" } }),
+	});
+	assert.equal(unauthenticated.status, 401);
+	assert.equal(handled.length, 0, "unauthenticated payloads cannot create sender provenance");
+	assert.equal(adapter.getUser("8"), undefined);
+
 	const inboundResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",
 		headers: {
@@ -173,6 +185,7 @@ try {
 		},
 		body: JSON.stringify({
 			deliveryId: "delivery-one",
+			senderIdentity: { source: "verified_ingress", userId: "9", userName: "forged@example.com", displayName: "Forged" },
 			message: {
 				id: 88,
 				type: "stream",
@@ -180,7 +193,7 @@ try {
 				display_recipient: "customer · Casey",
 				subject: "",
 				sender_id: 8,
-				sender_email: "casey@example.com",
+				sender_email: "user0008@example.com",
 				sender_full_name: "Casey",
 				sender_is_bot: false,
 				timestamp: Math.floor(Date.now() / 1000),
@@ -207,6 +220,25 @@ try {
 	assert.equal(handled[0].replyTarget, `zulip:${CHANNEL_ID}`);
 	assert.equal(handled[0].directlyAddressed, true);
 	assert.equal(handled[0].sourceEventType, "zulip_mention");
+	assert.equal(handled[0].user, "8", "numeric transport identity is unchanged");
+	assert.deepEqual(handled[0].senderIdentity, {
+		source: "verified_ingress", userId: "8", userName: "user0008@example.com", displayName: "Casey",
+	});
+	const verifiedContext = adapter.createContext(handled[0], store);
+	assert.equal(verifiedContext.message.userName, "user0008@example.com", "displayName does not replace opaque userName");
+	assert.deepEqual(verifiedContext.message.senderIdentity, handled[0].senderIdentity);
+	const unverifiedContext = adapter.createContext({ ...handled[0], senderIdentity: undefined }, store);
+	assert.equal(unverifiedContext.message.senderIdentity, undefined, "the user directory cannot promote a legacy event to verified attribution");
+	const mismatchedContext = adapter.createContext({ ...handled[0], user: "7" }, store);
+	assert.equal(mismatchedContext.message.senderIdentity, undefined, "a snapshot belongs only to its exact numeric sender");
+	const attribution = new UserInputProvenance();
+	const attributedPrompt = formatBusyMessageSteer(handled[0], adapter, "zulip:Example channel", 0);
+	attribution.track(attributedPrompt, verifiedContext.message.senderIdentity);
+	const attributedMessage = { role: "user", content: [{ type: "text", text: attributedPrompt }] };
+	assert.equal(attribution.apply(attributedMessage)[0].displayName, "Casey");
+	const attributedRow = JSON.stringify({ type: "message", id: "verified-input", message: attributedMessage });
+	assert.equal(projectConversationLine(attributedRow)?.displayName, "Casey");
+	assert.equal(projectConversationLine(attributedRow)?.userName, "user0008@example.com");
 
 	const ambientResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",
@@ -248,6 +280,9 @@ try {
 	assert.equal(ambient[0].replyTarget, `zulip:${CHANNEL_ID}`);
 	assert.equal(handled.length, 1, "ordinary Zulip messages do not bypass ambient evaluation");
 	assert.equal(pulseRecords.length, 2, "human mention and ambient traffic both reach pulse accounting");
+	assert.equal(adapter.getUser("8")?.userName, "casey@example.com", "a later ingress can refresh the directory");
+	assert.equal(adapter.createContext(handled[0], store).message.userName, "user0008@example.com", "a queued input retains its ingress snapshot");
+	assert.match(formatBusyMessageSteer(handled[0], adapter, "zulip:Example channel", 0), /\[user0008@example\.com\]:/);
 
 	const dmResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",

@@ -1,5 +1,6 @@
 import type { MomEvent, PlatformAdapter } from "./adapters/types.js";
 import { formatDeliveryContext } from "./delivery-context.js";
+import { readVerifiedSenderIdentity } from "./sender-identity.js";
 
 export type BusyMessageDisposition = "steered" | "queued";
 
@@ -29,7 +30,8 @@ export function formatBusyMessageSteer(
 	receivedAt = Date.now(),
 ): string {
 	const user = adapter.getUser(event.user);
-	const userName = user?.userName || user?.displayName || event.user || "unknown";
+	const senderIdentity = readVerifiedSenderIdentity(event.senderIdentity, event.user);
+	const userName = senderIdentity?.userName || user?.userName || user?.displayName || event.user || "unknown";
 	const deliveryContext = formatDeliveryContext({
 		sourceEventType: event.sourceEventType,
 		deliveryId: event.deliveryId,

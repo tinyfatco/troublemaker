@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "http";
 import type { ToolStreamingMode, WorkingOutputTarget, WorkingStreamPresentation } from "../context.js";
 import type { ConversationToolExecutionDetails } from "../console/tool-detail-projection.js";
 import type { Attachment, ChannelStore } from "../store.js";
+import type { VerifiedSenderIdentity } from "../sender-identity.js";
 import type {
 	RelationshipAdmissionRequest,
 	RelationshipAdmissionResult,
@@ -26,6 +27,8 @@ export interface MomEvent {
 	channel: string;
 	ts: string;
 	user: string;
+	/** Immutable sender snapshot from authenticated ingress, not a profile lookup or body field. */
+	senderIdentity?: VerifiedSenderIdentity;
 	/** Slack workspace associated with the invoking user, when supplied by Slack. */
 	teamId?: string;
 	text: string;
@@ -168,6 +171,7 @@ export interface MomContext {
 		rawText: string;
 		user: string;
 		userName?: string;
+		senderIdentity?: VerifiedSenderIdentity;
 		channel: string;
 			ts: string;
 			freshContext?: boolean;
