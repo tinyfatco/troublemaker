@@ -1,0 +1,20 @@
+{
+  "artifact": {
+    "version": 1,
+    "work_item_id": "work-item-example",
+    "revision_id": "revision-one",
+    "media_id": "media-one",
+    "media_sha256": "3dfbb740fdb477de0700d927ed36d8e0c47a34d3f85d7076f51d3fb9d182295e",
+    "text_sha256": "52d6c973f0e9aa30f5e57331b1e6e3634a51d4a4fffdb74eb5e94a1258587ff4",
+    "action": "publish",
+    "account_id": "account-one"
+  },
+  "text": "reviewed draft v1",
+  "media_base64": "cmVkYWN0ZWQtdmlkZW8tdjE=",
+  "approval": {
+    "version": 1,
+    "approval_id": "approval-one",
+    "artifact_approval_digest": "38c2d7e51707498feb11229e167839146751797295d6515725b6b08e0ceb8fbd"
+  },
+  "canonical": "computer-owner-review-artifact-v1\n1\nwork-item-example\nrevision-one\nmedia-one\n3dfbb740fdb477de0700d927ed36d8e0c47a34d3f85d7076f51d3fb9d182295e\n52d6c973f0e9aa30f5e57331b1e6e3634a51d4a4fffdb74eb5e94a1258587ff4\npublish\naccount-one"
+}

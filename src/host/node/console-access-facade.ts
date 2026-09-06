@@ -5,6 +5,7 @@ import { performance } from "node:perf_hooks";
 import {
 	DEVICE_GRANT_VERSION,
 	deviceRequestScope,
+	ownerReviewDeviceRoute,
 	isSafeDeviceIdentifier,
 	sha256Hex,
 	type CanonicalDeviceRequestInput,
@@ -13,6 +14,11 @@ import {
 	canonicalDeviceRequest,
 } from "../../console/device-grants.js";
 import { DeviceGrantStore, DeviceGrantStoreError } from "./device-grant-store.js";
+import { OwnerReviewStore, OwnerReviewError } from "./owner-review-store.js";
+import {
+	OWNER_REVIEW_MAX_BODY_BYTES, parseOwnerReviewPut,
+	parseOwnerReviewExecutionRequest, parseOwnerReviewReconciliation,
+} from "../../console/owner-review.js";
 import {
 	parseOwnerPushAuthoritativeEvent,
 	parseOwnerPushContext,
@@ -38,6 +44,8 @@ export interface ConsoleAccessFacadeOptions {
 	grantStore: DeviceGrantStore;
 	/** Optional complete owner-push authority. Omission keeps the capability unavailable. */
 	ownerPush?: OwnerPushRuntime;
+	/** Optional private review authority. No external execution transport is installed. */
+	ownerReview?: OwnerReviewStore;
 	/** Independent server-producer bearer; never forwarded to or exposed through the model runtime. */
 	ownerPushProducerToken?: string;
 	/** Shared 32-byte secret for authenticated facade-to-Gateway receipt claims. */
@@ -130,9 +138,9 @@ export class ConsoleAccessFacade {
 		if (producerToken === options.ownerToken) {
 			throw new Error("Owner push producer authority must be independent from owner access");
 		}
-		if (Boolean(options.ownerPush) !== Boolean(producerToken)
+		if (Boolean(options.ownerPush || options.ownerReview) !== Boolean(producerToken)
 			|| (options.ownerPush && !options.ownerPush.available)) {
-			throw new Error("Owner push requires a runtime, transport, and independent producer authority");
+			throw new Error("Owner authority requires a runtime and independent producer authority");
 		}
 		this.ownerPushProducerToken = producerToken;
 		const authorityKey = options.voiceReceiptAuthorityKey
@@ -173,6 +181,10 @@ export class ConsoleAccessFacade {
 	private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const requestStartedAt = this.timingNow();
 		const url = new URL(req.url || "/", "http://localhost");
+		if (["/api/v2/owner-review-items", "/api/v2/owner-review-executions", "/api/v2/owner-review-reconciliations"].includes(url.pathname)) {
+			await this.handleOwnerReviewProducer(req, res, url);
+			return;
+		}
 		if (url.pathname === "/api/v2/owner-notification-events") {
 			await this.handleOwnerPushAuthoritativeEvent(req, res);
 			return;
@@ -220,7 +232,7 @@ export class ConsoleAccessFacade {
 
 		let body: Buffer;
 		try {
-			body = await readBoundedBody(req, this.maximumBodyBytes);
+			body = await readBoundedBody(req, scope === "owner_review" ? Math.min(4096, this.maximumBodyBytes) : this.maximumBodyBytes);
 		} catch (error) {
 			if (error instanceof BoundedBodyError) {
 				this.sendError(res, error.status, error.code);
@@ -237,7 +249,7 @@ export class ConsoleAccessFacade {
 			return;
 		}
 		if (this.ownerAuthorized(req.headers.authorization)) {
-			if (scope === "voice_receipts") {
+			if (scope === "voice_receipts" || scope === "owner_review") {
 				this.sendError(res, 403, "device_grant_required");
 				return;
 			}
@@ -307,6 +319,10 @@ export class ConsoleAccessFacade {
 			throw error;
 		}
 		let verifiedOwnerContext: OwnerPushContext | undefined;
+		if (scope === "owner_review") {
+			await this.handleOwnerReviewDevice(req, res, url, body, verifiedGrant);
+			return;
+		}
 		if (requestedOwnerContext) {
 			if (!this.options.ownerPush) {
 				this.sendError(res, 503, "owner_context_authority_unavailable");
@@ -380,6 +396,66 @@ export class ConsoleAccessFacade {
 			voiceTiming,
 			verifiedOwnerContext,
 		);
+	}
+
+	private async handleOwnerReviewProducer(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+		if (req.method !== "POST") { this.sendError(res, 405, "method_not_allowed"); return; }
+		if (!this.producerAuthorized(req.headers.authorization)) { this.sendError(res, 401, "unauthorized"); return; }
+		if (!this.options.ownerReview) { this.sendError(res, 503, "owner_review_unavailable"); return; }
+		try {
+			if (url.search || !isJSONRequest(req)) throw new OwnerReviewError(400, "invalid_owner_review_request");
+			const body = await readBoundedBody(req, url.pathname === "/api/v2/owner-review-items" ? OWNER_REVIEW_MAX_BODY_BYTES : 4096);
+			const value = parseReviewJSON(body);
+			const request = url.pathname === "/api/v2/owner-review-items" ? parseOwnerReviewPut(value)
+				: url.pathname === "/api/v2/owner-review-executions" ? parseOwnerReviewExecutionRequest(value)
+					: parseOwnerReviewReconciliation(value);
+			if (!request) throw new OwnerReviewError(400, "invalid_owner_review_request");
+			if (!this.allowedAgentRoutes.has(request.route_agent_id)) throw new OwnerReviewError(404, "not_found");
+			await this.verifyOwnerReviewSubject(request.route_agent_id, request.subject_agent_id);
+			const result = url.pathname === "/api/v2/owner-review-items" ? this.options.ownerReview.put(request)
+				: url.pathname === "/api/v2/owner-review-executions" ? this.options.ownerReview.claimExecution(request)
+					: this.options.ownerReview.reconcile(request);
+			this.sendJSON(res, 200, result);
+		} catch (error) { this.sendOwnerReviewError(res, error); }
+	}
+
+	private async handleOwnerReviewDevice(
+		req: IncomingMessage, res: ServerResponse, url: URL, body: Buffer, grant: DeviceGrantDescriptor,
+	): Promise<void> {
+		if (!this.options.ownerReview) { this.sendError(res, 503, "owner_review_unavailable"); return; }
+		try {
+			const route = ownerReviewDeviceRoute(req.method || "GET", url.pathname);
+			if (!route) throw new OwnerReviewError(404, "not_found");
+			if (url.search || (req.method === "GET" && body.length !== 0)
+				|| (req.method === "POST" && !isJSONRequest(req))) {
+				throw new OwnerReviewError(400, "invalid_owner_review_request");
+			}
+			await this.verifyOwnerReviewSubject(grant.route_agent_id, grant.subject_agent_id);
+			// Status lookup awaits I/O; revocation or expiry during that wait must win.
+			if (!this.options.grantStore.getActive(grant.grant_id)) throw new OwnerReviewError(401, "unknown_or_revoked_grant");
+			if (route.operation === "media") {
+				const media = this.options.ownerReview.media(grant, route.workItemId, route.revisionId!);
+				res.writeHead(200, {
+					"content-type": media.contentType, "content-length": media.bytes.length,
+					"cache-control": "no-store", "x-content-type-options": "nosniff",
+					"content-disposition": "attachment", "content-security-policy": "sandbox; default-src 'none'",
+				});
+				res.end(media.bytes);
+				return;
+			}
+			const result = route.operation === "get" ? this.options.ownerReview.get(grant, route.workItemId)
+				: this.options.ownerReview.decide(grant, route.workItemId, parseReviewJSON(body), route.operation);
+			this.sendJSON(res, 200, result);
+		} catch (error) { this.sendOwnerReviewError(res, error); }
+	}
+
+	private async verifyOwnerReviewSubject(route: string, subject: string): Promise<void> {
+		if (await this.readUpstreamStatus(route) !== subject) throw new OwnerReviewError(409, "owner_review_agent_mismatch");
+	}
+
+	private sendOwnerReviewError(res: ServerResponse, error: unknown): void {
+		if (error instanceof OwnerReviewError || error instanceof BoundedBodyError) this.sendError(res, error.status, error.code);
+		else this.sendError(res, 502, "owner_review_authority_unavailable");
 	}
 
 	private observeRequestRejection(
@@ -722,6 +798,18 @@ export class ConsoleAccessFacade {
 interface OwnerPushAcknowledgmentRoute {
 	routeAgentId: string;
 	notificationId: string;
+}
+
+function isJSONRequest(req: IncomingMessage): boolean {
+	return /^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(String(req.headers["content-type"] || ""));
+}
+
+function parseReviewJSON(body: Buffer): unknown {
+	try {
+		const text = body.toString("utf8");
+		if (!Buffer.from(text, "utf8").equals(body)) throw new Error("invalid utf8");
+		return JSON.parse(text);
+	} catch { throw new OwnerReviewError(400, "invalid_owner_review_request"); }
 }
 
 function matchOwnerPushAcknowledgmentRoute(pathname: string): OwnerPushAcknowledgmentRoute | null {
