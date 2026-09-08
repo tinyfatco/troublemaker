@@ -85,3 +85,10 @@ const cuaSource = readFileSync(new URL('../src/cua-driver/bridge.ts', import.met
 assert.match(cuaSource, /toAgentResult\(result, this.outputStore\)/);
 console.log(JSON.stringify({originalBytes: Buffer.byteLength(tree), boundedBytes: Buffer.byteLength(bounded), reductionPercent: +(100*(1-Buffer.byteLength(bounded)/Buffer.byteLength(tree))).toFixed(2)}));
 console.log('Computer output regressions passed');
+
+const structured = store.bound(JSON.stringify({app:"Example Browser", elements:[
+ ...Array.from({length:1000}, (_,i)=>({id:i, role:"AXStaticText", name:"Example prose"})),
+ {id:"example-control-9001", role:"AXButton", name:"Search"}
+]}));
+assert.match(structured, /example-control-9001/);
+assert.match(structured, /Search/);
