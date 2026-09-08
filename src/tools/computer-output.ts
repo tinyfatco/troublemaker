@@ -59,7 +59,16 @@ export class ComputerOutputStore {
 		const ranked = lines.map((line, index) => ({ line, index, rank:
 			index < 16 ? 0 : /\b(app(?:lication)?|window|focused|selected|url|error|snapshot)\b\s*[:=]/i.test(line) ? 1 :
 			/\b(button|textfield|text field|combobox|checkbox|menuitem|toolbar|AXButton|AXTextField)\b/i.test(line) ? 2 : 3,
-		})).sort((a, b) => a.rank - b.rank || a.index - b.index);
+		}));
+		// Structured AX nodes often put IDs/names on adjacent JSON lines. Keep
+		// those neighbors with the control, rather than returning a role alone.
+		const controls = ranked.filter((item) => item.rank === 2);
+		for (const control of controls) {
+			for (let i = Math.max(0, control.index - 3); i <= Math.min(ranked.length - 1, control.index + 3); i++) {
+				ranked[i].rank = Math.min(ranked[i].rank, 2);
+			}
+		}
+		ranked.sort((a, b) => a.rank - b.rank || a.index - b.index);
 		let used = 0;
 		const selected: Array<{ index: number; text: string }> = [];
 		for (const item of ranked) {
