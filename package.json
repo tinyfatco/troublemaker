@@ -44,6 +44,7 @@
 		"install:local-mac": "scripts/install-local-mac-launch-agents.sh",
 		"doctor:local-mac": "scripts/doctor-local-mac.sh",
 		"test:send-message": "pnpm exec tsx test/send-message.test.ts",
+		"test:computer-output": "pnpm exec tsx test/computer-output.test.ts",
 		"test:tool-label-contract": "pnpm exec tsx test/tool-label-contract.test.ts",
 		"test:mattermost-adapter": "pnpm exec tsx test/mattermost-adapter.test.ts",
 		"test:mattermost-host-managed": "pnpm exec tsx test/mattermost-host-managed.test.ts",

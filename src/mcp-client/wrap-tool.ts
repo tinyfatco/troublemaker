@@ -5,6 +5,8 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import * as log from "../log.js";
 import { requireNonblankToolLabel, requiredToolLabelSchema, stripToolPresentationArgs } from "../tools/tool-label.js";
 
+import { ComputerOutputStore } from "../tools/computer-output.js";
+
 interface McpToolDef {
 	name: string;
 	description?: string;
@@ -214,7 +216,7 @@ async function maybePreMovePeekabooCursor(
 	} catch (err) {
 		if (signal?.aborted) throw err;
 		const errMsg = err instanceof Error ? err.message : String(err);
-		log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move failed`, errMsg);
+		log.logWarning(`[mcp-client] ${namespacedName}: cursor pre-move failed`, errMsg.substring(0, 200));
 	}
 }
 
@@ -262,6 +264,7 @@ export function wrapMcpTool(
 	alias: string,
 	tool: McpToolDef,
 	client: Client,
+	outputStore?: ComputerOutputStore,
 ): AgentTool<any> {
 	const namespacedName = `${alias}__${tool.name}`;
 	const description = tool.description
@@ -310,15 +313,15 @@ export function wrapMcpTool(
 				}
 
 				return {
-					content: [{ type: "text", text }],
+					content: [{ type: "text", text: outputStore ? outputStore.bound(isError ? `MCP tool returned an error:\n${text}` : text) : text }],
 					details: undefined,
 				};
 			} catch (err) {
 				if (signal?.aborted) throw err;
 				const errMsg = err instanceof Error ? err.message : String(err);
-				log.logWarning(`[mcp-client] ${namespacedName} failed`, errMsg);
+				log.logWarning(`[mcp-client] ${namespacedName} failed`, errMsg.substring(0, 200));
 				return {
-					content: [{ type: "text", text: `MCP call failed: ${errMsg}` }],
+					content: [{ type: "text", text: outputStore ? outputStore.bound(`MCP call failed: ${errMsg}`) : `MCP call failed: ${errMsg}` }],
 					details: undefined,
 				};
 			}

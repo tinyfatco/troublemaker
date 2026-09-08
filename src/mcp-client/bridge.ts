@@ -6,6 +6,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import * as log from "../log.js";
 import { loadMcpConfigs, type ResolvedMcpServer } from "./config.js";
+import { ComputerOutputStore } from "../tools/computer-output.js";
 import { wrapMcpTool } from "./wrap-tool.js";
 
 interface ConnectedServer {
@@ -184,9 +185,13 @@ export class McpBridge {
 		const toolsResult = await client.listTools();
 		const tools: AgentTool<any>[] = [];
 
+		const outputStore = isComputerUseMcpServer(config) || config.alias === "peekaboo"
+			? new ComputerOutputStore(`${config.alias}__read_output_detail`) : undefined;
 		for (const mcpTool of toolsResult.tools) {
-			tools.push(wrapMcpTool(config.alias, mcpTool, client));
+			tools.push(wrapMcpTool(config.alias, mcpTool, client, outputStore));
 		}
+
+		if (outputStore) tools.push(outputStore.tool());
 
 		const source = config.transport === "stdio"
 			? `${config.command} ${config.args.join(" ")}`.trim()

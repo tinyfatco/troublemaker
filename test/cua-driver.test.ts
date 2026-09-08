@@ -113,7 +113,7 @@ test("packaged embedded host binds the private endpoint and shuts down cleanly",
 		const bridge = new CuaDriverBridge({ ...packaged, distributable: true, permissionPreflight: grantedPermissions, embeddedHost: () => fakeEmbeddedHost(never, events), connect: (socket) => { socketPath = socket; return fakeClient(); } });
 		await bridge.connect();
 		assert.equal(socketPath, "/private/synthetic.sock");
-		assert.equal(bridge.tools().length, 56);
+		assert.equal(bridge.tools().length, 57);
 		await bridge.disconnect();
 		assert.deepEqual(events, ["stop", "destroy"]);
 	} finally {
@@ -296,8 +296,8 @@ test("native inventory becomes namespaced deferred Pi tools and forwards exact a
 	});
 	await bridge.connect();
 	const tools = bridge.tools();
-	assert.equal(tools.length, 56);
-	assert.equal(new Set(tools.map((tool) => tool.name)).size, 56);
+	assert.equal(tools.length, 57);
+	assert.equal(new Set(tools.map((tool) => tool.name)).size, 57);
 	assert.ok(tools.some((tool) => tool.name === "cua_check_for_update"));
 	const click = tools.find((tool) => tool.name === "cua_click");
 	assert.ok(click);
@@ -318,7 +318,7 @@ test("adapter also accepts the same-process SDK camelCase inventory shape", asyn
 		connect: () => fakeClient({ inventory: inventory({ camelCaseSchema: true }) }),
 	});
 	await bridge.connect();
-	assert.equal(bridge.tools().length, 56);
+	assert.equal(bridge.tools().length, 57);
 });
 
 test("Cua refusal stays prominent while retaining image evidence", async () => {
@@ -357,4 +357,31 @@ test("version, schema, duplicates, and exact surface mismatches fail closed", as
 test("adapter has no model, MCP, or API-key execution path", async () => {
 	const source = await import("node:fs/promises").then(({ readFile }) => readFile(new URL("../src/cua-driver/bridge.ts", import.meta.url), "utf8"));
 	assert.doesNotMatch(source, /OPENAI_API_KEY|McpBridge|streamSimple|responses\.create|chat\.completions/);
+});
+
+
+test("all native computer actions bound returned state and support detail without replay", async () => {
+    const text = "Application: Example Browser\nWindow: Example Document\n" +
+        Array.from({length:4000}, (_,i) => `[${i}] AXStaticText ${"Example prose. ".repeat(8)}`).join("\n") +
+        '\n[9001] AXButton "Search"';
+    let calls = 0;
+    const bridge = new CuaDriverBridge({prepareDaemon: async () => {}, connect: () => fakeClient({
+        result: {text, images: [], isError: false, degraded:false, rawJson:"{}"},
+        onCall: () => { calls++; },
+    })});
+    await bridge.connect();
+    for (const name of CUA_DRIVER_020_TOOL_NAMES) {
+        const tool = bridge.tools().find(t => t.name === `cua_${name}`)!;
+        const result = await tool.execute("example", {label:"Inspect example state"});
+        const output = (result.content[0] as {text:string}).text;
+        assert.ok(Buffer.byteLength(output) <= 8192);
+        assert.match(output, /9001/);
+        const id = output.match(/result_id:"([^"]+)"/)![1];
+        const before = calls;
+        const detail = await bridge.tools().find(t => t.name === "cua_read_output_detail")!
+            .execute("example-detail", {label:"Inspect element", result_id:id, query:"3999"});
+        assert.match((detail.content[0] as {text:string}).text, /3999/);
+        assert.equal(calls, before);
+    }
+    await bridge.disconnect();
 });
