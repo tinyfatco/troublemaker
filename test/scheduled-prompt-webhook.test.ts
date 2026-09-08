@@ -4,6 +4,9 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	currentHostDeliveryScope,
+} from "../src/adapters/host-delivery-scope.js";
+import {
 	ScheduledPromptWebhookIngress,
 } from "../src/adapters/scheduled-prompt-webhook.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "../src/adapters/types.js";
@@ -160,6 +163,48 @@ try {
 		}, "durable scheduled delivery receipts were not recorded");
 		assert.equal(compactions, 1);
 		assert.equal(runs, 1, "no-op and compaction do not invoke a model run");
+	});
+
+	let scheduledPhoneScope: ReturnType<typeof currentHostDeliveryScope>;
+	const phone = {
+		...adapter(async () => {
+			scheduledPhoneScope = currentHostDeliveryScope();
+		}),
+		name: "phone",
+		getChannel: (channelId: string) => channelId === "phone-0123456789abcdef0123"
+			? { id: channelId, name: "SMS •••• 0123" }
+			: undefined,
+	};
+	const phoneIngress = new ScheduledPromptWebhookIngress({
+		workingDir: directory,
+		inboundToken: "exact-scheduled-token",
+		hostContextId: "front-desk:example:intake",
+		adapters: [phone],
+	});
+	phoneIngress.setHandler(handler);
+	await withServer(phoneIngress, async (base) => {
+		const scheduledPhone = await fetch(base, {
+			method: "POST",
+			headers: { authorization: "Bearer exact-scheduled-token", "content-type": "application/json" },
+			body: JSON.stringify(payload("f", {
+				event: {
+					type: "periodic",
+					schedule: "15 21 * * *",
+					timezone: "America/Chicago",
+					text: "send the exact nightly report once",
+					channelId: "phone-0123456789abcdef0123",
+					replyTarget: "phone-0123456789abcdef0123",
+				},
+			})),
+		});
+		assert.equal(scheduledPhone.status, 202);
+		await waitFor(() => Boolean(scheduledPhoneScope), "scheduled phone scope was not established");
+		assert.deepEqual(scheduledPhoneScope, {
+			source: "hostd-scheduled-phone",
+			eventId: `scheduled:${"f".repeat(64)}`,
+			replyTarget: "phone-0123456789abcdef0123",
+		});
+		assert.equal(currentHostDeliveryScope(), undefined, "scheduled phone scope clears after the turn");
 	});
 } finally {
 	await rm(directory, { recursive: true, force: true });

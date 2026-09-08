@@ -64,9 +64,12 @@ export class HostManagedPhoneProvider implements PhoneMessagingProvider {
 			: "";
 		const idempotencyKey = hostDelivery?.source === "mcp-operator"
 			? `${this.contextId}:mcp:${hostDelivery.eventId}:${digest}`
-			: (hostDelivery
-				? `${this.contextId}:hostd-phone:${eventDigest}:${digest}`
-				: `${this.contextId}:${randomUUID()}:${digest}`);
+			: hostDelivery?.source === "hostd-scheduled-phone"
+				? `${this.contextId}:scheduled-phone:${hostDelivery.eventId}`
+				: (hostDelivery
+					? `${this.contextId}:hostd-phone:${eventDigest}:${digest}`
+					: `${this.contextId}:${randomUUID()}:${digest}`);
+		const hostOrigin = Boolean(hostDelivery);
 		const response = await fetch(this.endpoint, {
 			method: "POST",
 			headers: {
@@ -78,7 +81,7 @@ export class HostManagedPhoneProvider implements PhoneMessagingProvider {
 				thread_target: request.channel.channelId,
 				agent_body: request.text,
 				idempotency_key: idempotencyKey,
-				...(hostDelivery ? { origin_event_id: hostDelivery.eventId } : {}),
+				...(hostOrigin && hostDelivery ? { origin_event_id: hostDelivery.eventId } : {}),
 				...(hostDelivery?.source === "hostd-phone" ? { origin_event_ids: eventIds } : {}),
 				...(progress ? { relationship_progress: progress } : {}),
 			}),

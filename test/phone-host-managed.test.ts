@@ -81,6 +81,30 @@ async function run() {
 			/exact direct Hostd phone scope/i,
 		);
 
+		const scheduledEventId = `scheduled:${"a".repeat(64)}`;
+		for (const text of [
+			"The exact nightly report.",
+			"The exact nightly report.",
+			"A changed report that Hostd must reject against the same key.",
+		]) {
+			await withHostDeliveryScope({
+				source: "hostd-scheduled-phone",
+				eventId: scheduledEventId,
+				replyTarget: channel.channelId,
+			}, () => provider.sendMessage({ channel, text }));
+		}
+		for (const sent of sentBodies.slice(2, 5)) {
+			assert.equal(
+				sent.idempotency_key,
+				`${channel.hostContextId}:scheduled-phone:${scheduledEventId}`,
+				"one scheduled occurrence keeps one body-bound outbox key across retries",
+			);
+			assert.equal(sent.origin_event_id, scheduledEventId, "Hostd receives the exact scheduled occurrence for authorization");
+			assert.equal("origin_event_ids" in sent, false, "a schedule is not misclassified as inbound phone evidence");
+			assert.equal("relationship_progress" in sent, false);
+		}
+		assert.equal(currentHostDeliveryScope(), undefined, "scheduled phone scope clears after retries");
+
 		const directEventIds = [
 			"phone:provider-message-one",
 			"phone:provider-message-two",
@@ -98,11 +122,11 @@ async function run() {
 			channel,
 			text: "A concise direct reply.",
 		})));
-		assert.equal(sentBodies[2]?.origin_event_id, directEventIds[1]);
-		assert.deepEqual(sentBodies[2]?.origin_event_ids, directEventIds);
-		assert.deepEqual(sentBodies[2]?.relationship_progress, directProgress);
+		assert.equal(sentBodies[5]?.origin_event_id, directEventIds[1]);
+		assert.deepEqual(sentBodies[5]?.origin_event_ids, directEventIds);
+		assert.deepEqual(sentBodies[5]?.relationship_progress, directProgress);
 		assert.match(
-			String(sentBodies[2]?.idempotency_key),
+			String(sentBodies[5]?.idempotency_key),
 			/:hostd-phone:[a-f0-9]{24}:[a-f0-9]{24}$/,
 		);
 		await assert.rejects(

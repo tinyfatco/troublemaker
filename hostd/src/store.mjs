@@ -1254,6 +1254,47 @@ export class HostStore {
 		return events;
 	}
 
+	getActiveScheduledPhoneEventScope({ contextId, conversation, eventId }) {
+		if (typeof eventId !== "string" || !/^scheduled:[a-f0-9]{64}$/.test(eventId)) return undefined;
+		const event = this.database.prepare(`
+			SELECT id, source, provider_message_id AS providerMessageId,
+				provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, status, lease_token AS leaseToken,
+				payload_json AS payloadJson
+			FROM events WHERE id = ?
+		`).get(eventId);
+		if (
+			!event
+			|| event.source !== "scheduled-prompt"
+			|| event.providerMessageId !== event.id
+			|| event.principalHash !== `scheduled:${contextId}`
+			|| event.contextId !== contextId
+			|| event.targetId !== conversation.targetId
+			|| event.status !== "running"
+			|| !event.leaseToken
+		) return undefined;
+		let payload;
+		try {
+			payload = JSON.parse(event.payloadJson);
+		} catch {
+			return undefined;
+		}
+		if (
+			!payload?.schedule
+			|| !payload?.event
+			|| event.providerThreadId !== `attention:${payload.schedule.filename}`
+			|| payload.event.channelId !== conversation.threadTarget
+			|| payload.event.replyTarget !== conversation.threadTarget
+		) return undefined;
+		const exactLease = this.database.prepare(`
+			SELECT id FROM events
+			WHERE context_id = ? AND lease_token = ?
+		`).all(contextId, event.leaseToken);
+		if (exactLease.length !== 1 || exactLease[0].id !== event.id) return undefined;
+		return [event];
+	}
+
 	validateRelationshipProgress({ conversation, originEvents, progress }) {
 		const normalized = normalizeRelationshipProgress(progress);
 		if (!normalized) return undefined;
@@ -5068,11 +5109,20 @@ export class HostStore {
 						originEvents.length !== 1
 						|| originEvents[0]?.id !== delivery.originEventId
 						|| !instruction
-						|| instruction.source !== "mcp-operator"
 						|| instruction.status !== "running"
 						|| instruction.contextId !== conversation.contextId
 					) throw new Error("phone outbox instruction scope is no longer active");
-					originEvents = [instruction];
+					if (instruction.source === "scheduled-prompt") {
+						const scheduledEvents = this.getActiveScheduledPhoneEventScope({
+							contextId: conversation.contextId,
+							conversation: activeConversation,
+							eventId: delivery.originEventId,
+						});
+						if (!scheduledEvents) throw new Error("phone outbox scheduled scope is no longer active");
+						originEvents = scheduledEvents;
+					} else if (instruction.source === "mcp-operator") {
+						originEvents = [instruction];
+					} else throw new Error("phone outbox instruction scope is no longer active");
 				}
 			} else if (relationshipProgress || delivery.progressSha256) {
 				throw new Error("phone outbox relationship scope is missing");

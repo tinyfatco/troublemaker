@@ -612,8 +612,11 @@ export function createHostServer({
 					return;
 				}
 				const mcpRelationship = activeMcpRelationshipScope(store, mcp, contextId);
+				const originEvent = originEventId ? store.getEvent(originEventId) : undefined;
+				const scheduledPhoneScope = originEvent?.source === "scheduled-prompt";
 				if (
 					!mcpRelationship
+					&& !scheduledPhoneScope
 					&& (
 						Boolean(originEventId) !== Boolean(originEventIds.length)
 						|| (originEventId && originEventIds.at(-1) !== originEventId)
@@ -624,7 +627,20 @@ export function createHostServer({
 				}
 				let originEvents = [];
 				let directPhoneScope = false;
-				if (mcpRelationship) {
+				if (scheduledPhoneScope) {
+					const activeEvents = originEventIds.length === 0
+						? store.getActiveScheduledPhoneEventScope({
+							contextId,
+							conversation,
+							eventId: originEventId,
+						})
+						: undefined;
+					if (!activeEvents) {
+						json(response, 403, { error: "scheduled_phone_scope_denied" });
+						return;
+					}
+					originEvents = activeEvents;
+				} else if (mcpRelationship) {
 					if (
 						mcpRelationship.invalid
 						|| mcpRelationship.source !== "phone"

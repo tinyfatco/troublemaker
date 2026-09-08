@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { join } from "node:path";
 import * as log from "../log.js";
+import { withHostDeliveryScope } from "./host-delivery-scope.js";
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
 import type { FollowUpWakeMetadata, MomEvent, MomHandler, PlatformAdapter, RunResult } from "./types.js";
 
@@ -226,11 +227,20 @@ export class ScheduledPromptWebhookIngress {
 				const specialized = adapter as PlatformAdapter & {
 					runScheduledEvent?: (event: MomEvent) => Promise<RunResult | void>;
 				};
-				if (specialized.runScheduledEvent) await specialized.runScheduledEvent(event);
-				else {
-					if (!this.handler) throw new Error("scheduled prompt handler is unavailable");
-					await this.handler.handleEvent(event, adapter, true);
-				}
+				const run = async () => {
+					if (specialized.runScheduledEvent) await specialized.runScheduledEvent(event);
+					else {
+						if (!this.handler) throw new Error("scheduled prompt handler is unavailable");
+						await this.handler.handleEvent(event, adapter, true);
+					}
+				};
+				if (adapter.name === "phone") {
+					await withHostDeliveryScope({
+						source: "hostd-scheduled-phone",
+						eventId: payload.deliveryId,
+						replyTarget: event.channel,
+					}, run);
+				} else await run();
 			}
 			this.markCompleted(payload.deliveryId);
 			return { duplicate: false };

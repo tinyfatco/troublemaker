@@ -299,6 +299,27 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 	const claimed = store.claimNextEvent();
 	store.acceptEvent(claimed.id, claimed.leaseToken);
 	store.heartbeatEvent(claimed.id, claimed.leaseToken);
+	const scheduledEventId = `scheduled:${"a".repeat(64)}`;
+	store.database.prepare(`
+		INSERT INTO events(
+			id, source, provider_message_id, provider_thread_id, principal_hash,
+			target_id, context_id, awareness_sequence, status, payload_json,
+			received_at, available_at, lease_token, lease_expires_at,
+			accepted_at, started_at, updated_at
+		) VALUES (?, 'scheduled-prompt', ?, 'attention:nightly-report.json', ?, ?, ?, 100,
+			'running', ?, ?, ?, 'scheduled-example-lease', ?, ?, ?, ?)
+	`).run(
+		scheduledEventId,
+		scheduledEventId,
+		`scheduled:${owner.contextId}`,
+		owner.targetId,
+		owner.contextId,
+		JSON.stringify({
+			schedule: { filename: "nightly-report.json", generation: 1 },
+			event: { channelId: owner.threadTarget, replyTarget: owner.threadTarget },
+		}),
+		...Array(6).fill(new Date().toISOString()),
+	);
 	const sends = [];
 	const mattermostCalls = [];
 	const server = createHostServer({
@@ -458,6 +479,36 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.equal(duplicate.status, 200);
 		assert.equal(sends.length, 1);
 
+		const scheduledKey = `${owner.contextId}:scheduled-phone:${scheduledEventId}`;
+		const scheduled = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "One exact scheduled report.",
+			idempotency_key: scheduledKey,
+			origin_event_id: scheduledEventId,
+		});
+		assert.equal(scheduled.status, 200);
+		assert.equal(sends.length, 2);
+		const scheduledRetry = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "One exact scheduled report.",
+			idempotency_key: scheduledKey,
+			origin_event_id: scheduledEventId,
+		});
+		assert.equal(scheduledRetry.status, 200);
+		assert.equal(sends.length, 2, "one scheduled occurrence retries without a second provider call");
+		const scheduledChangedBody = await post({
+			context_id: owner.contextId,
+			thread_target: owner.threadTarget,
+			agent_body: "A changed report must not reuse the scheduled occurrence.",
+			idempotency_key: scheduledKey,
+			origin_event_id: scheduledEventId,
+		});
+		assert.equal(scheduledChangedBody.status, 409);
+		assert.deepEqual(await scheduledChangedBody.json(), { error: "delivery_idempotency_conflict" });
+		assert.equal(sends.length, 2, "a changed body cannot create a second scheduled provider call");
+
 		const uncertain = await postAs(stranger.contextId, {
 			context_id: stranger.contextId,
 			thread_target: stranger.threadTarget,
@@ -466,7 +517,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		});
 		assert.equal(uncertain.status, 409);
 		assert.deepEqual(await uncertain.json(), { error: "delivery_result_uncertain" });
-		assert.equal(sends.length, 2);
+		assert.equal(sends.length, 3);
 
 		const uncertainRetry = await postAs(stranger.contextId, {
 			context_id: stranger.contextId,
@@ -476,7 +527,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		});
 		assert.equal(uncertainRetry.status, 409);
 		assert.deepEqual(await uncertainRetry.json(), { error: "delivery_result_uncertain" });
-		assert.equal(sends.length, 2);
+		assert.equal(sends.length, 3);
 
 		const secondBody = await post({
 			context_id: owner.contextId,
@@ -489,7 +540,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 		assert.deepEqual(await secondBody.json(), {
 			error: "relationship_instruction_delivery_already_exists",
 		});
-		assert.equal(sends.length, 2);
+		assert.equal(sends.length, 3);
 		assert.equal(store.listProviderReceiptsForEvent(claimed.id).length, 1);
 
 		await mcp.revoke(owner.contextId, { direction: "inbound", id: grant.id });
@@ -501,7 +552,7 @@ test("outbound phone delivery accepts only the owning context and opaque direct 
 			origin_event_id: claimed.id,
 		});
 		assert.equal(revoked.status, 403);
-		assert.equal(sends.length, 2);
+		assert.equal(sends.length, 3);
 	} finally {
 		await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()));
 		store.close();

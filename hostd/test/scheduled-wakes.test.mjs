@@ -220,6 +220,39 @@ test("periodic downtime coalesces to the newest eligible slot without a backlog 
 	}
 });
 
+test("nightly phone occurrences keep one stable slot id and make the next night distinct", async () => {
+	const contextId = "front-desk:example-0:intake";
+	const subject = await fixture(1, settings({ mode: "host", contextIds: [contextId] }));
+	let nowMs = BASE_NOW;
+	const manager = new ScheduledWakeManager({ config: subject.config, store: subject.store, clock: () => nowMs });
+	try {
+		await subject.write(0, "nightly-report.json", {
+			type: "periodic",
+			schedule: "15 21 * * *",
+			timezone: "America/Chicago",
+			text: "send the verified nightly report",
+			channelId: "phone-0123456789abcdef0123",
+			replyTarget: "phone-0123456789abcdef0123",
+		});
+		await manager.scan();
+		const firstSchedule = subject.store.getScheduledPrompt(contextId, "nightly-report.json");
+		nowMs = Date.parse(firstSchedule.nextFireAt);
+		assert.equal(await manager.materializeDue(), 1);
+		const [first] = events(subject.store);
+		assert.equal(await manager.materializeDue(), 0, "one slot cannot materialize twice");
+		const secondSchedule = subject.store.getScheduledPrompt(contextId, "nightly-report.json");
+		nowMs = Date.parse(secondSchedule.nextFireAt);
+		assert.equal(await manager.materializeDue(), 1);
+		const all = events(subject.store);
+		assert.equal(all.length, 2);
+		assert.notEqual(all[1].id, first.id, "tomorrow receives a distinct deterministic occurrence id");
+		assert.equal(JSON.parse(first.payloadJson).event.channelId, "phone-0123456789abcdef0123");
+		assert.equal(JSON.parse(all[1].payloadJson).event.replyTarget, "phone-0123456789abcdef0123");
+	} finally {
+		await subject.close();
+	}
+});
+
 test("catch-up and hourly limits skip excess periodic work", async () => {
 	const subject = await fixture(1, settings({
 		mode: "host",

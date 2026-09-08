@@ -293,6 +293,43 @@ async function run() {
 	});
 
 	await withHostDeliveryScope({
+		source: "hostd-scheduled-phone",
+		eventId: `scheduled:${"a".repeat(64)}`,
+		replyTarget: relationshipTarget,
+	}, async () => {
+		await (tool.execute as any)("call-scheduled-phone-exact", {
+			label: "bounded scheduled phone report",
+			target: relationshipTarget,
+			text: "one exact nightly report",
+		});
+		assertEqual(phone.sent.at(-1)?.channel, relationshipTarget, "scheduled phone turn permits its exact bound target");
+		try {
+			await (tool.execute as any)("call-scheduled-phone-substitute", {
+				label: "wrong scheduled target",
+				target: "phone-other-conversation",
+				text: "must not leave the bound thread",
+			});
+			assert(false, "scheduled phone turn denies a substituted recipient");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("exact bound reply target"), "scheduled phone turn denies a substituted recipient");
+		}
+		try {
+			await (tool.execute as any)("call-scheduled-phone-progress", {
+				label: "wrong scheduled progress",
+				target: relationshipTarget,
+				text: "must not claim inbound progress",
+				relationship_progress: {
+					close_state: "request_answered",
+					next_step: "await_customer_choice",
+				},
+			});
+			assert(false, "scheduled phone turns cannot claim direct inbound progress");
+		} catch (error) {
+			assert(error instanceof Error && error.message.includes("exact direct Hostd phone turn"), "scheduled phone turns cannot claim direct inbound progress");
+		}
+	});
+
+	await withHostDeliveryScope({
 		source: "hostd-phone",
 		eventId: "phone:direct-two",
 		eventIds: ["phone:direct-one", "phone:direct-two"],

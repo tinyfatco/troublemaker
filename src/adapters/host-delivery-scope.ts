@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface HostDeliveryScope {
-	source: "mcp-operator" | "hostd-phone";
+	source: "mcp-operator" | "hostd-phone" | "hostd-scheduled-phone";
 	eventId: string;
 	eventIds?: readonly string[];
 	replyTarget?: string;
