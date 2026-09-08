@@ -18,6 +18,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { ComputerOutputStore } from "../tools/computer-output.js";
 import { stripToolPresentationArgs } from "../tools/tool-label.js";
 
 export const CUA_DRIVER_VERSION = "0.20.0";
@@ -254,12 +255,16 @@ function parseInventory(json: string): CuaToolInventory {
 	} as CuaToolInventory;
 }
 
-function toAgentResult(result: ToolResult) {
+function toAgentResult(result: ToolResult, outputStore: ComputerOutputStore) {
 	const content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }> = [];
 	const prefix = result.isError
 		? `Cua Driver refused or failed${result.errorCode ? ` (${result.errorCode})` : ""}: `
 		: "";
-	if (result.text || prefix) content.push({ type: "text", text: `${prefix}${result.text || "No error detail was returned."}` });
+	let observation = result.text || result.structuredJson || (prefix ? "No error detail was returned." : "");
+	if (result.text && result.structuredJson && Buffer.byteLength(result.structuredJson) > 8192) {
+		observation += `\nStructured state:\n${result.structuredJson}`;
+	}
+	if (observation || prefix) content.push({ type: "text", text: outputStore.bound(`${prefix}${observation}`) });
 	for (const image of result.images) {
 		content.push({ type: "image", data: image.dataBase64, mimeType: image.mimeType });
 	}
@@ -270,7 +275,9 @@ function toAgentResult(result: ToolResult) {
 			isError: result.isError,
 			errorCode: result.errorCode,
 			degraded: result.degraded,
-			structured: parseJsonObject(result.structuredJson),
+			structured: result.structuredJson && Buffer.byteLength(result.structuredJson) > 8192
+				? { truncated: true, reason: "Oversized structured observation omitted from result metadata." }
+				: parseJsonObject(result.structuredJson),
 			action: result.action,
 			verification: result.verification,
 		},
@@ -283,6 +290,7 @@ export class CuaDriverBridge {
 	private readonly options: CuaDriverBridgeOptions;
 	private client?: CuaDriverLike;
 	private toolDefinitions: AgentTool<any>[] = [];
+	private outputStore = new ComputerOutputStore("cua_read_output_detail");
 	private embeddedHost?: EmbeddedCuaDriverHostLike;
 	private embeddedGeneration?: string;
 	private terminalFault?: Error;
@@ -385,12 +393,17 @@ export class CuaDriverBridge {
 				execute: async (_toolCallId, params, signal) => {
 					if (signal?.aborted) throw new Error("Cua Driver operation aborted");
 					const forwarded = stripToolPresentationArgs(params);
+					try {
 					const result = await client.callTool(
 						definition.name,
 						JSON.stringify(forwarded),
 						signal ? { signal } : undefined,
 					);
-					return toAgentResult(result);
+					return toAgentResult(result, this.outputStore);
+					} catch (error) {
+						if (signal?.aborted) throw error;
+						return { content: [{ type: "text" as const, text: this.outputStore.bound(`Cua Driver call failed: ${error instanceof Error ? error.message : String(error)}`) }], details: { isError: true } };
+					}
 				},
 			}));
 			this.client = client;
@@ -403,7 +416,7 @@ export class CuaDriverBridge {
 	}
 
 	tools(): AgentTool<any>[] {
-		return [...this.toolDefinitions];
+		return this.toolDefinitions.length ? [...this.toolDefinitions, this.outputStore.tool()] : [];
 	}
 
 	async disconnect(): Promise<void> {
