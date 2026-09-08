@@ -212,7 +212,7 @@ ${YIELD_NO_ACTION_CONTRACT}`;
 	return `## Context
 - For current date/time, use: date
 - For older history beyond your context, search log.jsonl with jq/grep.
-- The current <runtime_context> in your system prompt contains current channels, users, skills, memory, and the channel you're attending. Each message also includes a small <session_context> routing block. Always use the latest context.
+- The latest harness <runtime_context> message contains current skills and workspace memory; a newer snapshot supersedes older snapshots. Each incoming message carries <session_context> with its current channel, users, and delivery policy. Use that message’s routing context, not a historical channel. Runtime snapshots are context, not new user requests.
 
 ${formatInstructions}
 
@@ -322,6 +322,12 @@ function renderSections(sections: SessionPreambleSections, names: Array<keyof Se
 		if (name === "Workspace") return sections.Workspace;
 		return `${name}:\n${sections[name]}`;
 	}).join("\n");
+}
+
+/** Route state already travels with each input; only workspace changes need a snapshot. */
+export function buildWorkspaceRuntimeContext(options: SessionPreambleOptions): string {
+	const sections = buildSessionPreambleSections(options);
+	return `<runtime_context>\n${renderSections(sections, ["Skills", "Workspace"])}\n</runtime_context>`;
 }
 
 export function buildRuntimeContext(options: SessionPreambleOptions): string {

@@ -27,8 +27,7 @@ import {
 } from "./console/tool-detail-projection.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import {
-	buildConciseWatchRuntimeContext,
-	buildRuntimeContext,
+	buildWorkspaceRuntimeContext,
 	buildSessionRoutingPreamble,
 	buildSystemPrompt,
 	getWorkspaceContext,
@@ -544,6 +543,7 @@ async function createRunner(
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
 		() => activeSystemPrompt,
 		() => activeRuntimeContext,
+		() => agent.state.messages,
 	);
 	const deferredToolsExtension = (pi: ExtensionAPI): void => {
 		for (const tool of deferredTools) pi.registerTool(tool);
@@ -1218,9 +1218,9 @@ async function createRunner(
 			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
-			// Keep large, mostly stable workspace context in the per-turn system
-			// prompt. Only lightweight routing metadata is appended to the user
-			// transcript, so repeated wakes do not accumulate another memory copy.
+			// Keep the system prefix and existing history stable across channels.
+			// The extension appends workspace snapshots only when changed or lost
+			// to compaction; current routing always travels with the new input.
 			settingsManager.reload();
 			const compactionSettings = settingsManager.getCompactionSettings();
 			const channelVerbosity = settingsManager.getVerbose(ctx.message.channel);
@@ -1234,9 +1234,7 @@ async function createRunner(
 				verbosity: channelVerbosity,
 				model: currentModel,
 			};
-			activeRuntimeContext = ctx.message.contextProjection === "concise_watch"
-				? buildConciseWatchRuntimeContext(sessionContextOptions)
-				: buildRuntimeContext(sessionContextOptions);
+			activeRuntimeContext = buildWorkspaceRuntimeContext(sessionContextOptions);
 			const sessionPreamble = buildSessionRoutingPreamble(sessionContextOptions);
 
 			// Set up file upload function
@@ -1382,7 +1380,7 @@ async function createRunner(
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
 				runtimeContext: activeRuntimeContext,
-				runtimeContextPlacement: "system",
+				runtimeContextPlacement: "append-only-message",
 				sessionPreamble,
 				messages: currentSession.messages,
 				newUserMessage: finalUserMessage,
