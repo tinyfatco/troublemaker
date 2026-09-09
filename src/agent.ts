@@ -19,6 +19,10 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
+import { inferenceProgressURL, watchInferenceProgress } from "./inference-progress.js";
+import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
+import { InputBudget } from "./core/input-budget.js";
+import { buildCompactSystemPrompt, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
 import {
@@ -54,7 +58,7 @@ import { UserInputProvenance } from "./streaming/user-input-provenance.js";
 import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sender-identity.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
-import type { ChannelStore } from "./store.js";
+import { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
@@ -89,6 +93,7 @@ import {
 	writeHandoffJournal,
 	type HandoffRotationJournal,
 } from "./handoff-compaction.js";
+import { createRunnerOperationQueue, handoffContinuationMessage, runHandoffSegments } from "./handoff-continuation.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -447,13 +452,17 @@ async function createRunner(
 	const workspacePath = executor.getWorkspacePath(workspaceDir);
 
 	const toolSearchRegistry: { current: ToolSearchRegistry | null } = { current: null };
+	const compactPrompt = compactPromptEnabled(process.env.TROUBLEMAKER_PROMPT_PROFILE);
+	const inputBudget = process.env.TROUBLEMAKER_INPUT_BUDGET === "small"
+		? new InputBudget(join(awarenessDir, "input-budget")) : undefined;
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
 	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
-		createSearchToolsTool(() => toolSearchRegistry.current),
+		...(inputBudget ? [inputBudget.tool] : []),
+		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
 	]);
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
@@ -489,6 +498,7 @@ async function createRunner(
 	// mutate the resident's active choice. Refreshed models become eligible only
 	// through the existing explicit setting and next-turn resolution path.
 	const model = resolveModelWithAuth(workspaceDir, modelRegistry);
+	if (compactPrompt && model.api !== "openai-completions") throw new Error("Compact prompt profile currently requires an OpenAI-compatible chat-completions model");
 
 	// FAT-275: read thinking_level from settings.json and clamp it to the
 	// selected provider/model's supported runtime shape.
@@ -510,9 +520,27 @@ async function createRunner(
 		if (runState.handoffRequested) {
 			normalizedOptions = { ...normalizedOptions, maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536) };
 		}
-		return isClaudeCliProvider(streamModel.provider)
-			? claudeCliStream(streamModel, context, normalizedOptions)
-			: streamSimple(streamModel, context, normalizedOptions);
+		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
+		const progressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
+		const requestId = `chatcmpl-${randomUUID()}`;
+		if (progressURL) normalizedOptions = { ...normalizedOptions, headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId } };
+		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
+		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(boundedContext) : boundedContext, normalizedOptions);
+		if (progressURL) {
+			const sink = runState.liveEventSink;
+			const responseContext = runState.ctx;
+			const stop = watchInferenceProgress(progressURL, requestId, (processing) => {
+				const event = { type: "status", status: "processing", processing } as const;
+				try { void Promise.resolve(sink?.(event)).catch(() => {}); } catch { /* Best effort. */ }
+				try { responseContext?.emitContentBlock?.(event); } catch { /* Best effort. */ }
+			});
+			void result.result().then(stop, stop);
+		}
+		return compactPrompt ? restoreCompactToolStream(result, {
+			role: "assistant", content: [], api: streamModel.api, provider: streamModel.provider, model: streamModel.id,
+			stopReason: "error", timestamp: Date.now(),
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		}) : result;
 	};
 
 	// Create agent
@@ -523,7 +551,12 @@ async function createRunner(
 			thinkingLevel: initialThinkingLevel,
 			tools,
 		},
-		convertToLlm,
+		convertToLlm: (messages) => convertToLlm(compactPrompt ? compactInitialRuntimePrefix(messages) : messages),
+		// AgentSession binds lifecycle hooks, but the SDK normally installs this
+		// provider-context bridge. Our manually constructed Agent needs it too.
+		transformContext: async (messages) => session?.extensionRunner
+			? session.extensionRunner.emitContext(messages)
+			: messages,
 		streamFn,
 		steeringMode: "all",
 		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
@@ -544,30 +577,47 @@ async function createRunner(
 
 	let activeSystemPrompt = systemPrompt;
 	let activeRuntimeContext = "";
+	let forceHandoff = false;
+	let completedHandoffRotations = 0;
+	let lastRunContext: MomContext | undefined;
+	let lastRunFormatInstructions = formatInstructions;
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
 		() => activeSystemPrompt,
-		() => activeRuntimeContext,
+		() => runState.handoffRequested ? "" : activeRuntimeContext,
 		() => agent.state.messages,
 	);
 	const deferredToolsExtension = (pi: ExtensionAPI): void => {
 		for (const tool of deferredTools) pi.registerTool(tool);
 	};
 	const handoffContextExtension = (pi: ExtensionAPI): void => {
-		pi.on("context", (event) => {
+		const requestHandoff = (messages: readonly AgentMessage[]) => {
 			const settings = settingsManager.getCompactionSettings();
 			const ctx = runState.ctx;
-			if (!ctx || !settings.enabled || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
-			if (!runState.handoffRequested && shouldRequestHandoff(
-				estimateHandoffContextTokens(event.messages), agent.state.model?.contextWindow || 200_000,
+			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
+			if (!runState.handoffRequested && (forceHandoff || shouldRequestHandoff(
+				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
 				settings.reserveTokens, settings.keepRecentTokens,
-			)) {
+			))) {
 				runState.handoffRequested = true;
 				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
 			}
-			if (!runState.handoffRequested) return;
+			return runState.handoffRequested ? ctx : undefined;
+		};
+		pi.on("before_agent_start", (event) => {
+			requestHandoff([...agent.state.messages, { role: "user", content: event.prompt, timestamp: 0 }]);
+		});
+		pi.on("context", (event) => {
+			const ctx = requestHandoff(event.messages);
+			if (!ctx) return;
 			// Append a small control message without rewriting or duplicating the
 			// runtime snapshot. The original messages remain an exact prefix.
 			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
+		});
+		pi.on("tool_call", () => {
+			if (runState.handoffRequested) return {
+				block: true,
+				reason: "Continuity checkpoint required: write the requested private handoff now. Tool work is paused until context rotation.",
+			};
 		});
 	};
 	const resourceLoader = new DefaultResourceLoader({
@@ -575,6 +625,7 @@ async function createRunner(
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [
+			handoffContextExtension,
 			dynamicRuntimeContextExtension,
 			handoffContextExtension,
 			deferredToolsExtension,
@@ -659,7 +710,7 @@ async function createRunner(
 					session.agent.state.systemPrompt = currentSystemPrompt;
 				},
 			};
-			session.setActiveToolsByName(tools.map((tool) => tool.name));
+			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS, ...(inputBudget ? ["input_detail"] : [])] : tools.map((tool) => tool.name));
 			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
@@ -1159,6 +1210,8 @@ async function createRunner(
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	};
 
+	let resumeAfterHandoff = false;
+	let handoffRunAborted = false;
 	const runner: AgentRunner = {
 		async run(
 			ctx: MomContext,
@@ -1168,6 +1221,11 @@ async function createRunner(
 			liveEventSink?: RuntimeEventSink,
 			completionID?: string,
 		): Promise<RunResult> {
+			resumeAfterHandoff = false;
+			if (!forceHandoff) {
+				lastRunContext = ctx;
+				lastRunFormatInstructions = runFormatInstructions;
+			}
 			const tRun = performance.now();
 			runState.completionID = completionID?.trim() || randomUUID();
 			runState.assistantText.reset(runState.completionID);
@@ -1210,7 +1268,7 @@ async function createRunner(
 			}
 
 			const tMem = performance.now();
-			const workspaceContext = getWorkspaceContext(workspaceStore);
+			const workspaceContext = compactPrompt ? getCompactWorkspaceContext(workspaceStore) : getWorkspaceContext(workspaceStore);
 			log.logInfo(`[perf] getWorkspaceContext: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
@@ -1223,6 +1281,7 @@ async function createRunner(
 
 			// Re-resolve model each run and keep the session prompt aligned with it.
 			const currentModel = resolveModelWithAuth(workspaceDir, modelRegistry);
+			if (compactPrompt && currentModel.api !== "openai-completions") throw new Error("Compact prompt profile currently requires an OpenAI-compatible chat-completions model");
 			const agentModel = agent.state.model;
 			if (!agentModel || currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider) {
 				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
@@ -1237,7 +1296,9 @@ async function createRunner(
 				agent.state.thinkingLevel = effectiveThinkingLevel;
 			}
 
-			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
+			const systemPrompt = compactPrompt
+				? buildCompactSystemPrompt(workspacePath, `${currentModel.provider}/${currentModel.id}`, runFormatInstructions)
+				: buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
 			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
@@ -1251,7 +1312,7 @@ async function createRunner(
 				workspaceContext,
 				channels: ctx.channels,
 				users: ctx.users,
-				skills,
+				skills: compactPrompt ? [] : skills,
 				displayChannelId: ctx.message.channel,
 				displayChannelName: ctx.channelName,
 				verbosity: channelVerbosity,
@@ -1537,6 +1598,14 @@ async function createRunner(
 						replyTarget: ctx.message.replyTarget || null,
 					})
 					: null;
+				if (runState.handoffRequested && !runState.capturedHandoff && runState.stopReason !== "aborted") {
+					runState.stopReason = "error";
+					runState.errorMessage = "Could not create a valid continuity checkpoint. The conversation was preserved and no continuation was started.";
+					const errorEvent = { type: "error" as const, message: runState.errorMessage };
+					emitLiveEvent(errorEvent);
+					ctx.emitContentBlock?.(errorEvent);
+					await ctx.sendFinalResponse(runState.errorMessage);
+				}
 				const finalText = runState.handoffRequested
 					? joinPublicHandoffParts(rawFinalTextParts, true)
 					: rawFinalTextParts.join("\n");
@@ -1545,7 +1614,7 @@ async function createRunner(
 				if (wasYielded()) {
 					log.logInfo("yield_no_action — no output posted");
 					resetYield();
-				} else if (finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
+				} else if (runState.stopReason !== "error" && finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
 					try {
 						// Hard cap: never post more than 40KB (signature blobs can be hundreds of KB)
 						const cappedText = finalText.length > 40000 ? finalText.substring(0, 40000) + "\n\n_(truncated)_" : finalText;
@@ -1617,6 +1686,9 @@ async function createRunner(
 					writeHandoffJournal(rotationJournalPath, journal);
 					resetSessionState();
 					await recoverRotation(journal);
+					completedHandoffRotations++;
+					resumeAfterHandoff = journal.handoff.inProgress.some((item) => item.trim())
+						|| journal.handoff.nextSteps.some((item) => item.trim());
 					log.logInfo(`[handoff] Context rotated with ${tail.length} complete recent messages`);
 				}
 			}
@@ -1643,6 +1715,7 @@ async function createRunner(
 		},
 
 		abort(): void {
+			handoffRunAborted = true;
 			acceptsSteering = false;
 			userInputProvenance.clear();
 			if (!session) return;
@@ -1766,6 +1839,37 @@ async function createRunner(
 
 			// Don't compact if context is too small to benefit
 			const info = this.getContextInfo();
+			settingsManager.reload();
+			if (settingsManager.getCompactionSettings().mode === "handoff") {
+				if (messagesBefore === 0) throw new Error("No conversation to checkpoint.");
+				if (runState.ctx) throw new Error("Wait for the active run to finish before compacting.");
+				const noop = async () => {};
+				const text = `Harness-requested continuity checkpoint. Preserve the current task without performing further work.${instructions ? `\nAdditional checkpoint guidance: ${instructions}` : ""}`;
+				const maintenanceContext: MomContext = {
+					message: { text, rawText: text, user: "harness", userName: "harness",
+						channel: lastRunContext?.message.channel ?? "compaction", ts: String(Date.now()),
+						replyTarget: lastRunContext?.message.replyTarget, sourceEventType: "handoff_compaction", attachments: [] },
+					channels: lastRunContext?.channels ?? [], users: lastRunContext?.users ?? [],
+					channelName: lastRunContext?.channelName,
+					respond: noop, sendFinalResponse: noop, respondInThread: noop, setTyping: noop,
+					uploadFile: noop, setWorking: noop, deleteMessage: noop, restartWorking: noop,
+				};
+				const before = completedHandoffRotations;
+				forceHandoff = true;
+				handoffRunAborted = false;
+				try {
+					// Use the ordinary warm provider path, but do not resume the task
+					// during an explicit maintenance-only compaction operation.
+					const result = await runSegment(maintenanceContext, new ChannelStore({ workingDir: workspaceDir, botToken: "" }), undefined, lastRunFormatInstructions);
+					if (result.stopReason === "error" || result.stopReason === "aborted" || completedHandoffRotations === before) {
+						throw new Error(result.errorMessage ?? "Checkpoint cancelled; original conversation preserved.");
+					}
+					return { messagesBefore, messagesAfter: getSessionManager().buildSessionContext().messages.length, tokensBefore: info.contextTokens };
+				} finally {
+					forceHandoff = false;
+					resumeAfterHandoff = false;
+				}
+			}
 			const MIN_COMPACT_TOKENS = 50000;
 			if (info.contextTokens < MIN_COMPACT_TOKENS && info.contextTokens > 0) {
 				throw new Error(`Context too small to compact (${log.formatTokens(info.contextTokens)} tokens, minimum ${log.formatTokens(MIN_COMPACT_TOKENS)})`);
@@ -1822,6 +1926,24 @@ async function createRunner(
 			return result;
 		},
 		};
+	const runSegment = runner.run.bind(runner);
+	runner.run = async (ctx, store, pending, format, sink, completionID) => {
+		handoffRunAborted = false;
+		return runHandoffSegments(async (continuation) => {
+			const segmentContext: MomContext = continuation ? {
+				...ctx,
+				message: handoffContinuationMessage(ctx.message),
+			} : ctx;
+			const result = await runSegment(segmentContext, store, continuation ? undefined : pending, format, sink,
+				continuation ? randomUUID() : completionID);
+			return { result, resume: resumeAfterHandoff };
+		}, () => handoffRunAborted);
+	};
+	const serializeOperation = createRunnerOperationQueue();
+	const runCanonical = runner.run.bind(runner);
+	const compactCanonical = runner.compact.bind(runner);
+	runner.run = (...args) => serializeOperation(() => runCanonical(...args));
+	runner.compact = (...args) => serializeOperation(() => compactCanonical(...args));
 	startLiveModelCatalogRefresh(workspaceDir, modelRegistry);
 	return runner;
 }

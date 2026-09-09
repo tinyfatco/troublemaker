@@ -1564,6 +1564,10 @@ const handler: MomHandler = {
 		}
 
 		const state = await getAwareness(event.channel, adapter, adapter.formatInstructions);
+		if (trimmed.split(/\s+/, 1)[0].toLowerCase() === "/compact") {
+			return withGlobalRunSlot(`compaction:${adapter.name}:${event.channel}`, () =>
+				executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner));
+		}
 		return executeSlashCommand(trimmed, event.channel, workingDir, adapter, state.runner);
 	},
 

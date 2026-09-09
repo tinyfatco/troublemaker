@@ -1,0 +1,55 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { Context, ToolResultMessage } from "@earendil-works/pi-ai";
+import { InputBudget, INPUT_ITEM_BYTES, INPUT_BATCH_BYTES, CONVERSATION_POLICY } from "../src/core/input-budget.js";
+
+const dir = mkdtempSync(join(tmpdir(), "example-input-budget-"));
+const result = (id: string, text: string, timestamp = 200): ToolResultMessage => ({ role: "toolResult", toolCallId: id, toolName: "example_tool", content: [{ type: "text", text }], isError: false, timestamp });
+const textOf = (message: Context["messages"][number]) => typeof message.content === "string" ? message.content : message.content.map(b => b.type === "text" ? b.text : "").join("");
+try {
+	const budget = new InputBudget(dir, 100);
+	const old = result("old", "Existing cached history".repeat(500), 10);
+	const raw = "example element_id=42\n" + "😀 long observation\n".repeat(10000) + "UNIQUE_END";
+	const incoming = result("new", raw);
+	const context: Context = { messages: [old, incoming] };
+	const projected = budget.project(context);
+	assert.deepEqual(projected.messages[0], old, "deployment must preserve the old cached prefix");
+	assert.equal(textOf(incoming), raw, "canonical history must remain intact");
+	const short = textOf(projected.messages[1]);
+	assert.ok(Buffer.byteLength(short) <= INPUT_ITEM_BYTES);
+	assert.ok(short.includes("element_id=42"));
+	assert.ok(!short.includes("�"));
+	assert.ok(short.includes("Input bounded"));
+	assert.equal((projected.messages[1] as ToolResultMessage).toolCallId, "new");
+	const id = short.match(/id:"([a-f0-9]+)"/)![1];
+	let offset = 0, reconstructed = "";
+	for (;;) {
+		const response = await budget.tool.execute("detail", { id, offset, label: "Read example detail" });
+		const text = (response.content[0] as { text: string }).text;
+		assert.ok(Buffer.byteLength(text) <= INPUT_ITEM_BYTES);
+		const split = text.lastIndexOf("\n[Historical input");
+		reconstructed += text.slice(0, split);
+		const next = text.match(/next offset:(\d+)/);
+		if (!next) break;
+		offset = Number(next[1]);
+	}
+	assert.equal(reconstructed, raw, "pagination must recover every byte without rerunning a tool");
+	const searched = await budget.tool.execute("query", { id, query: "UNIQUE_END", label: "Find example" });
+	assert.ok((searched.content[0] as { text: string }).text.startsWith("UNIQUE_END"));
+	await assert.rejects(() => budget.tool.execute("bad", { id: "../../example", label: "Invalid" }));
+	const restart = new InputBudget(dir, 1000);
+	assert.deepEqual(restart.project(context), projected, "restart must preserve exact admitted projections");
+	const batch = Array.from({ length: 16 }, (_, i) => result(`batch-${i}`, raw, 300 + i));
+	const batchProjection = restart.project({ messages: [...context.messages, ...batch] });
+	assert.deepEqual(batchProjection.messages.slice(0, 2), projected.messages, "later input must never reshape cached messages");
+	assert.ok(batchProjection.messages.slice(2).reduce((n, m) => n + Buffer.byteLength(textOf(m)), 0) <= INPUT_BATCH_BYTES);
+	assert.throws(() => restart.project({ messages: Array.from({ length: 17 }, (_, i) => result(`overflow-${i}`, raw, 400 + i)) }), /split the batch/);
+	const user = restart.project({ messages: [{ role: "user", content: "Please explain that result.", timestamp: 2000 }] });
+	assert.ok(textOf(user.messages[0]).includes("Please explain that result."));
+	assert.ok(textOf(user.messages[0]).includes(CONVERSATION_POLICY));
+	const checkpoint: Context = { messages: [{ role: "user", content: "Synthetic checkpoint schema ".repeat(100), timestamp: 3000 }] };
+	assert.deepEqual(restart.project(checkpoint, true), checkpoint, "trusted checkpoint controls must remain intact while tools are paused");
+	console.log(`input budget: passed; ${Buffer.byteLength(raw)} -> ${Buffer.byteLength(short)} bytes; lossless pagination, batch limit, restart/prefix preservation`);
+} finally { rmSync(dir, { recursive: true, force: true }); }
