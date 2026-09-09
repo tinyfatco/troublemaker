@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { calculateContextTokens, estimateTokens, SessionManager } from "@earendil-works/pi-coding-agent";
 
 export const HANDOFF_OPEN = "<troublemaker_private_handoff>";
 export const HANDOFF_CLOSE = "</troublemaker_private_handoff>";
@@ -37,7 +37,11 @@ export interface HandoffRotationJournal {
 }
 
 export function handoffInstruction(channel: string, replyTarget?: string): string {
-	return `PRIVATE CONTINUITY CHECKPOINT REQUIRED. Finish the user's substantive work first. At the absolute end of this same assistant turn, append exactly one ${HANDOFF_OPEN} JSON ${HANDOFF_CLOSE} block. Do not mention or explain the block. The JSON must match this schema exactly: {"version":1,"goal":"string","constraints":["string"],"completed":["string"],"inProgress":["string"],"nextSteps":["string"],"decisions":[{"decision":"string","rationale":"string"}],"provenance":[{"claim":"string","source":"string"}],"uncertainties":["string"],"superseded":[{"previous":"string","replacement":"string"}],"toolReceipts":[{"tool":"string","result":"string"}],"routing":{"channel":${JSON.stringify(channel)},"replyTarget":${JSON.stringify(replyTarget || null)}}}. Preserve exact identifiers and paths only when necessary for continuity; never include credentials, secrets, hidden reasoning, or unrelated personal data.`;
+	return `PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW. Context is nearly full. Pause additional tool work at this safe boundary and write a concise handoff for a fresh context to continue the task. At the absolute end of this same assistant turn, append exactly one ${HANDOFF_OPEN} JSON ${HANDOFF_CLOSE} block. Do not mention or explain the block. Aim for at most 600 tokens: essential state and next action, not a transcript or tool output. The JSON must match this schema exactly: {"version":1,"goal":"string","constraints":["string"],"completed":["string"],"inProgress":["string"],"nextSteps":["string"],"decisions":[{"decision":"string","rationale":"string"}],"provenance":[{"claim":"string","source":"string"}],"uncertainties":["string"],"superseded":[{"previous":"string","replacement":"string"}],"toolReceipts":[{"tool":"string","result":"string"}],"routing":{"channel":${JSON.stringify(channel)},"replyTarget":${JSON.stringify(replyTarget || null)}}}. Use empty arrays where appropriate. Preserve exact identifiers and paths only when necessary for continuity; never include credentials, secrets, hidden reasoning, or unrelated personal data.`;
+}
+
+export function appendHandoffInstruction(messages: AgentMessage[], instruction: string): AgentMessage[] {
+	return [...messages, { role: "user", content: instruction, timestamp: 0 }];
 }
 
 function longestDelimiterPrefixSuffix(text: string): number {
@@ -145,6 +149,20 @@ export function shouldRequestHandoff(contextTokens: number, contextWindow: numbe
 	return contextTokens >= Math.max(1, contextWindow - reserveTokens - keepRecentTokens);
 }
 
+/** Include tool results and new input added since the last measured usage. */
+export function estimateHandoffContextTokens(messages: readonly AgentMessage[]): number {
+	let trailing = 0;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") {
+			const measured = calculateContextTokens(message.usage);
+			if (measured > 0) return measured + trailing;
+		}
+		trailing += estimateTokens(message);
+	}
+	return trailing;
+}
+
 function messageChars(message: AgentMessage): number {
 	return JSON.stringify(message).length;
 }
@@ -163,6 +181,34 @@ export function selectCompleteRecentTail(messages: AgentMessage[], keepRecentTok
 	return messages.slice(start);
 }
 
+/** Retain a few complete dialogue messages without replaying tools or old usage. */
+export function selectBoundedRecentDialogue(messages: AgentMessage[], keepRecentTokens: number): AgentMessage[] {
+	const budget = Math.max(0, Math.min(4096, Math.floor(keepRecentTokens * 4)));
+	const selected: AgentMessage[] = [];
+	let size = 0;
+	for (let index = messages.length - 1; index >= 0 && selected.length < 4; index--) {
+		const message = sanitizeHandoffMessage(messages[index]);
+		if (message.role !== "user" && message.role !== "assistant") continue;
+		const content = typeof message.content === "string"
+			? [{ type: "text" as const, text: message.content }]
+			: message.content.filter((part) => part.type === "text").map((part) => ({ type: "text" as const, text: part.text }));
+		if (!content.some((part) => part.text.trim())) continue;
+		const retained: AgentMessage = message.role === "user"
+			? { role: "user", content, timestamp: message.timestamp }
+			: {
+				role: "assistant", content, api: message.api, provider: message.provider, model: message.model,
+				stopReason: "stop", timestamp: message.timestamp,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			};
+		const chars = JSON.stringify(retained).length;
+		if (size + chars > budget) continue;
+		selected.unshift(retained);
+		size += chars;
+	}
+	return selected;
+}
+
 export function sanitizeHandoffMessage(message: AgentMessage): AgentMessage {
 	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
 	const textParts = message.content.filter((part) => part.type === "text").map((part) => part.text);
@@ -174,6 +220,23 @@ export function sanitizeHandoffMessage(message: AgentMessage): AgentMessage {
 			? { ...part, text: projected[textIndex++] }
 			: part),
 	} as AgentMessage;
+}
+
+/** Keep tool protocol identity, not old output payloads, in a rotated context. */
+export function compactHandoffMessage(message: AgentMessage, archivePath: string): AgentMessage {
+	if (message.role !== "toolResult") return sanitizeHandoffMessage(message);
+	const previous = message.details as { handoffOutputArchive?: unknown } | undefined;
+	const source = typeof previous?.handoffOutputArchive === "string"
+		? previous.handoffOutputArchive : archivePath;
+	return {
+		role: "toolResult",
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
+		isError: message.isError,
+		timestamp: message.timestamp,
+		content: [{ type: "text", text: `Tool ${message.isError ? "failed" : "completed"}. Full output omitted during handoff. Original result for toolCallId ${JSON.stringify(message.toolCallId)} is in archived session ${JSON.stringify(source)}; retrieve only relevant details if needed.` }],
+		details: { handoffOutputArchive: source },
+	};
 }
 
 /** Sanitize a persisted Pi session line before it reaches awareness/UI surfaces. */

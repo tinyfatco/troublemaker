@@ -15,10 +15,14 @@ import {
 	projectPublicHandoffParts,
 	handoffInstruction,
 	sanitizeHandoffMessage,
+	compactHandoffMessage,
 	sanitizePrivateHandoffSessionLine,
 	readHandoffJournal,
 	replayHandoffRotation,
 	selectCompleteRecentTail,
+	selectBoundedRecentDialogue,
+	appendHandoffInstruction,
+	estimateHandoffContextTokens,
 	shouldRequestHandoff,
 	writeHandoffJournal,
 } from "../src/handoff-compaction.js";
@@ -103,6 +107,50 @@ const messages = [
 	{ role: "assistant", content: [{ type: "text", text: "recent answer" }] },
 ] as any;
 assert.deepEqual(selectCompleteRecentTail(messages, 1), messages.slice(2), "tail starts at a complete user turn");
+const largeDialogue = [
+	{ role: "user", content: "Keep the latest request", timestamp: 1 },
+	{ role: "assistant", content: [{ type: "text", text: "Working on it" }, { type: "toolCall", id: "example-call", name: "example_tool", arguments: { data: "x".repeat(100_000) } }],
+		api: "openai-completions", provider: "example", model: "example", timestamp: 2, stopReason: "toolUse", usage: { input: 60_000 } },
+	{ role: "toolResult", toolCallId: "example-call", toolName: "example_tool", content: [{ type: "text", text: "output".repeat(100_000) }], timestamp: 3 },
+	{ role: "user", content: "oversized message".repeat(100_000), timestamp: 4 },
+	{ role: "user", content: "The newest small correction", timestamp: 5 },
+] as any;
+const boundedDialogue = selectBoundedRecentDialogue(largeDialogue, 1024);
+assert.equal(boundedDialogue.length, 3, "retain small dialogue while omitting huge messages and tool results");
+assert(JSON.stringify(boundedDialogue).length < 4096);
+assert(!JSON.stringify(boundedDialogue).includes('"toolCall"'));
+assert(!JSON.stringify(boundedDialogue).includes('"toolResult"'));
+assert.equal((boundedDialogue[1] as any).usage.input, 0, "old context usage cannot retrigger rotation in a fresh session");
+assert.equal(selectBoundedRecentDialogue([...messages, ...messages, ...messages], 1024).length, 4);
+assert.deepEqual(selectBoundedRecentDialogue(largeDialogue, 0), []);
+const measuredMessage = { ...largeDialogue[1], usage: { input: 1_000, output: 50, cacheRead: 44_000, cacheWrite: 0, totalTokens: 45_050 } };
+assert(estimateHandoffContextTokens([measuredMessage, largeDialogue[2]]) > 45_050,
+	"pressure includes tool output added after the last measured response");
+const unchangedPrefix = JSON.stringify(messages);
+const withCheckpoint = appendHandoffInstruction(messages, handoffInstruction("example-channel"));
+assert.equal(JSON.stringify(withCheckpoint.slice(0, -1)), unchangedPrefix, "checkpoint preserves the entire warm prefix");
+assert.equal(JSON.stringify(messages), unchangedPrefix, "checkpoint injection never mutates stored history");
+assert.equal(withCheckpoint.length, messages.length + 1);
+assert(withCheckpoint.every((message, index) => index === messages.length || message === messages[index]));
+for (const isError of [false, true]) {
+	const result = {
+		role: "toolResult", toolCallId: "example-tool-call", toolName: "example_tool", isError, timestamp: 1,
+		content: [{ type: "text", text: "example full output ".repeat(20_000) }, { type: "image", data: "a".repeat(100_000), mimeType: "image/png" }],
+		details: { payload: "example hidden details ".repeat(10_000) },
+	} as any;
+	const before = JSON.stringify(result);
+	const compacted = compactHandoffMessage(result, "/tmp/example-session.jsonl") as any;
+	assert.equal(compacted.toolCallId, result.toolCallId);
+	assert.equal(compacted.toolName, result.toolName);
+	assert.equal(compacted.isError, isError, "failure status survives rotation");
+	assert.equal(compacted.content.length, 1, "images and bulk text leave the hot context");
+	assert(JSON.stringify(compacted).length < before.length / 100, "tool payload reduction exceeds 99 percent");
+	assert(!JSON.stringify(compacted).includes("example hidden details"));
+	assert.match(compacted.content[0].text, /example-session\.jsonl/);
+	assert.equal(JSON.stringify(result), before, "the source remains intact for archival");
+	assert.deepEqual(compactHandoffMessage(compacted, "/tmp/example-next-session.jsonl"), compacted,
+		"later rotations retain the original output location without archive chains");
+}
 const privateInstruction = handoffInstruction("web");
 const triggeringUser = { role: "user", content: [{ type: "text", text: "do the substantive work" }] } as any;
 const privateAssistant = { role: "assistant", content: [{ type: "text", text: `done${HANDOFF_OPEN}${JSON.stringify(captures[0].handoff)}${HANDOFF_CLOSE}` }] } as any;
@@ -134,6 +182,6 @@ assert.match(agentSource, /base\.mode === "handoff"/, "only handoff mode disable
 assert.match(agentSource, /writeHandoffJournal[\s\S]*resetSessionState\(\)[\s\S]*recoverRotation/, "handoff persists before archive and rotation");
 assert.match(agentSource, /sanitizeStreamingMessage\(agentEvent\.message, false\)/, "streaming projection uses private boundary buffering");
 assert.doesNotMatch(agentSource, /finalUserMessage \+= `\\n\\n\$\{handoffInstruction/, "private instruction never enters the user transcript");
-assert.match(agentSource, /ordinaryRuntimeContext = activeRuntimeContext[\s\S]*activeRuntimeContext = `\$\{ordinaryRuntimeContext\}[\s\S]*finally[\s\S]*activeRuntimeContext = ordinaryRuntimeContext/, "private instruction is scoped to one dynamic system prompt");
+assert.doesNotMatch(agentSource, /activeRuntimeContext = `\$\{ordinaryRuntimeContext\}/, "checkpoint does not duplicate the workspace snapshot");
 
 console.log("handoff compaction: ok");
