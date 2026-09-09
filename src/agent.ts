@@ -546,25 +546,32 @@ async function createRunner(
 	let activeRuntimeContext = "";
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
 		() => activeSystemPrompt,
-		() => activeRuntimeContext,
+		() => runState.handoffRequested ? "" : activeRuntimeContext,
 		() => agent.state.messages,
 	);
 	const deferredToolsExtension = (pi: ExtensionAPI): void => {
 		for (const tool of deferredTools) pi.registerTool(tool);
 	};
 	const handoffContextExtension = (pi: ExtensionAPI): void => {
-		pi.on("context", (event) => {
+		const requestHandoff = (messages: readonly AgentMessage[]) => {
 			const settings = settingsManager.getCompactionSettings();
 			const ctx = runState.ctx;
 			if (!ctx || !settings.enabled || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
 			if (!runState.handoffRequested && shouldRequestHandoff(
-				estimateHandoffContextTokens(event.messages), agent.state.model?.contextWindow || 200_000,
+				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
 				settings.reserveTokens, settings.keepRecentTokens,
 			)) {
 				runState.handoffRequested = true;
 				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
 			}
-			if (!runState.handoffRequested) return;
+			return runState.handoffRequested ? ctx : undefined;
+		};
+		pi.on("before_agent_start", (event) => {
+			requestHandoff([...agent.state.messages, { role: "user", content: event.prompt, timestamp: 0 }]);
+		});
+		pi.on("context", (event) => {
+			const ctx = requestHandoff(event.messages);
+			if (!ctx) return;
 			// Append a small control message without rewriting or duplicating the
 			// runtime snapshot. The original messages remain an exact prefix.
 			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
@@ -575,8 +582,8 @@ async function createRunner(
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [
-			dynamicRuntimeContextExtension,
 			handoffContextExtension,
+			dynamicRuntimeContextExtension,
 			deferredToolsExtension,
 			hostGmailExtension,
 			hostSitesExtension,
