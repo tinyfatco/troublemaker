@@ -16,7 +16,7 @@ const server=createServer(async(req,res)=>{
  const emit=(delta:any,finish_reason:any=null)=>res.write(`data: ${JSON.stringify({id:`example-${n}`,object:'chat.completion.chunk',created:1,model:'example-model',choices:[{index:0,delta,finish_reason}]})}\n\n`);
  if(n<3){
  const name=n===1?'search_tools':'call_tool';
- const args=n===1?{query:'handoff_context',label:'Find context handoff'}:{name:'handoff_context',arguments:{label:'Hand off synthetic task',summary:'Synthetic task: return fixture complete.',nextSteps:['Return fixture complete'],continue:true}};
+ const args=n===1?{query:'handoff_context',label:'Find context handoff'}:{name:'handoff_context',arguments:{label:'Hand off synthetic task',summary:'Synthetic task: return fixture complete.',nextSteps:'Return fixture complete',continue:true}};
  emit({role:'assistant',tool_calls:[{index:0,id:`example-call-${n}`,type:'function',function:{name,arguments:JSON.stringify(args)}}]});emit({},'tool_calls');
  }else{emit({role:'assistant',content:'Fixture complete.'});emit({},'stop');}
  res.end('data: [DONE]\n\n');

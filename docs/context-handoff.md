@@ -1,6 +1,6 @@
 # Context handoff
 
-`handoff_context` is a discoverable agent tool. Supply a concise `summary`, an array of `nextSteps`, and `continue` (true to continue unfinished work; false to wait). Call it alone after other tools complete. The summary is generated in the existing conversation, without a separate summarization request. The harness supplies authoritative routing.
+`handoff_context` is a discoverable agent tool. Supply a concise `summary`, `nextSteps` as plain text or an array, and `continue` (true to continue unfinished work; false to wait). Call it alone after other tools complete. The summary is generated in the existing conversation, without a separate summarization request. The harness supplies authoritative routing.
 
 The tool stages the checkpoint and terminates the tool sequence. Rotation occurs at the safe boundary: archive the old conversation, persist the rotation journal, build the new context with a bounded recent tail, then publish completion. Invalid checkpoints preserve the original context. A canonical run permits at most eight agent-requested rotations. Stop/cancellation takes precedence over continuation.
 

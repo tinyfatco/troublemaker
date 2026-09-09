@@ -17,6 +17,11 @@ try {
  const result=await tool.execute('example-call',{label:'Checkpoint',summary:'Synthetic task complete; next step verify fixture',nextSteps:['Verify fixture'],continue:true},undefined as any);
  assert.equal((result as any).terminate,true);assert.equal(staged.resume,true);assert.equal(staged.summary.nextSteps[0],'Verify fixture');
  await assert.rejects(()=>tool.execute('example-invalid',{summary:'x'.repeat(12001),nextSteps:[]},undefined as any));
+ await tool.execute('example-string',{summary:'Synthetic task',nextSteps:'  Verify fixture  ',continue:true},undefined as any);
+ assert.deepEqual(staged.summary.nextSteps,['Verify fixture']);
+ await tool.execute('example-empty',{summary:'Synthetic task complete',nextSteps:' ',continue:false},undefined as any);
+ assert.deepEqual(staged.summary.nextSteps,[]);
+ await assert.rejects(()=>tool.execute('example-invalid-steps',{summary:'Synthetic task',nextSteps:42},undefined as any));
  const off=parseCacheResumeSettings({});const on=parseCacheResumeSettings({enabled:true});
  const input={interactive:false,idleMinutes:20,restore:'miss' as const,exactPromptVerified:true,checkpointCoversTail:false};
  assert.equal(decideCacheResume(off,input),'unchanged');
