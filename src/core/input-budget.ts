@@ -29,7 +29,8 @@ function save(path: string, text: string): void {
 export class InputBudget {
 	private readonly startedAt: number;
 	private readonly trusted = new WeakSet<object>();
-	/** Only harness-owned messages are registered before role conversion loses provenance. */
+	/** Exempt original user input and harness snapshots before conversion loses provenance.
+	 * This is a size exemption, not an instruction-authority grant. Saved projections win. */
 	trust(message: Message): void { this.trusted.add(message); }
 	constructor(private readonly directory: string, now = Math.floor(Date.now() - process.uptime() * 1000)) {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });

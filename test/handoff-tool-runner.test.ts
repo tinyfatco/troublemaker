@@ -37,7 +37,7 @@ try{
  writeFileSync(join(root,'MEMORY.md'),'Synthetic durable fact. '.repeat(150)+'COMPLETE_MEMORY_END');
  writeFileSync(join(root,'SOUL.md'),'COMPLETE_SOUL_END');
  writeFileSync(join(root,'settings.json'),JSON.stringify({defaultProvider:'example',defaultModel:'example-model',compaction:{enabled:true,mode:'handoff',reserveTokens:1000,keepRecentTokens:256}}));
- const noop=async()=>{};const ctx:any={message:{text:'Hand off and continue fixture',rawText:'Hand off and continue fixture',user:'example-user',channel:'example-channel',ts:'1',attachments:[]},channels:[],users:[],respond:noop,sendFinalResponse:noop,respondInThread:noop,setTyping:noop,uploadFile:noop,setWorking:noop,deleteMessage:noop,restartWorking:noop,emitContentBlock:(e:any)=>{events.push(e);if(injectSteering && e.contextTransition?.state==='preparing'){injectSteering=false;void runner.steer('Cancel the rotation and answer this correction.');}}};
+ const noop=async()=>{};const ctx:any={message:{text:'Hand off and continue fixture '+ 'Synthetic user paragraphs 😀. '.repeat(300)+'USER_MESSAGE_END',rawText:'Hand off and continue fixture',user:'example-user',channel:'example-channel',ts:'1',attachments:[]},channels:[],users:[],respond:noop,sendFinalResponse:noop,respondInThread:noop,setTyping:noop,uploadFile:noop,setWorking:noop,deleteMessage:noop,restartWorking:noop,emitContentBlock:(e:any)=>{events.push(e);if(injectSteering && e.contextTransition?.state==='preparing'){injectSteering=false;void runner.steer('Cancel the rotation and answer this correction.');}}};
  runner=await getOrCreateRunner({type:'host'},join(root,'awareness'),'Be concise.');
  const result=await runner.run(ctx,new ChannelStore({workingDir:root,botToken:''}));
  assert.equal(result.stopReason,'stop');assert.equal(requests.length,3,'tool should rotate without another summarization call');
@@ -45,6 +45,8 @@ try{
  assert(events.some(e=>e.contextTransition?.state==='completed'));
  const context=readFileSync(join(root,'awareness/context.jsonl'),'utf8');assert(context.includes('troublemaker.continuity-handoff.v1'));
  assert(JSON.stringify(requests[2]).includes('Harness continuation after context rotation'));
+ assert(JSON.stringify(requests[0]).includes('USER_MESSAGE_END'),'long original user input reaches provider in full');
+ assert(!JSON.stringify(requests[0]).includes('[Input bounded.'),'neither curated rules nor genuine user input is clipped');
  assert(JSON.stringify(requests[0]).includes('COMPLETE_MEMORY_END'));
  assert(JSON.stringify(requests[0]).includes('COMPLETE_SOUL_END'));
  writeFileSync(join(root,'MEMORY.md'),'CHANGED_MEMORY_NEXT_CONTEXT_ONLY');
