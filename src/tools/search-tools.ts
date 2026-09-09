@@ -134,7 +134,9 @@ export function createSearchToolsTool(getRegistry: () => ToolSearchRegistry | nu
 			const query = typeof body.query === "string" ? body.query : "";
 			const limit = normalizedLimit(body.limit ?? (includeCoreByDefault ? 2 : undefined));
 			const shouldActivate = body.activate !== false;
-			const includeActive = body.includeActive === true;
+			// Compact mode exposes schemas through discovery, even for active tools.
+			// Changing search results leaves the provider's tool schema/prefix stable.
+			const includeActive = body.includeActive ?? includeCoreByDefault;
 			const includeCore = body.includeCore ?? includeCoreByDefault;
 			const active = new Set(registry.getActiveToolNames());
 

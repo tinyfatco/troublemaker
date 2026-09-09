@@ -573,7 +573,7 @@ async function createRunner(
 		},
 		convertToLlm: (messages) => (compactPrompt ? compactInitialRuntimePrefix(messages) : messages).flatMap(message => {
 			const converted = convertToLlm([message]);
-			if (message.role === "custom" && message.customType === "runtime-context") {
+			if (message.role === "user" || (message.role === "custom" && message.customType === "runtime-context")) {
 				for (const item of converted) inputBudget?.trust(item);
 			}
 			return converted;

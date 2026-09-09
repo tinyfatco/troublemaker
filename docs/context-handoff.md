@@ -25,3 +25,9 @@ Existing heartbeat configuration remains independent. No heartbeat settings are 
 The compact prompt profile loads complete `AGENTS.md`, `IDENTITY.md`, `USER.md`, `SOUL.md`, `MEMORY.md`, and `HEARTBEAT.md` files, plus `BOOTSTRAP.md`, `BRIEF.md`, and active goal state when present. Keep these curated files small; they are not silently shortened to meet the external-input budget. Daily logs, transcripts, and task guides remain on demand.
 
 The workspace snapshot is pinned for the context lifetime, including after a service restart. File changes take effect after a handoff, fresh reset, or compaction that removes the snapshot. Already-admitted provider projections remain byte-for-byte stable, including snapshots admitted under earlier truncation policies. Newly admitted harness workspace snapshots bypass the ordinary input limiter using structural provenance; user text and tool results cannot opt themselves out by imitating snapshot tags.
+
+## User input and tool-output limits
+
+Original user messages, including voice transcripts and steering, are admitted in full before provider-role conversion. They do not consume the per-item or aggregate tool-output budget. The exemption uses message provenance, not content matching. Tool results and file observations remain bounded. Existing saved projections take precedence even when an older user message was clipped; deployment never silently expands the cached past. Recovering an earlier message can use the existing detail reference without rewriting history.
+
+Compact tool discovery includes already-active tools because their schemas are otherwise hidden behind the generic call interface. This makes `input_detail` retrievable without altering the provider's cached tool definitions.

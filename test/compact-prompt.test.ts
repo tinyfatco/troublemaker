@@ -37,6 +37,11 @@ try {
  const registry = {getAllTools:()=>[{name:"read",description:"Read a file"},{name:"bash"}],getActiveToolNames:()=>active,setActiveToolsByName:(names:string[])=>{active=names;}};
  await createSearchToolsTool(()=>registry,true).execute("example-call",{query:"read"});
  assert.ok(active.includes("read"),"compact discovery must find inactive core tools");
+ active=["bash","search_tools","input_detail"];
+ const detailRegistry={getAllTools:()=>[{name:"input_detail",description:"Retrieve bounded input",parameters:{type:"object",properties:{id:{type:"string"},offset:{type:"integer"},label:{type:"string"}},required:["id","label"]}}],getActiveToolNames:()=>active,setActiveToolsByName:(names:string[])=>{active=names;}};
+ const recovered=await createSearchToolsTool(()=>detailRegistry,true).execute("example-detail",{query:"input_detail"});
+ const discovered=JSON.parse((recovered.content[0] as any).text);
+ assert.equal(discovered.tools[0].name,"input_detail");assert(discovered.tools[0].parameters.properties.offset);
  active=["bash","search_tools"];
  await createSearchToolsTool(()=>registry).execute("example-call",{query:"read"});
  assert.ok(!active.includes("read"),"default discovery must remain unchanged");
