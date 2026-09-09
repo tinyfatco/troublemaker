@@ -16,15 +16,21 @@ process.env.PI_OFFLINE = "1";
 process.env.TROUBLEMAKER_PROMPT_PROFILE = "compact";
 const requests: Array<{ messages: Array<{role: string; content: unknown}>; tools: unknown }> = [];
 const checkpoint = { version: 1, goal: "Finish the synthetic check", constraints: ["No external actions"], completed: ["Initial fixture complete"], inProgress: ["Final fixture reply"], nextSteps: ["Reply fixture complete"], decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: "example-channel", replyTarget: null} };
+let abortDuringCheckpoint: (() => void) | undefined;
 const server = createServer(async (req, res) => {
 	let body = "";
 	for await (const chunk of req) body += chunk;
 	requests.push(JSON.parse(body));
 	const n = requests.length;
-	const content = n === 1 ? "Initial fixture complete." : n === 2 ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
+	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
 	res.writeHead(200, {"Content-Type": "text/event-stream"});
 	const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({id: `example-${n}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices, ...(usage ? {usage} : {})})}\n\n`);
 	send([{index: 0, delta: {role: "assistant", content}, finish_reason: null}]);
+	if (n === 5) {
+		await new Promise(resolve => setTimeout(resolve, 20));
+		abortDuringCheckpoint?.();
+		await new Promise(resolve => setTimeout(resolve, 20));
+	}
 	send([{index: 0, delta: {}, finish_reason: "stop"}], {prompt_tokens: n < 3 ? 22000 : 1600, completion_tokens: 100, total_tokens: n < 3 ? 22100 : 1700});
 	res.end("data: [DONE]\n\n");
 });
@@ -52,6 +58,25 @@ try {
 	const durable = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
 	assert(durable.includes("troublemaker.continuity-handoff.v1"));
 	assert(readdirSync(join(root, "awareness/history")).length > 0, "source conversation is archived");
+	// Force pressure in the fixture without constructing a large prompt.
+	const settingsPath = join(root, "settings.json");
+	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+	settings.compaction.reserveTokens = 31000;
+	writeFileSync(settingsPath, JSON.stringify(settings));
+	const historyBefore = readdirSync(join(root, "awareness/history"), {recursive: true});
+	ctx.message = {...ctx.message, text: "Keep this correction", rawText: "Keep this correction", ts: "3"};
+	assert.equal((await runner.run(ctx, store)).stopReason, "error");
+	assert(finals.some(text => text.includes("conversation was preserved")), "invalid checkpoints report a visible failure");
+	assert.equal(requests.length, 4, "malformed checkpoint must not start a cold continuation or spin retries");
+	assert(readFileSync(join(root, "awareness/context.jsonl"), "utf8").startsWith(durable), "failed checkpoint preserves every prior durable byte");
+	assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBefore, "failed checkpoint never rotates away the conversation");
+	const beforeAbort = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
+	abortDuringCheckpoint = () => runner.abort();
+	ctx.message = {...ctx.message, text: "Cancellation fixture", rawText: "Cancellation fixture", ts: "4"};
+	assert.equal((await runner.run(ctx, store)).stopReason, "aborted");
+	assert.equal(requests.length, 5, "cancelled checkpoint must not resume");
+	assert(readFileSync(join(root, "awareness/context.jsonl"), "utf8").startsWith(beforeAbort));
+	assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBefore);
 	console.log("handoff runner: ok");
 } finally {
 	await new Promise<void>(resolve => server.close(() => resolve()));

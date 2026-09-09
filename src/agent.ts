@@ -1578,6 +1578,14 @@ async function createRunner(
 						replyTarget: ctx.message.replyTarget || null,
 					})
 					: null;
+				if (runState.handoffRequested && !runState.capturedHandoff && runState.stopReason !== "aborted") {
+					runState.stopReason = "error";
+					runState.errorMessage = "Could not create a valid continuity checkpoint. The conversation was preserved and no continuation was started.";
+					const errorEvent = { type: "error" as const, message: runState.errorMessage };
+					emitLiveEvent(errorEvent);
+					ctx.emitContentBlock?.(errorEvent);
+					await ctx.sendFinalResponse(runState.errorMessage);
+				}
 				const finalText = runState.handoffRequested
 					? joinPublicHandoffParts(rawFinalTextParts, true)
 					: rawFinalTextParts.join("\n");
@@ -1586,7 +1594,7 @@ async function createRunner(
 				if (wasYielded()) {
 					log.logInfo("yield_no_action — no output posted");
 					resetYield();
-				} else if (finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
+				} else if (runState.stopReason !== "error" && finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
 					try {
 						// Hard cap: never post more than 40KB (signature blobs can be hundreds of KB)
 						const cappedText = finalText.length > 40000 ? finalText.substring(0, 40000) + "\n\n_(truncated)_" : finalText;
