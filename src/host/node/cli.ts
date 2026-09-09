@@ -2040,7 +2040,10 @@ if (enqueueActiveGoalContinuationWake(true)) {
 // Compaction has its own abort controller; keep queued steering intact when only
 // the summary request is stale.
 const WATCHDOG_INTERVAL_MS = 60_000;
-const WATCHDOG_STALE_THRESHOLD_MS = 5 * 60 * 1000;
+const requestedWatchdogMs = Number(process.env.TROUBLEMAKER_STALE_RUN_TIMEOUT_MS);
+const WATCHDOG_STALE_THRESHOLD_MS = Number.isFinite(requestedWatchdogMs)
+	&& requestedWatchdogMs >= 60_000 && requestedWatchdogMs <= 30 * 60_000
+	? requestedWatchdogMs : 5 * 60 * 1000;
 setInterval(() => {
 	if (!awareness?.running) return;
 	const staleness = Date.now() - awareness.lastActivity;
