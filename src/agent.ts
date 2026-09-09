@@ -21,6 +21,7 @@ import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import { inferenceProgressURL, watchInferenceProgress } from "./inference-progress.js";
 import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
+import { InputBudget } from "./core/input-budget.js";
 import { buildCompactSystemPrompt, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
@@ -452,12 +453,15 @@ async function createRunner(
 
 	const toolSearchRegistry: { current: ToolSearchRegistry | null } = { current: null };
 	const compactPrompt = compactPromptEnabled(process.env.TROUBLEMAKER_PROMPT_PROFILE);
+	const inputBudget = process.env.TROUBLEMAKER_INPUT_BUDGET === "small"
+		? new InputBudget(join(awarenessDir, "input-budget")) : undefined;
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
 	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
+		...(inputBudget ? [inputBudget.tool] : []),
 		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
 	]);
 
@@ -520,7 +524,8 @@ async function createRunner(
 		const progressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
 		const requestId = `chatcmpl-${randomUUID()}`;
 		if (progressURL) normalizedOptions = { ...normalizedOptions, headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId } };
-		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(context) : context, normalizedOptions);
+		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
+		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(boundedContext) : boundedContext, normalizedOptions);
 		if (progressURL) {
 			const sink = runState.liveEventSink;
 			const responseContext = runState.ctx;
@@ -704,7 +709,7 @@ async function createRunner(
 					session.agent.state.systemPrompt = currentSystemPrompt;
 				},
 			};
-			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS] : tools.map((tool) => tool.name));
+			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS, ...(inputBudget ? ["input_detail"] : [])] : tools.map((tool) => tool.name));
 			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
