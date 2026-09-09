@@ -627,6 +627,7 @@ async function createRunner(
 		extensionFactories: [
 			handoffContextExtension,
 			dynamicRuntimeContextExtension,
+			handoffContextExtension,
 			deferredToolsExtension,
 			hostGmailExtension,
 			hostSitesExtension,
