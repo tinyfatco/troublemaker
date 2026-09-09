@@ -31,3 +31,5 @@ Console conversation streams preserve the bounded `processing` object on their `
 ## Verification
 
 Run the compact prompt, compact tool surface, search tool, inference progress, handoff compaction, and conversation contract tests, then compile TypeScript. The tool-surface test uses a synthetic provider to exercise Pi's real execution loop, including rejected arguments, blocked calls, and truncated responses. Before enabling for a live agent, additionally verify actual model tool selection, first-use discovery, prefix-cache reuse after discovery, fresh-context startup, and normal handoff behavior. Do not benchmark against a server already handling an interactive or background task.
+
+See [handoff compaction](handoff-compaction.md) for rotation, continuation, concurrency, and verification details.
