@@ -104,17 +104,22 @@ function serializeTool(tool: ToolInfoLike, active: boolean) {
 	};
 }
 
-export function createSearchToolsTool(getRegistry: () => ToolSearchRegistry | null | undefined): AgentTool<any> {
+export function createSearchToolsTool(getRegistry: () => ToolSearchRegistry | null | undefined, includeCoreByDefault = false): AgentTool<any> {
 	return {
 		name: "search_tools",
 		label: "search_tools",
-		description: "Search custom and extension-provided tools that are not in the default tool set. Matching tools are activated by default, so after calling search_tools you can call the returned tool names on the next step.",
-		parameters: Type.Object({
+		description: includeCoreByDefault
+			? "Find tools by name or capability. Use call_tool with the returned name and argument schema on the next step. Defaults to two matches."
+			: "Search custom and extension-provided tools that are not in the default tool set. Matching tools are activated by default, so after calling search_tools you can call the returned tool names on the next step.",
+		parameters: includeCoreByDefault ? Type.Object({
+			query: Type.String({ description: "Tool name or capability." }),
+			limit: Type.Optional(Type.Number({ description: "Maximum matches; default 2, maximum 20." })),
+		}) : Type.Object({
 			query: Type.String({ description: "Capability to search for, for example DNS, domains, email, calendar, deploy, or screenshots." }),
-			limit: Type.Optional(Type.Number({ description: "Maximum tools to return and activate. Defaults to 8, maximum 20." })),
+			limit: Type.Optional(Type.Number({ description: `Maximum tools to return and activate. Defaults to ${includeCoreByDefault ? 2 : 8}, maximum 20.` })),
 			activate: Type.Optional(Type.Boolean({ description: "Whether to activate matching tools for the next model step. Defaults to true." })),
 			includeActive: Type.Optional(Type.Boolean({ description: "Include tools that are already active. Defaults to false." })),
-			includeCore: Type.Optional(Type.Boolean({ description: "Include core baked-in tools such as read, write, edit, and bash. Defaults to false." })),
+			includeCore: Type.Optional(Type.Boolean({ description: `Include core tools such as read, write, edit, and bash. Defaults to ${includeCoreByDefault}.` })),
 		}),
 		execute: async (_id: string, input: unknown) => {
 			const registry = getRegistry();
@@ -127,10 +132,10 @@ export function createSearchToolsTool(getRegistry: () => ToolSearchRegistry | nu
 
 			const body = (input && typeof input === "object" ? input : {}) as SearchToolsInput;
 			const query = typeof body.query === "string" ? body.query : "";
-			const limit = normalizedLimit(body.limit);
+			const limit = normalizedLimit(body.limit ?? (includeCoreByDefault ? 2 : undefined));
 			const shouldActivate = body.activate !== false;
 			const includeActive = body.includeActive === true;
-			const includeCore = body.includeCore === true;
+			const includeCore = body.includeCore ?? includeCoreByDefault;
 			const active = new Set(registry.getActiveToolNames());
 
 			const matches = registry.getAllTools()
@@ -153,7 +158,7 @@ export function createSearchToolsTool(getRegistry: () => ToolSearchRegistry | nu
 				activated: shouldActivate ? matches.map((tool) => tool.name) : [],
 				tools: matches.map((tool) => serializeTool(tool, active.has(tool.name))),
 				note: matches.length > 0
-					? "Returned tools are now callable on the next model step when activate is true."
+					? includeCoreByDefault ? "Use call_tool with a returned name and arguments matching its schema." : "Returned tools are now callable on the next model step when activate is true."
 					: "No matching custom tools found.",
 			}, null, 2));
 		},

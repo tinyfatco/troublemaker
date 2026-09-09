@@ -1,3 +1,5 @@
+import type { InferenceProgress } from "../inference-progress.js";
+
 export interface WebTurnProjectContext {
 	siteId?: string;
 	slug: string;
@@ -54,7 +56,8 @@ export type RuntimeMode = "edge" | "host";
 
 export interface RuntimeStatusEvent {
 	type: "status";
-	status: "accepted" | "waking" | "connecting" | "container" | "steering" | "streaming" | "compacting";
+	status: "accepted" | "waking" | "connecting" | "container" | "steering" | "streaming" | "compacting" | "processing";
+	processing?: InferenceProgress;
 	message?: string;
 	mode?: RuntimeMode;
 }

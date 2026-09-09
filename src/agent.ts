@@ -19,6 +19,9 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
+import { inferenceProgressURL, watchInferenceProgress } from "./inference-progress.js";
+import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
+import { buildCompactSystemPrompt, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
 import {
@@ -447,13 +450,14 @@ async function createRunner(
 	const workspacePath = executor.getWorkspacePath(workspaceDir);
 
 	const toolSearchRegistry: { current: ToolSearchRegistry | null } = { current: null };
+	const compactPrompt = compactPromptEnabled(process.env.TROUBLEMAKER_PROMPT_PROFILE);
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
 	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
-		createSearchToolsTool(() => toolSearchRegistry.current),
+		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
 	]);
 
 	// Minimal system prompt for agent creation — will be replaced with full prompt in run()
@@ -489,6 +493,7 @@ async function createRunner(
 	// mutate the resident's active choice. Refreshed models become eligible only
 	// through the existing explicit setting and next-turn resolution path.
 	const model = resolveModelWithAuth(workspaceDir, modelRegistry);
+	if (compactPrompt && model.api !== "openai-completions") throw new Error("Compact prompt profile currently requires an OpenAI-compatible chat-completions model");
 
 	// FAT-275: read thinking_level from settings.json and clamp it to the
 	// selected provider/model's supported runtime shape.
@@ -510,9 +515,23 @@ async function createRunner(
 		if (runState.handoffRequested) {
 			normalizedOptions = { ...normalizedOptions, maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536) };
 		}
-		return isClaudeCliProvider(streamModel.provider)
-			? claudeCliStream(streamModel, context, normalizedOptions)
-			: streamSimple(streamModel, context, normalizedOptions);
+		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
+		const progressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
+		const requestId = `chatcmpl-${randomUUID()}`;
+		if (progressURL) normalizedOptions = { ...normalizedOptions, headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId } };
+		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(context) : context, normalizedOptions);
+		if (progressURL) {
+			const sink = runState.liveEventSink;
+			const stop = watchInferenceProgress(progressURL, requestId, (processing) => {
+				void Promise.resolve(sink?.({ type: "status", status: "processing", processing })).catch(() => {});
+			});
+			void result.result().then(stop, stop);
+		}
+		return compactPrompt ? restoreCompactToolStream(result, {
+			role: "assistant", content: [], api: streamModel.api, provider: streamModel.provider, model: streamModel.id,
+			stopReason: "error", timestamp: Date.now(),
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		}) : result;
 	};
 
 	// Create agent
@@ -523,7 +542,7 @@ async function createRunner(
 			thinkingLevel: initialThinkingLevel,
 			tools,
 		},
-		convertToLlm,
+		convertToLlm: (messages) => convertToLlm(compactPrompt ? compactInitialRuntimePrefix(messages) : messages),
 		streamFn,
 		steeringMode: "all",
 		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
@@ -666,7 +685,7 @@ async function createRunner(
 					session.agent.state.systemPrompt = currentSystemPrompt;
 				},
 			};
-			session.setActiveToolsByName(tools.map((tool) => tool.name));
+			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS] : tools.map((tool) => tool.name));
 			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
@@ -1217,7 +1236,7 @@ async function createRunner(
 			}
 
 			const tMem = performance.now();
-			const workspaceContext = getWorkspaceContext(workspaceStore);
+			const workspaceContext = compactPrompt ? getCompactWorkspaceContext(workspaceStore) : getWorkspaceContext(workspaceStore);
 			log.logInfo(`[perf] getWorkspaceContext: ${(performance.now() - tMem).toFixed(0)}ms`);
 
 			const tSkills = performance.now();
@@ -1230,6 +1249,7 @@ async function createRunner(
 
 			// Re-resolve model each run and keep the session prompt aligned with it.
 			const currentModel = resolveModelWithAuth(workspaceDir, modelRegistry);
+			if (compactPrompt && currentModel.api !== "openai-completions") throw new Error("Compact prompt profile currently requires an OpenAI-compatible chat-completions model");
 			const agentModel = agent.state.model;
 			if (!agentModel || currentModel.id !== agentModel.id || currentModel.provider !== agentModel.provider) {
 				log.logInfo(`[awareness] Model changed to ${currentModel.provider}/${currentModel.id}`);
@@ -1244,7 +1264,9 @@ async function createRunner(
 				agent.state.thinkingLevel = effectiveThinkingLevel;
 			}
 
-			const systemPrompt = buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
+			const systemPrompt = compactPrompt
+				? buildCompactSystemPrompt(workspacePath, `${currentModel.provider}/${currentModel.id}`, runFormatInstructions)
+				: buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
 			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
@@ -1258,7 +1280,7 @@ async function createRunner(
 				workspaceContext,
 				channels: ctx.channels,
 				users: ctx.users,
-				skills,
+				skills: compactPrompt ? [] : skills,
 				displayChannelId: ctx.message.channel,
 				displayChannelName: ctx.channelName,
 				verbosity: channelVerbosity,
