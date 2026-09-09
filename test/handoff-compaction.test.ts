@@ -15,6 +15,7 @@ import {
 	projectPublicHandoffParts,
 	handoffInstruction,
 	sanitizeHandoffMessage,
+	compactHandoffMessage,
 	sanitizePrivateHandoffSessionLine,
 	readHandoffJournal,
 	replayHandoffRotation,
@@ -103,6 +104,25 @@ const messages = [
 	{ role: "assistant", content: [{ type: "text", text: "recent answer" }] },
 ] as any;
 assert.deepEqual(selectCompleteRecentTail(messages, 1), messages.slice(2), "tail starts at a complete user turn");
+for (const isError of [false, true]) {
+	const result = {
+		role: "toolResult", toolCallId: "example-tool-call", toolName: "example_tool", isError, timestamp: 1,
+		content: [{ type: "text", text: "example full output ".repeat(20_000) }, { type: "image", data: "a".repeat(100_000), mimeType: "image/png" }],
+		details: { payload: "example hidden details ".repeat(10_000) },
+	} as any;
+	const before = JSON.stringify(result);
+	const compacted = compactHandoffMessage(result, "/tmp/example-session.jsonl") as any;
+	assert.equal(compacted.toolCallId, result.toolCallId);
+	assert.equal(compacted.toolName, result.toolName);
+	assert.equal(compacted.isError, isError, "failure status survives rotation");
+	assert.equal(compacted.content.length, 1, "images and bulk text leave the hot context");
+	assert(JSON.stringify(compacted).length < before.length / 100, "tool payload reduction exceeds 99 percent");
+	assert(!JSON.stringify(compacted).includes("example hidden details"));
+	assert.match(compacted.content[0].text, /example-session\.jsonl/);
+	assert.equal(JSON.stringify(result), before, "the source remains intact for archival");
+	assert.deepEqual(compactHandoffMessage(compacted, "/tmp/example-next-session.jsonl"), compacted,
+		"later rotations retain the original output location without archive chains");
+}
 const privateInstruction = handoffInstruction("web");
 const triggeringUser = { role: "user", content: [{ type: "text", text: "do the substantive work" }] } as any;
 const privateAssistant = { role: "assistant", content: [{ type: "text", text: `done${HANDOFF_OPEN}${JSON.stringify(captures[0].handoff)}${HANDOFF_CLOSE}` }] } as any;

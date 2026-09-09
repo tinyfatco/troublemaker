@@ -82,7 +82,7 @@ import {
 	projectPublicHandoffParts,
 	readHandoffJournal,
 	replayHandoffRotation,
-	sanitizeHandoffMessage,
+	compactHandoffMessage,
 	selectCompleteRecentTail,
 	shouldRequestHandoff,
 	writeHandoffJournal,
@@ -1603,15 +1603,16 @@ async function createRunner(
 				} else {
 					const id = randomUUID();
 					const date = new Date().toISOString().slice(0, 10);
+					const archivePath = join(awarenessDir, "history", date, `handoff-${id}.jsonl`);
 					const tail = selectCompleteRecentTail(
-						currentSession.messages.map((message) => sanitizeHandoffMessage(message)),
+						currentSession.messages.map((message) => compactHandoffMessage(message, archivePath)),
 						compactionSettings.keepRecentTokens,
 					);
 					const journal: HandoffRotationJournal = {
 						version: 1,
 						id,
 						createdAt: new Date().toISOString(),
-						archivePath: join(awarenessDir, "history", date, `handoff-${id}.jsonl`),
+						archivePath,
 						handoff: runState.capturedHandoff.handoff,
 						tail,
 					};

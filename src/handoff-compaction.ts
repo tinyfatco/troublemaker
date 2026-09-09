@@ -176,6 +176,23 @@ export function sanitizeHandoffMessage(message: AgentMessage): AgentMessage {
 	} as AgentMessage;
 }
 
+/** Keep tool protocol identity, not old output payloads, in a rotated context. */
+export function compactHandoffMessage(message: AgentMessage, archivePath: string): AgentMessage {
+	if (message.role !== "toolResult") return sanitizeHandoffMessage(message);
+	const previous = message.details as { handoffOutputArchive?: unknown } | undefined;
+	const source = typeof previous?.handoffOutputArchive === "string"
+		? previous.handoffOutputArchive : archivePath;
+	return {
+		role: "toolResult",
+		toolCallId: message.toolCallId,
+		toolName: message.toolName,
+		isError: message.isError,
+		timestamp: message.timestamp,
+		content: [{ type: "text", text: `Tool ${message.isError ? "failed" : "completed"}. Full output omitted during handoff. Original result for toolCallId ${JSON.stringify(message.toolCallId)} is in archived session ${JSON.stringify(source)}; retrieve only relevant details if needed.` }],
+		details: { handoffOutputArchive: source },
+	};
+}
+
 /** Sanitize a persisted Pi session line before it reaches awareness/UI surfaces. */
 export function sanitizePrivateHandoffSessionLine(line: string): string {
 	try {
