@@ -92,6 +92,7 @@ import {
 	writeHandoffJournal,
 	type HandoffRotationJournal,
 } from "./handoff-compaction.js";
+import { handoffContinuationMessage, runHandoffSegments } from "./handoff-continuation.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -1188,6 +1189,8 @@ async function createRunner(
 		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	};
 
+	let resumeAfterHandoff = false;
+	let handoffRunAborted = false;
 	const runner: AgentRunner = {
 		async run(
 			ctx: MomContext,
@@ -1197,6 +1200,7 @@ async function createRunner(
 			liveEventSink?: RuntimeEventSink,
 			completionID?: string,
 		): Promise<RunResult> {
+			resumeAfterHandoff = false;
 			const tRun = performance.now();
 			runState.completionID = completionID?.trim() || randomUUID();
 			runState.assistantText.reset(runState.completionID);
@@ -1649,6 +1653,8 @@ async function createRunner(
 					writeHandoffJournal(rotationJournalPath, journal);
 					resetSessionState();
 					await recoverRotation(journal);
+					resumeAfterHandoff = journal.handoff.inProgress.some((item) => item.trim())
+						|| journal.handoff.nextSteps.some((item) => item.trim());
 					log.logInfo(`[handoff] Context rotated with ${tail.length} complete recent messages`);
 				}
 			}
@@ -1675,6 +1681,7 @@ async function createRunner(
 		},
 
 		abort(): void {
+			handoffRunAborted = true;
 			acceptsSteering = false;
 			userInputProvenance.clear();
 			if (!session) return;
@@ -1854,6 +1861,19 @@ async function createRunner(
 			return result;
 		},
 		};
+	const runSegment = runner.run.bind(runner);
+	runner.run = async (ctx, store, pending, format, sink, completionID) => {
+		handoffRunAborted = false;
+		return runHandoffSegments(async (continuation) => {
+			const segmentContext: MomContext = continuation ? {
+				...ctx,
+				message: handoffContinuationMessage(ctx.message),
+			} : ctx;
+			const result = await runSegment(segmentContext, store, continuation ? undefined : pending, format, sink,
+				continuation ? randomUUID() : completionID);
+			return { result, resume: resumeAfterHandoff };
+		}, () => handoffRunAborted);
+	};
 	startLiveModelCatalogRefresh(workspaceDir, modelRegistry);
 	return runner;
 }
