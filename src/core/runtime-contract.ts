@@ -1,3 +1,4 @@
+import type { ContextTransition } from "../context-transition.js";
 import type { InferenceProgress } from "../inference-progress.js";
 
 export interface WebTurnProjectContext {
@@ -55,6 +56,7 @@ export interface WebTurnSettings {
 export type RuntimeMode = "edge" | "host";
 
 export interface RuntimeStatusEvent {
+	contextTransition?: ContextTransition;
 	type: "status";
 	status: "accepted" | "waking" | "connecting" | "container" | "steering" | "streaming" | "compacting" | "processing";
 	processing?: InferenceProgress;

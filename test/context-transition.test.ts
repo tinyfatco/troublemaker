@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import {mkdtempSync, readFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {rm} from 'node:fs/promises';
+import {readContextTransitions, saveContextTransition, type ContextTransition} from '../src/context-transition.js';
+import {createHandoffContextTool} from '../src/tools/handoff-context.js';
+import {decideCacheResume, parseCacheResumeSettings} from '../src/cache-resume-policy.js';
+const root = mkdtempSync(join(tmpdir(),'example-transitions-'));
+try {
+ const t:ContextTransition={version:1,id:'example-transition',kind:'handoff',trigger:'agent',state:'preparing',revision:1,startedAt:'2026-01-01T00:00:00Z',updatedAt:'2026-01-01T00:00:00Z'};
+ saveContextTransition(root,t);saveContextTransition(root,t);assert.equal(readContextTransitions(root).length,1);
+ saveContextTransition(root,{...t,state:'completed',revision:2});saveContextTransition(root,t);
+ assert.equal(readContextTransitions(root)[0].state,'completed');
+ assert(!readFileSync(join(root,'awareness/context-transitions.json'),'utf8').includes('summary'));
+ let staged:any;const tool=createHandoffContextTool((summary,resume)=>{staged={summary,resume};});
+ const result=await tool.execute('example-call',{label:'Checkpoint',summary:'Synthetic task complete; next step verify fixture',nextSteps:['Verify fixture'],continue:true},undefined as any);
+ assert.equal((result as any).terminate,true);assert.equal(staged.resume,true);assert.equal(staged.summary.nextSteps[0],'Verify fixture');
+ await assert.rejects(()=>tool.execute('example-invalid',{summary:'x'.repeat(12001),nextSteps:[]},undefined as any));
+ const off=parseCacheResumeSettings({});const on=parseCacheResumeSettings({enabled:true});
+ const input={interactive:false,idleMinutes:20,restore:'miss' as const,exactPromptVerified:true,checkpointCoversTail:false};
+ assert.equal(decideCacheResume(off,input),'unchanged');
+ assert.equal(decideCacheResume(on,input),'defer_unattended');
+ assert.equal(decideCacheResume(on,{...input,restore:'ram'}),'checkpoint_while_warm');
+ assert.equal(decideCacheResume(on,{...input,restore:'ssd'}),'restore');
+ assert.equal(decideCacheResume(on,{...input,checkpointTokens:2000,checkpointCoversTail:true}),'resume_checkpoint');
+ assert.equal(decideCacheResume(on,{...input,exactPromptVerified:false}),'defer_unattended');
+ assert.equal(decideCacheResume(on,{...input,interactive:true}),'ask_user');
+ console.log('PASS context transition persistence, handoff tool, and cache resume policy');
+} finally {await rm(root,{recursive:true,force:true});}

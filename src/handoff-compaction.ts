@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { saveContextTransition, type ContextTransition } from "./context-transition.js";
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync, openSync, closeSync, fsyncSync } from "node:fs";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -28,6 +29,7 @@ export interface StructuredHandoff {
 }
 
 export interface HandoffRotationJournal {
+    transition?: ContextTransition;
 	version: 1;
 	id: string;
 	createdAt: string;
@@ -258,7 +260,9 @@ export function sanitizePrivateHandoffSessionLine(line: string): string {
 export function writeHandoffJournal(path: string, journal: HandoffRotationJournal): void {
 	const temporary = `${path}.tmp`;
 	writeFileSync(temporary, `${JSON.stringify(journal)}\n`, { encoding: "utf8", mode: 0o600 });
+    const fd = openSync(temporary, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
 	renameSync(temporary, path);
+    const directory = openSync(dirname(path), "r"); try { fsyncSync(directory); } finally { closeSync(directory); }
 }
 
 export function readHandoffJournal(path: string): HandoffRotationJournal | null {
@@ -292,6 +296,8 @@ export async function replayHandoffRotation(
 		{ version: 1, journalId: journal.id },
 	);
 	for (const message of journal.tail) fresh.appendMessage(message as Parameters<typeof fresh.appendMessage>[0]);
+    const contextFd = openSync(contextFile, "r"); try { fsyncSync(contextFd); } finally { closeSync(contextFd); }
+    if (journal.transition) saveContextTransition(dirname(awarenessDir), {...journal.transition, state: "completed", revision: 2, updatedAt: new Date().toISOString(), retainedMessages: journal.tail.length});
 	removeHandoffJournal(journalPath);
 }
 

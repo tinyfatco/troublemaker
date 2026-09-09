@@ -1,3 +1,4 @@
+import { parseCacheResumeSettings, type CacheResumeSettings } from "./cache-resume-policy.js";
 /**
  * Context management for mom.
  *
@@ -198,6 +199,7 @@ export interface MomSettings {
 	mattermost?: MomMattermostSettings;
 	discord?: MomDiscordSettings;
 	compaction?: Partial<MomCompactionSettings>;
+    cacheResume?: Partial<CacheResumeSettings>;
 	retry?: Partial<MomRetrySettings>;
 	spontaneity?: Partial<MomSpontaneitySettings>;
 	/** `"default"` is shorthand for the enabled 1/3/5/10-minute preset. */
@@ -344,6 +346,8 @@ export class MomSettingsManager {
 			console.error(`Warning: Could not save settings file: ${error}`);
 		}
 	}
+
+    getCacheResumeSettings(): CacheResumeSettings { return parseCacheResumeSettings(this.settings.cacheResume); }
 
 	getCompactionSettings(): MomCompactionSettings {
 		return {

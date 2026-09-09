@@ -1,3 +1,4 @@
+import { readContextTransitions } from "./context-transition.js";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
@@ -1239,6 +1240,15 @@ export class Gateway {
 				return;
 			}
 
+
+            if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/context-transitions")) {
+                try {
+                    const transitions = this.workspaceDir ? readContextTransitions(this.workspaceDir) : [];
+                    res.writeHead(200, {"Content-Type": "application/json", "Cache-Control": "no-store"});
+                    res.end(JSON.stringify({transitions}));
+                } catch (error) { this.sendConsoleError(res, error, 503); }
+                return;
+            }
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/deliveries")) {
 				this.handleDeliveryReceipts(req, res);
 				return;
