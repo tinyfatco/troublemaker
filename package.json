@@ -70,7 +70,7 @@
 		"test:working-rollover-policy": "pnpm exec tsx test/working-rollover-policy.test.ts",
 		"test:context-messages-only-error": "pnpm exec tsx test/context-messages-only-error.test.ts",
 		"test:compaction-qol": "pnpm exec tsx test/compaction-qol.test.ts",
-		"test:handoff-compaction": "pnpm exec tsx test/handoff-compaction.test.ts && pnpm exec tsx test/handoff-continuation.test.ts",
+		"test:handoff-compaction": "pnpm exec tsx test/handoff-compaction.test.ts && pnpm exec tsx test/handoff-continuation.test.ts && pnpm exec tsx test/handoff-runner.test.ts",
 		"test:discord-ambient": "pnpm exec tsx test/discord-ambient.test.ts",
 		"test:discord-gateway": "pnpm exec tsx test/discord-gateway-lifecycle.test.ts && pnpm exec tsx test/discord-gateway-classification.test.ts && pnpm exec tsx test/discord-gateway-config.test.ts && pnpm exec tsx test/discord-rest.test.ts && pnpm exec tsx test/discord-tool-streaming.test.ts",
 		"test:channel-pulse-dedupe": "pnpm exec tsx test/channel-pulse-dedupe.test.ts",

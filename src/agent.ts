@@ -547,6 +547,11 @@ async function createRunner(
 			tools,
 		},
 		convertToLlm: (messages) => convertToLlm(compactPrompt ? compactInitialRuntimePrefix(messages) : messages),
+		// AgentSession binds lifecycle hooks, but the SDK normally installs this
+		// provider-context bridge. Our manually constructed Agent needs it too.
+		transformContext: async (messages) => session?.extensionRunner
+			? session.extensionRunner.emitContext(messages)
+			: messages,
 		streamFn,
 		steeringMode: "all",
 		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
