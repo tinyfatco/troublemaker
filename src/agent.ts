@@ -76,14 +76,15 @@ import {
 import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
 import {
 	extractStructuredHandoff,
+	appendHandoffInstruction,
+	estimateHandoffContextTokens,
 	handoffInstruction,
 	handoffJournalPath,
 	joinPublicHandoffParts,
 	projectPublicHandoffParts,
 	readHandoffJournal,
 	replayHandoffRotation,
-	compactHandoffMessage,
-	selectCompleteRecentTail,
+	selectBoundedRecentDialogue,
 	shouldRequestHandoff,
 	writeHandoffJournal,
 	type HandoffRotationJournal,
@@ -505,7 +506,10 @@ async function createRunner(
 	});
 	const streamFn: StreamFn = (streamModel, context, options) => {
 		const boundedOptions = boundCompactionStreamOptions(context, options);
-		const normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
+		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
+		if (runState.handoffRequested) {
+			normalizedOptions = { ...normalizedOptions, maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536) };
+		}
 		return isClaudeCliProvider(streamModel.provider)
 			? claudeCliStream(streamModel, context, normalizedOptions)
 			: streamSimple(streamModel, context, normalizedOptions);
@@ -548,12 +552,31 @@ async function createRunner(
 	const deferredToolsExtension = (pi: ExtensionAPI): void => {
 		for (const tool of deferredTools) pi.registerTool(tool);
 	};
+	const handoffContextExtension = (pi: ExtensionAPI): void => {
+		pi.on("context", (event) => {
+			const settings = settingsManager.getCompactionSettings();
+			const ctx = runState.ctx;
+			if (!ctx || !settings.enabled || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
+			if (!runState.handoffRequested && shouldRequestHandoff(
+				estimateHandoffContextTokens(event.messages), agent.state.model?.contextWindow || 200_000,
+				settings.reserveTokens, settings.keepRecentTokens,
+			)) {
+				runState.handoffRequested = true;
+				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
+			}
+			if (!runState.handoffRequested) return;
+			// Append a small control message without rewriting or duplicating the
+			// runtime snapshot. The original messages remain an exact prefix.
+			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
+		});
+	};
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [
 			dynamicRuntimeContextExtension,
+			handoffContextExtension,
 			deferredToolsExtension,
 			hostGmailExtension,
 			hostSitesExtension,
@@ -1354,28 +1377,6 @@ async function createRunner(
 				log.logInfo(`[gpt-steering] Ack fast path injected for "${ctx.message.text.substring(0, 40)}"`);
 			}
 
-			let handoffRuntimeInstruction = "";
-			if (compactionSettings.enabled && compactionSettings.mode === "handoff" && !isClaudeCliProvider(currentModel.provider)) {
-				let contextTokens = 0;
-				for (let index = currentSession.messages.length - 1; index >= 0; index--) {
-					const usage = (currentSession.messages[index] as any).usage;
-					if (usage) {
-						contextTokens = (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
-						break;
-					}
-				}
-				runState.handoffRequested = shouldRequestHandoff(
-					contextTokens,
-					currentModel.contextWindow || 200_000,
-					compactionSettings.reserveTokens,
-					compactionSettings.keepRecentTokens,
-				);
-				if (runState.handoffRequested) {
-					handoffRuntimeInstruction = handoffInstruction(ctx.message.channel, ctx.message.replyTarget);
-					log.logInfo(`[handoff] Pressure threshold reached; requesting an end-of-turn checkpoint`);
-				}
-			}
-
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
@@ -1396,9 +1397,7 @@ async function createRunner(
 			};
 			const tPrompt = performance.now();
 			userInputProvenance.track(finalUserMessage, readVerifiedSenderIdentity(ctx.message.senderIdentity, ctx.message.user));
-			const ordinaryRuntimeContext = activeRuntimeContext;
 			try {
-				if (handoffRuntimeInstruction) activeRuntimeContext = `${ordinaryRuntimeContext}\n\n${handoffRuntimeInstruction}`;
 				const gated = await runWithModelCredentialGate({
 					resolveCredential: resolveCurrentModelCredential,
 					prompt: async () => {
@@ -1424,7 +1423,6 @@ async function createRunner(
 				log.logWarning("Model prompt failed", errMsg);
 			} finally {
 				acceptsSteering = false;
-				activeRuntimeContext = ordinaryRuntimeContext;
 			}
 			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
@@ -1604,8 +1602,8 @@ async function createRunner(
 					const id = randomUUID();
 					const date = new Date().toISOString().slice(0, 10);
 					const archivePath = join(awarenessDir, "history", date, `handoff-${id}.jsonl`);
-					const tail = selectCompleteRecentTail(
-						currentSession.messages.map((message) => compactHandoffMessage(message, archivePath)),
+					const tail = selectBoundedRecentDialogue(
+						currentSession.messages,
 						compactionSettings.keepRecentTokens,
 					);
 					const journal: HandoffRotationJournal = {
