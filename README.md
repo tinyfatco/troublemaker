@@ -4,10 +4,6 @@ An AI agent runtime with multi-platform adapters. Connects to Microsoft Teams, S
 
 Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
 
-## Don't want to self-host?
-
-[tinyfat.com](https://tinyfat.com) runs troublemaker for you — managed agents with sandboxed containers, multi-channel delivery, and scheduled events. No servers, no Docker, no ops.
-
 ## How It Works
 
 When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
