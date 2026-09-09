@@ -8,12 +8,13 @@ export function createHandoffContextTool(stage: (summary: StructuredHandoff, res
   parameters: Type.Object({
    label: Type.String(),
    summary: Type.String({ maxLength: 12000, description: 'Concise handoff: goal, constraints, completed work, decisions, uncertainties, exact necessary references, and next steps. No raw tool output or secrets.' }),
-   nextSteps: Type.Array(Type.String(), { maxItems: 12 }),
+   nextSteps: Type.Union([Type.String(), Type.Array(Type.String(), { maxItems: 12 })], { description: "Next actions as plain text or a list. An empty string or list means no remaining steps." }),
    continue: Type.Boolean({ description: 'Continue unfinished work after rotation; false means wait for the user.' }),
   }),
   execute: async (_id, args: any) => {
-   if (!args.summary?.trim() || args.summary.length > 12000 || !Array.isArray(args.nextSteps) || args.nextSteps.length > 12) throw new Error('Provide a bounded nonempty handoff and next steps');
-   const summary = { version: 1, goal: args.summary, constraints: [], completed: [], inProgress: [], nextSteps: args.nextSteps, decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: '', replyTarget: null} };
+   const nextSteps = typeof args.nextSteps === 'string' ? (args.nextSteps.trim() ? [args.nextSteps.trim()] : []) : args.nextSteps;
+   if (typeof args.summary !== 'string' || !args.summary.trim() || args.summary.length > 12000 || !Array.isArray(nextSteps) || nextSteps.length > 12 || nextSteps.some(step => typeof step !== 'string')) throw new Error('Provide a bounded nonempty handoff and next steps');
+   const summary = { version: 1, goal: args.summary, constraints: [], completed: [], inProgress: [], nextSteps, decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: '', replyTarget: null} };
    const parsed = extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(summary)}${HANDOFF_CLOSE}`);
    if (!parsed) throw new Error('Invalid continuity summary');
    stage(parsed.handoff, args.continue === true);
