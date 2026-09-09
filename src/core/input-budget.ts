@@ -28,7 +28,7 @@ function save(path: string, text: string): void {
 /** Durable, append-only provider projections. Never rewrite an admitted prefix. */
 export class InputBudget {
 	private readonly startedAt: number;
-	constructor(private readonly directory: string, now = Date.now()) {
+	constructor(private readonly directory: string, now = Math.floor(Date.now() - process.uptime() * 1000)) {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const epoch = join(directory, "epoch");
 		if (!existsSync(epoch)) writeFileSync(epoch, String(now), { mode: 0o600, flag: "wx" });
