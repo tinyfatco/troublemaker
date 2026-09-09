@@ -10,7 +10,7 @@ export function createRunnerOperationQueue(): <T>(operation: () => Promise<T>) =
 	};
 }
 
-export const HANDOFF_RESUME_INSTRUCTION = "Harness continuation after context rotation. Continue the unfinished work recorded in the private continuity handoff. Completed actions and tool receipts are already settled: do not replay them. Honor the latest user corrections and all current boundaries. If no authorized work remains, report the outcome and stop.";
+export const HANDOFF_RESUME_INSTRUCTION = "Harness continuation after context rotation. The requested rotation has completed. Do not call handoff_context again to fulfill the same request. Continue the unfinished work recorded in the private continuity handoff. Completed actions and tool receipts are already settled: do not replay them. Honor the latest user corrections and all current boundaries. If no authorized work remains, report the outcome and stop.";
 
 export function handoffContinuationMessage(message: MomContext["message"]): MomContext["message"] {
 	return {

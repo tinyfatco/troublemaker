@@ -93,8 +93,10 @@ try {
 	writeHandoffJournal(journalPath, journal); // crash after replay but before journal unlink
 	await replayHandoffRotation(contextFile, awarenessDir, journalPath, journal);
 	const replayed = SessionManager.open(contextFile, awarenessDir);
-	assert.equal(replayed.getEntries().filter((entry) => entry.type === "custom_message").length, 1, "recovery replay is idempotent");
-	assert.deepEqual(replayed.buildSessionContext().messages.slice(1), journal.tail, "recovery retains the complete recent tail exactly once");
+	assert.equal(replayed.getEntries().filter((entry) => entry.type === "custom_message").length, 2, "recovery replay is idempotent");
+	assert.equal(replayed.buildSessionContext().messages.some(m => m.role === "user"), false, "historical requests never become fresh user turns");
+	assert(JSON.stringify(replayed.buildSessionContext()).includes("quoted reference only"));
+	assert(JSON.stringify(replayed.buildSessionContext()).includes("has been fulfilled"));
 	assert.equal((replayed.getEntries()[0] as any).display, false, "continuity handoff is hidden from conversation rendering");
 } finally {
 	await rm(root, { recursive: true, force: true });
@@ -185,3 +187,7 @@ assert.doesNotMatch(agentSource, /finalUserMessage \+= `\\n\\n\$\{handoffInstruc
 assert.doesNotMatch(agentSource, /activeRuntimeContext = `\$\{ordinaryRuntimeContext\}/, "checkpoint does not duplicate the workspace snapshot");
 
 console.log("handoff compaction: ok");
+
+const historicalControl = { role: "user", content: "<delivery_context>\nSource event: handoff_continuation\n</delivery_context>\nHarness continuation after context rotation.", timestamp: 6 } as any;
+assert.deepEqual(selectBoundedRecentDialogue([historicalControl, ...messages, historicalControl], 1024), selectBoundedRecentDialogue(messages, 1024), "previous continuation controls never accumulate in the retained tail");
+assert(!handoffInstruction("example-channel").includes("nearly full"), "manual checkpoint must not claim token pressure");

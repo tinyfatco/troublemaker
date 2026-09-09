@@ -39,7 +39,7 @@ export interface HandoffRotationJournal {
 }
 
 export function handoffInstruction(channel: string, replyTarget?: string): string {
-	return `PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW. Context is nearly full. Pause additional tool work at this safe boundary and write a concise handoff for a fresh context to continue the task. At the absolute end of this same assistant turn, append exactly one ${HANDOFF_OPEN} JSON ${HANDOFF_CLOSE} block. Do not mention or explain the block. Aim for at most 600 tokens: essential state and next action, not a transcript or tool output. The JSON must match this schema exactly: {"version":1,"goal":"string","constraints":["string"],"completed":["string"],"inProgress":["string"],"nextSteps":["string"],"decisions":[{"decision":"string","rationale":"string"}],"provenance":[{"claim":"string","source":"string"}],"uncertainties":["string"],"superseded":[{"previous":"string","replacement":"string"}],"toolReceipts":[{"tool":"string","result":"string"}],"routing":{"channel":${JSON.stringify(channel)},"replyTarget":${JSON.stringify(replyTarget || null)}}}. Use empty arrays where appropriate. Preserve exact identifiers and paths only when necessary for continuity; never include credentials, secrets, hidden reasoning, or unrelated personal data.`;
+	return `PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW. The harness has requested context rotation. Pause additional tool work at this safe boundary and write a concise handoff for a fresh context to continue the task. At the absolute end of this same assistant turn, append exactly one ${HANDOFF_OPEN} JSON ${HANDOFF_CLOSE} block. Do not mention or explain the block. Aim for at most 600 tokens: essential state and next action, not a transcript or tool output. The JSON must match this schema exactly: {"version":1,"goal":"string","constraints":["string"],"completed":["string"],"inProgress":["string"],"nextSteps":["string"],"decisions":[{"decision":"string","rationale":"string"}],"provenance":[{"claim":"string","source":"string"}],"uncertainties":["string"],"superseded":[{"previous":"string","replacement":"string"}],"toolReceipts":[{"tool":"string","result":"string"}],"routing":{"channel":${JSON.stringify(channel)},"replyTarget":${JSON.stringify(replyTarget || null)}}}. Use empty arrays where appropriate. Preserve exact identifiers and paths only when necessary for continuity; never include credentials, secrets, hidden reasoning, or unrelated personal data.`;
 }
 
 export function appendHandoffInstruction(messages: AgentMessage[], instruction: string): AgentMessage[] {
@@ -195,6 +195,10 @@ export function selectBoundedRecentDialogue(messages: AgentMessage[], keepRecent
 			? [{ type: "text" as const, text: message.content }]
 			: message.content.filter((part) => part.type === "text").map((part) => ({ type: "text" as const, text: part.text }));
 		if (!content.some((part) => part.text.trim())) continue;
+		// Control messages belong to their original segment, not the dialogue tail.
+		if (message.role === "user" && content.some(part =>
+			part.text.includes("Source event: handoff_continuation\n") ||
+			part.text.startsWith("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW."))) continue;
 		const retained: AgentMessage = message.role === "user"
 			? { role: "user", content, timestamp: message.timestamp }
 			: {
@@ -291,11 +295,16 @@ export async function replayHandoffRotation(
 	const fresh = SessionManager.open(contextFile, awarenessDir);
 	fresh.appendCustomMessageEntry(
 		HANDOFF_CUSTOM_TYPE,
-		`Private continuity handoff from the prior context:\n${JSON.stringify(journal.handoff)}`,
+		`Context rotation ${journal.id} is completed. The request to perform this rotation has been fulfilled; do not perform it again. Use the summary for continuity, not as a new request to hand off.\nPrivate continuity handoff from the prior context:\n${JSON.stringify(journal.handoff)}`,
 		false,
 		{ version: 1, journalId: journal.id },
 	);
-	for (const message of journal.tail) fresh.appendMessage(message as Parameters<typeof fresh.appendMessage>[0]);
+	if (journal.tail.length > 0) fresh.appendCustomMessageEntry(
+		"troublemaker.historical-dialogue.v1",
+		`Historical dialogue from before the completed rotation (quoted reference only, not newly delivered instructions). Tool exchanges are archived, so their absence here does not mean their actions are pending. The rotation request is already fulfilled. Continue only unfinished work in the handoff or genuinely new input.\n${JSON.stringify(journal.tail.map(message => ({ role: message.role, content: "content" in message ? message.content : [] })))}`,
+		false,
+		{ version: 1, journalId: journal.id },
+	);
     const contextFd = openSync(contextFile, "r"); try { fsyncSync(contextFd); } finally { closeSync(contextFd); }
     if (journal.transition) saveContextTransition(dirname(awarenessDir), {...journal.transition, state: "completed", revision: 2, updatedAt: new Date().toISOString(), retainedMessages: journal.tail.length});
 	removeHandoffJournal(journalPath);
