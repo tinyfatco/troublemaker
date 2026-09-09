@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FilesystemWorkspaceStore } from "../src/storage/node/filesystem-workspace.js";
-import { compactInitialRuntimePrefix, compactPromptEnabled, getCompactWorkspaceContext, COMPACT_INITIAL_TOOLS } from "../src/core/compact-prompt.js";
+import { existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, getCompactWorkspaceContext, COMPACT_INITIAL_TOOLS } from "../src/core/compact-prompt.js";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { createSearchToolsTool } from "../src/tools/search-tools.js";
 const dir = mkdtempSync(join(tmpdir(), "example-compact-"));
@@ -15,7 +15,10 @@ try {
  const context = getCompactWorkspaceContext(new FilesystemWorkspaceStore(dir));
  assert.ok(context.includes(rules.trim()));
  assert.ok(context.includes("Do not access the private example volume."));
- assert.ok(!context.includes("OLD HISTORY"));
+ assert.ok(context.includes("OLD HISTORY ".repeat(10000)));
+ for (const name of ["IDENTITY.md","SOUL.md","HEARTBEAT.md","BRIEF.md"]) { writeFileSync(join(dir,name),`Full ${name} end`); }
+ const full = getCompactWorkspaceContext(new FilesystemWorkspaceStore(dir));
+ for (const name of ["IDENTITY.md","SOUL.md","HEARTBEAT.md","BRIEF.md"]) assert(full.includes(`Full ${name} end`));
  assert.ok(context.includes("These files have not been loaded"));
  assert.equal(compactPromptEnabled(undefined),false);
  assert.equal(compactPromptEnabled("compact"),true);
@@ -24,6 +27,9 @@ try {
  const runtime:AgentMessage={role:"custom",customType:"runtime-context",content:"Stable workspace",display:false,timestamp:2};
  const later:AgentMessage={...runtime,content:"Later update",timestamp:3};
  const messages=[user,runtime,user,later];
+ assert.equal(existingCompactRuntimeContext(messages), "Later update", "restart retains latest admitted snapshot even when files change");
+ assert.equal(existingCompactRuntimeContext([user]), undefined, "fresh context loads current files");
+ assert.equal(existingCompactRuntimeContext([{role:"custom",customType:"troublemaker.continuity-handoff.v1",content:"summary",display:false,timestamp:4}]), undefined, "handoff loads current files");
  assert.deepEqual(compactInitialRuntimePrefix(messages),[runtime,user,user,later]);
  assert.deepEqual(messages,[user,runtime,user,later],"durable order must remain unchanged");
  assert.deepEqual(compactInitialRuntimePrefix([user,runtime]),[runtime,user],"first request and later requests must share prefix placement");

@@ -24,7 +24,7 @@ import { MomSettingsManager } from "./context.js";
 import { inferenceProgressURL, watchInferenceProgress } from "./inference-progress.js";
 import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
 import { InputBudget } from "./core/input-budget.js";
-import { buildCompactSystemPrompt, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
+import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
 import { playCompactionCue } from "./compaction-cue.js";
 import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
 import {
@@ -571,7 +571,13 @@ async function createRunner(
 			thinkingLevel: initialThinkingLevel,
 			tools,
 		},
-		convertToLlm: (messages) => convertToLlm(compactPrompt ? compactInitialRuntimePrefix(messages) : messages),
+		convertToLlm: (messages) => (compactPrompt ? compactInitialRuntimePrefix(messages) : messages).flatMap(message => {
+			const converted = convertToLlm([message]);
+			if (message.role === "custom" && message.customType === "runtime-context") {
+				for (const item of converted) inputBudget?.trust(item);
+			}
+			return converted;
+		}),
 		// AgentSession binds lifecycle hooks, but the SDK normally installs this
 		// provider-context bridge. Our manually constructed Agent needs it too.
 		transformContext: async (messages) => session?.extensionRunner
@@ -1372,7 +1378,8 @@ async function createRunner(
 				verbosity: channelVerbosity,
 				model: currentModel,
 			};
-			activeRuntimeContext = buildWorkspaceRuntimeContext(sessionContextOptions);
+			activeRuntimeContext = (compactPrompt ? existingCompactRuntimeContext(agent.state.messages) : undefined)
+				?? buildWorkspaceRuntimeContext(sessionContextOptions);
 			const sessionPreamble = buildSessionRoutingPreamble(sessionContextOptions);
 
 			// Set up file upload function

@@ -27,14 +27,20 @@ ${formatInstructions}`;
 
 /** Preserve binding rules and active work in full. Do not silently clip them to a token target. */
 export function getCompactWorkspaceContext(workspace: WorkspaceStore): string {
-	if (workspace.exists("BOOTSTRAP.md")) return `Bootstrap:\n${workspace.readText("BOOTSTRAP.md") ?? ""}`;
 	const sections: string[] = [];
-	for (const file of ["AGENTS.md", "IDENTITY.md", "USER.md", "BRIEF.md"]) {
-		const content = workspace.readText(file)?.trim();
-		if (content) sections.push(`${file}:\n${content}`);
+	for (const file of ["BOOTSTRAP.md", "AGENTS.md", "IDENTITY.md", "USER.md", "SOUL.md", "MEMORY.md", "HEARTBEAT.md", "BRIEF.md"]) {
+		const content = workspace.readText(file);
+		if (content?.trim()) sections.push(`${file}:\n${content}`);
 	}
 	const goal = renderGoalContext(readGoalState(workspace));
 	if (goal) sections.push(goal);
-	sections.push("Additional context is available on demand: SOUL.md (personality), MEMORY.md and memory/ (history), skills/ (task guides), SYSTEM.md (environment), calendar/README.md and display/README.md. These files have not been loaded. Read relevant files before relying on their contents.");
+	sections.push("Additional context is available on demand: memory/ (daily history), skills/ (task guides), SYSTEM.md (environment), calendar/README.md and display/README.md. These files have not been loaded. Read relevant files before relying on their contents.");
 	return sections.join("\n\n");
+}
+
+/** A workspace snapshot belongs to a context lifetime, including across restart. */
+export function existingCompactRuntimeContext(messages: AgentMessage[]): string | undefined {
+ const snapshot = [...messages].reverse().find(message => message.role === "custom" && message.customType === "runtime-context");
+ if (!snapshot || snapshot.role !== "custom") return undefined;
+ return typeof snapshot.content === "string" ? snapshot.content : snapshot.content.filter(part => part.type === "text").map(part => part.text).join("\n");
 }
