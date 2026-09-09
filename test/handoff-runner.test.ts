@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,9 +22,15 @@ const server = createServer(async (req, res) => {
 	for await (const chunk of req) body += chunk;
 	requests.push(JSON.parse(body));
 	const n = requests.length;
-	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
+	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
 	res.writeHead(200, {"Content-Type": "text/event-stream"});
 	const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({id: `example-${n}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices, ...(usage ? {usage} : {})})}\n\n`);
+	if (n === 7) {
+		send([{index: 0, delta: {role: "assistant", tool_calls: [{index: 0, id: "example-paused-tool", type: "function", function: {name: "call_tool", arguments: JSON.stringify({name: "bash", arguments: {command: `printf unexpected > '${join(root, "must-not-exist")}'`, label: "Synthetic paused write"}})}}]}, finish_reason: null}]);
+		send([{index: 0, delta: {}, finish_reason: "tool_calls"}]);
+		res.end("data: [DONE]\n\n");
+		return;
+	}
 	send([{index: 0, delta: {role: "assistant", content}, finish_reason: null}]);
 	if (n === 5) {
 		await new Promise(resolve => setTimeout(resolve, 20));
@@ -77,6 +83,18 @@ try {
 	assert.equal(requests.length, 5, "cancelled checkpoint must not resume");
 	assert(readFileSync(join(root, "awareness/context.jsonl"), "utf8").startsWith(beforeAbort));
 	assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBefore);
+	settings.compaction.reserveTokens = 10000;
+	writeFileSync(settingsPath, JSON.stringify(settings));
+	const manual = await runner.compact("Preserve the synthetic fixture only.");
+	assert.equal(requests.length, 6, "explicit compaction writes one warm checkpoint without resuming tasks");
+	assert(manual.messagesAfter > 0);
+	assert(JSON.stringify(requests[5].messages).includes("PRIVATE CONTINUITY CHECKPOINT"));
+	assert.deepEqual(requests[5].messages[0], requests[2].messages[0], "manual handoff uses the conversation system prompt, not standalone summarization");
+	assert.deepEqual(requests[5].tools, requests[2].tools);
+	await runner.compact();
+	assert.equal(requests.length, 8);
+	assert(!existsSync(join(root, "must-not-exist")), "tool calls cannot mutate state during checkpoint generation");
+	assert(JSON.stringify(requests[7].messages).includes("Tool work is paused"));
 	console.log("handoff runner: ok");
 } finally {
 	await new Promise<void>(resolve => server.close(() => resolve()));

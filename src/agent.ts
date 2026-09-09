@@ -57,7 +57,7 @@ import { UserInputProvenance } from "./streaming/user-input-provenance.js";
 import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sender-identity.js";
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
-import type { ChannelStore } from "./store.js";
+import { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
@@ -572,6 +572,10 @@ async function createRunner(
 
 	let activeSystemPrompt = systemPrompt;
 	let activeRuntimeContext = "";
+	let forceHandoff = false;
+	let completedHandoffRotations = 0;
+	let lastRunContext: MomContext | undefined;
+	let lastRunFormatInstructions = formatInstructions;
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
 		() => activeSystemPrompt,
 		() => runState.handoffRequested ? "" : activeRuntimeContext,
@@ -584,11 +588,11 @@ async function createRunner(
 		const requestHandoff = (messages: readonly AgentMessage[]) => {
 			const settings = settingsManager.getCompactionSettings();
 			const ctx = runState.ctx;
-			if (!ctx || !settings.enabled || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
-			if (!runState.handoffRequested && shouldRequestHandoff(
+			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
+			if (!runState.handoffRequested && (forceHandoff || shouldRequestHandoff(
 				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
 				settings.reserveTokens, settings.keepRecentTokens,
-			)) {
+			))) {
 				runState.handoffRequested = true;
 				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
 			}
@@ -603,6 +607,12 @@ async function createRunner(
 			// Append a small control message without rewriting or duplicating the
 			// runtime snapshot. The original messages remain an exact prefix.
 			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
+		});
+		pi.on("tool_call", () => {
+			if (runState.handoffRequested) return {
+				block: true,
+				reason: "Continuity checkpoint required: write the requested private handoff now. Tool work is paused until context rotation.",
+			};
 		});
 	};
 	const resourceLoader = new DefaultResourceLoader({
@@ -1206,6 +1216,10 @@ async function createRunner(
 			completionID?: string,
 		): Promise<RunResult> {
 			resumeAfterHandoff = false;
+			if (!forceHandoff) {
+				lastRunContext = ctx;
+				lastRunFormatInstructions = runFormatInstructions;
+			}
 			const tRun = performance.now();
 			runState.completionID = completionID?.trim() || randomUUID();
 			runState.assistantText.reset(runState.completionID);
@@ -1666,6 +1680,7 @@ async function createRunner(
 					writeHandoffJournal(rotationJournalPath, journal);
 					resetSessionState();
 					await recoverRotation(journal);
+					completedHandoffRotations++;
 					resumeAfterHandoff = journal.handoff.inProgress.some((item) => item.trim())
 						|| journal.handoff.nextSteps.some((item) => item.trim());
 					log.logInfo(`[handoff] Context rotated with ${tail.length} complete recent messages`);
@@ -1818,6 +1833,37 @@ async function createRunner(
 
 			// Don't compact if context is too small to benefit
 			const info = this.getContextInfo();
+			settingsManager.reload();
+			if (settingsManager.getCompactionSettings().mode === "handoff") {
+				if (messagesBefore === 0) throw new Error("No conversation to checkpoint.");
+				if (runState.ctx) throw new Error("Wait for the active run to finish before compacting.");
+				const noop = async () => {};
+				const text = `Harness-requested continuity checkpoint. Preserve the current task without performing further work.${instructions ? `\nAdditional checkpoint guidance: ${instructions}` : ""}`;
+				const maintenanceContext: MomContext = {
+					message: { text, rawText: text, user: "harness", userName: "harness",
+						channel: lastRunContext?.message.channel ?? "compaction", ts: String(Date.now()),
+						replyTarget: lastRunContext?.message.replyTarget, sourceEventType: "handoff_compaction", attachments: [] },
+					channels: lastRunContext?.channels ?? [], users: lastRunContext?.users ?? [],
+					channelName: lastRunContext?.channelName,
+					respond: noop, sendFinalResponse: noop, respondInThread: noop, setTyping: noop,
+					uploadFile: noop, setWorking: noop, deleteMessage: noop, restartWorking: noop,
+				};
+				const before = completedHandoffRotations;
+				forceHandoff = true;
+				handoffRunAborted = false;
+				try {
+					// Use the ordinary warm provider path, but do not resume the task
+					// during an explicit maintenance-only compaction operation.
+					const result = await runSegment(maintenanceContext, new ChannelStore({ workingDir: workspaceDir, botToken: "" }), undefined, lastRunFormatInstructions);
+					if (result.stopReason === "error" || result.stopReason === "aborted" || completedHandoffRotations === before) {
+						throw new Error(result.errorMessage ?? "Checkpoint cancelled; original conversation preserved.");
+					}
+					return { messagesBefore, messagesAfter: getSessionManager().buildSessionContext().messages.length, tokensBefore: info.contextTokens };
+				} finally {
+					forceHandoff = false;
+					resumeAfterHandoff = false;
+				}
+			}
 			const MIN_COMPACT_TOKENS = 50000;
 			if (info.contextTokens < MIN_COMPACT_TOKENS && info.contextTokens > 0) {
 				throw new Error(`Context too small to compact (${log.formatTokens(info.contextTokens)} tokens, minimum ${log.formatTokens(MIN_COMPACT_TOKENS)})`);
