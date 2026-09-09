@@ -92,7 +92,7 @@ import {
 	writeHandoffJournal,
 	type HandoffRotationJournal,
 } from "./handoff-compaction.js";
-import { handoffContinuationMessage, runHandoffSegments } from "./handoff-continuation.js";
+import { createRunnerOperationQueue, handoffContinuationMessage, runHandoffSegments } from "./handoff-continuation.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -1933,6 +1933,11 @@ async function createRunner(
 			return { result, resume: resumeAfterHandoff };
 		}, () => handoffRunAborted);
 	};
+	const serializeOperation = createRunnerOperationQueue();
+	const runCanonical = runner.run.bind(runner);
+	const compactCanonical = runner.compact.bind(runner);
+	runner.run = (...args) => serializeOperation(() => runCanonical(...args));
+	runner.compact = (...args) => serializeOperation(() => compactCanonical(...args));
 	startLiveModelCatalogRefresh(workspaceDir, modelRegistry);
 	return runner;
 }

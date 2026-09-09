@@ -22,7 +22,7 @@ const server = createServer(async (req, res) => {
 	for await (const chunk of req) body += chunk;
 	requests.push(JSON.parse(body));
 	const n = requests.length;
-	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
+	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8 || n === 9) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
 	res.writeHead(200, {"Content-Type": "text/event-stream"});
 	const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({id: `example-${n}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices, ...(usage ? {usage} : {})})}\n\n`);
 	if (n === 7) {
@@ -95,6 +95,16 @@ try {
 	assert.equal(requests.length, 8);
 	assert(!existsSync(join(root, "must-not-exist")), "tool calls cannot mutate state during checkpoint generation");
 	assert(JSON.stringify(requests[7].messages).includes("Tool work is paused"));
+	const maintenance = runner.compact();
+	const concurrentInput = {...ctx, message: {...ctx.message, text: "Concurrent user correction", rawText: "Concurrent user correction", ts: "5"}};
+	const interactive = runner.run(concurrentInput, store);
+	await maintenance;
+	assert.equal((await interactive).stopReason, "stop");
+	assert.equal(requests.length, 10, "concurrent interactive input waits for checkpoint completion without being dropped or replayed");
+	assert(JSON.stringify(requests[8].messages).includes("PRIVATE CONTINUITY CHECKPOINT"));
+	assert(!JSON.stringify(requests[8].messages).includes("Concurrent user correction"));
+	assert(JSON.stringify(requests[9].messages).includes("Concurrent user correction"));
+	assert(!JSON.stringify(requests[9].messages).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"));
 	console.log("handoff runner: ok");
 } finally {
 	await new Promise<void>(resolve => server.close(() => resolve()));
