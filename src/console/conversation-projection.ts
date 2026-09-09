@@ -1,4 +1,5 @@
 import type { RuntimeLiveEvent, RuntimeStreamEvent } from "../core/runtime-contract.js";
+import { parseInferenceProgress, type InferenceProgress } from "../inference-progress.js";
 import { readVerifiedSenderIdentity } from "../sender-identity.js";
 import {
 	mergeToolExecutionDetails,
@@ -60,7 +61,7 @@ interface ConversationLiveBase {
 
 type ConversationLivePayload =
 	| { kind: "message"; message: ConversationMessage }
-	| { kind: "state"; runId: string; state: "thinking"; message?: string }
+	| { kind: "state"; runId: string; state: "thinking"; message?: string; processing?: InferenceProgress }
 	| {
 		kind: "assistant";
 		runId: string;
@@ -353,7 +354,8 @@ function projectConversationRuntimeEvent(
 		};
 	}
 	if (event.type === "status") {
-		return { kind: "state", runId, state: "thinking", ...(event.message ? { message: event.message } : {}) };
+		const processing = parseInferenceProgress(event.processing);
+		return { kind: "state", runId, state: "thinking", ...(event.message ? { message: event.message } : {}), ...(processing ? { processing } : {}) };
 	}
 	// Operational runtime events still advance only the prose cursor. Any tool
 	// presentation belongs to the separately sanitized awareness sibling.
@@ -398,9 +400,11 @@ export function projectConversationTurnEvent(event: Record<string, unknown>): Re
 	if (type === "text") return { type: "assistant_text", text: stringValue(event.text) };
 	if (type === "text_patch") return { type: "assistant_text", text: stringValue(event.text) };
 	if (type === "status") {
+		const processing = parseInferenceProgress(event.processing);
 		return {
 			type: "state",
 			state: "thinking",
+			...(processing ? { processing } : {}),
 			...(stringValue(event.message) ? { message: stringValue(event.message) } : {}),
 		};
 	}

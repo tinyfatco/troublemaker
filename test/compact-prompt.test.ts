@@ -1,0 +1,38 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { FilesystemWorkspaceStore } from "../src/storage/node/filesystem-workspace.js";
+import { compactInitialRuntimePrefix, compactPromptEnabled, getCompactWorkspaceContext, COMPACT_INITIAL_TOOLS } from "../src/core/compact-prompt.js";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import { createSearchToolsTool } from "../src/tools/search-tools.js";
+const dir = mkdtempSync(join(tmpdir(), "example-compact-"));
+try {
+ const rules = "Binding rule. ".repeat(1000);
+ writeFileSync(join(dir,"AGENTS.md"),rules);
+ writeFileSync(join(dir,"USER.md"),"Do not access the private example volume.");
+ writeFileSync(join(dir,"MEMORY.md"),"OLD HISTORY ".repeat(10000));
+ const context = getCompactWorkspaceContext(new FilesystemWorkspaceStore(dir));
+ assert.ok(context.includes(rules.trim()));
+ assert.ok(context.includes("Do not access the private example volume."));
+ assert.ok(!context.includes("OLD HISTORY"));
+ assert.ok(context.includes("These files have not been loaded"));
+ assert.equal(compactPromptEnabled(undefined),false);
+ assert.equal(compactPromptEnabled("compact"),true);
+ assert.deepEqual(COMPACT_INITIAL_TOOLS,["bash","search_tools"]);
+ const user:AgentMessage={role:"user",content:"Example input",timestamp:1};
+ const runtime:AgentMessage={role:"custom",customType:"runtime-context",content:"Stable workspace",display:false,timestamp:2};
+ const later:AgentMessage={...runtime,content:"Later update",timestamp:3};
+ const messages=[user,runtime,user,later];
+ assert.deepEqual(compactInitialRuntimePrefix(messages),[runtime,user,user,later]);
+ assert.deepEqual(messages,[user,runtime,user,later],"durable order must remain unchanged");
+ assert.deepEqual(compactInitialRuntimePrefix([user,runtime]),[runtime,user],"first request and later requests must share prefix placement");
+ let active = ["bash","search_tools"];
+ const registry = {getAllTools:()=>[{name:"read",description:"Read a file"},{name:"bash"}],getActiveToolNames:()=>active,setActiveToolsByName:(names:string[])=>{active=names;}};
+ await createSearchToolsTool(()=>registry,true).execute("example-call",{query:"read"});
+ assert.ok(active.includes("read"),"compact discovery must find inactive core tools");
+ active=["bash","search_tools"];
+ await createSearchToolsTool(()=>registry).execute("example-call",{query:"read"});
+ assert.ok(!active.includes("read"),"default discovery must remain unchanged");
+} finally {rmSync(dir,{recursive:true,force:true});}
+console.log("compact prompt: ok");
