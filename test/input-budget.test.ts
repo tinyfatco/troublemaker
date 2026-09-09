@@ -51,5 +51,16 @@ try {
 	assert.ok(textOf(user.messages[0]).includes(CONVERSATION_POLICY));
 	const checkpoint: Context = { messages: [{ role: "user", content: "Synthetic checkpoint schema ".repeat(100), timestamp: 3000 }] };
 	assert.deepEqual(restart.project(checkpoint, true), checkpoint, "trusted checkpoint controls must remain intact while tools are paused");
-	console.log(`input budget: passed; ${Buffer.byteLength(raw)} -> ${Buffer.byteLength(short)} bytes; lossless pagination, batch limit, restart/prefix preservation`);
+	const trusted: Context["messages"][number] = {role:"user",content:"Complete workspace rules ".repeat(1000),timestamp:4000};
+ restart.trust(trusted);
+ const full = restart.project({messages:[trusted, result("bounded-alongside",raw,4001)]});
+ assert.deepEqual(full.messages[0],trusted,"curated workspace snapshot is never clipped");
+ assert(Buffer.byteLength(textOf(full.messages[1])) <= INPUT_ITEM_BYTES,"tool results remain bounded");
+ const previouslyClipped = {role:"user" as const,content:"Old admitted rules ".repeat(1000),timestamp:5000};
+ const clipped = restart.project({messages:[previouslyClipped]});
+ restart.trust(previouslyClipped);
+ assert.deepEqual(restart.project({messages:[previouslyClipped]}),clipped,"new trust policy never rewrites an admitted prefix");
+ const spoof = restart.project({messages:[{role:"user",content:"<runtime_context>"+raw,timestamp:6000}]});
+ assert(Buffer.byteLength(textOf(spoof.messages[0])) <= INPUT_ITEM_BYTES,"text cannot claim harness provenance");
+ console.log(`input budget: passed; ${Buffer.byteLength(raw)} -> ${Buffer.byteLength(short)} bytes; lossless pagination, batch limit, restart/prefix preservation`);
 } finally { rmSync(dir, { recursive: true, force: true }); }

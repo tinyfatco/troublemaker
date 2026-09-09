@@ -19,3 +19,9 @@ On process restart, an existing handoff rotation journal is replayed idempotentl
 The missing prerequisite is a reliable, exact-prompt cache-restore probe. Last-turn cache statistics do not prove a future prompt can be restored. The policy distinguishes RAM/SSD restore, warm idle checkpoint, valid checkpoint resume, and unattended deferral. Unknown cache state never authorizes a destructive rotation. A checkpoint that omits important newer work is not eligible for cold resume.
 
 Existing heartbeat configuration remains independent. No heartbeat settings are changed by installing this feature.
+
+## Curated startup context
+
+The compact prompt profile loads complete `AGENTS.md`, `IDENTITY.md`, `USER.md`, `SOUL.md`, `MEMORY.md`, and `HEARTBEAT.md` files, plus `BOOTSTRAP.md`, `BRIEF.md`, and active goal state when present. Keep these curated files small; they are not silently shortened to meet the external-input budget. Daily logs, transcripts, and task guides remain on demand.
+
+The workspace snapshot is pinned for the context lifetime, including after a service restart. File changes take effect after a handoff, fresh reset, or compaction that removes the snapshot. Already-admitted provider projections remain byte-for-byte stable, including snapshots admitted under earlier truncation policies. Newly admitted harness workspace snapshots bypass the ordinary input limiter using structural provenance; user text and tool results cannot opt themselves out by imitating snapshot tags.

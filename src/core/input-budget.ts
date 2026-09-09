@@ -28,6 +28,9 @@ function save(path: string, text: string): void {
 /** Durable, append-only provider projections. Never rewrite an admitted prefix. */
 export class InputBudget {
 	private readonly startedAt: number;
+	private readonly trusted = new WeakSet<object>();
+	/** Only harness-owned messages are registered before role conversion loses provenance. */
+	trust(message: Message): void { this.trusted.add(message); }
 	constructor(private readonly directory: string, now = Math.floor(Date.now() - process.uptime() * 1000)) {
 		mkdirSync(directory, { recursive: true, mode: 0o700 });
 		const epoch = join(directory, "epoch");
@@ -41,7 +44,7 @@ export class InputBudget {
 		// The harness's checkpoint schema is control data, not external input.
 		// Cutting it could deadlock handoff while normal tools are paused.
 		const checkpoint = preserveCheckpoint ? [...context.messages].reverse().find(message => message.role === "user") : undefined;
-		const pending = context.messages.filter(message => message !== checkpoint && message.role !== "assistant" && !this.saved(message));
+		const pending = context.messages.filter(message => message !== checkpoint && !this.trusted.has(message) && message.role !== "assistant" && !this.saved(message));
 		// Reserve a bounded receipt for every result, including large parallel batches.
 		const share = Math.min(INPUT_ITEM_BYTES, Math.floor(INPUT_BATCH_BYTES / Math.max(1, pending.length)));
 		if (pending.length > 16) throw new Error("Input batch exceeds 16 unadmitted messages; split the batch before model inference.");
@@ -52,7 +55,7 @@ export class InputBudget {
 			if (existsSync(path)) return JSON.parse(readFileSync(path, "utf8")) as Message;
 			// Existing transcripts are grandfathered on first deployment. Their
 			// original bytes remain available to the inference server's warm cache.
-			if (message === checkpoint || message.timestamp < this.startedAt) {
+			if (message === checkpoint || this.trusted.has(message) || message.timestamp < this.startedAt) {
 				save(path, JSON.stringify(message));
 				return message;
 			}
