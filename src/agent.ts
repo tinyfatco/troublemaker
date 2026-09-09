@@ -522,8 +522,11 @@ async function createRunner(
 		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(context) : context, normalizedOptions);
 		if (progressURL) {
 			const sink = runState.liveEventSink;
+			const responseContext = runState.ctx;
 			const stop = watchInferenceProgress(progressURL, requestId, (processing) => {
-				void Promise.resolve(sink?.({ type: "status", status: "processing", processing })).catch(() => {});
+				const event = { type: "status", status: "processing", processing } as const;
+				try { void Promise.resolve(sink?.(event)).catch(() => {}); } catch { /* Best effort. */ }
+				try { responseContext?.emitContentBlock?.(event); } catch { /* Best effort. */ }
 			});
 			void result.result().then(stop, stop);
 		}
