@@ -33,3 +33,8 @@ try {
  assert.equal(decideCacheResume(on,{...input,interactive:true}),'ask_user');
  console.log('PASS context transition persistence, handoff tool, and cache resume policy');
 } finally {await rm(root,{recursive:true,force:true});}
+
+const alreadyCompleted = createHandoffContextTool(() => false);
+const noReplay = await alreadyCompleted.execute('example-completed-call', {label:'Repeat synthetic rotation', summary:'Synthetic summary', nextSteps:[], continue:true});
+assert.equal(noReplay.terminate, true);
+assert(JSON.stringify(noReplay.content).includes('already completed'));

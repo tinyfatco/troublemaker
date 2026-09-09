@@ -1,7 +1,7 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
 import { extractStructuredHandoff, HANDOFF_OPEN, HANDOFF_CLOSE, type StructuredHandoff } from '../handoff-compaction.js';
-export function createHandoffContextTool(stage: (summary: StructuredHandoff, resume: boolean) => void): AgentTool<any> {
+export function createHandoffContextTool(stage: (summary: StructuredHandoff, resume: boolean) => void | false): AgentTool<any> {
  return {
   name: 'handoff_context', label: 'Hand off context',
   description: 'Save a concise continuity summary and rotate into fresh context at the end of this tool sequence. Use when the user requests a handoff, or when a long task needs a fresh context. Write the summary from the current conversation; do not reread all history. Completed work must not be repeated. No more tools should follow this call.',
@@ -17,7 +17,10 @@ export function createHandoffContextTool(stage: (summary: StructuredHandoff, res
    const summary = { version: 1, goal: args.summary, constraints: [], completed: [], inProgress: [], nextSteps, decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: '', replyTarget: null} };
    const parsed = extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(summary)}${HANDOFF_CLOSE}`);
    if (!parsed) throw new Error('Invalid continuity summary');
-   stage(parsed.handoff, args.continue === true);
+   if (stage(parsed.handoff, args.continue === true) === false) return {
+    content: [{ type: 'text', text: 'The requested context handoff already completed in this run. No additional rotation was performed. Returning control to the user.' }],
+    details: {}, terminate: true,
+   };
    return { content: [{type:'text',text:'Handoff staged. The harness will archive and rotate at the safe turn boundary.'}], details: {}, terminate: true };
   },
  };

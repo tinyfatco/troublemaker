@@ -465,6 +465,7 @@ async function createRunner(
 		...extraTools,
         createHandoffContextTool((summary, resume) => {
             if (agent.state.messages.filter(m => m.role === "assistant").at(-1)?.content.filter(c => c.type === "toolCall").length !== 1) throw new Error("Call handoff_context alone, after other tools finish");
+            if (runState.ctx?.message.sourceEventType === "handoff_continuation" && completedHandoffRotations > rotationsAtRunStart) return false;
             if (!runState.ctx || runState.handoffRequested) throw new Error("A handoff is already pending or no conversation is active");
             if (completedHandoffRotations - rotationsAtRunStart >= 8) throw new Error("Too many handoffs in this run; return control to the user");
             summary.routing = { channel: runState.ctx.message.channel, replyTarget: runState.ctx.message.replyTarget || null };
@@ -628,6 +629,17 @@ async function createRunner(
 			requestHandoff([...agent.state.messages, { role: "user", content: event.prompt, timestamp: 0 }]);
 		});
 		pi.on("context", (event) => {
+			// A tool checkpoint already contains its summary. Another model call
+			// means steering/follow-up continued the segment before rotation.
+			// That newer input supersedes the staged snapshot; preserve this context.
+			if (runState.toolHandoff) {
+				finishTransition("aborted");
+				runState.handoffRequested = false;
+				runState.toolHandoff = false;
+				runState.capturedHandoff = null;
+				runState.handoffContinue = false;
+				return;
+			}
 			const ctx = requestHandoff(event.messages);
 			if (!ctx) return;
 			// Append a small control message without rewriting or duplicating the
@@ -635,7 +647,7 @@ async function createRunner(
 			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
 		});
 		pi.on("tool_call", () => {
-			if (runState.handoffRequested) return {
+			if (runState.handoffRequested && !runState.toolHandoff) return {
 				block: true,
 				reason: "Continuity checkpoint required: write the requested private handoff now. Tool work is paused until context rotation.",
 			};
