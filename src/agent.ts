@@ -1,3 +1,5 @@
+import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
+import { createHandoffContextTool } from "./tools/handoff-context.js";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -461,6 +463,17 @@ async function createRunner(
 	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
+        createHandoffContextTool((summary, resume) => {
+            if (agent.state.messages.filter(m => m.role === "assistant").at(-1)?.content.filter(c => c.type === "toolCall").length !== 1) throw new Error("Call handoff_context alone, after other tools finish");
+            if (!runState.ctx || runState.handoffRequested) throw new Error("A handoff is already pending or no conversation is active");
+            if (completedHandoffRotations - rotationsAtRunStart >= 8) throw new Error("Too many handoffs in this run; return control to the user");
+            summary.routing = { channel: runState.ctx.message.channel, replyTarget: runState.ctx.message.replyTarget || null };
+            runState.handoffRequested = true;
+            runState.toolHandoff = true;
+            runState.handoffContinue = resume;
+            runState.capturedHandoff = {publicText: "", handoff: summary};
+            beginTransition("handoff", "agent");
+        }),
 		...(inputBudget ? [inputBudget.tool] : []),
 		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
 	]);
@@ -493,6 +506,12 @@ async function createRunner(
 	});
 	await registerClaudeCliRuntimeAuth(modelRuntime);
 	const modelRegistry = new ModelRegistry(modelRuntime);
+
+    for (const interrupted of readContextTransitions(workspaceDir)) {
+        if (interrupted.state === "preparing") saveContextTransition(workspaceDir, {
+            ...interrupted, state: "aborted", revision: interrupted.revision + 1, updatedAt: new Date().toISOString(),
+        });
+    }
 
 	// Resolve model before starting catalog refresh so discovery can never
 	// mutate the resident's active choice. Refreshed models become eligible only
@@ -579,6 +598,7 @@ async function createRunner(
 	let activeRuntimeContext = "";
 	let forceHandoff = false;
 	let completedHandoffRotations = 0;
+    let rotationsAtRunStart = 0;
 	let lastRunContext: MomContext | undefined;
 	let lastRunFormatInstructions = formatInstructions;
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
@@ -599,6 +619,7 @@ async function createRunner(
 				settings.reserveTokens, settings.keepRecentTokens,
 			))) {
 				runState.handoffRequested = true;
+                beginTransition("handoff", forceHandoff ? "user" : "context_limit");
 				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
 			}
 			return runState.handoffRequested ? ctx : undefined;
@@ -798,8 +819,29 @@ async function createRunner(
 		runStartLeafID: null as string | null,
 		claimedAssistantMessageIDs: new Set<string>(),
 		handoffRequested: false,
+        toolHandoff: false,
+        handoffContinue: true,
 		capturedHandoff: null as ReturnType<typeof extractStructuredHandoff>,
 	};
+
+    let activeTransition: ContextTransition | null = null;
+    const publishTransition = (value: ContextTransition) => {
+        saveContextTransition(workspaceDir, value);
+        const event = {type: "status" as const, status: value.state === "preparing" ? "compacting" as const : "streaming" as const, contextTransition: value};
+        emitLiveEvent(event);
+        runState.ctx?.emitContentBlock?.(event);
+    };
+    const beginTransition = (kind: ContextTransition["kind"], trigger: ContextTransition["trigger"]) => {
+        if (activeTransition) return;
+        const now = new Date().toISOString();
+        activeTransition = {version: 1, id: randomUUID(), kind, trigger, state: "preparing", revision: 1, startedAt: now, updatedAt: now};
+        publishTransition(activeTransition);
+    };
+    const finishTransition = (state: ContextTransition["state"], counts: Partial<Pick<ContextTransition, "tokensBefore" | "tokensAfter" | "retainedMessages">> = {}) => {
+        if (!activeTransition) return;
+        publishTransition({...activeTransition, ...counts, state, revision: 2, updatedAt: new Date().toISOString()});
+        activeTransition = null;
+    };
 
 	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
 		const sink = runState.liveEventSink;
@@ -891,8 +933,8 @@ async function createRunner(
 	// Event handler
 	let _eventSeq = 0;
 	const eventHandler = async (event: any) => {
-		if (event.type === "compaction_start") beginCompaction(event.reason);
-		else if (event.type === "compaction_end") finishCompaction();
+		if (event.type === "compaction_start") { beginCompaction(event.reason); beginTransition("compaction", "context_limit"); }
+		else if (event.type === "compaction_end") { finishCompaction(); const e = event as any; finishTransition(e.result ? "completed" : e.aborted ? "aborted" : e.errorMessage ? "failed" : "skipped", e.result ? {tokensBefore: e.result.tokensBefore} : {}); }
 		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
 
 		_eventSeq++;
@@ -1353,7 +1395,9 @@ async function createRunner(
 			runState.liveEventSink = liveEventSink ?? null;
 			runState.claimedAssistantMessageIDs.clear();
 			runState.handoffRequested = false;
-			runState.capturedHandoff = null;
+            runState.toolHandoff = false;
+            runState.handoffContinue = true;
+            runState.capturedHandoff = null;
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -1592,12 +1636,12 @@ async function createRunner(
 						.filter((c): c is { type: "text"; text: string } => c.type === "text")
 						.map((c) => c.text) ?? [];
 				const rawFinalText = rawFinalTextParts.join("");
-				runState.capturedHandoff = runState.handoffRequested
+				runState.capturedHandoff = runState.capturedHandoff ?? (runState.handoffRequested
 					? extractStructuredHandoff(rawFinalText, {
 						channel: ctx.message.channel,
 						replyTarget: ctx.message.replyTarget || null,
 					})
-					: null;
+					: null);
 				if (runState.handoffRequested && !runState.capturedHandoff && runState.stopReason !== "aborted") {
 					runState.stopReason = "error";
 					runState.errorMessage = "Could not create a valid continuity checkpoint. The conversation was preserved and no continuation was started.";
@@ -1667,8 +1711,9 @@ async function createRunner(
 			if (runState.handoffRequested) {
 				if (runState.stopReason === "error" || runState.stopReason === "aborted" || !runState.capturedHandoff) {
 					log.logWarning("[handoff] Terminal checkpoint missing or invalid; preserving the original context without rotation");
+                    finishTransition(runState.stopReason === "aborted" ? "aborted" : "failed");
 				} else {
-					const id = randomUUID();
+					const id = activeTransition?.id ?? randomUUID();
 					const date = new Date().toISOString().slice(0, 10);
 					const archivePath = join(awarenessDir, "history", date, `handoff-${id}.jsonl`);
 					const tail = selectBoundedRecentDialogue(
@@ -1681,14 +1726,16 @@ async function createRunner(
 						createdAt: new Date().toISOString(),
 						archivePath,
 						handoff: runState.capturedHandoff.handoff,
+                        transition: activeTransition ?? undefined,
 						tail,
 					};
 					writeHandoffJournal(rotationJournalPath, journal);
 					resetSessionState();
 					await recoverRotation(journal);
 					completedHandoffRotations++;
-					resumeAfterHandoff = journal.handoff.inProgress.some((item) => item.trim())
-						|| journal.handoff.nextSteps.some((item) => item.trim());
+					resumeAfterHandoff = runState.handoffContinue && (journal.handoff.inProgress.some((item) => item.trim())
+                        || journal.handoff.nextSteps.some((item) => item.trim()));
+                    finishTransition("completed", {retainedMessages: tail.length});
 					log.logInfo(`[handoff] Context rotated with ${tail.length} complete recent messages`);
 				}
 			}
@@ -1877,7 +1924,10 @@ async function createRunner(
 
 			// Run compaction — this generates the summary and updates
 			// agent.messages in memory with the compacted view
-			const result = await currentSession.compact(instructions);
+			beginTransition("compaction", "user");
+            let result;
+            try { result = await currentSession.compact(instructions); }
+            catch (error) { finishTransition("failed"); throw error; }
 
 			// Capture the compacted messages before we tear down the session
 			const compactedMessages = [...currentSession.messages];
@@ -1905,6 +1955,7 @@ async function createRunner(
 			agent.state.messages = compactedMessages;
 
 			log.logInfo(`[awareness] Context compacted: ${messagesBefore} → ${compactedMessages.length} messages, file rotated`);
+            finishTransition("completed", {tokensBefore: result.tokensBefore, retainedMessages: compactedMessages.length});
 
 			return {
 				messagesBefore,
@@ -1928,6 +1979,7 @@ async function createRunner(
 		};
 	const runSegment = runner.run.bind(runner);
 	runner.run = async (ctx, store, pending, format, sink, completionID) => {
+        rotationsAtRunStart = completedHandoffRotations;
 		handoffRunAborted = false;
 		return runHandoffSegments(async (continuation) => {
 			const segmentContext: MomContext = continuation ? {
