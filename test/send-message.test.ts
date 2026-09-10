@@ -8,9 +8,10 @@ import {
 } from "../src/tools/send-message.js";
 import { registerToolDisplayBarrier } from "../src/streaming/tool-delivery-barrier.js";
 
-type SentMessage = { channel: string; text: string };
+type SentMessage = { channel: string; text: string; attachments?: Array<{ filePath: string; filename: string }> };
 type ThreadMessage = { channel: string; threadTs: string; text: string };
 type GroupMessage = { channel: string; text: string; recipients: string[] };
+type UploadedFile = { channel: string; filePath: string; title?: string; threadTs?: string };
 
 let passed = 0;
 let failed = 0;
@@ -33,14 +34,15 @@ function makeAdapter(name: string) {
 	const sent: SentMessage[] = [];
 	const threadSent: ThreadMessage[] = [];
 	const groupSent: GroupMessage[] = [];
+	const uploaded: UploadedFile[] = [];
 	const adapter = {
 		name,
 		maxMessageLength: 1000,
 		formatInstructions: "",
 		start: async () => {},
 		stop: async () => {},
-		postMessage: async (channel: string, text: string) => {
-			sent.push({ channel, text });
+		postMessage: async (channel: string, text: string, attachments?: Array<{ filePath: string; filename: string }>) => {
+			sent.push({ channel, text, attachments });
 			return `${name}-ts`;
 		},
 		updateMessage: async () => {},
@@ -53,7 +55,9 @@ function makeAdapter(name: string) {
 			groupSent.push({ channel, text, recipients });
 			return `${name}-group-ts`;
 		},
-		uploadFile: async () => {},
+		uploadFile: async (channel: string, filePath: string, title?: string, threadTs?: string) => {
+			uploaded.push({ channel, filePath, title, threadTs });
+		},
 		logToFile: () => {},
 		logBotResponse: () => {},
 		getUser: () => undefined,
@@ -65,7 +69,7 @@ function makeAdapter(name: string) {
 		},
 		enqueueEvent: () => false,
 	} as unknown as PlatformAdapter;
-	return { adapter, sent, threadSent, groupSent };
+	return { adapter, sent, threadSent, groupSent, uploaded };
 }
 
 async function run() {
@@ -184,6 +188,50 @@ async function run() {
 	assertEqual(slack.threadSent.length, 1, "tool sends slack thread targets through postInThread");
 	assertEqual(slack.threadSent[0]?.channel, "C1234567890", "slack thread target passes raw channel");
 	assertEqual(slack.threadSent[0]?.threadTs, "1710000000.123456", "slack thread target passes thread timestamp");
+
+	const threadAttachmentResult = await (tool.execute as any)("call-thread-attachments", {
+		label: "Slack thread attachments",
+		target: "slack:C1234567890:1710000000.123456",
+		text: "files for this thread",
+		attachments: ["/tmp/example-report.md", "/tmp/example-data.json"],
+	});
+	assertEqual(slack.uploaded.length, 2, "Slack thread attachments invoke one upload per file");
+	assertEqual(slack.uploaded[0]?.channel, "C1234567890", "Slack thread upload preserves the channel");
+	assertEqual(slack.uploaded[0]?.filePath, "/tmp/example-report.md", "Slack thread upload preserves the first file path");
+	assertEqual(slack.uploaded[0]?.title, "example-report.md", "Slack thread upload derives the first filename");
+	assertEqual(slack.uploaded[0]?.threadTs, "1710000000.123456", "Slack thread upload preserves the exact thread root");
+	assertEqual(slack.uploaded[1]?.threadTs, "1710000000.123456", "every Slack upload preserves the exact thread root");
+	assertEqual(threadAttachmentResult.details?.delivered, true, "Slack thread attachments are marked delivered only after all uploads pass");
+
+	const uploadFile = slack.adapter.uploadFile;
+	let uploadAttempts = 0;
+	slack.adapter.uploadFile = async () => {
+		uploadAttempts++;
+		if (uploadAttempts === 2) throw new Error("provider upload rejected");
+	};
+	const failedAttachmentResult = await (tool.execute as any)("call-thread-attachment-failure", {
+		label: "Slack thread attachment failure",
+		target: "slack:C1234567890:1710000000.123456",
+		text: "text and one file post before the second file fails",
+		attachments: ["/tmp/example-partial.txt", "/tmp/example-failure.txt"],
+	});
+	slack.adapter.uploadFile = uploadFile;
+	assertEqual(failedAttachmentResult.details?.delivered, false, "Slack upload failure is never marked delivered");
+	assertEqual(failedAttachmentResult.details?.partialDelivery, true, "Slack upload failure records partial text delivery");
+	assertEqual(failedAttachmentResult.details?.messageTs, "slack-thread-ts", "Slack upload failure preserves the existing message receipt");
+	assertEqual(failedAttachmentResult.details?.uploadedAttachments, 1, "Slack upload failure reports the exact completed upload count");
+	assert((failedAttachmentResult.content?.[0]?.text || "").includes("after 1 upload(s)"), "Slack partial failure names the completed file count");
+	assert((failedAttachmentResult.content?.[0]?.text || "").includes("Do not retry the whole message"), "Slack partial failure warns against a blind full retry");
+
+	const topLevelAttachmentResult = await (tool.execute as any)("call-slack-top-attachment", {
+		label: "Slack top-level attachment",
+		target: "C1234567890",
+		text: "top-level file",
+		attachments: ["/tmp/example-top-level.txt"],
+	});
+	assertEqual(slack.uploaded.length, 3, "Slack top-level attachments invoke the upload provider");
+	assertEqual(slack.uploaded[2]?.threadTs, undefined, "Slack top-level upload does not invent a thread root");
+	assertEqual(topLevelAttachmentResult.details?.delivered, true, "Slack top-level attachment is marked delivered after upload passes");
 
 	await (tool.execute as any)("call-mattermost-thread", {
 		label: "mattermost thread test",

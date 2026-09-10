@@ -198,6 +198,8 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				throw new Error(`No adapter found for target "${target}". Valid targets include teams:<encoded conversation>[:<encoded message>], rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
 			}
 
+			let postedMessageTs: string | undefined;
+			let uploadedAttachmentCount = 0;
 			try {
 				const attachmentObjects = attachments?.map((filePath) => ({
 					filePath,
@@ -211,12 +213,24 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				if (signal?.aborted) throw new Error("Operation aborted");
 				await waitForToolDisplay(_toolCallId);
 
+				const slackAttachments = resolved.adapter.name === "slack" ? attachmentObjects : undefined;
 				const ts = resolved.threadTs
 					? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
 					: phoneRecipients.length > 0
 						? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
-						: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject);
+						: await resolved.adapter.postMessage(resolved.channel, text, slackAttachments ? undefined : attachmentObjects, subject);
+				postedMessageTs = ts;
 				resolved.adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
+
+				for (const attachment of slackAttachments || []) {
+					await resolved.adapter.uploadFile(
+						resolved.channel,
+						attachment.filePath,
+						attachment.filename,
+						resolved.threadTs,
+					);
+					uploadedAttachmentCount++;
+				}
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
 				const recipientInfo = phoneRecipients.length ? ` to ${phoneRecipients.length + 1} phone participant(s)` : "";
@@ -230,6 +244,20 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
 				log.logWarning(`[send_message] Failed to send to ${resolved.adapter.name}:${resolved.channel}`, errMsg);
+				if (postedMessageTs) {
+					return {
+						content: [{
+							type: "text" as const,
+							text: `Message text was sent, but attachment delivery failed after ${uploadedAttachmentCount} upload(s): ${errMsg}. Do not retry the whole message without reconciling the existing receipt (ts=${postedMessageTs}).`,
+						}],
+						details: {
+							delivered: false,
+							partialDelivery: true,
+							messageTs: postedMessageTs,
+							uploadedAttachments: uploadedAttachmentCount,
+						},
+					};
+				}
 				return {
 					content: [{ type: "text" as const, text: `Failed to send message: ${errMsg}` }],
 					details: { delivered: false },
