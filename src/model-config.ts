@@ -1,3 +1,4 @@
+import { getCodexCliModel, isCodexCliAuthenticated, isCodexCliProvider, listCodexCliModels } from "./codex-cli.js";
 /**
  * Model resolution and runtime switching.
  *
@@ -211,6 +212,11 @@ function resolveFireworksAliasModel(
  */
 export function resolveModel(workingDir?: string, modelRegistry?: ModelRegistry): Model<Api> {
 	const { provider, id: modelId } = getCurrentModelSelection(workingDir);
+	if (isCodexCliProvider(provider)) {
+		const model = getCodexCliModel(modelId);
+		if (!model) throw new Error(`Unsupported Codex CLI model: ${modelId}`);
+		return model;
+	}
 	if (isClaudeCliProvider(provider)) {
 		const cliModel = getClaudeCliModel(modelId);
 		if (!cliModel) {
@@ -250,7 +256,7 @@ export function resolveModelWithAuth(workingDir?: string, modelRegistry?: ModelR
 	const model = resolveModel(workingDir, modelRegistry);
 	// Claude CLI owns its login state. Invocation reports an actionable CLI
 	// auth error rather than silently falling back to an unrelated API model.
-	if (isClaudeCliProvider(model.provider)) return model;
+	if (isClaudeCliProvider(model.provider) || isCodexCliProvider(model.provider)) return model;
 	if (!modelRegistry || modelRegistry.hasConfiguredAuth(model)) return model;
 
 	log.logWarning(
@@ -301,8 +307,10 @@ export function findModel(
 ): Model<Api> | undefined {
 	const q = query.toLowerCase().trim();
 	if (!q) return undefined;
+	if (q.startsWith("codex-cli/")) return getCodexCliModel(q.slice("codex-cli/".length));
 
 	const allModels = getRegistryModels(workingDir, modelRegistry);
+	if (isCodexCliAuthenticated()) allModels.push(...listCodexCliModels());
 	if (isClaudeCliAuthenticated()) allModels.push(...listClaudeCliModels());
 
 	// Friendly aliases first (e.g. /model minimax, /model opus, /model gpt5)
@@ -403,6 +411,9 @@ export function listModels(
 		for (const model of getLiveModelCatalogSnapshot(workingDir)) addModel(model);
 	}
 	for (const option of CURATED_MODEL_OPTIONS) addOption(option);
+	if (isCodexCliAuthenticated()) {
+		for (const model of listCodexCliModels()) addModel(model);
+	}
 	if (isClaudeCliAuthenticated()) {
 		for (const model of listClaudeCliModels()) addModel(model);
 	}
