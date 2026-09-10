@@ -1,3 +1,4 @@
+import { createCodexCliStream, getCodexCliRuntimeAuth, isCodexCliProvider, registerCodexCliRuntimeAuth, resetCodexCliSession } from "./codex-cli.js";
 import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
 import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
 import { createHandoffContextTool } from "./tools/handoff-context.js";
@@ -507,6 +508,7 @@ async function createRunner(
 		allowModelNetwork: false,
 	});
 	await registerClaudeCliRuntimeAuth(modelRuntime);
+	await registerCodexCliRuntimeAuth(modelRuntime);
 	const modelRegistry = new ModelRegistry(modelRuntime);
 
     for (const interrupted of readContextTransitions(workspaceDir)) {
@@ -535,12 +537,18 @@ async function createRunner(
 		onToolEvent: (event) => claudeCliToolEventHandler(event),
 		onToolOutput: (event) => claudeCliToolOutputHandler(event),
 	});
+	const codexCliStream = createCodexCliStream(workspaceDir, {
+		tools: () => tools,
+		onToolEvent: (event) => claudeCliToolEventHandler(event),
+		onToolOutput: (event) => claudeCliToolOutputHandler(event),
+	});
 	const streamFn: StreamFn = (streamModel, context, options) => {
 		const boundedOptions = boundCompactionStreamOptions(context, options);
 		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
 		if (runState.handoffRequested) {
 			normalizedOptions = { ...normalizedOptions, maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536) };
 		}
+		if (isCodexCliProvider(streamModel.provider)) return codexCliStream(streamModel, context, normalizedOptions);
 		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
 		const progressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
 		const requestId = `chatcmpl-${randomUUID()}`;
@@ -586,7 +594,7 @@ async function createRunner(
 			: messages,
 		streamFn,
 		steeringMode: "all",
-		getApiKey: async (provider: string) => getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
+		getApiKey: async (provider: string) => getCodexCliRuntimeAuth(provider) ?? getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
 	});
 
 	// Defer context loading to run()
@@ -621,7 +629,7 @@ async function createRunner(
 		const requestHandoff = (messages: readonly AgentMessage[]) => {
 			const settings = settingsManager.getCompactionSettings();
 			const ctx = runState.ctx;
-			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || isClaudeCliProvider(agent.state.model?.provider)) return;
+			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || (isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))) return;
 			if (!runState.handoffRequested && (forceHandoff || shouldRequestHandoff(
 				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
 				settings.reserveTokens, settings.keepRecentTokens,
@@ -698,7 +706,7 @@ async function createRunner(
 	const compactionSettingsProxy = new Proxy(settingsManager, {
 		get(target, prop, receiver) {
 			if (prop === "getCompactionEnabled") {
-				return () => isClaudeCliProvider(agent.state.model?.provider)
+				return () => (isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))
 					|| target.getCompactionSettings().mode === "handoff"
 					? false
 					: target.getCompactionEnabled();
@@ -706,7 +714,7 @@ async function createRunner(
 			if (prop === "getCompactionSettings") {
 				return () => {
 					const base = target.getCompactionSettings();
-					if (isClaudeCliProvider(agent.state.model?.provider) || base.mode === "handoff") {
+					if ((isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider)) || base.mode === "handoff") {
 						return { ...base, enabled: false };
 					}
 					return base;
@@ -807,6 +815,7 @@ async function createRunner(
 			throw err;
 		}
 		resetClaudeCliSession(workspaceDir);
+		resetCodexCliSession(workspaceDir);
 		resetSessionState();
 		log.logInfo(`[awareness] ${label}: context reset (${messagesCleared} messages archived)`);
 		return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
@@ -1519,7 +1528,7 @@ async function createRunner(
 			log.logInfo(`[awareness] Pre-prompt: ${currentSession.messages.length} messages in context`);
 
 			const resolveCurrentModelCredential = async () => {
-				if (getClaudeCliRuntimeAuth(currentModel.provider)) return;
+				if (getCodexCliRuntimeAuth(currentModel.provider) || getClaudeCliRuntimeAuth(currentModel.provider)) return;
 				await resolveApiKey(modelRegistry, currentModel.provider);
 			};
 			const tPrompt = performance.now();
@@ -1898,8 +1907,8 @@ async function createRunner(
 		},
 
 		async compact(instructions?: string): Promise<CompactResult> {
-			if (isClaudeCliProvider(agent.state.model?.provider)) {
-				throw new Error("Claude Code owns compaction for claude-cli models; use /clear to start a fresh session.");
+			if ((isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))) {
+				throw new Error("The CLI harness owns compaction for CLI models; use /clear to start a fresh session.");
 			}
 			const contextFile = join(awarenessDir, "context.jsonl");
 			// Ensure messages are loaded from context.jsonl before counting
