@@ -117,6 +117,7 @@
 		"test:sanitize": "pnpm exec tsx test/sanitize.test.ts",
 		"test:search-tools": "pnpm exec tsx test/search-tools.test.ts",
 		"test:speak-tool": "pnpm exec tsx test/speak-tool.test.ts",
+		"test:tool-loop-guard": "pnpm exec tsx test/tool-loop-guard.test.ts && pnpm exec tsx test/tool-loop-runner.test.ts",
 		"test:yield-no-action": "pnpm exec tsx test/yield-no-action.test.ts",
 		"test:list-channels": "pnpm exec tsx test/list-channels.test.ts",
 		"test:web-direct-chat-preamble": "pnpm exec tsx test/web-direct-chat-preamble.test.ts",

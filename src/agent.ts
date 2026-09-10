@@ -1,3 +1,4 @@
+import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
 import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
 import { createHandoffContextTool } from "./tools/handoff-context.js";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
@@ -659,11 +660,13 @@ async function createRunner(
 			};
 		});
 	};
+	const toolLoopGuard = new ToolLoopGuard();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
 		agentDir: process.env.PI_AGENT_DIR || getAgentDir(),
 		additionalExtensionPaths: parseExtensionPaths(process.env.TROUBLEMAKER_EXTENSION_PATHS),
 		extensionFactories: [
+			toolLoopGuard.extension,
 			handoffContextExtension,
 			dynamicRuntimeContextExtension,
 			handoffContextExtension,
@@ -1565,7 +1568,7 @@ async function createRunner(
 			// Retry one text-only turn when the active model failed its concrete
 			// action contract. Claude needs an exact deferred MCP selection in
 			// messages-only channels; GPT-5 keeps its planning-only act-now nudge.
-			if (runState.stopReason !== "error" && !wasYielded() && !runState.handoffRequested) {
+			if (!toolLoopGuard.stopped && runState.stopReason !== "error" && !wasYielded() && !runState.handoffRequested) {
 				const messages = currentSession.messages;
 				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
 				const assistantText =
@@ -1624,6 +1627,13 @@ async function createRunner(
 
 			// Wait for queued messages
 			await queueChain;
+
+			if (toolLoopGuard.stopped) {
+				runState.stopReason = "error";
+				runState.errorMessage = TOOL_LOOP_STOP_MESSAGE;
+				runState.handoffRequested = false;
+				resumeAfterHandoff = false;
+			}
 
 			// Handle error case. Missing model credentials are an operational
 			// condition, not assistant-authored conversation content. Failing quiet
@@ -1998,6 +2008,7 @@ async function createRunner(
 		};
 	const runSegment = runner.run.bind(runner);
 	runner.run = async (ctx, store, pending, format, sink, completionID) => {
+		toolLoopGuard.reset();
         rotationsAtRunStart = completedHandoffRotations;
 		handoffRunAborted = false;
 		return runHandoffSegments(async (continuation) => {
