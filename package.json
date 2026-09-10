@@ -175,7 +175,8 @@
 		"test:owner-push": "pnpm exec tsx test/owner-push-contract.test.ts",
 		"test:hostd-merged-contract": "node --test hostd/test/config.test.mjs hostd/test/sites.test.mjs",
 		"test:compact-startup": "pnpm exec tsx test/compact-prompt.test.ts && pnpm exec tsx test/compact-tool-surface.test.ts",
-		"test:inference-progress": "pnpm exec tsx test/inference-progress.test.ts"
+		"test:inference-progress": "pnpm exec tsx test/inference-progress.test.ts",
+		"test:codex-cli": "pnpm exec tsx test/codex-cli.test.ts"
 	},
 	"dependencies": {
 		"@anthropic-ai/sandbox-runtime": "0.0.16",
