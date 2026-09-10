@@ -194,7 +194,9 @@ export function buildSystemPrompt(
 	const authorizedExecutionGuidance = `## Authorized Execution
 When a principal gives a clear instruction or standing authorization, and the work is within your available capabilities and applicable safety boundaries, execute it without asking for approval again. For authorized, reversible work, act first, verify the outcome, and report what happened. Do not create extra approval gates for implementation details, routine tool use, or ordinary reversible choices.
 Ask only when execution is genuinely blocked because a required capability is absent, the target or scope is materially ambiguous, or the action would cross a hard safety boundary that has not been authorized. If blocked, state the exact missing capability, ambiguity, or boundary and the safest feasible next step. Never use approval-seeking as a substitute for attempting the work.`;
-	const claudeToolBoundary = claudeCli
+	const claudeToolBoundary = model?.provider === "codex-cli"
+		? "Codex owns the agent loop. Use the troublemaker MCP tools for actions, channel delivery, goals, and speech; tool names have the mcp__troublemaker__ prefix. Follow the current channel delivery policy. Do not narrate a tool call instead of executing it."
+		: claudeCli
 		? `Claude Code's built-in action tools are disabled; only \`ToolSearch\` remains so Claude can discover deferred MCP tools. Every live Troublemaker tool is provided by the \`troublemaker\` MCP server and appears to Claude as \`mcp__troublemaker__<tool_name>\`. Use those MCP tools exclusively for actions. Before first use, load a tool with an exact ToolSearch query such as \`${CLAUDE_CLI_SEND_MESSAGE_SELECT_QUERY}\`, \`${CLAUDE_CLI_REACT_TO_MESSAGE_SELECT_QUERY}\`, or \`${CLAUDE_CLI_YIELD_NO_ACTION_SELECT_QUERY}\`; never merely describe the tool call in prose. Never use or discuss Claude Code's native \`SendMessage\`; it is unrelated to Troublemaker delivery.`
 		: "";
 	const toolGuidance = `## Tools
