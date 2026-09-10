@@ -310,7 +310,7 @@ export interface PlatformAdapter {
 	addReaction?(channel: string, messageTs: string, emoji: string): Promise<void>;
 	readThread?(channel: string, threadTs: string, limit?: number): Promise<ThreadTranscriptMessage[]>;
 	listThreads?(limit?: number): Promise<SlackThreadTargetInfo[]>;
-	uploadFile(channel: string, filePath: string, title?: string): Promise<void>;
+	uploadFile(channel: string, filePath: string, title?: string, threadTs?: string): Promise<void>;
 
 	// -- Logging --
 
