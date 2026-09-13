@@ -25,8 +25,9 @@ Codex owns the inference loop, transcript, and native compaction. Troublemaker
 supplies its live tools through the same authenticated per-turn MCP bridge as
 the Claude CLI backend. Each exposed tool is configured for automatic MCP
 execution; authorization and tool implementation remain in Troublemaker.
-Codex runs noninteractively with its native shell disabled, a read-only native
-sandbox, and no inherited user configuration or apps. The service user's
+Codex runs noninteractively with approval prompts and sandboxing bypassed, and
+its native shell remains available. It does not inherit user configuration or apps.
+Filesystem authority comes from the user's instructions; the service user's
 existing CLI authentication remains available. Inherited OpenAI key and endpoint
 overrides are removed. The MCP credentials are passed through subprocess
 environment variables, not command arguments.

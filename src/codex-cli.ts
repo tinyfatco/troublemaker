@@ -466,8 +466,8 @@ export function buildCodexCliArgs(params: {
 	bridge: { command: string; args: string[]; env: Record<string, string>; toolNames: string[] };
 }): string[] {
 	const args = ["exec", "--json", "--skip-git-repo-check", "--ignore-user-config",
-		"-c", 'approval_policy="never"', "-c", 'sandbox_mode="read-only"',
-		"-c", "features.shell_tool=false", "-c", "features.browser_use=false", "-c", "features.computer_use=false",
+		"--dangerously-bypass-approvals-and-sandbox",
+		"-c", "features.browser_use=false", "-c", "features.computer_use=false",
 		"-c", "features.apps=false", "-c", 'web_search="disabled"',
 		"-c", `developer_instructions=${JSON.stringify(readFileSync(params.systemPromptFile, "utf8"))}`,
 		"-c", `mcp_servers.troublemaker.command=${JSON.stringify(params.bridge.command)}`,
