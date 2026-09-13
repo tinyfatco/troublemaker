@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createCodexCliStream, getCodexCliModel, isCodexCliAuthenticated, resetCodexCliSession, buildCodexCliEnvironment } from '../src/codex-cli.js';
+import { createCodexCliStream, getCodexCliModel, isCodexCliAuthenticated, resetCodexCliSession, buildCodexCliArgs, buildCodexCliEnvironment } from '../src/codex-cli.js';
 import { findModel } from '../src/model-config.js';
 const root = mkdtempSync(join(tmpdir(), 'codex-wrapper-test-'));
 const fake = join(root, 'codex');
@@ -32,6 +32,16 @@ if (process.argv[2] === 'login') process.exit(0);
  assert.equal(isCodexCliAuthenticated(), true);
  assert.equal(buildCodexCliEnvironment().OPENAI_API_KEY, undefined);
  assert.equal(findModel('codex-cli/example-model')?.provider, 'codex-cli');
+ writeFileSync(join(root,'system.md'),'Synthetic system prompt.');
+ writeFileSync(join(root,'mcp.json'),'{}');
+ const launchArgs = buildCodexCliArgs({
+  modelId:'default', systemPromptFile:join(root,'system.md'), mcpConfigFile:join(root,'mcp.json'),
+  sessionId:'11111111-1111-4111-8111-111111111111', resume:false,
+  bridge:{command:'bridge',args:[],env:{},toolNames:[]},
+ });
+ assert.equal(launchArgs.includes('--dangerously-bypass-approvals-and-sandbox'),true);
+ assert.equal(launchArgs.includes('sandbox_mode="read-only"'),false);
+ assert.equal(launchArgs.includes('features.shell_tool=false'),false);
  const model = getCodexCliModel('default')!;
  const stream = createCodexCliStream(root);
  const context = {systemPrompt:'Synthetic test instructions.',messages:[{role:'user' as const,content:'First question',timestamp:1}]};
