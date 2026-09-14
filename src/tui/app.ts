@@ -93,7 +93,7 @@ export async function runTroublemakerTui(profile: TuiAgentProfile): Promise<void
 	await app.run(backlog.lines);
 }
 
-class TroublemakerTuiApp {
+export class TroublemakerTuiApp {
 	private readonly terminal = new ProcessTerminal();
 	private readonly ui: TUI;
 	private readonly header = new Container();
@@ -232,13 +232,8 @@ class TroublemakerTuiApp {
 			return;
 		}
 
-		this.addUserMessage(this.profile.channelId, "you", text);
-		this.activeTurn = new Container();
-		this.chat.addChild(this.activeTurn);
 		this.latestAssistantSnapshot = null;
-		this.activeSegmentBaseline = [];
-		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
-		this.rememberLocalEcho(this.profile.channelId, text, this.activeTurn, this.activeSegmentPrecedingContent);
+		this.beginLocalInputSegment(text);
 		this.activeAbort = new AbortController();
 		this.stopRequested = false;
 		this.editor.borderColor = (value) => chalk.yellow(value);
@@ -249,7 +244,7 @@ class TroublemakerTuiApp {
 			await this.client.streamMessage(text, (event) => this.handleStreamEvent(event), this.activeAbort.signal);
 		} catch (error) {
 			if (!this.stopRequested && !isAbortError(error)) {
-				this.addError(error instanceof Error ? error.message : String(error), this.activeTurn);
+				this.addError(error instanceof Error ? error.message : String(error), this.activeTurn || this.chat);
 			}
 		} finally {
 			this.clearLoader();
@@ -312,20 +307,24 @@ class TroublemakerTuiApp {
 		}
 	}
 
-	private async submitSteer(text: string): Promise<void> {
-		const liveView = this.findLiveRunForChannel(this.profile.channelId);
+	private beginLocalInputSegment(text: string): void {
+		// A terminal POST can steer a canonical run started on another channel.
+		// Move its output boundary when the local echo is painted, before either
+		// the POST response or delayed runtime/awareness acknowledgement arrives.
+		const live = this.findLiveRunEntryForLocalEcho(this.profile.channelId);
+		const liveView = live?.[1];
 		const baseline = liveView?.latestSnapshot?.content || this.latestAssistantSnapshot?.content || [];
 		this.activeSegmentBaseline = [...baseline];
 		this.addUserMessage(this.profile.channelId, "you", text);
 		this.activeTurn = new Container();
 		this.chat.addChild(this.activeTurn);
 		this.activeSegmentPrecedingContent = this.lastTranscriptContent;
-		this.rememberLocalEcho(this.profile.channelId, text, this.activeTurn, this.activeSegmentPrecedingContent);
-		if (liveView) {
-			liveView.target = this.activeTurn;
-			liveView.segmentBaseline = [...baseline];
-			liveView.precedingContent = this.activeSegmentPrecedingContent;
-		}
+		const echo = this.rememberLocalEcho(this.profile.channelId, text, this.activeTurn, this.activeSegmentPrecedingContent);
+		if (live) this.adoptLocalInputSegmentForRun(live[0], echo);
+	}
+
+	private async submitSteer(text: string): Promise<void> {
+		this.beginLocalInputSegment(text);
 		this.showLoader("Steering...");
 		const controller = new AbortController();
 		this.steeringAborts.add(controller);
@@ -527,6 +526,9 @@ class TroublemakerTuiApp {
 		const view = this.liveRuns.get(runId);
 		if (!view) return;
 		const target = localEcho.target || this.activeTurn;
+		// Acknowledgements may arrive after newer local inputs (including in a
+		// batch). Deduplicate them without rewinding the serialized transcript.
+		if (target && this.chat.children.indexOf(target) < this.chat.children.indexOf(view.target)) return;
 		if (target && view.target !== target) {
 			view.target = target;
 			view.segmentBaseline = [...(view.latestSnapshot?.content || [])];
@@ -554,10 +556,6 @@ class TroublemakerTuiApp {
 		};
 		this.liveRuns.set(envelope.runId, view);
 		return view;
-	}
-
-	private findLiveRunForChannel(channelId: string): LiveRunView | undefined {
-		return this.findLiveRunEntryForChannel(channelId)?.[1];
 	}
 
 	private findLiveRunEntryForChannel(channelId: string): [string, LiveRunView] | undefined {
@@ -891,18 +889,20 @@ class TroublemakerTuiApp {
 		text: string,
 		target?: Container,
 		precedingContent?: TranscriptContentKind | null,
-	): void {
+	): PendingInputEcho {
 		this.prunePendingEchoes();
-		this.pendingLocalEchoes.push({
+		const echo: PendingInputEcho = {
 			channel,
 			text,
 			target,
 			precedingContent,
 			expiresAt: Date.now() + LOCAL_ECHO_TTL_MS,
-		});
+		};
+		this.pendingLocalEchoes.push(echo);
 		if (this.pendingLocalEchoes.length > MAX_PENDING_LOCAL_ECHOES) {
 			this.pendingLocalEchoes.splice(0, this.pendingLocalEchoes.length - MAX_PENDING_LOCAL_ECHOES);
 		}
+		return echo;
 	}
 
 	private consumeLocalEcho(channel: string, text: string): boolean {
