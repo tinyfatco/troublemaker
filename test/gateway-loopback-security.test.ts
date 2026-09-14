@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
+	isAuthorizedConsoleRequest,
 	isTrustedGatewayBrowserRequest,
 	isTrustedStandaloneWebSocketRequest,
 	resolveGatewayListenHost,
@@ -13,6 +14,13 @@ assert.equal(resolveGatewayListenHost("0.0.0.0", true), "0.0.0.0");
 assert.throws(() => resolveGatewayListenHost("0.0.0.0"), /loopback-only/);
 assert.throws(() => resolveGatewayListenHost("::"), /loopback-only/);
 assert.throws(() => resolveGatewayListenHost("192.0.2.1"), /loopback-only/);
+
+const consoleToken = "a".repeat(32);
+assert.equal(isAuthorizedConsoleRequest({}, undefined), true, "unset tokens preserve standalone compatibility");
+assert.equal(isAuthorizedConsoleRequest({}, consoleToken), false, "a configured console token fails closed");
+assert.equal(isAuthorizedConsoleRequest({ authorization: "Bearer wrong" }, consoleToken), false);
+assert.equal(isAuthorizedConsoleRequest({ authorization: `Bearer ${consoleToken}` }, consoleToken), true);
+assert.equal(isAuthorizedConsoleRequest({ authorization: [`Bearer ${consoleToken}`] }, consoleToken), true);
 
 const browserRequest = (headers: Record<string, string>) => ({ headers }) as any;
 assert.equal(isTrustedGatewayBrowserRequest(browserRequest({})), true, "native callers may omit browser headers");
