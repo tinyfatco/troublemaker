@@ -346,7 +346,6 @@ const server = createServer(async (req, res) => {
 			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
 			res.write(`data: ${JSON.stringify({ type: "status", status: "accepted" })}\n\n`);
 			res.write(`data: ${JSON.stringify({ type: "status", status: "steering", message: "Steering active run..." })}\n\n`);
-			emitAwareness("terminal-during-external-run", terminalDuringExternalRunLine);
 			await new Promise((resolvePromise) => setTimeout(resolvePromise, 40));
 			emitRuntime("webhook-run", "slack:#webhook", {
 				type: "assistant_snapshot",
@@ -362,6 +361,8 @@ const server = createServer(async (req, res) => {
 					isStreaming: false,
 				},
 			}, "terminal");
+			// The live snapshot can beat persistence of the terminal steering input.
+			emitAwareness("terminal-during-external-run", terminalDuringExternalRunLine);
 			res.end("data: [DONE]\n\n");
 		} else if (receivedMessages.length === 2) {
 			await writeTurn(res, steerReceived, () => {
@@ -396,6 +397,7 @@ try {
 	const installed = installTuiProfile({
 		command: "demo-agent",
 		name: "Demo Agent",
+		presentation: process.env.TUI_TEST_PRESENTATION === "pi" ? "pi" : "compact",
 		baseUrl: `http://127.0.0.1:${address.port}`,
 		executablePath: resolve("dist/tui.js"),
 		configPath: join(tempRoot, "config", "tui.json"),
