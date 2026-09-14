@@ -1751,6 +1751,7 @@ for (const adapter of adapters) {
 const gateway = new Gateway({
 	uiDir: parsedArgs.uiDir,
 	workspaceDir: workingDir,
+	consoleToken: process.env.MOM_WEB_INPUT_TOKEN?.trim(),
 	transcription: createDeepgramConsoleTranscriptionService(process.env),
 	voiceSessions: incrementalVoiceSessions,
 	// This standalone node entry point does not compose the owner-push facade or

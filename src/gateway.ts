@@ -1,4 +1,5 @@
 import { readContextTransitions } from "./context-transition.js";
+import { timingSafeEqual } from "crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { connect as connectSocket, type Socket } from "net";
 import { existsSync, readFileSync, statSync, openSync, readSync, closeSync } from "fs";
@@ -127,6 +128,8 @@ export interface GatewayOptions {
 	uiDir?: string;
 	/** Directory to scope file API reads to */
 	workspaceDir?: string;
+	/** Optional Bearer credential protecting the complete portable console API. */
+	consoleToken?: string;
 	/** Explicit environment seam for deterministic local identity tests. */
 	consoleEnvironment?: Record<string, string | undefined>;
 	/** Optional host-owned speech transcription capability. */
@@ -178,6 +181,17 @@ export function isTrustedGatewayBrowserRequest(req: Pick<IncomingMessage, "heade
 function firstHeaderValue(value: string | string[] | undefined): string | undefined {
 	const first = Array.isArray(value) ? value[0] : value;
 	return first?.split(",", 1)[0]?.trim() || undefined;
+}
+
+export function isAuthorizedConsoleRequest(
+	headers: Pick<IncomingMessage["headers"], "authorization">,
+	token: string | undefined,
+): boolean {
+	if (!token) return true;
+	const match = /^Bearer ([^\s]+)$/i.exec(firstHeaderValue(headers.authorization) || "");
+	const supplied = Buffer.from(match?.[1] || "", "utf8");
+	const expected = Buffer.from(token, "utf8");
+	return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
 function authorityHostname(value: string | undefined): string | undefined {
@@ -239,6 +253,7 @@ export class Gateway {
 	private transcription: ConsoleTranscriptionService | null = null;
 	private transcriptionLedger: ConsoleTranscriptionLedger | null = null;
 	private voiceSessions: VoiceSessionRuntime | null = null;
+	private readonly consoleToken?: string;
 	private readonly voiceReceiptAuthorityKey?: Uint8Array;
 	/** Connected SSE clients for /awareness/stream */
 	private awarenessClients = new Set<ServerResponse>();
@@ -251,6 +266,11 @@ export class Gateway {
 	constructor(options: GatewayOptions = {}) {
 		this.transcription = options.transcription ?? null;
 		this.voiceSessions = options.voiceSessions ?? null;
+		const consoleToken = options.consoleToken?.trim();
+		if (consoleToken && Buffer.byteLength(consoleToken, "utf8") < 32) {
+			throw new Error("Gateway console token must be at least 32 bytes");
+		}
+		this.consoleToken = consoleToken || undefined;
 		const authorityKey = options.voiceReceiptAuthorityKey
 			?? parseVoiceReceiptAuthorityKey(process.env.TROUBLEMAKER_VOICE_RECEIPT_AUTHORITY_KEY);
 		if (authorityKey && !isVoiceReceiptAuthorityKey(authorityKey)) {
@@ -1195,6 +1215,16 @@ export class Gateway {
 			if (req.method === "GET" && urlPath === "/health") {
 				res.writeHead(200);
 				res.end("ok");
+				return;
+			}
+
+			if (urlPath.startsWith("/api/v2/") && !isAuthorizedConsoleRequest(req.headers, this.consoleToken)) {
+				res.writeHead(401, {
+					"Content-Type": "application/json",
+					"Cache-Control": "no-store",
+					"WWW-Authenticate": "Bearer",
+				});
+				res.end(JSON.stringify({ ok: false, error: "Unauthorized" }));
 				return;
 			}
 
