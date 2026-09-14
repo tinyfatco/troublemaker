@@ -42,14 +42,18 @@ try {
 
 	const executablePath = join(tempRoot, "dist", "tui.js");
 	const configPath = join(tempRoot, "config", "tui.json");
+	const tokenFile = join(tempRoot, "gateway-token");
+	const consoleToken = "a".repeat(32);
 	const binDir = join(tempRoot, "bin");
 	await mkdir(dirname(executablePath), { recursive: true });
 	await writeFile(executablePath, "#!/usr/bin/env node\n", { mode: 0o755 });
+	await writeFile(tokenFile, consoleToken, { mode: 0o600 });
 
 	const installed = installTuiProfile({
 		command: "example-agent",
 		name: "Example Agent",
 		baseUrl: "http://127.0.0.1:43123/",
+		bearerTokenFile: tokenFile,
 		executablePath,
 		configPath,
 		binDir,
@@ -58,6 +62,7 @@ try {
 	assert.equal(installed.profile.channelId, "terminal:example-agent");
 	assert.equal(installed.profile.baseUrl, "http://127.0.0.1:43123");
 	assert.equal(installed.profile.presentation, "compact", "compact presentation remains the install default");
+	assert.equal(installed.profile.bearerTokenFile, tokenFile);
 	assert.equal(resolve(dirname(installed.commandPath), await readlink(installed.commandPath)), resolve(executablePath));
 	assert.equal((await stat(configPath)).mode & 0o777, 0o600);
 	assert.deepEqual(loadTuiProfiles(configPath)["example-agent"], installed.profile);
@@ -424,6 +429,7 @@ try {
 	let receivedStop: Record<string, unknown> | undefined;
 	const receivedLiveUrls: string[] = [];
 	const server = createServer(async (req, res) => {
+		assert.equal(req.headers.authorization, `Bearer ${consoleToken}`, `missing TUI auth for ${req.url}`);
 		if (req.url === "/health") {
 			res.writeHead(200);
 			res.end("ok");
@@ -439,12 +445,12 @@ try {
 			res.end(JSON.stringify({ running: ["awareness"], idle: false, activeRun: "external run" }));
 			return;
 		}
-		if (req.url?.startsWith("/api/v2/agents/current/events")) {
+		if (req.url?.startsWith("/api/v2/agents/current/events?")) {
 			res.writeHead(200, { "Content-Type": "application/json" });
 			res.end(JSON.stringify({ lines: [historyLine], total: 1, offset: 0 }));
 			return;
 		}
-		if (req.url === "/awareness/stream") {
+		if (req.url === "/api/v2/agents/current/events/stream") {
 			res.writeHead(200, { "Content-Type": "text/event-stream" });
 			res.end(`id: message-1\ndata: ${historyLine}\n\n`);
 			return;
@@ -480,6 +486,7 @@ try {
 		name: "Example Agent",
 		baseUrl: `http://127.0.0.1:${address.port}`,
 		channelId: "terminal:example-agent",
+		bearerTokenFile: tokenFile,
 	});
 	try {
 		const statusResponse = await client.getStatus();
@@ -505,6 +512,7 @@ try {
 			baseUrl: `http://127.0.0.1:${address.port}`,
 			channelId: "terminal:pi-agent",
 			presentation: "pi",
+			bearerTokenFile: tokenFile,
 		});
 		const piLiveEvents: string[] = [];
 		await piClient.streamLive((event) => piLiveEvents.push(event.kind), undefined, undefined, 42);
