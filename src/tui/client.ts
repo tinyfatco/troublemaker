@@ -1,4 +1,5 @@
 import type { RuntimeLiveEvent, RuntimeStreamEvent } from "../core/runtime-contract.js";
+import { readProtectedTokenFile } from "../protected-token-file.js";
 import type { TuiAgentProfile } from "./config.js";
 import { readRuntimeSse, readSseData } from "./protocol.js";
 
@@ -25,12 +26,17 @@ interface TuiBacklogResponse {
 }
 
 export class TroublemakerTuiClient {
-	constructor(private readonly profile: TuiAgentProfile) {}
+	private readonly authorization?: string;
+
+	constructor(private readonly profile: TuiAgentProfile) {
+		const token = readProtectedTokenFile(profile.bearerTokenFile);
+		this.authorization = token ? `Bearer ${token}` : undefined;
+	}
 
 	async getStatus(signal?: AbortSignal): Promise<TuiAgentStatus> {
-		const health = await fetch(this.url("/health"), { signal });
+		const health = await fetch(this.url("/health"), { headers: this.headers(), signal });
 		if (!health.ok) throw new Error(`Health check failed (${health.status})`);
-		const response = await fetch(this.url("/api/v2/agents/current/status"), { signal });
+		const response = await fetch(this.url("/api/v2/agents/current/status"), { headers: this.headers(), signal });
 		if (!response.ok) throw new Error(`Agent status failed (${response.status})`);
 		const raw = await response.json() as Record<string, unknown>;
 		return {
@@ -43,7 +49,10 @@ export class TroublemakerTuiClient {
 
 	async getBacklog(limit = 40, signal?: AbortSignal): Promise<TuiBacklogResponse> {
 		const boundedLimit = Math.max(1, Math.min(200, Math.floor(limit)));
-		const response = await fetch(this.url(`/api/v2/agents/current/events?limit=${boundedLimit}`), { signal });
+		const response = await fetch(this.url(`/api/v2/agents/current/events?limit=${boundedLimit}`), {
+			headers: this.headers(),
+			signal,
+		});
 		if (!response.ok) throw new Error(`Agent history failed (${response.status})`);
 		const raw = await response.json() as Record<string, unknown>;
 		return {
@@ -54,7 +63,11 @@ export class TroublemakerTuiClient {
 	}
 
 	async getRunStatus(signal?: AbortSignal): Promise<TuiRunStatus> {
-		const response = await fetch(this.url("/status"), { cache: "no-store", signal });
+		const response = await fetch(this.url("/status"), {
+			cache: "no-store",
+			headers: this.headers(),
+			signal,
+		});
 		if (!response.ok) throw new Error(`Agent run status failed (${response.status})`);
 		const raw = await response.json() as Record<string, unknown>;
 		const running = Array.isArray(raw.running) && raw.running.length > 0;
@@ -84,7 +97,7 @@ export class TroublemakerTuiClient {
 	): Promise<void> {
 		const response = await fetch(this.url("/api/v2/agents/current/messages"), {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: this.headers({ "Content-Type": "application/json" }),
 			body: JSON.stringify({
 				message,
 				channelId: this.profile.channelId,
@@ -103,8 +116,8 @@ export class TroublemakerTuiClient {
 		signal?: AbortSignal,
 		onConnected?: () => void | Promise<void>,
 	): Promise<void> {
-		const response = await fetch(this.url("/awareness/stream"), {
-			headers: { Accept: "text/event-stream" },
+		const response = await fetch(this.url("/api/v2/agents/current/events/stream"), {
+			headers: this.headers({ Accept: "text/event-stream" }),
 			signal,
 		});
 		if (!response.ok || !response.body) {
@@ -130,10 +143,10 @@ export class TroublemakerTuiClient {
 		if (afterSequence > 0) params.set("after", String(afterSequence));
 		const suffix = params.size > 0 ? `?${params}` : "";
 		const response = await fetch(this.url(`/api/v2/agents/current/live${suffix}`), {
-			headers: {
+			headers: this.headers({
 				Accept: "text/event-stream",
 				...(afterSequence > 0 ? { "Last-Event-ID": String(afterSequence) } : {}),
-			},
+			}),
 			signal,
 		});
 		if (!response.ok || !response.body) {
@@ -152,11 +165,18 @@ export class TroublemakerTuiClient {
 	async stop(signal?: AbortSignal): Promise<void> {
 		const response = await fetch(this.url("/api/v2/agents/current/messages/stop"), {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: this.headers({ "Content-Type": "application/json" }),
 			body: JSON.stringify({ channelId: this.profile.channelId }),
 			signal,
 		});
 		if (!response.ok) throw new Error(`Stop request failed (${response.status})`);
+	}
+
+	private headers(additional: Record<string, string> = {}): Record<string, string> {
+		return {
+			...additional,
+			...(this.authorization ? { Authorization: this.authorization } : {}),
+		};
 	}
 
 	private url(path: string): string {

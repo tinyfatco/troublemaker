@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { basename, dirname, join, resolve } from "path";
+import { basename, dirname, isAbsolute, join, resolve } from "path";
 
 export type TuiPresentation = "compact" | "pi";
 
@@ -10,6 +10,7 @@ export interface TuiAgentProfile {
 	baseUrl: string;
 	channelId: string;
 	presentation?: TuiPresentation;
+	bearerTokenFile?: string;
 }
 
 interface TuiConfigFile {
@@ -23,6 +24,7 @@ export interface InstallTuiProfileOptions {
 	baseUrl: string;
 	channelId?: string;
 	presentation?: TuiPresentation;
+	bearerTokenFile?: string;
 	executablePath: string;
 	configPath?: string;
 	binDir?: string;
@@ -72,6 +74,13 @@ export function normalizeTuiBaseUrl(value: string): string {
 	return url.toString().replace(/\/$/, "");
 }
 
+export function normalizeTuiTokenFile(value: string | undefined): string | undefined {
+	const tokenFile = value?.trim();
+	if (!tokenFile) return undefined;
+	if (!isAbsolute(tokenFile)) throw new Error("TUI bearer token file path must be absolute");
+	return tokenFile;
+}
+
 export function loadTuiProfiles(configPath = defaultTuiConfigPath()): Record<string, TuiAgentProfile> {
 	if (!existsSync(configPath)) return {};
 	let parsed: unknown;
@@ -95,7 +104,17 @@ export function loadTuiProfiles(configPath = defaultTuiConfigPath()): Record<str
 				? raw.channelId.trim()
 				: `terminal:${command}`;
 			const presentation: TuiPresentation = raw.presentation === "pi" ? "pi" : "compact";
-			profiles[command] = { command, name, baseUrl, channelId, presentation };
+			const bearerTokenFile = normalizeTuiTokenFile(
+				typeof raw.bearerTokenFile === "string" ? raw.bearerTokenFile : undefined,
+			);
+			profiles[command] = {
+				command,
+				name,
+				baseUrl,
+				channelId,
+				presentation,
+				...(bearerTokenFile ? { bearerTokenFile } : {}),
+			};
 		} catch {
 			// One stale profile should not make every installed agent unusable.
 		}
@@ -105,12 +124,14 @@ export function loadTuiProfiles(configPath = defaultTuiConfigPath()): Record<str
 
 export function installTuiProfile(options: InstallTuiProfileOptions): InstalledTuiProfile {
 	const command = normalizeTuiCommand(options.command);
+	const bearerTokenFile = normalizeTuiTokenFile(options.bearerTokenFile);
 	const profile: TuiAgentProfile = {
 		command,
 		name: options.name?.trim() || titleCase(command),
 		baseUrl: normalizeTuiBaseUrl(options.baseUrl),
 		channelId: options.channelId?.trim() || `terminal:${command}`,
 		presentation: options.presentation === "pi" ? "pi" : "compact",
+		...(bearerTokenFile ? { bearerTokenFile } : {}),
 	};
 	const configPath = options.configPath || defaultTuiConfigPath();
 	const binDir = options.binDir || defaultTuiBinDir();

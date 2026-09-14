@@ -10,6 +10,7 @@ interface ParsedInstallArgs {
 	baseUrl: string;
 	channelId?: string;
 	presentation?: TuiPresentation;
+	bearerTokenFile?: string;
 	binDir?: string;
 }
 
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
 			baseUrl: parsed.baseUrl,
 			channelId: parsed.channelId,
 			presentation: parsed.presentation,
+			bearerTokenFile: parsed.bearerTokenFile,
 			binDir: parsed.binDir,
 			executablePath: fileURLToPath(import.meta.url),
 		});
@@ -75,11 +77,12 @@ async function openAgent(command: string): Promise<void> {
 
 function parseInstallArgs(args: string[]): ParsedInstallArgs {
 	const command = args.shift();
-	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>] [--presentation compact|pi]");
+	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>] [--presentation compact|pi] [--token-file <absolute-path>]");
 	let name: string | undefined;
 	let baseUrl: string | undefined;
 	let channelId: string | undefined;
 	let presentation: TuiPresentation | undefined;
+	let bearerTokenFile: string | undefined;
 	let binDir: string | undefined;
 	while (args.length > 0) {
 		const flag = args.shift();
@@ -92,18 +95,19 @@ function parseInstallArgs(args: string[]): ParsedInstallArgs {
 			if (value !== "compact" && value !== "pi") throw new Error("Presentation must be compact or pi");
 			presentation = value;
 		}
+		else if (flag === "--token-file") bearerTokenFile = value;
 		else if (flag === "--bin-dir") binDir = value;
 		else throw new Error(`Unknown install option: ${flag}`);
 	}
 	if (!baseUrl) throw new Error("Missing required option: --url");
-	return { command, name, baseUrl, channelId, presentation, binDir };
+	return { command, name, baseUrl, channelId, presentation, bearerTokenFile, binDir };
 }
 
 function printHelp(): void {
 	console.log(`Troublemaker terminal UI
 
 Usage:
-  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi]
+  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi] [--token-file <absolute-path>]
   troublemaker-tui open <agent>
   troublemaker-tui list
   <agent-command>
