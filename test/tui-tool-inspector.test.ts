@@ -77,6 +77,16 @@ const unlabeled = unlabeledRegistry.updateSnapshot({
 }, false).get(0);
 assert(unlabeled);
 assert.match(stripTerminalSequences(formatToolLabel(unlabeled)), /^\[1\] → List apps$/, "an unlabeled call still streams immediately with a readable fallback");
+const labeledUpdate = unlabeledRegistry.updateSnapshot({
+	id: "assistant-unlabeled",
+	type: "message",
+	timestamp: "2026-01-02T03:04:05Z",
+	role: "assistant",
+	isStreaming: true,
+	content: [{ type: "toolCall", id: "tool-unlabeled", name: "computer-use__list_apps", label: "Checking running apps", arguments: {} }],
+}, false).get(0);
+assert.equal(labeledUpdate, unlabeled, "a later streamed label updates the original tool row in place");
+assert.match(stripTerminalSequences(formatToolLabel(unlabeled)), /^\[1\] → Checking running apps$/);
 
 assert.equal(registry.toggle(2), true);
 assert.equal(first.expanded, false, "toggling one selector leaves other calls collapsed");
