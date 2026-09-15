@@ -1089,9 +1089,12 @@ export class Gateway {
 			: req.headers["last-event-id"];
 		const afterSequence = parseLiveSequence(headerCursor ?? url.searchParams.get("after"));
 		const conversationSurface = url.searchParams.get("surface") === "conversation";
-		const presentation = !conversationSurface && url.searchParams.get("presentation") === "pi"
-			? "pi"
-			: "compact";
+		const requestedPresentation = url.searchParams.get("presentation");
+		const presentation = !conversationSurface && requestedPresentation === "pi-thinking"
+			? "pi-thinking"
+			: !conversationSurface && requestedPresentation === "pi"
+				? "pi"
+				: "compact";
 		this.liveClientCount++;
 		const subscription = this.liveEvents.subscribe((event) => {
 			if (ownerContext && !runtimeEventMatchesOwnerContext(event, ownerContext)) return;

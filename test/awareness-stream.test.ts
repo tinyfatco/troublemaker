@@ -109,6 +109,7 @@ async function run() {
 
   const runtimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live");
   const piRuntimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live?presentation=pi");
+  const piThinkingRuntimePromise = collectEvents(2, 5000, "/api/v2/agents/current/live?presentation=pi-thinking");
   await sleep(200);
   const inputEnvelope = gw.publishRuntimeEvent({
     runId: "external-run",
@@ -134,7 +135,7 @@ async function run() {
       role: "assistant",
       isStreaming: true,
       content: [
-        { type: "thinking", thinking: "PRIVATE_THINKING" },
+        { type: "thinking", thinking: "PRIVATE_THINKING", thinkingSignature: "PRIVATE_SIGNATURE" },
         { type: "toolCall", id: "tool-1", name: "bash", label: "Checking safely", arguments: { command: "echo VISIBLE_ARGUMENT", apiKey: "SYNTHETIC_SECRET_VALUE" }, displayDetails: { invocation: { text: "UNTRUSTED_DETAIL", format: "text", isTruncated: false }, artifacts: [] } },
         { type: "toolResult", toolCallId: "tool-1", result: "VISIBLE_RESULT person@example.com", isError: false, displayDetails: { result: { text: "UNTRUSTED_RESULT_DETAIL", format: "text", isTruncated: false }, artifacts: [] } },
       ],
@@ -142,9 +143,11 @@ async function run() {
   });
   const runtimeEvents = await runtimePromise;
   const piRuntimeEvents = await piRuntimePromise;
+  const piThinkingRuntimeEvents = await piThinkingRuntimePromise;
   const inputPayload = runtimeEvents.find((event) => event.includes('"type":"user_input"')) || "";
   const runtimePayload = runtimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
   const piRuntimePayload = piRuntimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
+  const piThinkingRuntimePayload = piThinkingRuntimeEvents.find((event) => event.includes('"type":"assistant_snapshot"')) || "";
   const parsedInputPayload = JSON.parse(inputPayload) as { deliveryId?: string; event?: unknown };
   const parsedRuntimePayload = JSON.parse(runtimePayload) as { id?: string; sequence?: number; event?: unknown };
   const parsedPiRuntimePayload = JSON.parse(piRuntimePayload) as { id?: string; sequence?: number; event?: unknown };
@@ -164,7 +167,11 @@ async function run() {
   assert(piRuntimePayload.includes("[REDACTED]"), "explicit Pi presentation redacts sensitive argument keys");
   assert(!piRuntimePayload.includes("SYNTHETIC_SECRET_VALUE"), "explicit Pi presentation never receives the credential value");
   assert(!piRuntimePayload.includes("person@example.com"), "explicit Pi presentation redacts email output");
-  assert(!piRuntimePayload.includes("PRIVATE_THINKING"), "thinking remains absent in explicit Pi presentation");
+  assert(!piRuntimePayload.includes("PRIVATE_THINKING"), "thinking remains absent in ordinary Pi presentation");
+  assert(piThinkingRuntimePayload.includes("PRIVATE_THINKING"), "explicit Pi-thinking presentation receives local reasoning text");
+  assert(!piThinkingRuntimePayload.includes("PRIVATE_SIGNATURE") && !piThinkingRuntimePayload.includes("thinkingSignature"), "Pi-thinking presentation never carries reasoning signatures");
+  assert(piThinkingRuntimePayload.includes("VISIBLE_ARGUMENT") && piThinkingRuntimePayload.includes("VISIBLE_RESULT"), "Pi-thinking retains bounded Pi tool detail");
+  assert(!piThinkingRuntimePayload.includes("SYNTHETIC_SECRET_VALUE") && !piThinkingRuntimePayload.includes("person@example.com"), "Pi-thinking preserves tool-detail redaction");
   assert(!piRuntimePayload.includes("UNTRUSTED_DETAIL") && !piRuntimePayload.includes("UNTRUSTED_RESULT_DETAIL"), "Pi presentation recomputes safe detail instead of trusting producer fields");
   assert(parsedPiRuntimePayload.id === parsedRuntimePayload.id && parsedPiRuntimePayload.sequence === parsedRuntimePayload.sequence, "compact and Pi projections share one event identity and ordered cursor");
   assert(!JSON.stringify(assistantEnvelope).includes("VISIBLE_ARGUMENT") && !JSON.stringify(assistantEnvelope).includes("VISIBLE_RESULT"), "publish receipts remain compact even with a Pi subscriber");

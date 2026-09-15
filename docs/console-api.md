@@ -245,5 +245,13 @@ Markdown `text`, `isFinal`, `startedAt`, and eventual `durableMessageIds`.
 Clients should upsert visible prose by segment identity and use the parent
 completion only for delivery and speech. A new segment begins after any visible
 human input, tool activity, or runtime-status barrier, so later prose cannot be
-patched backward across the intervening event. The projection never includes
-thinking, tool arguments/results, or other hidden runtime payloads.
+patched backward across the intervening event.
+
+The default projection never includes thinking, tool arguments/results, or
+other hidden runtime payloads. An authenticated terminal may explicitly request
+`presentation=pi` for bounded, recomputed, redacted tool detail. A loopback or
+locally tunneled terminal may instead request `presentation=pi-thinking` to add
+bounded reasoning text to that Pi projection; reasoning signatures are always
+removed. These privileged projections exist only while a matching subscriber
+is connected and never become durable live history or conversation-surface
+content.

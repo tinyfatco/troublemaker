@@ -397,7 +397,11 @@ try {
 	const installed = installTuiProfile({
 		command: "demo-agent",
 		name: "Demo Agent",
-		presentation: process.env.TUI_TEST_PRESENTATION === "pi" ? "pi" : "compact",
+		presentation: process.env.TUI_TEST_PRESENTATION === "pi-thinking"
+			? "pi-thinking"
+			: process.env.TUI_TEST_PRESENTATION === "pi"
+				? "pi"
+				: "compact",
 		baseUrl: `http://127.0.0.1:${address.port}`,
 		executablePath: resolve("dist/tui.js"),
 		configPath: join(tempRoot, "config", "tui.json"),

@@ -16,6 +16,7 @@ import type {
 const DEFAULT_HISTORY_LIMIT = 512;
 const PI_DETAIL_HISTORY_LIMIT = 64;
 const PI_SNAPSHOT_DETAIL_CHARACTER_LIMIT = 128_000;
+const PI_SNAPSHOT_THINKING_CHARACTER_LIMIT = 128_000;
 
 type RuntimeLiveEventInput =
 	| { kind: "awareness"; line: string; awarenessId?: string }
@@ -26,7 +27,7 @@ export interface LiveEventSubscription {
 	unsubscribe(): void;
 }
 
-export type RuntimeLivePresentation = "compact" | "pi";
+export type RuntimeLivePresentation = "compact" | "pi" | "pi-thinking";
 
 export interface LiveEventSubscriptionOptions {
 	presentation?: RuntimeLivePresentation;
@@ -58,6 +59,7 @@ export class RuntimeLiveEventHub {
 	private readonly activeSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly latestSteering = new Map<string, RuntimeLiveEvent>();
 	private readonly piDetails = new Map<string, RuntimeLiveEvent>();
+	private readonly piThinkingDetails = new Map<string, RuntimeLiveEvent>();
 	private readonly subscribers = new Set<LiveEventSubscriber>();
 
 	constructor(private readonly historyLimit = DEFAULT_HISTORY_LIMIT) {}
@@ -67,11 +69,17 @@ export class RuntimeLiveEventHub {
 	}
 
 	publishRuntime(metadata: RuntimeLiveRunMetadata, event: RuntimeStreamEvent): RuntimeLiveEvent {
-		return this.publish({
-			kind: "runtime",
-			...metadata,
-			event: projectRuntimeEventForTerminal(event),
-		}, this.hasPiSubscribers() ? projectRuntimeEventForPiTerminal(event) : undefined);
+		return this.publish(
+			{
+				kind: "runtime",
+				...metadata,
+				event: projectRuntimeEventForTerminal(event),
+			},
+			this.hasPresentationSubscribers("pi") ? projectRuntimeEventForPiTerminal(event) : undefined,
+			this.hasPresentationSubscribers("pi-thinking")
+				? projectRuntimeEventForPiThinkingTerminal(event)
+				: undefined,
+		);
 	}
 
 	publishReset(reason: "context_rotated" | "replay_gap"): RuntimeLiveEvent {
@@ -95,7 +103,11 @@ export class RuntimeLiveEventHub {
 	): LiveEventSubscription {
 		const subscriber: LiveEventSubscriber = {
 			listener,
-			presentation: options.presentation === "pi" ? "pi" : "compact",
+			presentation: options.presentation === "pi-thinking"
+				? "pi-thinking"
+				: options.presentation === "pi"
+					? "pi"
+					: "compact",
 		};
 		if (afterSequence === 0) {
 			// A newly opened live client can attach in the middle of an external run.
@@ -126,12 +138,17 @@ export class RuntimeLiveEventHub {
 		return {
 			unsubscribe: () => {
 				this.subscribers.delete(subscriber);
-				if (!this.hasPiSubscribers()) this.piDetails.clear();
+				if (!this.hasPresentationSubscribers("pi")) this.piDetails.clear();
+				if (!this.hasPresentationSubscribers("pi-thinking")) this.piThinkingDetails.clear();
 			},
 		};
 	}
 
-	private publish(input: RuntimeLiveEventInput, piEvent?: RuntimeStreamEvent): RuntimeLiveEvent {
+	private publish(
+		input: RuntimeLiveEventInput,
+		piEvent?: RuntimeStreamEvent,
+		piThinkingEvent?: RuntimeStreamEvent,
+	): RuntimeLiveEvent {
 		if (input.kind === "runtime" && input.event.type === "steering_input") {
 			const previous = this.latestSteering.get(input.event.id);
 			if (previous?.kind === "runtime" && previous.event.type === "steering_input") {
@@ -146,12 +163,10 @@ export class RuntimeLiveEventHub {
 			timestamp: new Date().toISOString(),
 		} as RuntimeLiveEvent;
 		if (event.kind === "runtime" && piEvent) {
-			this.piDetails.set(event.id, { ...event, event: piEvent });
-			while (this.piDetails.size > PI_DETAIL_HISTORY_LIMIT) {
-				const oldest = this.piDetails.keys().next().value;
-				if (typeof oldest !== "string") break;
-				this.piDetails.delete(oldest);
-			}
+			this.rememberProjectedEvent(this.piDetails, event, piEvent);
+		}
+		if (event.kind === "runtime" && piThinkingEvent) {
+			this.rememberProjectedEvent(this.piThinkingDetails, event, piThinkingEvent);
 		}
 		if (event.kind === "runtime") {
 			if (event.event.type === "run_complete") {
@@ -185,13 +200,19 @@ export class RuntimeLiveEventHub {
 			);
 			if (previousSnapshot >= 0) {
 				const [removed] = this.history.splice(previousSnapshot, 1);
-				if (removed) this.piDetails.delete(removed.id);
+				if (removed) {
+					this.piDetails.delete(removed.id);
+					this.piThinkingDetails.delete(removed.id);
+				}
 			}
 		}
 		this.history.push(event);
 		while (this.history.length > this.historyLimit) {
 			const removed = this.history.shift();
-			if (removed) this.piDetails.delete(removed.id);
+			if (removed) {
+				this.piDetails.delete(removed.id);
+				this.piThinkingDetails.delete(removed.id);
+			}
 			if (
 				removed?.kind === "runtime"
 				&& removed.event.type === "steering_input"
@@ -206,13 +227,32 @@ export class RuntimeLiveEventHub {
 	}
 
 	private deliver(subscriber: LiveEventSubscriber, event: RuntimeLiveEvent): void {
-		subscriber.listener(subscriber.presentation === "pi"
-			? this.piDetails.get(event.id) ?? event
-			: event);
+		if (subscriber.presentation === "pi-thinking") {
+			subscriber.listener(this.piThinkingDetails.get(event.id) ?? event);
+			return;
+		}
+		if (subscriber.presentation === "pi") {
+			subscriber.listener(this.piDetails.get(event.id) ?? event);
+			return;
+		}
+		subscriber.listener(event);
 	}
 
-	private hasPiSubscribers(): boolean {
-		return [...this.subscribers].some((subscriber) => subscriber.presentation === "pi");
+	private hasPresentationSubscribers(presentation: RuntimeLivePresentation): boolean {
+		return [...this.subscribers].some((subscriber) => subscriber.presentation === presentation);
+	}
+
+	private rememberProjectedEvent(
+		projection: Map<string, RuntimeLiveEvent>,
+		event: RuntimeLiveEvent & { kind: "runtime" },
+		projected: RuntimeStreamEvent,
+	): void {
+		projection.set(event.id, { ...event, event: projected });
+		while (projection.size > PI_DETAIL_HISTORY_LIMIT) {
+			const oldest = projection.keys().next().value;
+			if (typeof oldest !== "string") break;
+			projection.delete(oldest);
+		}
 	}
 
 	private createEphemeralReset(reason: "replay_gap"): RuntimeLiveEvent {
@@ -308,29 +348,61 @@ export function projectRuntimeEventForTerminal(event: RuntimeStreamEvent): Runti
 }
 
 /**
- * Optional Pi-style snapshots carry only the existing bounded, redacted
- * display projection. Raw arguments, output, results, and thinking still never
- * enter live history or cross the terminal endpoint.
+ * Optional Pi-style snapshots carry only bounded, redacted display detail.
+ * Raw arguments, output, and results never enter live history. Regular Pi
+ * subscribers still receive no thinking; the explicit local-only projection
+ * below carries signature-free reasoning separately.
  */
 export function projectRuntimeEventForPiTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent | undefined {
+	return projectRuntimeEventForPi(event, false);
+}
+
+/**
+ * Explicit local-only Pi projection. It carries bounded reasoning text through
+ * the same authenticated terminal route, while stripping reasoning signatures.
+ */
+export function projectRuntimeEventForPiThinkingTerminal(event: RuntimeStreamEvent): RuntimeStreamEvent | undefined {
+	return projectRuntimeEventForPi(event, true);
+}
+
+function projectRuntimeEventForPi(
+	event: RuntimeStreamEvent,
+	includeThinking: boolean,
+): RuntimeStreamEvent | undefined {
 	if (event.type !== "assistant_snapshot") return undefined;
 	const compact = projectRuntimeEventForTerminal(event);
 	if (compact.type !== "assistant_snapshot") return undefined;
-	const budget = { remainingCharacters: PI_SNAPSHOT_DETAIL_CHARACTER_LIMIT };
+	const detailBudget = { remainingCharacters: PI_SNAPSHOT_DETAIL_CHARACTER_LIMIT };
+	const thinkingBudget = { remainingCharacters: PI_SNAPSHOT_THINKING_CHARACTER_LIMIT };
 	return {
 		...compact,
 		entry: {
 			...compact.entry,
-			content: event.entry.content.flatMap((block) => projectPiSnapshotContent(block, budget)),
+			content: event.entry.content.flatMap((block) => projectPiSnapshotContent(
+				block,
+				detailBudget,
+				thinkingBudget,
+				includeThinking,
+			)),
 		},
 	};
 }
 
 function projectPiSnapshotContent(
 	block: RuntimeAssistantSnapshotContent,
-	budget: { remainingCharacters: number },
+	detailBudget: { remainingCharacters: number },
+	thinkingBudget: { remainingCharacters: number },
+	includeThinking: boolean,
 ): RuntimeAssistantSnapshotContent[] {
-	if (block.type === "thinking") return [];
+	if (block.type === "thinking") {
+		if (!includeThinking || !block.thinking) return [];
+		const thinking = reservePiThinking(block.thinking, thinkingBudget);
+		return thinking ? [{
+			type: "thinking",
+			thinking,
+			contentIndex: block.contentIndex,
+		}] : [];
+	}
 	if (block.type === "toolCall") {
 		const compact = projectSnapshotContent(block)[0];
 		if (!compact || compact.type !== "toolCall") return [];
@@ -338,13 +410,13 @@ function projectPiSnapshotContent(
 			name: block.name,
 			arguments: block.arguments,
 			startedAt: block.startedAt,
-		}), budget);
+		}), detailBudget);
 		return [{ ...compact, ...(displayDetails ? { displayDetails } : {}) }];
 	}
 	if (block.type === "toolOutput") {
 		const displayDetails = reservePiDetails(projectToolResultDetails({
 			text: block.text,
-		}), budget);
+		}), detailBudget);
 		if (!displayDetails?.result) return [];
 		return [{
 			...block,
@@ -356,7 +428,7 @@ function projectPiSnapshotContent(
 		const displayDetails = reservePiDetails(projectToolResultDetails({
 			result: block.result,
 			isError: block.isError === true,
-		}), budget);
+		}), detailBudget);
 		return [{
 			...block,
 			result: displayDetails?.result?.text ?? "",
@@ -364,6 +436,22 @@ function projectPiSnapshotContent(
 		}];
 	}
 	return [block];
+}
+
+function reservePiThinking(
+	thinking: string,
+	budget: { remainingCharacters: number },
+): string {
+	if (budget.remainingCharacters <= 0) return "";
+	if (thinking.length <= budget.remainingCharacters) {
+		budget.remainingCharacters -= thinking.length;
+		return thinking;
+	}
+	const marker = "… earlier thinking omitted …\n";
+	const limit = budget.remainingCharacters;
+	const available = Math.max(0, limit - marker.length);
+	budget.remainingCharacters = 0;
+	return available > 0 ? `${marker}${thinking.slice(-available)}` : marker.slice(0, limit);
 }
 
 function reservePiDetails(

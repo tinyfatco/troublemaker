@@ -193,14 +193,16 @@ export function safeToolLabel(block: RuntimeAssistantSnapshotContent): string | 
 
 /**
  * Projects a cumulative assistant snapshot onto the visible content that
- * arrived after a transcript boundary. Thinking and raw tool output remain
- * intentionally absent from the terminal transcript.
+ * arrived after a transcript boundary. Thinking is included only for the
+ * explicit local Pi-thinking presentation; raw tool output remains absent.
  */
 export function assistantContentDelta(
 	current: RuntimeAssistantSnapshotContent[],
 	baseline: RuntimeAssistantSnapshotContent[],
+	includeThinking = false,
 ): RuntimeAssistantSnapshotContent[] {
 	const baselineText = baseline.filter((block) => block.type === "text");
+	const baselineThinking = includeThinking ? baseline.filter((block) => block.type === "thinking") : [];
 	const baselineToolCalls = new Set(baseline
 		.filter((block) => block.type === "toolCall")
 		.map((block) => block.type === "toolCall" ? block.id : ""));
@@ -222,7 +224,21 @@ export function assistantContentDelta(
 	const includedToolCalls = new Set<string>();
 	const delta: RuntimeAssistantSnapshotContent[] = [];
 	let textIndex = 0;
+	let thinkingIndex = 0;
 	for (const block of current) {
+		if (block.type === "thinking") {
+			if (!includeThinking) continue;
+			const previous = baselineThinking[thinkingIndex++];
+			if (!previous) {
+				delta.push(block);
+			} else if (block.thinking.startsWith(previous.thinking)) {
+				const suffix = block.thinking.slice(previous.thinking.length);
+				if (suffix) delta.push({ ...block, thinking: suffix });
+			} else if (block.thinking !== previous.thinking) {
+				delta.push(block);
+			}
+			continue;
+		}
 		if (block.type === "text") {
 			const previous = baselineText[textIndex++];
 			if (!previous) {

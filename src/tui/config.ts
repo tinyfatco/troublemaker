@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync
 import { homedir } from "os";
 import { basename, dirname, isAbsolute, join, resolve } from "path";
 
-export type TuiPresentation = "compact" | "pi";
+export type TuiPresentation = "compact" | "pi" | "pi-thinking";
 
 export interface TuiAgentProfile {
 	command: string;
@@ -103,7 +103,11 @@ export function loadTuiProfiles(configPath = defaultTuiConfigPath()): Record<str
 			const channelId = typeof raw.channelId === "string" && raw.channelId.trim()
 				? raw.channelId.trim()
 				: `terminal:${command}`;
-			const presentation: TuiPresentation = raw.presentation === "pi" ? "pi" : "compact";
+			const presentation: TuiPresentation = raw.presentation === "pi-thinking"
+				? "pi-thinking"
+				: raw.presentation === "pi"
+					? "pi"
+					: "compact";
 			const bearerTokenFile = normalizeTuiTokenFile(
 				typeof raw.bearerTokenFile === "string" ? raw.bearerTokenFile : undefined,
 			);
@@ -130,7 +134,11 @@ export function installTuiProfile(options: InstallTuiProfileOptions): InstalledT
 		name: options.name?.trim() || titleCase(command),
 		baseUrl: normalizeTuiBaseUrl(options.baseUrl),
 		channelId: options.channelId?.trim() || `terminal:${command}`,
-		presentation: options.presentation === "pi" ? "pi" : "compact",
+		presentation: options.presentation === "pi-thinking"
+			? "pi-thinking"
+			: options.presentation === "pi"
+				? "pi"
+				: "compact",
 		...(bearerTokenFile ? { bearerTokenFile } : {}),
 	};
 	const configPath = options.configPath || defaultTuiConfigPath();

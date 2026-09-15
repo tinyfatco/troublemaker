@@ -77,7 +77,7 @@ async function openAgent(command: string): Promise<void> {
 
 function parseInstallArgs(args: string[]): ParsedInstallArgs {
 	const command = args.shift();
-	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>] [--presentation compact|pi] [--token-file <absolute-path>]");
+	if (!command) throw new Error("Usage: troublemaker-tui install <command> --url <agent-url> [--name <display-name>] [--channel <channel-id>] [--presentation compact|pi|pi-thinking] [--token-file <absolute-path>]");
 	let name: string | undefined;
 	let baseUrl: string | undefined;
 	let channelId: string | undefined;
@@ -92,7 +92,9 @@ function parseInstallArgs(args: string[]): ParsedInstallArgs {
 		else if (flag === "--url") baseUrl = value;
 		else if (flag === "--channel") channelId = value;
 		else if (flag === "--presentation") {
-			if (value !== "compact" && value !== "pi") throw new Error("Presentation must be compact or pi");
+			if (value !== "compact" && value !== "pi" && value !== "pi-thinking") {
+				throw new Error("Presentation must be compact, pi, or pi-thinking");
+			}
 			presentation = value;
 		}
 		else if (flag === "--token-file") bearerTokenFile = value;
@@ -107,14 +109,15 @@ function printHelp(): void {
 	console.log(`Troublemaker terminal UI
 
 Usage:
-  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi] [--token-file <absolute-path>]
+  troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi|pi-thinking] [--token-file <absolute-path>]
   troublemaker-tui open <agent>
   troublemaker-tui list
   <agent-command>
 
 Installed agent commands open a Pi-styled terminal client against that agent's
 canonical Troublemaker console session. Compact presentation is the default;
-use --presentation pi for bounded, redacted live tool detail.`);
+use --presentation pi for bounded, redacted live tool detail, or pi-thinking to
+also stream local model thinking through the authenticated terminal connection.`);
 }
 
 main().catch((error) => {

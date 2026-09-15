@@ -9,7 +9,7 @@ const terminalChannel = "terminal:example";
 const timestamp = "2040-01-01T00:00:00Z";
 
 // Drive real transcript rendering without starting the terminal or any network loops.
-function harness(presentation: "pi" | "compact", channel: string) {
+function harness(presentation: "pi" | "pi-thinking" | "compact", channel: string) {
 	const requests: Array<() => void> = [];
 	const client = {
 		streamMessage: () => new Promise<void>((resolve) => requests.push(resolve)),
@@ -52,10 +52,72 @@ function harness(presentation: "pi" | "compact", channel: string) {
 	};
 	emit({ type: "user_input", entries: [{ channel, userName: "Casey", text: "INITIAL_INPUT" }] });
 	snapshot("BEFORE_INPUT");
-	return { app, emit, input, awareness, snapshot, ordered, content, finish: () => requests.forEach((resolve) => resolve()) };
+	return { app, emit, input, awareness, snapshot, rendered, ordered, content, finish: () => requests.forEach((resolve) => resolve()) };
 }
 
-for (const presentation of ["pi", "compact"] as const) {
+test("Pi paints each cumulative assistant text update immediately", () => {
+	const h = harness("pi", terminalChannel);
+	h.content[0] = { type: "text", text: "BEFORE_INPUT FIRST_TEXT_FRAGMENT" };
+	h.emit({ type: "assistant_snapshot", entry: {
+		id: "example-assistant",
+		type: "message",
+		timestamp,
+		role: "assistant",
+		isStreaming: true,
+		content: [...h.content],
+	} });
+	assert.match(h.rendered(), /BEFORE_INPUT FIRST_TEXT_FRAGMENT/);
+	h.content[0] = { type: "text", text: "BEFORE_INPUT FIRST_TEXT_FRAGMENT SECOND_TEXT_FRAGMENT" };
+	h.emit({ type: "assistant_snapshot", entry: {
+		id: "example-assistant",
+		type: "message",
+		timestamp,
+		role: "assistant",
+		isStreaming: true,
+		content: [...h.content],
+	} });
+	assert.match(h.rendered(), /FIRST_TEXT_FRAGMENT SECOND_TEXT_FRAGMENT/);
+});
+
+test("Pi-thinking paints each cumulative reasoning update immediately", () => {
+	const h = harness("pi-thinking", terminalChannel);
+	h.content.push({ type: "thinking", thinking: "FIRST_REASONING_FRAGMENT" });
+	h.emit({ type: "assistant_snapshot", entry: {
+		id: "example-assistant",
+		type: "message",
+		timestamp,
+		role: "assistant",
+		isStreaming: true,
+		content: [...h.content],
+	} });
+	assert.match(h.rendered(), /FIRST_REASONING_FRAGMENT/);
+	h.content[h.content.length - 1] = { type: "thinking", thinking: "FIRST_REASONING_FRAGMENT SECOND_REASONING_FRAGMENT" };
+	h.emit({ type: "assistant_snapshot", entry: {
+		id: "example-assistant",
+		type: "message",
+		timestamp,
+		role: "assistant",
+		isStreaming: true,
+		content: [...h.content],
+	} });
+	assert.match(h.rendered(), /FIRST_REASONING_FRAGMENT SECOND_REASONING_FRAGMENT/);
+});
+
+test("ordinary Pi keeps reasoning hidden", () => {
+	const h = harness("pi", terminalChannel);
+	h.content.push({ type: "thinking", thinking: "PRIVATE_REASONING_FRAGMENT" });
+	h.emit({ type: "assistant_snapshot", entry: {
+		id: "example-assistant",
+		type: "message",
+		timestamp,
+		role: "assistant",
+		isStreaming: true,
+		content: [...h.content],
+	} });
+	assert.doesNotMatch(h.rendered(), /PRIVATE_REASONING_FRAGMENT/);
+});
+
+for (const presentation of ["pi", "pi-thinking", "compact"] as const) {
 	test(`${presentation}: interrupted run cannot adopt an older local target on restart`, async () => {
 		const h = harness(presentation, terminalChannel);
 		const first = h.app.handleSubmit("FIRST_INPUT");

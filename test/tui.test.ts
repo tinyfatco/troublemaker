@@ -38,6 +38,7 @@ try {
 	assert.doesNotMatch(appSource, /command === "\/clear"/, "TUI forwards /clear to the resident instead of clearing only its display");
 	assert.match(appSource, /\/clear  archive and reset agent context/, "TUI help describes the resident-side clear behavior");
 	assert.match(appSource, /profile\.presentation === "pi"/, "Pi presentation requires explicit profile opt-in");
+	assert.match(appSource, /profile\.presentation === "pi-thinking"/, "live thinking requires a separate explicit profile opt-in");
 	assert.match(appSource, /this\.piPresentation && !historical/, "Pi tool details remain live-only while durable history stays compact");
 
 	const executablePath = join(tempRoot, "dist", "tui.js");
@@ -77,6 +78,17 @@ try {
 	});
 	assert.equal(piInstalled.profile.presentation, "pi", "Pi live presentation requires an explicit profile opt-in");
 	assert.equal(loadTuiProfiles(configPath)["pi-agent"]?.presentation, "pi");
+	const piThinkingInstalled = installTuiProfile({
+		command: "pi-thinking-agent",
+		name: "Pi Thinking Agent",
+		baseUrl: "http://127.0.0.1:43126",
+		presentation: "pi-thinking",
+		executablePath,
+		configPath,
+		binDir,
+	});
+	assert.equal(piThinkingInstalled.profile.presentation, "pi-thinking");
+	assert.equal(loadTuiProfiles(configPath)["pi-thinking-agent"]?.presentation, "pi-thinking");
 	assert.equal(resolveInvokedAgent("/tmp/example-agent"), "example-agent");
 	assert.equal(resolveInvokedAgent("/tmp/troublemaker-tui"), undefined);
 	assert.equal(normalizeTuiCommand(" Example-Agent "), "example-agent");
@@ -392,6 +404,13 @@ try {
 		{ type: "text", text: "New block" },
 	]);
 	assert.deepEqual(assistantContentDelta([
+		{ type: "thinking", thinking: "private thought plus live continuation" },
+		{ type: "text", text: "Before and after" },
+	], baselineContent, true), [
+		{ type: "thinking", thinking: " plus live continuation" },
+		{ type: "text", text: " and after" },
+	], "explicit Pi-thinking mode streams only post-boundary reasoning and text");
+	assert.deepEqual(assistantContentDelta([
 		{ type: "toolCall", id: "done", name: "bash", label: "Already done", arguments: {} },
 		{ type: "toolResult", toolCallId: "done", result: "same", isError: false },
 	], [
@@ -516,10 +535,22 @@ try {
 		});
 		const piLiveEvents: string[] = [];
 		await piClient.streamLive((event) => piLiveEvents.push(event.kind), undefined, undefined, 42);
+		const piThinkingClient = new TroublemakerTuiClient({
+			command: "pi-thinking-agent",
+			name: "Pi Thinking Agent",
+			baseUrl: `http://127.0.0.1:${address.port}`,
+			channelId: "terminal:pi-thinking-agent",
+			presentation: "pi-thinking",
+			bearerTokenFile: tokenFile,
+		});
+		const piThinkingLiveEvents: string[] = [];
+		await piThinkingClient.streamLive((event) => piThinkingLiveEvents.push(event.kind));
 		assert.deepEqual(compactLiveEvents, ["reset"]);
 		assert.deepEqual(piLiveEvents, ["reset"]);
+		assert.deepEqual(piThinkingLiveEvents, ["reset"]);
 		assert.equal(receivedLiveUrls[0], "/api/v2/agents/current/live", "compact default adds no presentation query");
 		assert.equal(receivedLiveUrls[1], "/api/v2/agents/current/live?presentation=pi&after=42", "Pi mode explicitly opts into safe detail");
+		assert.equal(receivedLiveUrls[2], "/api/v2/agents/current/live?presentation=pi-thinking", "Pi-thinking mode explicitly opts into local reasoning");
 
 		const events: string[] = [];
 		await client.streamMessage("hello", (event) => events.push(event.type));

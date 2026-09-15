@@ -136,16 +136,17 @@ export class TerminalToolCallRegistry {
 	}
 }
 
-/** Renders consecutive labels in one natural flow, followed by selected details. */
+/** Renders one compact Pi-style summary line per call, with detail only on demand. */
 export class TerminalToolCallStream implements Component {
 	constructor(private readonly calls: TerminalToolCallView[]) {}
 
 	render(width: number): string[] {
-		const labels = this.calls.map((call) => formatToolLabel(call)).join("  ");
-		const lines = new Text(labels, 1, 0).render(width);
+		const lines: string[] = [];
 		for (const call of this.calls) {
-			if (!call.expanded) continue;
-			lines.push(...new Text(formatToolDetails(call), 3, 0).render(width));
+			lines.push(...new Text(formatToolLabel(call), 1, 0).render(width));
+			if (call.expanded) {
+				lines.push(...new Text(formatToolDetails(call), 3, 0).render(width));
+			}
 		}
 		return lines;
 	}
@@ -242,9 +243,8 @@ export function formatToolLabel(call: TerminalToolCallView): string {
 			: call.state === "pending"
 				? "→"
 				: call.state === "cancelled" ? "−" : "?";
-	const disclosure = call.expanded ? "▾" : "▸";
 	const label = oneLine(call.label) || oneLine(call.name) || "tool";
-	return `${chalk.dim(`[${call.selector}]`)} ${chalk.dim(disclosure)} ${color(icon)} ${chalk.bold(label)}`;
+	return `${chalk.dim(`[${call.selector}]`)} ${color(icon)} ${chalk.bold(label)}`;
 }
 
 export function formatToolDetails(call: TerminalToolCallView): string {
