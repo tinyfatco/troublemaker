@@ -8,7 +8,7 @@ The provider always receives `search_tools`, `call_tool`, and `handoff_context`.
 
 ## Optional progress telemetry
 
-`TROUBLEMAKER_INFERENCE_PROGRESS_URL` can point to an operator-configured **loopback HTTP** MTPLX snapshot endpoint. No endpoint is guessed. Each inference request receives a unique `x-mtplx-request-id`; any intermediary proxy must preserve this header. Only the matching request's numerical prefill measurements are forwarded. Missing or failed telemetry does not block inference. Redirects and non-loopback destinations are rejected.
+`TROUBLEMAKER_INFERENCE_PROGRESS_URL` can point to an operator-configured **loopback HTTP** MTPLX snapshot endpoint. No endpoint is guessed. Each inference request receives a unique `x-mtplx-request-id`; any intermediary proxy must preserve this header. Only the matching request's numerical prefill measurements are forwarded. Redirects and non-loopback destinations are rejected. When this telemetry is configured, the runtime also enforces the local uncached-prefill ceiling described in [handoff compaction](handoff-compaction.md): cached long contexts remain eligible, but a genuine oversized cache miss is cancelled and recovered through a bounded private checkpoint. Missing telemetry cannot prove a cache miss, so it remains non-blocking.
 
 The portable status event optionally carries:
 

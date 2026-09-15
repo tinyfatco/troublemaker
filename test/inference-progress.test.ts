@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { inferenceProgressURL, progressFromSnapshot, parseInferenceProgress, watchInferenceProgress } from "../src/inference-progress.js";
+import { exceedsLocalPrefillLimit, inferenceProgressURL, progressFromSnapshot, parseInferenceProgress, uncachedPrefillTokens, watchInferenceProgress } from "../src/inference-progress.js";
 import { projectConversationTurnEvent } from "../src/console/conversation-projection.js";
 const p={phase:"prefill",processedTokens:512,totalTokens:1024,cachedTokens:0,elapsedSeconds:2};
 assert.deepEqual(parseInferenceProgress({...p,secret:"must not propagate"}),p);
@@ -8,12 +8,18 @@ for(const bad of [{...p,processedTokens:2048},{...p,totalTokens:0},{...p,cachedT
 const snapshot={in_flight:[{prefill_state:{request_id:"example-request",phase:"chunk",tokens_done:512,tokens_total:1024,cached_tokens:0,elapsed_s:2,prompt_preview:"private"}}]};
 assert.deepEqual(progressFromSnapshot(snapshot,"example-request"),p);
 assert.equal(progressFromSnapshot(snapshot,"another-request"),undefined);
+assert.equal(uncachedPrefillTokens({...p,totalTokens:30_000,cachedTokens:28_000}),2_000);
+assert.equal(exceedsLocalPrefillLimit({...p,totalTokens:30_000,cachedTokens:28_000},24_000),false,
+	"large cached contexts remain fast and are allowed");
+assert.equal(exceedsLocalPrefillLimit({...p,totalTokens:30_000,cachedTokens:0},24_000),true,
+	"a true 30K cache miss is rejected");
 assert.equal(inferenceProgressURL("https://example.com"),undefined);
 assert.equal(inferenceProgressURL("http://user:password@localhost"),undefined);
 assert.ok(inferenceProgressURL("http://127.0.0.1:1234/v1/mtplx/snapshot"));
 const projected=projectConversationTurnEvent({type:"status",status:"processing",processing:{...p,secret:"private"}});
 assert.deepEqual(projected,{type:"state",state:"thinking",processing:p});
-const server=createServer((_request,response)=>{response.setHeader("Content-Type","application/json");response.end(JSON.stringify(snapshot));});
+let authorization: string | undefined;
+const server=createServer((request,response)=>{authorization=typeof request.headers.authorization==="string"?request.headers.authorization:undefined;response.setHeader("Content-Type","application/json");response.end(JSON.stringify(snapshot));});
 await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
 try {
 	const address=server.address();
@@ -24,8 +30,9 @@ try {
 		const stop=watchInferenceProgress(new URL(`http://127.0.0.1:${address.port}`),"example-request",progress=>{
 			try {assert.deepEqual(progress,p);samples++;stop();clearTimeout(timeout);resolve();}
 			catch(error){stop();clearTimeout(timeout);reject(error);}
-		});
+		},{apiKey:"synthetic-key"});
 	});
 	assert.equal(samples,1);
+	assert.equal(authorization,"Bearer synthetic-key");
 } finally {await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
 console.log("inference progress: ok");

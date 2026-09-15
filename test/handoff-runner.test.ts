@@ -1,130 +1,173 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getOrCreateRunner } from "../src/agent.js";
 import { ChannelStore } from "../src/store.js";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { MomContext } from "../src/adapters/types.js";
-import { HANDOFF_OPEN, HANDOFF_CLOSE } from "../src/handoff-compaction.js";
 import { HANDOFF_RESUME_INSTRUCTION } from "../src/handoff-continuation.js";
 
 const root = mkdtempSync(join(tmpdir(), "handoff-runner-"));
 process.env.PI_AGENT_DIR = join(root, "agent-config");
 process.env.PI_OFFLINE = "1";
 process.env.TROUBLEMAKER_PROMPT_PROFILE = "compact";
-const requests: Array<{ messages: Array<{role: string; content: unknown}>; tools: Array<{function?: {name?: string}}>;
-	temperature?: number; enable_thinking?: boolean; tool_choice?: {function?: {name?: string}} }> = [];
-const checkpoint = { version: 1, goal: "Finish the synthetic check", constraints: ["No external actions"], completed: ["Initial fixture complete"], inProgress: ["Final fixture reply"], nextSteps: ["Reply fixture complete"], decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: "example-channel", replyTarget: null} };
-const privateCheckpointPreamble = "SYNTHETIC CHECKPOINT PREAMBLE MUST STAY PRIVATE";
+
+type Request = { messages: Array<{role: string; content: unknown}>; tools?: Array<{function?: {name?: string}}>;
+ temperature?: number; enable_thinking?: boolean; tool_choice?: {function?: {name?: string}} };
+const requests: Request[] = [];
+let normalRequests = 0;
+let checkpointBehavior: "valid" | "invalid" | "delayed" = "valid";
 let abortDuringCheckpoint: (() => void) | undefined;
+const summary = "Finish the synthetic check. Preserve the triggering user request and continue after rotation.";
+
 const server = createServer(async (req, res) => {
-	let body = "";
-	for await (const chunk of req) body += chunk;
-	requests.push(JSON.parse(body));
-	const n = requests.length;
-	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8 || n === 9) ? `${privateCheckpointPreamble}\n${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
-	res.writeHead(200, {"Content-Type": "text/event-stream"});
-	const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({id: `example-${n}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices, ...(usage ? {usage} : {})})}\n\n`);
-	if (n === 2) {
-		send([{index: 0, delta: {role: "assistant", content: privateCheckpointPreamble, tool_calls: [{index: 0, id: "example-pressure-handoff", type: "function", function: {name: "handoff_context", arguments: JSON.stringify({label: "Save synthetic checkpoint", summary: checkpoint.goal, nextSteps: checkpoint.nextSteps, continue: true})}}]}, finish_reason: null}]);
-		send([{index: 0, delta: {}, finish_reason: "tool_calls"}], {prompt_tokens: 22000, completion_tokens: 100, total_tokens: 22100});
-		res.end("data: [DONE]\n\n");
-		return;
-	}
-	if (n === 7) {
-		send([{index: 0, delta: {role: "assistant", tool_calls: [{index: 0, id: "example-paused-tool", type: "function", function: {name: "call_tool", arguments: JSON.stringify({name: "bash", arguments: {command: `printf unexpected > '${join(root, "must-not-exist")}'`, label: "Synthetic paused write"}})}}]}, finish_reason: null}]);
-		send([{index: 0, delta: {}, finish_reason: "tool_calls"}]);
-		res.end("data: [DONE]\n\n");
-		return;
-	}
-	send([{index: 0, delta: {role: "assistant", content}, finish_reason: null}]);
-	if (n === 5) {
-		await new Promise(resolve => setTimeout(resolve, 20));
-		abortDuringCheckpoint?.();
-		await new Promise(resolve => setTimeout(resolve, 20));
-	}
-	send([{index: 0, delta: {}, finish_reason: "stop"}], {prompt_tokens: n < 3 ? 22000 : 1600, completion_tokens: 100, total_tokens: n < 3 ? 22100 : 1700});
-	res.end("data: [DONE]\n\n");
+ let body = "";
+ for await (const chunk of req) body += chunk;
+ const request = JSON.parse(body) as Request;
+ requests.push(request);
+ const isCheckpoint = request.tool_choice?.function?.name === "handoff_context";
+ res.writeHead(200, {"Content-Type": "text/event-stream"});
+ const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({
+  id: `example-${requests.length}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices,
+  ...(usage ? {usage} : {}),
+ })}\n\n`);
+ if (isCheckpoint) {
+  const behavior = checkpointBehavior;
+  checkpointBehavior = "valid";
+  if (behavior === "delayed") {
+   abortDuringCheckpoint?.();
+   await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  if (behavior === "invalid") {
+   send([{index: 0, delta: {role: "assistant", content: "invalid checkpoint prose"}, finish_reason: null}]);
+   send([{index: 0, delta: {}, finish_reason: "stop"}], {prompt_tokens: 1800, completion_tokens: 10, total_tokens: 1810});
+  } else {
+   send([{index: 0, delta: {role: "assistant", tool_calls: [{index: 0, id: `private-${requests.length}`, type: "function", function: {
+    name: "handoff_context", arguments: JSON.stringify({label: "Save synthetic checkpoint", summary, nextSteps: ["Reply fixture complete"], continue: true}),
+   }}]}, finish_reason: null}]);
+   send([{index: 0, delta: {}, finish_reason: "tool_calls"}], {prompt_tokens: 1800, completion_tokens: 80, total_tokens: 1880});
+  }
+  res.end("data: [DONE]\n\n");
+  return;
+ }
+ normalRequests++;
+ const content = normalRequests === 1 ? "Initial fixture complete." : "Fixture complete.";
+ send([{index: 0, delta: {role: "assistant", content}, finish_reason: null}]);
+ send([{index: 0, delta: {}, finish_reason: "stop"}], {
+  prompt_tokens: normalRequests === 1 ? 22000 : 1600,
+  completion_tokens: 100,
+  total_tokens: normalRequests === 1 ? 22100 : 1700,
+ });
+ res.end("data: [DONE]\n\n");
 });
+
 await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 try {
-	const address = server.address(); assert(address && typeof address !== "string");
-	writeFileSync(join(root, "models.json"), JSON.stringify({providers: {example: {baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "example-key", api: "openai-completions", models: [{id: "example-model", name: "Example", reasoning: false, input: ["text"], contextWindow: 32768, maxTokens: 2048, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}}]}}}));
-	writeFileSync(join(root, "settings.json"), JSON.stringify({defaultProvider: "example", defaultModel: "example-model", thinkingLevel: "off", compaction: {enabled: true, mode: "handoff", reserveTokens: 10000, keepRecentTokens: 1024}}));
-	writeFileSync(join(root, "AGENTS.md"), "Only perform the synthetic fixture. No tools or external actions.\n");
-	const finals: string[] = [];
-	const projections: unknown[] = [];
-	const noop = async () => {};
-	const ctx: MomContext = {message: {text: "Initial fixture", rawText: "Initial fixture", user: "example-user", channel: "example-channel", ts: "1", attachments: []}, channels: [], users: [], respond: noop, sendFinalResponse: async text => {finals.push(text);}, respondInThread: noop, setTyping: noop, uploadFile: noop, setWorking: noop, deleteMessage: noop, restartWorking: noop, emitContentBlock: event => {projections.push(event);}};
-	const runner = await getOrCreateRunner({type: "host"}, join(root, "awareness"), "Be concise.");
-	const store = new ChannelStore({workingDir: root, botToken: ""});
-	assert.equal((await runner.run(ctx, store)).stopReason, "stop");
-	ctx.message = {...ctx.message, text: "Finish the fixture", rawText: "Finish the fixture", ts: "2", sourceEventType: "heartbeat"};
-	assert.equal((await runner.run(ctx, store)).stopReason, "stop", "heartbeat pressure uses the same handoff path");
-	assert.equal(requests.length, 3, "warm checkpoint must automatically continue in the new context");
-	assert.deepEqual(requests[1].messages.slice(0, requests[0].messages.length), requests[0].messages, "checkpoint retains the provider's original prompt prefix");
-	assert.deepEqual(requests[1].tools, requests[0].tools, "checkpoint tool schema prefix remains stable");
-	assert(requests[1].tools.some(tool => tool.function?.name === "handoff_context"), "stable compact schema exposes the validated checkpoint tool");
-	assert.equal(requests[1].tool_choice?.function?.name, "handoff_context", "pressure checkpoint forces the handoff tool");
-	assert.equal(requests[1].temperature, 0, "pressure checkpoint uses deterministic sampling");
-	assert.equal(requests[1].enable_thinking, false, "pressure checkpoint does not spend tokens on private reasoning");
-	const checkpointInstructionCount = JSON.stringify(requests[1].messages).split("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW").length - 1;
-	assert.equal(checkpointInstructionCount, 1, "one pressure event must inject exactly one checkpoint instruction");
-	assert(JSON.stringify(requests[2].messages).includes(HANDOFF_RESUME_INSTRUCTION));
-	assert(!JSON.stringify(requests[2]).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"), "checkpoint command must not leak into the resumed context");
-	assert(!JSON.stringify(projections).includes(privateCheckpointPreamble), "checkpoint preambles must not enter live Computer/TUI projections");
-	assert(!JSON.stringify(projections).includes(checkpoint.goal), "checkpoint summaries must not enter live Computer/TUI projections");
-	assert(!JSON.stringify(projections).includes("handoff_context"), "the private checkpoint tool must not become a visible tool row");
-	assert(!finals.join("\n").includes(privateCheckpointPreamble), "checkpoint preambles must not become platform responses");
-	assert(finals.includes("Fixture complete."));
-	const durable = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
-	assert(durable.includes("troublemaker.continuity-handoff.v1"));
-	assert(readdirSync(join(root, "awareness/history")).length > 0, "source conversation is archived");
-	// Force pressure in the fixture without constructing a large prompt.
-	const settingsPath = join(root, "settings.json");
-	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-	settings.compaction.reserveTokens = 31000;
-	writeFileSync(settingsPath, JSON.stringify(settings));
-	const historyBefore = readdirSync(join(root, "awareness/history"), {recursive: true});
-	ctx.message = {...ctx.message, text: "Keep this correction", rawText: "Keep this correction", ts: "3"};
-	assert.equal((await runner.run(ctx, store)).stopReason, "error");
-	assert(finals.some(text => text.includes("conversation was preserved")), "invalid checkpoints report a visible failure");
-	assert.equal(requests.length, 4, "malformed checkpoint must not start a cold continuation or spin retries");
-	assert(readFileSync(join(root, "awareness/context.jsonl"), "utf8").startsWith(durable), "failed checkpoint preserves every prior durable byte");
-	assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBefore, "failed checkpoint never rotates away the conversation");
-	const beforeAbort = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
-	abortDuringCheckpoint = () => runner.abort();
-	ctx.message = {...ctx.message, text: "Cancellation fixture", rawText: "Cancellation fixture", ts: "4"};
-	assert.equal((await runner.run(ctx, store)).stopReason, "aborted");
-	assert.equal(requests.length, 5, "cancelled checkpoint must not resume");
-	assert(readFileSync(join(root, "awareness/context.jsonl"), "utf8").startsWith(beforeAbort));
-	assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBefore);
-	settings.compaction.reserveTokens = 10000;
-	writeFileSync(settingsPath, JSON.stringify(settings));
-	const manual = await runner.compact("Preserve the synthetic fixture only.");
-	assert.equal(requests.length, 6, "explicit compaction writes one warm checkpoint without resuming tasks");
-	assert(manual.messagesAfter > 0);
-	assert(JSON.stringify(requests[5].messages).includes("PRIVATE CONTINUITY CHECKPOINT"));
-	assert.deepEqual(requests[5].messages[0], requests[2].messages[0], "manual handoff uses the conversation system prompt, not standalone summarization");
-	assert.deepEqual(requests[5].tools, requests[2].tools);
-	await runner.compact();
-	assert.equal(requests.length, 8);
-	assert(!existsSync(join(root, "must-not-exist")), "tool calls cannot mutate state during checkpoint generation");
-	assert(JSON.stringify(requests[7].messages).includes("Other tool work is paused"));
-	const maintenance = runner.compact();
-	const concurrentInput = {...ctx, message: {...ctx.message, text: "Concurrent user correction", rawText: "Concurrent user correction", ts: "5"}};
-	const interactive = runner.run(concurrentInput, store);
-	await maintenance;
-	assert.equal((await interactive).stopReason, "stop");
-	assert.equal(requests.length, 10, "concurrent interactive input waits for checkpoint completion without being dropped or replayed");
-	assert(JSON.stringify(requests[8].messages).includes("PRIVATE CONTINUITY CHECKPOINT"));
-	assert(!JSON.stringify(requests[8].messages).includes("Concurrent user correction"));
-	assert(JSON.stringify(requests[9].messages).includes("Concurrent user correction"));
-	assert(!JSON.stringify(requests[9].messages).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"));
-	console.log("handoff runner: ok");
+ const address = server.address(); assert(address && typeof address !== "string");
+ writeFileSync(join(root, "models.json"), JSON.stringify({providers: {example: {
+  baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "example-key", api: "openai-completions",
+  models: [{id: "example-model", name: "Example", reasoning: false, input: ["text"], contextWindow: 32768,
+   maxTokens: 2048, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}}],
+ }}}));
+ writeFileSync(join(root, "settings.json"), JSON.stringify({defaultProvider: "example", defaultModel: "example-model",
+  thinkingLevel: "off", compaction: {enabled: true, mode: "handoff", reserveTokens: 10000, keepRecentTokens: 1024}}));
+ writeFileSync(join(root, "AGENTS.md"), "Only perform the synthetic fixture. No tools or external actions.\n");
+ const finals: string[] = [];
+ const projections: unknown[] = [];
+ const noop = async () => {};
+ const ctx: MomContext = {message: {text: "Initial fixture", rawText: "Initial fixture", user: "example-user",
+  channel: "example-channel", ts: "1", attachments: []}, channels: [], users: [], respond: noop,
+  sendFinalResponse: async text => { finals.push(text); }, respondInThread: noop, setTyping: noop, uploadFile: noop,
+  setWorking: noop, deleteMessage: noop, restartWorking: noop, emitContentBlock: event => { projections.push(event); }};
+ const runner = await getOrCreateRunner({type: "host"}, join(root, "awareness"), "Be concise.");
+ const store = new ChannelStore({workingDir: root, botToken: ""});
+
+ assert.equal((await runner.run(ctx, store)).stopReason, "stop");
+ ctx.message = {...ctx.message, text: "Finish the fixture", rawText: "Finish the fixture", ts: "2", sourceEventType: "heartbeat"};
+ assert.equal((await runner.run(ctx, store)).stopReason, "stop", "heartbeat pressure uses the transactional handoff path");
+ assert.equal(requests.length, 3, "one private checkpoint automatically continues in fresh context");
+ const pressure = requests[1];
+ assert.deepEqual(pressure.tools?.map(tool => tool.function?.name), ["handoff_context"], "private request exposes exactly one tool");
+ assert.equal(pressure.tool_choice?.function?.name, "handoff_context");
+ assert.equal(pressure.temperature, 0);
+ assert.equal(pressure.enable_thinking, false);
+ assert.equal(JSON.stringify(pressure.messages).split("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW").length - 1, 1);
+ assert(JSON.stringify(requests[2].messages).includes(HANDOFF_RESUME_INSTRUCTION));
+ assert(!JSON.stringify(projections).includes(summary), "private checkpoint arguments never enter Computer/TUI projections");
+ assert(!JSON.stringify(projections).includes("handoff_context"), "private checkpoint has no visible tool row");
+ assert(finals.includes("Fixture complete."));
+ const durableAfterSuccess = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
+ assert(durableAfterSuccess.includes("troublemaker.continuity-handoff.v1"));
+ const archives = readdirSync(join(root, "awareness/history"), {recursive: true});
+ assert(archives.length > 0);
+ const archivePath = join(root, "awareness/history", String(archives.find(value => String(value).endsWith(".jsonl"))));
+ if (archivePath.endsWith(".jsonl")) {
+  const archived = readFileSync(archivePath, "utf8");
+  assert(!archived.includes("private-2"), "private checkpoint response is never appended to the source session");
+ }
+
+ // Force pressure without constructing a giant fixture. A malformed private
+ // response preserves the user input and appends no checkpoint assistant/tool rows.
+ const settingsPath = join(root, "settings.json");
+ const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+ settings.compaction.reserveTokens = 31000;
+ writeFileSync(settingsPath, JSON.stringify(settings));
+ const historyBeforeFailure = readdirSync(join(root, "awareness/history"), {recursive: true});
+ const beforeFailure = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
+ checkpointBehavior = "invalid";
+ ctx.message = {...ctx.message, text: "Keep this correction", rawText: "Keep this correction", ts: "3"};
+ assert.equal((await runner.run(ctx, store)).stopReason, "error");
+ const afterFailure = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
+ assert(afterFailure.startsWith(beforeFailure), "failed private checkpoint preserves prior durable bytes");
+ assert(!afterFailure.includes("invalid checkpoint prose"), "failed private output never enters the session");
+ assert.deepEqual(readdirSync(join(root, "awareness/history"), {recursive: true}), historyBeforeFailure);
+
+ // Cancellation aborts the private HTTP request and leaves only legitimate user input.
+ const beforeAbort = afterFailure;
+ checkpointBehavior = "delayed";
+ abortDuringCheckpoint = () => runner.abort();
+ ctx.message = {...ctx.message, text: "Cancellation fixture", rawText: "Cancellation fixture", ts: "4"};
+ assert.equal((await runner.run(ctx, store)).stopReason, "aborted");
+ abortDuringCheckpoint = undefined;
+ const afterAbort = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
+ assert(afterAbort.startsWith(beforeAbort));
+ assert(!afterAbort.includes("private-5"));
+ const reopenedAfterAbort = SessionManager.open(join(root, "awareness/context.jsonl"), join(root, "awareness"));
+ const recoveredMessages = reopenedAfterAbort.buildSessionContext().messages;
+ assert.equal(recoveredMessages.at(-1)?.role, "user", "restart recovery keeps the triggering user message as the active leaf");
+ assert(JSON.stringify(recoveredMessages.at(-1)).includes("Cancellation fixture"));
+ assert(!JSON.stringify(recoveredMessages).includes("Private checkpoint cancelled"), "interrupted private output never becomes restart context");
+
+ // Explicit maintenance compaction uses the same private path but does not
+ // persist its harness prompt or continue the task.
+ settings.compaction.reserveTokens = 10000;
+ writeFileSync(settingsPath, JSON.stringify(settings));
+ const requestCountBeforeManual = requests.length;
+ const manual = await runner.compact("Preserve the synthetic fixture only.");
+ assert.equal(requests.length, requestCountBeforeManual + 1);
+ assert(manual.messagesAfter > 0);
+ const manualRequest = requests.at(-1)!;
+ assert.deepEqual(manualRequest.tools?.map(tool => tool.function?.name), ["handoff_context"]);
+ assert(JSON.stringify(manualRequest.messages).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"));
+ assert(!readFileSync(join(root, "awareness/context.jsonl"), "utf8").includes("Harness-requested continuity checkpoint"));
+
+ // The operation queue remains serialized: concurrent input waits behind a
+ // delayed maintenance checkpoint, then runs once in the rotated context.
+ checkpointBehavior = "delayed";
+ const beforeConcurrent = requests.length;
+ const maintenance = runner.compact();
+ const concurrentInput = {...ctx, message: {...ctx.message, text: "Concurrent user correction", rawText: "Concurrent user correction", ts: "5"}};
+ const interactive = runner.run(concurrentInput, store);
+ await maintenance;
+ assert.equal((await interactive).stopReason, "stop");
+ assert.equal(requests.length, beforeConcurrent + 2);
+ assert(!JSON.stringify(requests[beforeConcurrent].messages).includes("Concurrent user correction"));
+ assert(JSON.stringify(requests[beforeConcurrent + 1].messages).includes("Concurrent user correction"));
+ console.log("handoff runner: ok");
 } finally {
-	await new Promise<void>(resolve => server.close(() => resolve()));
-	await rm(root, {recursive: true, force: true});
+ await new Promise<void>(resolve => server.close(() => resolve()));
+ await rm(root, {recursive: true, force: true});
 }

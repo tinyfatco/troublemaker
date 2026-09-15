@@ -1,7 +1,7 @@
 import { createCodexCliStream, getCodexCliRuntimeAuth, isCodexCliProvider, registerCodexCliRuntimeAuth, resetCodexCliSession } from "./codex-cli.js";
 import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
 import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
-import { createHandoffContextTool } from "./tools/handoff-context.js";
+import { createHandoffContextTool, parseHandoffContextArguments } from "./tools/handoff-context.js";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -23,7 +23,7 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
-import { inferenceProgressURL, watchInferenceProgress } from "./inference-progress.js";
+import { exceedsLocalPrefillLimit, inferenceProgressURL, uncachedPrefillTokens, watchInferenceProgress } from "./inference-progress.js";
 import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
 import { InputBudget } from "./core/input-budget.js";
 import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
@@ -92,10 +92,13 @@ import {
 	estimateHandoffContextTokens,
 	handoffToolInstruction,
 	handoffJournalPath,
+	LOCAL_HANDOFF_SAFETY_TOKENS,
+	localPrefillLimitTokens,
 	readHandoffJournal,
 	replayHandoffRotation,
+	selectBoundedCheckpointTranscript,
 	selectBoundedRecentDialogue,
-	shouldRequestHandoff,
+	shouldRequestBoundedHandoff,
 	writeHandoffJournal,
 	type HandoffRotationJournal,
 } from "./handoff-compaction.js";
@@ -466,6 +469,8 @@ async function createRunner(
 	const compactPrompt = compactPromptEnabled(process.env.TROUBLEMAKER_PROMPT_PROFILE);
 	const inputBudget = process.env.TROUBLEMAKER_INPUT_BUDGET === "small"
 		? new InputBudget(join(awarenessDir, "input-budget")) : undefined;
+	const localProgressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
+	const localPrefillLimit = localProgressURL ? localPrefillLimitTokens() : undefined;
 
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
@@ -568,23 +573,43 @@ async function createRunner(
 		}
 		if (isCodexCliProvider(streamModel.provider)) return codexCliStream(streamModel, context, normalizedOptions);
 		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
-		const progressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
 		const requestId = `chatcmpl-${randomUUID()}`;
-		if (progressURL) normalizedOptions = { ...normalizedOptions, headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId } };
+		const prefillAbort = localProgressURL ? new AbortController() : undefined;
+		if (prefillAbort) {
+			const upstreamSignal = normalizedOptions?.signal;
+			if (upstreamSignal) {
+				if (upstreamSignal.aborted) prefillAbort.abort(upstreamSignal.reason);
+				else upstreamSignal.addEventListener("abort", () => prefillAbort.abort(upstreamSignal.reason), { once: true });
+			}
+			normalizedOptions = {
+				...normalizedOptions,
+				signal: prefillAbort.signal,
+				maxRetries: 0,
+				headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId },
+			};
+		}
 		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
 		const result = streamSimple(
 			streamModel,
 			compactPrompt ? compactToolContext(boundedContext) : boundedContext,
 			normalizedOptions,
 		);
-		if (progressURL) {
+		if (localProgressURL) {
 			const sink = runState.liveEventSink;
 			const responseContext = runState.ctx;
-			const stop = watchInferenceProgress(progressURL, requestId, (processing) => {
+			const stop = watchInferenceProgress(localProgressURL, requestId, (processing) => {
+				if (localPrefillLimit !== undefined && exceedsLocalPrefillLimit(processing, localPrefillLimit)) {
+					const uncached = uncachedPrefillTokens(processing);
+					runState.localPrefillRejected = true;
+					runState.localPrefillRejectionMessage = `Local prefill rejected: ${uncached} uncached tokens exceeds the ${localPrefillLimit}-token safety limit`;
+					log.logWarning(`[inference] Rejected local prefill: ${uncached} uncached tokens exceeds ${localPrefillLimit}`);
+					prefillAbort?.abort(new Error(runState.localPrefillRejectionMessage));
+					return;
+				}
 				const event = { type: "status", status: "processing", processing } as const;
 				try { void Promise.resolve(sink?.(event)).catch(() => {}); } catch { /* Best effort. */ }
 				try { responseContext?.emitContentBlock?.(event); } catch { /* Best effort. */ }
-			});
+			}, { apiKey: normalizedOptions?.apiKey });
 			void result.result().then(stop, stop);
 		}
 		return compactPrompt ? restoreCompactToolStream(result, {
@@ -652,9 +677,12 @@ async function createRunner(
 			const settings = settingsManager.getCompactionSettings();
 			const ctx = runState.ctx;
 			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || (isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))) return;
-			if (!runState.handoffRequested && (forceHandoff || shouldRequestHandoff(
+			// Telemetry-backed local models are intercepted transactionally before
+			// AgentSession.prompt. Never stage their private checkpoint in the session.
+			if (localPrefillLimit !== undefined && !forceHandoff) return;
+			if (!runState.handoffRequested && (forceHandoff || shouldRequestBoundedHandoff(
 				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
-				settings.reserveTokens, settings.keepRecentTokens,
+				settings.reserveTokens, settings.keepRecentTokens, localPrefillLimit,
 			))) {
 				runState.handoffRequested = true;
                 beginTransition("handoff", forceHandoff ? "user" : "context_limit");
@@ -748,6 +776,7 @@ async function createRunner(
 	// Session created lazily on first run
 	let session: AgentSession | null = null;
 	let acceptsSteering = false;
+	let privateHandoffAbortController: AbortController | null = null;
 	let unsubscribeSession: (() => void) | null = null;
 	let resourceLoaderReady = false;
 	const getSession = async () => {
@@ -785,6 +814,93 @@ async function createRunner(
 			unsubscribeSession = session.subscribe(eventHandler);
 		}
 		return session;
+	};
+
+	const privateCheckpointTimeoutMs = (() => {
+		const value = Number(process.env.TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS);
+		return Number.isSafeInteger(value) && value >= 10_000 && value <= 300_000 ? value : 120_000;
+	})();
+	const generatePrivateCheckpoint = async (
+		messages: readonly AgentMessage[],
+		currentModel: typeof model,
+		routing: { channel: string; replyTarget: string | null },
+	) => {
+		const inputLimit = Math.max(4096, (localPrefillLimit ?? localPrefillLimitTokens()) - LOCAL_HANDOFF_SAFETY_TOKENS);
+		const currentRuntimeSnapshot: AgentMessage | null = activeRuntimeContext.trim() ? {
+			role: "custom", customType: "runtime-context", content: activeRuntimeContext, display: false, timestamp: 0,
+		} : null;
+		const runtimeTokens = currentRuntimeSnapshot ? estimateHandoffContextTokens([currentRuntimeSnapshot]) : 0;
+		const transcript = selectBoundedCheckpointTranscript(messages, Math.max(1024, inputLimit - runtimeTokens));
+		const checkpointMessages = currentRuntimeSnapshot ? [...transcript, currentRuntimeSnapshot] : transcript;
+		const sourceTokens = estimateHandoffContextTokens(messages);
+		const projectedTokens = estimateHandoffContextTokens(checkpointMessages);
+		if (projectedTokens > inputLimit) throw new Error(`Private checkpoint projection exceeded its ${inputLimit}-token limit`);
+		const providerMessages = (compactPrompt ? compactInitialRuntimePrefix(checkpointMessages) : checkpointMessages)
+			.flatMap((message) => convertToLlm([message]));
+		providerMessages.push(...convertToLlm([{
+			role: "user", content: [{ type: "text", text: handoffToolInstruction() }], timestamp: 0,
+		}]));
+		const handoffTool = tools.find((tool) => tool.name === "handoff_context");
+		if (!handoffTool) throw new Error("Private checkpoint tool is unavailable");
+		const privateContext = {
+			systemPrompt: activeSystemPrompt,
+			messages: providerMessages,
+			tools: [{ name: handoffTool.name, description: handoffTool.description, parameters: handoffTool.parameters }],
+		};
+		const apiKey = getCodexCliRuntimeAuth(currentModel.provider)
+			?? getClaudeCliRuntimeAuth(currentModel.provider)
+			?? await resolveApiKey(modelRegistry, currentModel.provider);
+		const requestId = `chatcmpl-private-handoff-${randomUUID()}`;
+		const controller = new AbortController();
+		privateHandoffAbortController = controller;
+		const timer = setTimeout(() => controller.abort(new Error(`Private checkpoint exceeded ${privateCheckpointTimeoutMs}ms`)), privateCheckpointTimeoutMs);
+		timer.unref?.();
+		let stopProgress = () => {};
+		try {
+			let options = normalizeSimpleStreamOptionsForModel(currentModel, {
+				apiKey,
+				signal: controller.signal,
+				timeoutMs: privateCheckpointTimeoutMs,
+				maxRetries: 0,
+				maxTokens: 1536,
+				temperature: 0,
+				reasoning: "minimal",
+				headers: localProgressURL ? {
+					"x-mtplx-request-id": requestId,
+					"x-mtplx-session-id": requestId,
+				} : undefined,
+				samplingParams: {
+					enable_thinking: false,
+					tool_choice: { type: "function", function: { name: "handoff_context" } },
+				},
+			});
+			options = boundCompactionStreamOptions(privateContext, options);
+			const stream = streamSimple(currentModel, privateContext, options);
+			if (localProgressURL) stopProgress = watchInferenceProgress(localProgressURL, requestId, (progress) => {
+				if (localPrefillLimit !== undefined && exceedsLocalPrefillLimit(progress, localPrefillLimit)) {
+					const uncached = uncachedPrefillTokens(progress);
+					controller.abort(new Error(`Private checkpoint prefill rejected: ${uncached} uncached tokens exceeds ${localPrefillLimit}`));
+				}
+			}, { apiKey });
+			const assistant = await stream.result();
+			if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
+				throw new Error(assistant.errorMessage || `Private checkpoint ${assistant.stopReason}`);
+			}
+			const calls = assistant.content.filter((part) => part.type === "toolCall");
+			const leaked = assistant.content.some((part) =>
+				(part.type === "text" && part.text.trim())
+				|| (part.type === "thinking" && part.thinking.trim()));
+			if (calls.length !== 1 || calls[0].name !== "handoff_context" || leaked) {
+				throw new Error("Private checkpoint returned an invalid structured response");
+			}
+			const parsed = parseHandoffContextArguments(calls[0].arguments, routing);
+			log.logInfo(`[handoff] Private checkpoint validated source_tokens=${sourceTokens} projected_tokens=${projectedTokens}`);
+			return { ...parsed, sourceTokens, projectedTokens };
+		} finally {
+			clearTimeout(timer);
+			stopProgress();
+			if (privateHandoffAbortController === controller) privateHandoffAbortController = null;
+		}
 	};
 
 	const resetSessionState = () => {
@@ -862,6 +978,8 @@ async function createRunner(
 		stopReason: "stop",
 		errorMessage: undefined as string | undefined,
 		modelCredentialUnavailable: false,
+		localPrefillRejected: false,
+		localPrefillRejectionMessage: undefined as string | undefined,
 		initialPromptSent: false,
 		liveSnapshot: new LiveAssistantSnapshot(),
 		assistantText: new AssistantTextProjection(),
@@ -1458,6 +1576,8 @@ async function createRunner(
 			runState.stopReason = "stop";
 			runState.errorMessage = undefined;
 			runState.modelCredentialUnavailable = false;
+			runState.localPrefillRejected = false;
+			runState.localPrefillRejectionMessage = undefined;
 			runState.initialPromptSent = false;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
@@ -1550,6 +1670,23 @@ async function createRunner(
 				log.logInfo(`[gpt-steering] Ack fast path injected for "${ctx.message.text.substring(0, 40)}"`);
 			}
 
+			const promptUserMessage: AgentMessage = {
+				role: "user",
+				content: [{ type: "text", text: finalUserMessage }, ...imageAttachments],
+				timestamp: Date.now(),
+			};
+			const checkpointInput = forceHandoff
+				? [...agent.state.messages]
+				: [...agent.state.messages, promptUserMessage];
+			const checkpointAtStart = compactionSettings.mode === "handoff"
+				&& (compactionSettings.enabled || forceHandoff)
+				&& !isClaudeCliProvider(currentModel.provider)
+				&& !isCodexCliProvider(currentModel.provider)
+				&& (forceHandoff || shouldRequestBoundedHandoff(
+					estimateHandoffContextTokens(checkpointInput), currentModel.contextWindow || 200_000,
+					compactionSettings.reserveTokens, compactionSettings.keepRecentTokens, localPrefillLimit,
+				));
+
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
 				systemPrompt: currentSession.agent.state.systemPrompt,
@@ -1569,38 +1706,64 @@ async function createRunner(
 				await resolveApiKey(modelRegistry, currentModel.provider);
 			};
 			const tPrompt = performance.now();
-			userInputProvenance.track(finalUserMessage, readVerifiedSenderIdentity(ctx.message.senderIdentity, ctx.message.user));
-			try {
-				const gated = await runWithModelCredentialGate({
-					resolveCredential: resolveCurrentModelCredential,
-					prompt: async () => {
-						acceptsSteering = true;
-						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
-							await currentSession.prompt(finalUserMessage, {
-								...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
-								streamingBehavior: "steer" as const,
-							});
-						});
-					},
-				});
-				if (gated.status === "credential_unavailable") {
-					runState.stopReason = "error";
-					runState.errorMessage = gated.error.message;
-					runState.modelCredentialUnavailable = true;
-					log.logWarning("Model credential unavailable; prompt skipped without provider output");
+			if (checkpointAtStart) {
+				runState.handoffRequested = true;
+				runState.handoffContinue = !forceHandoff;
+				beginTransition("handoff", forceHandoff ? "user" : "context_limit");
+				try {
+					// The triggering user input is legitimate durable history. The private
+					// checkpoint response itself runs outside AgentSession and is never appended.
+					if (!forceHandoff) {
+						sm.appendMessage(promptUserMessage as Parameters<typeof sm.appendMessage>[0]);
+						agent.state.messages = [...agent.state.messages, promptUserMessage];
+					}
+					const checkpoint = await generatePrivateCheckpoint(
+						forceHandoff ? agent.state.messages : checkpointInput,
+						currentModel,
+						{ channel: ctx.message.channel, replyTarget: ctx.message.replyTarget || null },
+					);
+					runState.capturedHandoff = { publicText: "", handoff: checkpoint.handoff };
+					runState.handoffContinue = forceHandoff ? false : true;
+				} catch (err) {
+					const errMsg = err instanceof Error ? err.message : String(err);
+					runState.stopReason = handoffRunAborted ? "aborted" : "error";
+					runState.errorMessage = handoffRunAborted ? undefined : errMsg;
+					log.logWarning(handoffRunAborted ? "Private checkpoint aborted" : "Private checkpoint failed", errMsg);
 				}
-			} catch (err) {
-				const errMsg = err instanceof Error ? err.message : String(err);
-				runState.stopReason = "error";
-				runState.errorMessage = errMsg;
-				log.logWarning("Model prompt failed", errMsg);
-			} finally {
-				acceptsSteering = false;
+			} else {
+				userInputProvenance.track(finalUserMessage, readVerifiedSenderIdentity(ctx.message.senderIdentity, ctx.message.user));
+				try {
+					const gated = await runWithModelCredentialGate({
+						resolveCredential: resolveCurrentModelCredential,
+						prompt: async () => {
+							acceptsSteering = true;
+							await withToolOutputStream(claudeCliToolOutputHandler, async () => {
+								await currentSession.prompt(finalUserMessage, {
+									...(imageAttachments.length > 0 ? { images: imageAttachments } : {}),
+									streamingBehavior: "steer" as const,
+								});
+							});
+						},
+					});
+					if (gated.status === "credential_unavailable") {
+						runState.stopReason = "error";
+						runState.errorMessage = gated.error.message;
+						runState.modelCredentialUnavailable = true;
+						log.logWarning("Model credential unavailable; prompt skipped without provider output");
+					}
+				} catch (err) {
+					const errMsg = err instanceof Error ? err.message : String(err);
+					runState.stopReason = "error";
+					runState.errorMessage = errMsg;
+					log.logWarning("Model prompt failed", errMsg);
+				} finally {
+					acceptsSteering = false;
+				}
 			}
-			log.logInfo(`[perf] session.prompt (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
+			log.logInfo(`[perf] ${checkpointAtStart ? "private handoff" : "session.prompt"} (incl API): ${(performance.now() - tPrompt).toFixed(0)}ms`);
 
 			// If overflow error triggered background compaction+retry, wait for it.
-			if (runState.stopReason === "error" && !runState.modelCredentialUnavailable) {
+			if (runState.stopReason === "error" && !runState.modelCredentialUnavailable && !checkpointAtStart) {
 				await agent.waitForIdle();
 
 				const msgs = currentSession.messages;
@@ -1608,6 +1771,29 @@ async function createRunner(
 				if (last && last.stopReason && last.stopReason !== "error") {
 					runState.stopReason = last.stopReason;
 					runState.errorMessage = undefined;
+				}
+			}
+
+			if (!checkpointAtStart && runState.localPrefillRejected
+				&& compactionSettings.enabled && compactionSettings.mode === "handoff") {
+				runState.handoffRequested = true;
+				runState.handoffContinue = true;
+				beginTransition("handoff", "context_limit");
+				try {
+					const checkpoint = await generatePrivateCheckpoint(
+						currentSession.messages,
+						currentModel,
+						{ channel: ctx.message.channel, replyTarget: ctx.message.replyTarget || null },
+					);
+					runState.capturedHandoff = { publicText: "", handoff: checkpoint.handoff };
+					runState.stopReason = "stop";
+					runState.errorMessage = undefined;
+					log.logInfo("[handoff] Recovered a rejected local prefill through the bounded private path");
+				} catch (err) {
+					const errMsg = err instanceof Error ? err.message : String(err);
+					runState.stopReason = "error";
+					runState.errorMessage = `${runState.localPrefillRejectionMessage ?? "Local prefill rejected"}; bounded recovery failed: ${errMsg}`;
+					log.logWarning("Bounded checkpoint recovery failed", errMsg);
 				}
 			}
 
@@ -1840,6 +2026,7 @@ async function createRunner(
 			handoffRunAborted = true;
 			acceptsSteering = false;
 			userInputProvenance.clear();
+			privateHandoffAbortController?.abort(new Error("Private checkpoint cancelled"));
 			if (!session) return;
 			requestCompactionAbort();
 			const cleared = session.clearQueue();

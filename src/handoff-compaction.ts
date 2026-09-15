@@ -12,6 +12,8 @@ export const HANDOFF_CUSTOM_TYPE = "troublemaker.continuity-handoff.v1";
 export const MAX_HANDOFF_BYTES = 64 * 1024;
 export const MAX_HANDOFF_ITEMS = 200;
 export const MAX_HANDOFF_STRING_LENGTH = 8 * 1024;
+export const DEFAULT_LOCAL_PREFILL_LIMIT_TOKENS = 24_000;
+export const LOCAL_HANDOFF_SAFETY_TOKENS = 4_000;
 
 export interface StructuredHandoff {
 	version: 1;
@@ -156,6 +158,28 @@ export function shouldRequestHandoff(contextTokens: number, contextWindow: numbe
 	return contextTokens >= Math.max(1, contextWindow - reserveTokens - keepRecentTokens);
 }
 
+export function localPrefillLimitTokens(value = process.env.TROUBLEMAKER_LOCAL_PREFILL_LIMIT_TOKENS): number {
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed >= 4096 && parsed <= 200_000
+		? parsed
+		: DEFAULT_LOCAL_PREFILL_LIMIT_TOKENS;
+}
+
+/** Rotate early enough that a cache miss can still stay below the local prefill ceiling. */
+export function shouldRequestBoundedHandoff(
+	contextTokens: number,
+	contextWindow: number,
+	reserveTokens: number,
+	keepRecentTokens: number,
+	localPrefillLimit?: number,
+): boolean {
+	const ordinaryThreshold = Math.max(1, contextWindow - reserveTokens - keepRecentTokens);
+	const localThreshold = localPrefillLimit === undefined
+		? Number.POSITIVE_INFINITY
+		: Math.max(1, localPrefillLimit - LOCAL_HANDOFF_SAFETY_TOKENS);
+	return contextTokens > 0 && contextTokens >= Math.min(ordinaryThreshold, localThreshold);
+}
+
 /** Include tool results and new input added since the last measured usage. */
 export function estimateHandoffContextTokens(messages: readonly AgentMessage[]): number {
 	let trailing = 0;
@@ -168,6 +192,90 @@ export function estimateHandoffContextTokens(messages: readonly AgentMessage[]):
 		trailing += estimateTokens(message);
 	}
 	return trailing;
+}
+
+function checkpointTranscriptMessage(message: AgentMessage): AgentMessage | null {
+	const safe = sanitizeHandoffMessage(message);
+	if (safe.role === "custom" && safe.customType === HANDOFF_CUSTOM_TYPE) {
+		const text = typeof safe.content === "string"
+			? safe.content
+			: safe.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+		return text.trim() ? { role: "user", content: [{ type: "text", text: `[Prior continuity checkpoint]\n${text}` }], timestamp: safe.timestamp } : null;
+	}
+	if (safe.role === "assistant") {
+		if (safe.stopReason === "error" || safe.stopReason === "aborted") return null;
+		const parts = safe.content.flatMap((part): string[] => {
+			if (part.type === "text" && part.text.trim()) return [part.text];
+			if (part.type === "toolCall" && part.name !== "handoff_context") {
+				const args = JSON.stringify(part.arguments);
+				return [`[Tool call ${part.name}: ${args.length > 1000 ? `${args.slice(0, 1000)}…` : args}]`];
+			}
+			return [];
+		});
+		if (!parts.length) return null;
+		return {
+			role: "assistant", content: [{ type: "text", text: parts.join("\n") }],
+			api: safe.api, provider: safe.provider, model: safe.model, stopReason: "stop", timestamp: safe.timestamp,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+		};
+	}
+	if (safe.role === "user") {
+		const text = typeof safe.content === "string"
+			? safe.content
+			: safe.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+		return text.trim() ? { role: "user", content: [{ type: "text", text }], timestamp: safe.timestamp } : null;
+	}
+	if (safe.role === "toolResult") {
+		const text = safe.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+		if (!text.trim()) return null;
+		const excerpt = text.length > 1000 ? `${text.slice(0, 1000)}…` : text;
+		return { role: "user", content: [{ type: "text", text: `[Tool result ${safe.toolName}: ${excerpt}]` }], timestamp: safe.timestamp };
+	}
+	return null;
+}
+
+/**
+ * Build a text-only checkpoint transcript. For an already oversized context,
+ * retain the opening contract, the newest continuity summary, and the recent
+ * working tail. No individual local request is allowed to exceed maxTokens.
+ */
+export function selectBoundedCheckpointTranscript(messages: readonly AgentMessage[], maxTokens: number): AgentMessage[] {
+	const candidates = messages.map((message, index) => ({ index, message: checkpointTranscriptMessage(message) }))
+		.filter((entry): entry is { index: number; message: AgentMessage } => entry.message !== null);
+	const budget = Math.max(1024, maxTokens);
+	const total = candidates.reduce((sum, entry) => sum + estimateTokens(entry.message), 0);
+	if (total <= budget) return candidates.map((entry) => entry.message);
+
+	const selected = new Map<number, AgentMessage>();
+	let used = 0;
+	const add = (entry: { index: number; message: AgentMessage }, allowance = budget): boolean => {
+		if (selected.has(entry.index)) return true;
+		const tokens = estimateTokens(entry.message);
+		if (used + tokens > allowance || used + tokens > budget) return false;
+		selected.set(entry.index, entry.message);
+		used += tokens;
+		return true;
+	};
+
+	const headAllowance = Math.floor(budget * 0.2);
+	for (const entry of candidates) {
+		if (!add(entry, headAllowance)) break;
+	}
+	const prior = [...candidates].reverse().find((entry) => {
+		const source = messages[entry.index];
+		return source.role === "custom" && source.customType === HANDOFF_CUSTOM_TYPE;
+	});
+	if (prior) add(prior, Math.floor(budget * 0.4));
+	const note: AgentMessage = {
+		role: "user",
+		content: [{ type: "text", text: "[Older middle dialogue was omitted by the local prefill safety ceiling. Preserve uncertainty instead of inventing missing details; archived context remains available to the runtime.]" }],
+		timestamp: 0,
+	};
+	const noteTokens = estimateTokens(note);
+	if (used + noteTokens <= budget) { selected.set(Number.MAX_SAFE_INTEGER, note); used += noteTokens; }
+	for (let index = candidates.length - 1; index >= 0; index--) add(candidates[index]);
+	return [...selected.entries()].sort(([a], [b]) => a - b).map(([, message]) => message);
 }
 
 function messageChars(message: AgentMessage): number {

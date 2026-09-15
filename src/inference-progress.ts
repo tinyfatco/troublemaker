@@ -24,6 +24,14 @@ export function parseInferenceProgress(value: unknown): InferenceProgress | unde
 	return { phase: "prefill", processedTokens: done, totalTokens: total, cachedTokens: cached, elapsedSeconds: p.elapsedSeconds };
 }
 
+export function uncachedPrefillTokens(progress: InferenceProgress): number {
+	return Math.max(0, progress.totalTokens - progress.cachedTokens);
+}
+
+export function exceedsLocalPrefillLimit(progress: InferenceProgress, limitTokens: number): boolean {
+	return Number.isSafeInteger(limitTokens) && limitTokens > 0 && uncachedPrefillTokens(progress) > limitTokens;
+}
+
 export function progressFromSnapshot(value: unknown, requestId: string): InferenceProgress | undefined {
 	const requests = record(value)?.in_flight;
 	if (!Array.isArray(requests)) return;
@@ -46,7 +54,12 @@ export function inferenceProgressURL(value: string | undefined): URL | undefined
 }
 
 /** Read-only, opt-in local telemetry; failures must never fail or delay inference. */
-export function watchInferenceProgress(url: URL, requestId: string, emit: (progress: InferenceProgress) => void): () => void {
+export function watchInferenceProgress(
+	url: URL,
+	requestId: string,
+	emit: (progress: InferenceProgress) => void,
+	options: { apiKey?: string } = {},
+): () => void {
 	let stopped = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let pending: AbortController | undefined;
@@ -55,7 +68,11 @@ export function watchInferenceProgress(url: URL, requestId: string, emit: (progr
 		pending = new AbortController();
 		const timeout = setTimeout(() => pending?.abort(), 1500);
 		try {
-			const response = await fetch(url, { signal: pending.signal, redirect: "error" });
+			const response = await fetch(url, {
+				signal: pending.signal,
+				redirect: "error",
+				headers: options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : undefined,
+			});
 			if (response.ok) {
 				const progress = progressFromSnapshot(await response.json(), requestId);
 				const key = JSON.stringify(progress);
