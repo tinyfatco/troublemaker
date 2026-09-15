@@ -90,10 +90,8 @@ import {
 	extractStructuredHandoff,
 	appendHandoffInstruction,
 	estimateHandoffContextTokens,
-	handoffInstruction,
+	handoffToolInstruction,
 	handoffJournalPath,
-	joinPublicHandoffParts,
-	projectPublicHandoffParts,
 	readHandoffJournal,
 	replayHandoffRotation,
 	selectBoundedRecentDialogue,
@@ -265,18 +263,20 @@ function hasContent(message: AgentMessage): message is AgentMessage & { content:
 	return "content" in message && Array.isArray(message.content);
 }
 
-function sanitizeStreamingMessage(message: AgentMessage, terminal: boolean): AgentMessage {
+function sanitizeStreamingMessage(message: AgentMessage, _terminal: boolean): AgentMessage {
 	if (message.role !== "assistant" || !hasContent(message)) return message;
-	const textParts = message.content
-		.filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
-		.map((part) => part.text);
-	const projected = projectPublicHandoffParts(textParts, terminal);
-	let textIndex = 0;
+	// A pressure-triggered checkpoint is private harness work, not an assistant
+	// response. Hide the entire generated prose/reasoning segment, including any
+	// preamble emitted before the private delimiter. The semantic transition row
+	// owns presentation until the fresh-context continuation begins.
 	return {
 		...message,
-		content: message.content.map((part) => part.type === "text" && typeof part.text === "string"
-			? { ...part, text: projected[textIndex++] }
-			: part),
+		content: message.content.flatMap((part) => {
+			if (part.type === "text" && typeof part.text === "string") return [{ ...part, text: "" }];
+			if (part.type === "thinking") return [];
+			if (part.type === "toolCall" && part.name === "handoff_context") return [];
+			return [part];
+		}),
 	} as AgentMessage;
 }
 
@@ -475,14 +475,16 @@ async function createRunner(
         createHandoffContextTool((summary, resume) => {
             if (agent.state.messages.filter(m => m.role === "assistant").at(-1)?.content.filter(c => c.type === "toolCall").length !== 1) throw new Error("Call handoff_context alone, after other tools finish");
             if (runState.ctx?.message.sourceEventType === "handoff_continuation" && completedHandoffRotations > rotationsAtRunStart) return false;
-            if (!runState.ctx || runState.handoffRequested) throw new Error("A handoff is already pending or no conversation is active");
+            if (!runState.ctx) throw new Error("No conversation is active");
+            const pressureCheckpoint = runState.handoffRequested && !runState.toolHandoff && !runState.capturedHandoff;
+            if (runState.handoffRequested && !pressureCheckpoint) throw new Error("A handoff is already pending");
             if (completedHandoffRotations - rotationsAtRunStart >= 8) throw new Error("Too many handoffs in this run; return control to the user");
             summary.routing = { channel: runState.ctx.message.channel, replyTarget: runState.ctx.message.replyTarget || null };
             runState.handoffRequested = true;
             runState.toolHandoff = true;
-            runState.handoffContinue = resume;
+            runState.handoffContinue = pressureCheckpoint ? true : resume;
             runState.capturedHandoff = {publicText: "", handoff: summary};
-            beginTransition("handoff", "agent");
+            if (!pressureCheckpoint) beginTransition("handoff", "agent");
         }),
 		...(inputBudget ? [inputBudget.tool] : []),
 		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
@@ -553,7 +555,16 @@ async function createRunner(
 		const boundedOptions = boundCompactionStreamOptions(context, options);
 		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
 		if (runState.handoffRequested) {
-			normalizedOptions = { ...normalizedOptions, maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536) };
+			normalizedOptions = {
+				...normalizedOptions,
+				maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536),
+				temperature: 0,
+				samplingParams: {
+					...normalizedOptions?.samplingParams,
+					enable_thinking: false,
+					tool_choice: { type: "function", function: { name: "handoff_context" } },
+				},
+			};
 		}
 		if (isCodexCliProvider(streamModel.provider)) return codexCliStream(streamModel, context, normalizedOptions);
 		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
@@ -561,7 +572,11 @@ async function createRunner(
 		const requestId = `chatcmpl-${randomUUID()}`;
 		if (progressURL) normalizedOptions = { ...normalizedOptions, headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId } };
 		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
-		const result = streamSimple(streamModel, compactPrompt ? compactToolContext(boundedContext) : boundedContext, normalizedOptions);
+		const result = streamSimple(
+			streamModel,
+			compactPrompt ? compactToolContext(boundedContext) : boundedContext,
+			normalizedOptions,
+		);
 		if (progressURL) {
 			const sink = runState.liveEventSink;
 			const responseContext = runState.ctx;
@@ -666,12 +681,12 @@ async function createRunner(
 			if (!ctx) return;
 			// Append a small control message without rewriting or duplicating the
 			// runtime snapshot. The original messages remain an exact prefix.
-			return { messages: appendHandoffInstruction(event.messages, handoffInstruction(ctx.message.channel, ctx.message.replyTarget)) };
+			return { messages: appendHandoffInstruction(event.messages, handoffToolInstruction()) };
 		});
-		pi.on("tool_call", () => {
-			if (runState.handoffRequested && !runState.toolHandoff) return {
+		pi.on("tool_call", (event) => {
+			if (runState.handoffRequested && !runState.toolHandoff && event.toolName !== "handoff_context") return {
 				block: true,
-				reason: "Continuity checkpoint required: write the requested private handoff now. Tool work is paused until context rotation.",
+				reason: "Continuity checkpoint required: call handoff_context now. Other tool work is paused until context rotation.",
 			};
 		});
 	};
@@ -993,6 +1008,11 @@ async function createRunner(
 		if (event.type === "tool_execution_start") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
 			closeAssistantPresentation();
+			const privateCheckpointTool = runState.handoffRequested && agentEvent.toolName === "handoff_context";
+			if (privateCheckpointTool) {
+				runState.toolsUsed.push(agentEvent.toolName);
+				return;
+			}
 			const silentChannelTool = isYieldNoActionToolName(agentEvent.toolName);
 			const args = agentEvent.args && typeof agentEvent.args === "object"
 				? agentEvent.args as Record<string, unknown>
@@ -1035,6 +1055,7 @@ async function createRunner(
 			}
 		} else if (event.type === "tool_execution_end") {
 			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
+			if (runState.handoffRequested && agentEvent.toolName === "handoff_context") return;
 			const resultStr = extractToolResultText(agentEvent.result);
 			const pending = pendingTools.get(agentEvent.toolCallId);
 			pendingTools.delete(agentEvent.toolCallId);
@@ -1704,9 +1725,9 @@ async function createRunner(
 					ctx.emitContentBlock?.(errorEvent);
 					await ctx.sendFinalResponse(runState.errorMessage);
 				}
-				const finalText = runState.handoffRequested
-					? joinPublicHandoffParts(rawFinalTextParts, true)
-					: rawFinalTextParts.join("\n");
+				// Checkpoint generation is private harness work. Its prose must never
+				// become a platform response; the continuation supplies user-visible text.
+				const finalText = runState.handoffRequested ? "" : rawFinalTextParts.join("\n");
 
 				// Check if yield_no_action was called — skip posting final response
 				if (wasYielded()) {

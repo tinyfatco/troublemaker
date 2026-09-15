@@ -22,7 +22,7 @@ try {
  assert.ok(context.includes("These files have not been loaded"));
  assert.equal(compactPromptEnabled(undefined),false);
  assert.equal(compactPromptEnabled("compact"),true);
- assert.deepEqual(COMPACT_INITIAL_TOOLS,["bash","search_tools"]);
+ assert.deepEqual(COMPACT_INITIAL_TOOLS,["bash","search_tools","handoff_context"]);
  const user:AgentMessage={role:"user",content:"Example input",timestamp:1};
  const runtime:AgentMessage={role:"custom",customType:"runtime-context",content:"Stable workspace",display:false,timestamp:2};
  const later:AgentMessage={...runtime,content:"Later update",timestamp:3};

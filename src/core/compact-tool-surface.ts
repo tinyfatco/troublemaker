@@ -25,9 +25,11 @@ export function restoreCompactToolCalls(message: AssistantMessage): AssistantMes
 export function compactToolContext(context: Context): Context {
 	const search = context.tools?.find(tool => tool.name === "search_tools");
 	if (!search) throw new Error("Compact tool surface requires search_tools");
+	const handoff = context.tools?.find(tool => tool.name === "handoff_context");
+	if (!handoff) throw new Error("Compact tool surface requires handoff_context");
 	return {
 		...context,
-		tools: [search, CALL_TOOL],
+		tools: [search, CALL_TOOL, handoff],
 		messages: context.messages.map(message => {
 			if (message.role === "assistant") return { ...message, content: message.content.map(block => block.type === "toolCall" ? wrapCall(block) : block) };
 			if (message.role === "toolResult" && message.toolName !== "search_tools") return { ...message, toolName: "call_tool" };

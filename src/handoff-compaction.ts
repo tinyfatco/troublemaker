@@ -42,6 +42,11 @@ export function handoffInstruction(channel: string, replyTarget?: string): strin
 	return `PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW. The harness has requested context rotation. Pause additional tool work at this safe boundary and write a concise handoff for a fresh context to continue the task. At the absolute end of this same assistant turn, append exactly one ${HANDOFF_OPEN} JSON ${HANDOFF_CLOSE} block. Do not mention or explain the block. Aim for at most 600 tokens: essential state and next action, not a transcript or tool output. The JSON must match this schema exactly: {"version":1,"goal":"string","constraints":["string"],"completed":["string"],"inProgress":["string"],"nextSteps":["string"],"decisions":[{"decision":"string","rationale":"string"}],"provenance":[{"claim":"string","source":"string"}],"uncertainties":["string"],"superseded":[{"previous":"string","replacement":"string"}],"toolReceipts":[{"tool":"string","result":"string"}],"routing":{"channel":${JSON.stringify(channel)},"replyTarget":${JSON.stringify(replyTarget || null)}}}. Use empty arrays where appropriate. Preserve exact identifiers and paths only when necessary for continuity; never include credentials, secrets, hidden reasoning, or unrelated personal data.`;
 }
 
+/** Prefer schema-validated tool arguments over free-form sentinel JSON. */
+export function handoffToolInstruction(): string {
+	return "PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW. Pause all other work and call handoff_context exactly once as the only tool in this turn. Put the concise goal, constraints, completed work, current work, decisions, uncertainties, and exact necessary references in summary. Put only genuinely remaining actions in nextSteps. Set continue=true when unfinished work remains, otherwise false. Do not emit prose, JSON, delimiters, or any other tool call. The harness supplies authoritative routing.";
+}
+
 export function appendHandoffInstruction(messages: AgentMessage[], instruction: string): AgentMessage[] {
 	return [...messages, { role: "user", content: instruction, timestamp: 0 }];
 }
