@@ -14,6 +14,7 @@ import {
 	projectPublicHandoffText,
 	projectPublicHandoffParts,
 	handoffInstruction,
+	handoffToolInstruction,
 	sanitizeHandoffMessage,
 	compactHandoffMessage,
 	sanitizePrivateHandoffSessionLine,
@@ -68,6 +69,9 @@ assert.equal(extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(oversized
 const oversizedTotal = structuredClone(captures[0].handoff);
 oversizedTotal.constraints = Array.from({ length: 20 }, () => "x".repeat(4_000));
 assert.equal(extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(oversizedTotal)}${HANDOFF_CLOSE}`), null, "oversized serialized checkpoints fail closed");
+const toolInstruction = handoffToolInstruction();
+assert.match(toolInstruction, /call handoff_context exactly once/);
+assert.doesNotMatch(toolInstruction, /troublemaker_private_handoff/, "forced-tool checkpoints do not ask the model for sentinel JSON");
 assert.equal(DEFAULT_COMPACTION.mode, "native", "native compaction remains the safe default");
 assert.equal(shouldRequestHandoff(164_000, 200_000, 16_000, 20_000), true);
 assert.equal(shouldRequestHandoff(163_999, 200_000, 16_000, 20_000), false);

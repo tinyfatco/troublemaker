@@ -14,17 +14,25 @@ const root = mkdtempSync(join(tmpdir(), "handoff-runner-"));
 process.env.PI_AGENT_DIR = join(root, "agent-config");
 process.env.PI_OFFLINE = "1";
 process.env.TROUBLEMAKER_PROMPT_PROFILE = "compact";
-const requests: Array<{ messages: Array<{role: string; content: unknown}>; tools: unknown }> = [];
+const requests: Array<{ messages: Array<{role: string; content: unknown}>; tools: Array<{function?: {name?: string}}>;
+	temperature?: number; enable_thinking?: boolean; tool_choice?: {function?: {name?: string}} }> = [];
 const checkpoint = { version: 1, goal: "Finish the synthetic check", constraints: ["No external actions"], completed: ["Initial fixture complete"], inProgress: ["Final fixture reply"], nextSteps: ["Reply fixture complete"], decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: "example-channel", replyTarget: null} };
+const privateCheckpointPreamble = "SYNTHETIC CHECKPOINT PREAMBLE MUST STAY PRIVATE";
 let abortDuringCheckpoint: (() => void) | undefined;
 const server = createServer(async (req, res) => {
 	let body = "";
 	for await (const chunk of req) body += chunk;
 	requests.push(JSON.parse(body));
 	const n = requests.length;
-	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8 || n === 9) ? `${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
+	const content = n === 4 ? `${HANDOFF_OPEN}{invalid-json}${HANDOFF_CLOSE}` : n === 1 ? "Initial fixture complete." : (n === 2 || n === 5 || n === 6 || n === 8 || n === 9) ? `${privateCheckpointPreamble}\n${HANDOFF_OPEN}${JSON.stringify(checkpoint)}${HANDOFF_CLOSE}` : "Fixture complete.";
 	res.writeHead(200, {"Content-Type": "text/event-stream"});
 	const send = (choices: unknown[], usage?: unknown) => res.write(`data: ${JSON.stringify({id: `example-${n}`, object: "chat.completion.chunk", created: 1, model: "example-model", choices, ...(usage ? {usage} : {})})}\n\n`);
+	if (n === 2) {
+		send([{index: 0, delta: {role: "assistant", content: privateCheckpointPreamble, tool_calls: [{index: 0, id: "example-pressure-handoff", type: "function", function: {name: "handoff_context", arguments: JSON.stringify({label: "Save synthetic checkpoint", summary: checkpoint.goal, nextSteps: checkpoint.nextSteps, continue: true})}}]}, finish_reason: null}]);
+		send([{index: 0, delta: {}, finish_reason: "tool_calls"}], {prompt_tokens: 22000, completion_tokens: 100, total_tokens: 22100});
+		res.end("data: [DONE]\n\n");
+		return;
+	}
 	if (n === 7) {
 		send([{index: 0, delta: {role: "assistant", tool_calls: [{index: 0, id: "example-paused-tool", type: "function", function: {name: "call_tool", arguments: JSON.stringify({name: "bash", arguments: {command: `printf unexpected > '${join(root, "must-not-exist")}'`, label: "Synthetic paused write"}})}}]}, finish_reason: null}]);
 		send([{index: 0, delta: {}, finish_reason: "tool_calls"}]);
@@ -47,8 +55,9 @@ try {
 	writeFileSync(join(root, "settings.json"), JSON.stringify({defaultProvider: "example", defaultModel: "example-model", thinkingLevel: "off", compaction: {enabled: true, mode: "handoff", reserveTokens: 10000, keepRecentTokens: 1024}}));
 	writeFileSync(join(root, "AGENTS.md"), "Only perform the synthetic fixture. No tools or external actions.\n");
 	const finals: string[] = [];
+	const projections: unknown[] = [];
 	const noop = async () => {};
-	const ctx: MomContext = {message: {text: "Initial fixture", rawText: "Initial fixture", user: "example-user", channel: "example-channel", ts: "1", attachments: []}, channels: [], users: [], respond: noop, sendFinalResponse: async text => {finals.push(text);}, respondInThread: noop, setTyping: noop, uploadFile: noop, setWorking: noop, deleteMessage: noop, restartWorking: noop};
+	const ctx: MomContext = {message: {text: "Initial fixture", rawText: "Initial fixture", user: "example-user", channel: "example-channel", ts: "1", attachments: []}, channels: [], users: [], respond: noop, sendFinalResponse: async text => {finals.push(text);}, respondInThread: noop, setTyping: noop, uploadFile: noop, setWorking: noop, deleteMessage: noop, restartWorking: noop, emitContentBlock: event => {projections.push(event);}};
 	const runner = await getOrCreateRunner({type: "host"}, join(root, "awareness"), "Be concise.");
 	const store = new ChannelStore({workingDir: root, botToken: ""});
 	assert.equal((await runner.run(ctx, store)).stopReason, "stop");
@@ -57,10 +66,18 @@ try {
 	assert.equal(requests.length, 3, "warm checkpoint must automatically continue in the new context");
 	assert.deepEqual(requests[1].messages.slice(0, requests[0].messages.length), requests[0].messages, "checkpoint retains the provider's original prompt prefix");
 	assert.deepEqual(requests[1].tools, requests[0].tools, "checkpoint tool schema prefix remains stable");
+	assert(requests[1].tools.some(tool => tool.function?.name === "handoff_context"), "stable compact schema exposes the validated checkpoint tool");
+	assert.equal(requests[1].tool_choice?.function?.name, "handoff_context", "pressure checkpoint forces the handoff tool");
+	assert.equal(requests[1].temperature, 0, "pressure checkpoint uses deterministic sampling");
+	assert.equal(requests[1].enable_thinking, false, "pressure checkpoint does not spend tokens on private reasoning");
 	const checkpointInstructionCount = JSON.stringify(requests[1].messages).split("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW").length - 1;
 	assert.equal(checkpointInstructionCount, 1, "one pressure event must inject exactly one checkpoint instruction");
 	assert(JSON.stringify(requests[2].messages).includes(HANDOFF_RESUME_INSTRUCTION));
 	assert(!JSON.stringify(requests[2]).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"), "checkpoint command must not leak into the resumed context");
+	assert(!JSON.stringify(projections).includes(privateCheckpointPreamble), "checkpoint preambles must not enter live Computer/TUI projections");
+	assert(!JSON.stringify(projections).includes(checkpoint.goal), "checkpoint summaries must not enter live Computer/TUI projections");
+	assert(!JSON.stringify(projections).includes("handoff_context"), "the private checkpoint tool must not become a visible tool row");
+	assert(!finals.join("\n").includes(privateCheckpointPreamble), "checkpoint preambles must not become platform responses");
 	assert(finals.includes("Fixture complete."));
 	const durable = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
 	assert(durable.includes("troublemaker.continuity-handoff.v1"));
@@ -95,7 +112,7 @@ try {
 	await runner.compact();
 	assert.equal(requests.length, 8);
 	assert(!existsSync(join(root, "must-not-exist")), "tool calls cannot mutate state during checkpoint generation");
-	assert(JSON.stringify(requests[7].messages).includes("Tool work is paused"));
+	assert(JSON.stringify(requests[7].messages).includes("Other tool work is paused"));
 	const maintenance = runner.compact();
 	const concurrentInput = {...ctx, message: {...ctx.message, text: "Concurrent user correction", rawText: "Concurrent user correction", ts: "5"}};
 	const interactive = runner.run(concurrentInput, store);
