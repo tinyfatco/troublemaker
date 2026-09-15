@@ -220,17 +220,23 @@ export function selectBoundedRecentDialogue(messages: AgentMessage[], keepRecent
 	return selected;
 }
 
+export function isPrivateHandoffMessage(message: AgentMessage): boolean {
+	if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
+	const text = message.content
+		.filter((part) => part.type === "text")
+		.map((part) => part.text)
+		.join("");
+	return text.includes(HANDOFF_OPEN.slice(0, 12))
+		|| text.includes(HANDOFF_CLOSE)
+		|| message.content.some((part) => part.type === "toolCall" && part.name === "handoff_context");
+}
+
 export function sanitizeHandoffMessage(message: AgentMessage): AgentMessage {
-	if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
-	const textParts = message.content.filter((part) => part.type === "text").map((part) => part.text);
-	const projected = projectPublicHandoffParts(textParts, true);
-	let textIndex = 0;
-	return {
-		...message,
-		content: message.content.map((part) => part.type === "text"
-			? { ...part, text: projected[textIndex++] }
-			: part),
-	} as AgentMessage;
+	if (!isPrivateHandoffMessage(message)) return message;
+	// A checkpoint preamble is private too. Dropping only the marked JSON tail
+	// leaked model-written summaries into awareness and let failed attempts bloat
+	// later provider context.
+	return { ...message, content: [] } as AgentMessage;
 }
 
 /** Keep tool protocol identity, not old output payloads, in a rotated context. */
@@ -253,12 +259,16 @@ export function compactHandoffMessage(message: AgentMessage, archivePath: string
 /** Sanitize a persisted Pi session line before it reaches awareness/UI surfaces. */
 export function sanitizePrivateHandoffSessionLine(line: string): string {
 	try {
-		const entry = JSON.parse(line) as { type?: unknown; message?: AgentMessage };
+		const entry = JSON.parse(line) as { type?: unknown; message?: AgentMessage; [key: string]: unknown };
 		if (entry.type !== "message" || !entry.message || entry.message.role !== "assistant") return line;
-		const sanitized = sanitizeHandoffMessage(entry.message);
-		return JSON.stringify(sanitized) === JSON.stringify(entry.message)
-			? line
-			: JSON.stringify({ ...entry, message: sanitized });
+		if (!isPrivateHandoffMessage(entry.message)) return line;
+		const { message: _privateMessage, ...metadata } = entry;
+		return JSON.stringify({
+			...metadata,
+			type: "custom",
+			customType: "troublemaker.private-handoff-redacted",
+			display: false,
+		});
 	} catch {
 		return line.includes(HANDOFF_OPEN[0])
 			? JSON.stringify({ type: "custom", customType: "troublemaker.private-handoff-redacted", display: false })

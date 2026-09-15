@@ -164,17 +164,26 @@ const replayTail = selectCompleteRecentTail([triggeringUser, sanitizeHandoffMess
 const replayText = JSON.stringify(replayTail);
 assert(!replayText.includes(privateInstruction), "triggering user message and replay tail contain no private instruction");
 assert(!replayText.includes(HANDOFF_OPEN) && !replayText.includes(HANDOFF_CLOSE), "replay tail contains no private delimiters");
+assert(!replayText.includes("done"), "failed checkpoint preambles never enter retained dialogue");
 const persistedLine = JSON.stringify({ type: "message", id: "synthetic", message: privateAssistant });
 const publicPersistedLine = sanitizePrivateHandoffSessionLine(persistedLine);
 assert(!publicPersistedLine.includes(HANDOFF_OPEN) && !publicPersistedLine.includes(captures[0].handoff.goal), "durable awareness rows expose no handoff bytes");
-assert.match(publicPersistedLine, /done/, "durable awareness rows retain exact public response text");
+assert.doesNotMatch(publicPersistedLine, /done/, "checkpoint preambles are private too");
+assert.match(publicPersistedLine, /private-handoff-redacted/, "durable checkpoint rows become hidden metadata");
+const structuredPersistedLine = JSON.stringify({ type: "message", id: "structured", message: { role: "assistant", content: [
+	{ type: "toolCall", id: "checkpoint", name: "handoff_context", arguments: { summary: "PRIVATE SYNTHETIC SUMMARY", nextSteps: [], continue: true } },
+] } });
+const structuredPublicLine = sanitizePrivateHandoffSessionLine(structuredPersistedLine);
+assert.doesNotMatch(structuredPublicLine, /PRIVATE SYNTHETIC SUMMARY|handoff_context/, "structured checkpoint arguments never enter awareness");
+assert.match(structuredPublicLine, /private-handoff-redacted/);
 const splitPersistedLine = JSON.stringify({ type: "message", id: "split", message: { role: "assistant", content: [
 	{ type: "text", text: `done${HANDOFF_OPEN.slice(0, 9)}` },
 	{ type: "text", text: `${HANDOFF_OPEN.slice(9)}${JSON.stringify(captures[0].handoff)}${HANDOFF_CLOSE}` },
 ] } });
 const splitPublicLine = sanitizePrivateHandoffSessionLine(splitPersistedLine);
 assert(!splitPublicLine.includes("private_handoff") && !splitPublicLine.includes(captures[0].handoff.goal), "persisted split-part markers are sanitized as one stream");
-assert.match(splitPublicLine, /done/, "split-part persisted sanitization retains public text");
+assert.doesNotMatch(splitPublicLine, /done/, "split-part checkpoint preambles remain private");
+assert.match(splitPublicLine, /private-handoff-redacted/);
 for (let length = 1; length < HANDOFF_OPEN.length; length++) {
 	const prefix = HANDOFF_OPEN.slice(0, length);
 	const malformedCandidate = `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"${prefix}`;

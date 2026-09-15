@@ -82,4 +82,17 @@ import { sanitizeMessages } from "../src/sanitize.js";
 	assert.deepEqual(sanitizeMessages(messages), messages);
 }
 
+{
+	const before = { role: "user", content: [{ type: "text", text: "keep before" }] };
+	const after = { role: "user", content: [{ type: "text", text: "keep after" }] };
+	const failedSentinel = { role: "assistant", content: [{ type: "text", text: "PRIVATE PREAMBLE<troublemaker_private_handoff>{bad}" }] };
+	const failedStructured = { role: "assistant", content: [{ type: "toolCall", id: "handoff", name: "handoff_context", arguments: { summary: "PRIVATE SUMMARY" } }] };
+	const orphanedResult = { role: "toolResult", toolCallId: "handoff", content: [{ type: "text", text: "failed" }] };
+	assert.deepEqual(
+		sanitizeMessages([before, failedSentinel, after, failedStructured, orphanedResult]),
+		[before, after],
+		"failed checkpoint prose, arguments, and orphaned results stay out of provider context",
+	);
+}
+
 console.log("sanitize tests passed");
