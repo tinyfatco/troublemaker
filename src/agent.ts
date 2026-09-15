@@ -73,7 +73,11 @@ import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
 import hostSitesExtension from "./extensions/host-sites.js";
 import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
-import { createDynamicRuntimeContextExtension } from "./extensions/dynamic-runtime-context.js";
+import {
+	createDynamicRuntimeContextExtension,
+	STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
+	withDeliveryInstructions,
+} from "./extensions/dynamic-runtime-context.js";
 import {
 	createClaudeCliStream,
 	getClaudeCliRuntimeAuth,
@@ -1372,8 +1376,17 @@ async function createRunner(
 			}
 
 			const systemPrompt = compactPrompt
-				? buildCompactSystemPrompt(workspacePath, `${currentModel.provider}/${currentModel.id}`, runFormatInstructions)
-				: buildSystemPrompt(workspacePath, sandboxConfig, runFormatInstructions, agent.state.model);
+				? buildCompactSystemPrompt(
+					workspacePath,
+					`${currentModel.provider}/${currentModel.id}`,
+					STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
+				)
+				: buildSystemPrompt(
+					workspacePath,
+					sandboxConfig,
+					STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
+					agent.state.model,
+				);
 			activeSystemPrompt = systemPrompt;
 			currentSession.agent.state.systemPrompt = systemPrompt;
 
@@ -1393,8 +1406,9 @@ async function createRunner(
 				verbosity: channelVerbosity,
 				model: currentModel,
 			};
-			activeRuntimeContext = (compactPrompt ? existingCompactRuntimeContext(agent.state.messages) : undefined)
+			const workspaceRuntimeContext = (compactPrompt ? existingCompactRuntimeContext(agent.state.messages) : undefined)
 				?? buildWorkspaceRuntimeContext(sessionContextOptions);
+			activeRuntimeContext = withDeliveryInstructions(workspaceRuntimeContext, runFormatInstructions);
 			const sessionPreamble = buildSessionRoutingPreamble(sessionContextOptions);
 
 			// Set up file upload function
