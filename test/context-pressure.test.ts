@@ -14,7 +14,11 @@ import {
 	buildSessionPreamble,
 	buildSessionRoutingPreamble,
 } from "../src/core/prompt.js";
-import { createDynamicRuntimeContextExtension } from "../src/extensions/dynamic-runtime-context.js";
+import {
+	createDynamicRuntimeContextExtension,
+	STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
+	withDeliveryInstructions,
+} from "../src/extensions/dynamic-runtime-context.js";
 
 const largeWorkspaceMarker = "workspace-memory-marker-".repeat(10_000);
 const options = {
@@ -27,6 +31,16 @@ const options = {
 };
 
 const runtimeContext = buildRuntimeContext(options);
+const directRuntimeContext = withDeliveryInstructions(runtimeContext, "Direct channel formatting");
+const heartbeatRuntimeContext = withDeliveryInstructions(directRuntimeContext, "Heartbeat channel formatting");
+assert.match(STABLE_DELIVERY_FORMAT_INSTRUCTIONS, /latest hidden <delivery_instructions>/);
+assert.match(directRuntimeContext, /Direct channel formatting/);
+assert.doesNotMatch(heartbeatRuntimeContext, /Direct channel formatting/);
+assert.match(heartbeatRuntimeContext, /Heartbeat channel formatting/);
+assert.ok(
+	heartbeatRuntimeContext.startsWith(runtimeContext),
+	"switching to heartbeat replaces only the append-only delivery suffix",
+);
 const watchRuntimeContext = buildConciseWatchRuntimeContext(options);
 const routingContext = buildSessionRoutingPreamble(options);
 assert.match(runtimeContext, /^<runtime_context>/, "full dynamic state is marked as runtime context");
@@ -136,9 +150,15 @@ try {
 const agentSource = await readFile(new URL("../src/agent.ts", import.meta.url), "utf8");
 assert.match(
 	agentSource,
-	/activeRuntimeContext = buildWorkspaceRuntimeContext\(sessionContextOptions\)/,
-	"runner keeps volatile channel state out of workspace snapshots",
+	/const workspaceRuntimeContext =[\s\S]*buildWorkspaceRuntimeContext\(sessionContextOptions\)/,
+	"runner keeps volatile channel state out of the workspace snapshot base",
 );
+assert.match(
+	agentSource,
+	/activeRuntimeContext = withDeliveryInstructions\(workspaceRuntimeContext, runFormatInstructions\)/,
+	"channel and heartbeat instructions are appended after the reusable prefix",
+);
+assert.match(agentSource, /STABLE_DELIVERY_FORMAT_INSTRUCTIONS/, "system prompt construction uses one channel-independent delivery contract");
 assert.match(agentSource, /\(\) => agent\.state\.messages/, "snapshot deduplication inspects the actual post-compaction model history");
 
 assert.match(agentSource, /const sessionPreamble = buildSessionRoutingPreamble\(sessionContextOptions\)/, "runner appends only lightweight routing context");
