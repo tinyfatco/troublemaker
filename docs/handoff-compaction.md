@@ -12,11 +12,12 @@ When `TROUBLEMAKER_INFERENCE_PROGRESS_URL` is a valid loopback MTPLX telemetry e
 
 - hard uncached-prefill ceiling: `24,000` tokens
 - automatic handoff threshold: ceiling minus a `4,000`-token safety margin
+- private checkpoint transcript/workspace budget: `2,048` tokens
 - private checkpoint timeout: `120,000` ms, including queue time
 
-Override the ceiling with `TROUBLEMAKER_LOCAL_PREFILL_LIMIT_TOKENS` (4,096 to 200,000) and the private timeout with `TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS` (10,000 to 300,000).
+Override the ceiling with `TROUBLEMAKER_LOCAL_PREFILL_LIMIT_TOKENS` (4,096 to 200,000), the checkpoint input budget with `TROUBLEMAKER_PRIVATE_HANDOFF_INPUT_TOKENS` (1,024 to 12,000), and the private timeout with `TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS` (10,000 to 300,000).
 
-The guard uses `totalTokens - cachedTokens`, not total context size. A 30K context with a 28K cache hit is allowed; a genuine 30K cache miss is cancelled on the next telemetry poll. Provider retries are disabled for guarded local requests. The runtime then attempts one bounded private checkpoint and continues in fresh context. If recovery fails, the accepted user message remains durable and the run fails explicitly instead of spending many minutes on a giant prefill.
+The guard uses `totalTokens - cachedTokens`, not total context size. A 30K context with a 28K cache hit is allowed; a genuine 30K cache miss is cancelled on the next telemetry poll. Cancellation is propagated both to the client stream and MTPLX's request-cancellation endpoint so a disconnected request cannot keep occupying the serial scheduler. Provider retries are disabled for guarded local requests. The runtime then attempts one bounded private checkpoint and continues in fresh context. If recovery fails, the accepted user message remains durable and the run fails explicitly instead of spending many minutes on a giant prefill.
 
 Private checkpoint input is text-only and bounded below the hard ceiling. Normal-sized histories retain their available dialogue, compact tool-call and tool-result excerpts, and prior hidden continuity summary. An already oversized history retains its opening task contract, newest prior continuity summary, and recent working tail. The model receives an explicit omission notice and must preserve uncertainty rather than invent middle-history details. Full source history remains available in the archive after successful rotation.
 

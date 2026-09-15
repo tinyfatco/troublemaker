@@ -18,6 +18,7 @@ process.env.TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS = "10000";
 let activeRequestId = "";
 let firstRequestClosed = false;
 let ordinaryRequests = 0;
+let cancelRequests = 0;
 const modelRequests: any[] = [];
 const modelServer = createServer(async (req, res) => {
  let body = "";
@@ -51,7 +52,13 @@ const modelServer = createServer(async (req, res) => {
 });
 await new Promise<void>(resolve => modelServer.listen(0, "127.0.0.1", resolve));
 
-const progressServer = createServer((_req, res) => {
+const progressServer = createServer((req, res) => {
+ if (req.method === "POST" && req.url?.startsWith("/v1/mtplx/cancel/")) {
+  cancelRequests++;
+  res.setHeader("Content-Type", "application/json");
+  res.end(JSON.stringify({cancelled: true}));
+  return;
+ }
  const privateRequest = activeRequestId.startsWith("chatcmpl-private-handoff-");
  const total = privateRequest ? 1200 : 30000;
  res.setHeader("Content-Type", "application/json");
@@ -88,6 +95,7 @@ try {
  assert.equal(result.stopReason, "stop");
  assert(Date.now() - started < 8000, "giant uncached prefill is rejected promptly instead of hanging");
  assert(firstRequestClosed, "the oversized provider request is actively cancelled");
+ assert(cancelRequests >= 1, "the runtime also cancels the orphaned request at MTPLX");
  assert.equal(modelRequests.length, 3, "rejection is followed by one bounded checkpoint and one fresh-context continuation");
  assert.deepEqual(modelRequests[1].tools.map((tool: any) => tool.function?.name), ["handoff_context"]);
  assert.equal(modelRequests[1].tool_choice.function.name, "handoff_context");
