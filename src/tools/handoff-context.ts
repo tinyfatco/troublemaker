@@ -1,6 +1,27 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import { Type } from 'typebox';
 import { extractStructuredHandoff, HANDOFF_OPEN, HANDOFF_CLOSE, type StructuredHandoff } from '../handoff-compaction.js';
+
+export function parseHandoffContextArguments(
+ args: unknown,
+ routing: StructuredHandoff['routing'] = { channel: '', replyTarget: null },
+): { handoff: StructuredHandoff; resume: boolean } {
+ if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('Invalid continuity arguments');
+ const value = args as Record<string, unknown>;
+ const nextSteps = typeof value.nextSteps === 'string'
+  ? (value.nextSteps.trim() ? [value.nextSteps.trim()] : [])
+  : value.nextSteps;
+ if (typeof value.summary !== 'string' || !value.summary.trim() || value.summary.length > 12000
+  || !Array.isArray(nextSteps) || nextSteps.length > 12 || nextSteps.some(step => typeof step !== 'string')) {
+  throw new Error('Provide a bounded nonempty handoff and next steps');
+ }
+ const summary = { version: 1, goal: value.summary, constraints: [], completed: [], inProgress: [], nextSteps,
+  decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing };
+ const parsed = extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(summary)}${HANDOFF_CLOSE}`, routing);
+ if (!parsed) throw new Error('Invalid continuity summary');
+ return { handoff: parsed.handoff, resume: value.continue === true };
+}
+
 export function createHandoffContextTool(stage: (summary: StructuredHandoff, resume: boolean) => void | false): AgentTool<any> {
  return {
   name: 'handoff_context', label: 'Hand off context',
@@ -12,12 +33,8 @@ export function createHandoffContextTool(stage: (summary: StructuredHandoff, res
    continue: Type.Boolean({ description: 'Continue unfinished work after rotation; false means wait for the user.' }),
   }),
   execute: async (_id, args: any) => {
-   const nextSteps = typeof args.nextSteps === 'string' ? (args.nextSteps.trim() ? [args.nextSteps.trim()] : []) : args.nextSteps;
-   if (typeof args.summary !== 'string' || !args.summary.trim() || args.summary.length > 12000 || !Array.isArray(nextSteps) || nextSteps.length > 12 || nextSteps.some(step => typeof step !== 'string')) throw new Error('Provide a bounded nonempty handoff and next steps');
-   const summary = { version: 1, goal: args.summary, constraints: [], completed: [], inProgress: [], nextSteps, decisions: [], provenance: [], uncertainties: [], superseded: [], toolReceipts: [], routing: {channel: '', replyTarget: null} };
-   const parsed = extractStructuredHandoff(`${HANDOFF_OPEN}${JSON.stringify(summary)}${HANDOFF_CLOSE}`);
-   if (!parsed) throw new Error('Invalid continuity summary');
-   if (stage(parsed.handoff, args.continue === true) === false) return {
+   const parsed = parseHandoffContextArguments(args);
+   if (stage(parsed.handoff, parsed.resume) === false) return {
     content: [{ type: 'text', text: 'The requested context handoff already completed in this run. No additional rotation was performed. Returning control to the user.' }],
     details: {}, terminate: true,
    };

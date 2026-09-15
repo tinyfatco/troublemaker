@@ -21,9 +21,12 @@ import {
 	readHandoffJournal,
 	replayHandoffRotation,
 	selectCompleteRecentTail,
+	selectBoundedCheckpointTranscript,
 	selectBoundedRecentDialogue,
 	appendHandoffInstruction,
 	estimateHandoffContextTokens,
+	localPrefillLimitTokens,
+	shouldRequestBoundedHandoff,
 	shouldRequestHandoff,
 	writeHandoffJournal,
 } from "../src/handoff-compaction.js";
@@ -75,6 +78,12 @@ assert.doesNotMatch(toolInstruction, /troublemaker_private_handoff/, "forced-too
 assert.equal(DEFAULT_COMPACTION.mode, "native", "native compaction remains the safe default");
 assert.equal(shouldRequestHandoff(164_000, 200_000, 16_000, 20_000), true);
 assert.equal(shouldRequestHandoff(163_999, 200_000, 16_000, 20_000), false);
+assert.equal(localPrefillLimitTokens(undefined), 24_000);
+assert.equal(localPrefillLimitTokens("18000"), 18_000);
+assert.equal(localPrefillLimitTokens("3000"), 24_000, "unsafe local limits fall back to the supported default");
+assert.equal(shouldRequestBoundedHandoff(19_999, 65_536, 16_384, 12_000, 24_000), false);
+assert.equal(shouldRequestBoundedHandoff(20_000, 65_536, 16_384, 12_000, 24_000), true,
+	"local inference rotates before an uncached request can cross the hard ceiling");
 
 const root = mkdtempSync(join(tmpdir(), "troublemaker-handoff-"));
 try {
@@ -129,6 +138,13 @@ assert(!JSON.stringify(boundedDialogue).includes('"toolResult"'));
 assert.equal((boundedDialogue[1] as any).usage.input, 0, "old context usage cannot retrigger rotation in a fresh session");
 assert.equal(selectBoundedRecentDialogue([...messages, ...messages, ...messages], 1024).length, 4);
 assert.deepEqual(selectBoundedRecentDialogue(largeDialogue, 0), []);
+const boundedCheckpoint = selectBoundedCheckpointTranscript(largeDialogue, 2000);
+const boundedCheckpointText = JSON.stringify(boundedCheckpoint);
+assert(estimateHandoffContextTokens(boundedCheckpoint) <= 2000, "checkpoint transcript obeys the hard input budget");
+assert(boundedCheckpointText.includes("Keep the latest request"), "oversized recovery keeps the opening task contract");
+assert(boundedCheckpointText.includes("The newest small correction"), "oversized recovery keeps the recent working tail");
+assert(!boundedCheckpointText.includes("output".repeat(10_000)), "raw giant tool results never enter bounded checkpoint input");
+assert(boundedCheckpointText.includes("Older middle dialogue was omitted"), "the model is told not to invent omitted middle history");
 const measuredMessage = { ...largeDialogue[1], usage: { input: 1_000, output: 50, cacheRead: 44_000, cacheWrite: 0, totalTokens: 45_050 } };
 assert(estimateHandoffContextTokens([measuredMessage, largeDialogue[2]]) > 45_050,
 	"pressure includes tool output added after the last measured response");
