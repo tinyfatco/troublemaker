@@ -139,7 +139,9 @@ export class TroublemakerTuiClient {
 		afterSequence = 0,
 	): Promise<void> {
 		const params = new URLSearchParams();
-		if (this.profile.presentation === "pi") params.set("presentation", "pi");
+		if (this.profile.presentation === "pi" || this.profile.presentation === "pi-thinking") {
+			params.set("presentation", this.profile.presentation);
+		}
 		if (afterSequence > 0) params.set("after", String(afterSequence));
 		const suffix = params.size > 0 ? `?${params}` : "";
 		const response = await fetch(this.url(`/api/v2/agents/current/live${suffix}`), {

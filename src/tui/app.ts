@@ -1,4 +1,4 @@
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, TextContent, ThinkingContent } from "@earendil-works/pi-ai";
 import {
 	AssistantMessageComponent,
 	DynamicBorder,
@@ -104,6 +104,7 @@ export class TroublemakerTuiApp {
 	private readonly footer = new Container();
 	private readonly editor: Editor;
 	private readonly piPresentation: boolean;
+	private readonly showThinking: boolean;
 	private readonly toolCalls: TerminalToolCallRegistry | null;
 	private readonly toolSelectorInput: ToolSelectorSequence | null;
 	private status: TuiAgentStatus;
@@ -165,7 +166,8 @@ export class TroublemakerTuiApp {
 		this.editor.onSubmit = (text) => {
 			void this.handleSubmit(text);
 		};
-		this.piPresentation = profile.presentation === "pi";
+		this.piPresentation = profile.presentation === "pi" || profile.presentation === "pi-thinking";
+		this.showThinking = profile.presentation === "pi-thinking";
 		this.toolCalls = this.piPresentation ? new TerminalToolCallRegistry() : null;
 		this.toolSelectorInput = this.toolCalls
 			? new ToolSelectorSequence((selector) => {
@@ -386,7 +388,7 @@ export class TroublemakerTuiApp {
 			view.latestSnapshot = { ...snapshot, content: [...snapshot.content] };
 			const renderedKind = this.renderAssistant(view.target, {
 				...snapshot,
-				content: assistantContentDelta(snapshot.content, view.segmentBaseline),
+				content: assistantContentDelta(snapshot.content, view.segmentBaseline, this.showThinking),
 			}, false, view.precedingContent);
 			if (renderedKind) this.lastTranscriptContent = renderedKind;
 			if (envelope.channelId === this.profile.channelId) {
@@ -500,7 +502,11 @@ export class TroublemakerTuiApp {
 			if (existing.latestSnapshot) {
 				const renderedKind = this.renderAssistant(existing.target, {
 					...existing.latestSnapshot,
-					content: assistantContentDelta(existing.latestSnapshot.content, existing.segmentBaseline),
+					content: assistantContentDelta(
+						existing.latestSnapshot.content,
+						existing.segmentBaseline,
+						this.showThinking,
+					),
 				}, false, existing.precedingContent);
 				if (renderedKind) this.lastTranscriptContent = renderedKind;
 			}
@@ -708,19 +714,24 @@ export class TroublemakerTuiApp {
 		const results = new Map(snapshot.content
 			.filter((block) => block.type === "toolResult")
 			.map((block) => block.type === "toolResult" ? [block.toolCallId, block] as const : ["", null] as const));
-		let textGroup: TextContent[] = [];
+		let textGroup: Array<TextContent | ThinkingContent> = [];
 		let toolGroup: TerminalToolCallView[] = [];
 		let previousKind = precedingContent;
 		let renderedKind: TranscriptContentKind | null = null;
 		const flushText = () => {
 			if (textGroup.length === 0) return;
-			target.addChild(new AssistantMessageComponent(
-				toPiAssistantMessage(snapshot, textGroup),
-				true,
+			const component = new AssistantMessageComponent(
+				undefined,
+				!this.showThinking,
 				getMarkdownTheme(),
 				"Thinking...",
 				1,
-			));
+			);
+			component.updateContent(
+				toPiAssistantMessage(snapshot, textGroup),
+				!historical && snapshot.isStreaming !== false,
+			);
+			target.addChild(component);
 			textGroup = [];
 			previousKind = "text";
 			renderedKind = "text";
@@ -735,7 +746,12 @@ export class TroublemakerTuiApp {
 		};
 
 		for (const [contentIndex, block] of snapshot.content.entries()) {
-			if (block.type === "text" && block.text.trim()) {
+			if (block.type === "thinking" && this.showThinking && block.thinking) {
+				flushTools();
+				textGroup.push({ type: "thinking", thinking: block.thinking });
+				continue;
+			}
+			if (block.type === "text" && block.text) {
 				flushTools();
 				textGroup.push({ type: "text", text: block.text });
 				continue;
@@ -1095,7 +1111,7 @@ export class TroublemakerTuiApp {
 		this.header.addChild(new Spacer(1));
 		this.header.addChild(new Text(`${chalk.bold(this.status.agentName)}  ${chalk.dim("Troublemaker")}`, 1, 0));
 		const awareness = this.awarenessState === "live" ? chalk.green("awareness live") : chalk.yellow(`awareness ${this.awarenessState}`);
-		const presentation = this.piPresentation ? " · pi live" : "";
+		const presentation = this.showThinking ? " · pi thinking live" : this.piPresentation ? " · pi live" : "";
 		this.header.addChild(new Text(chalk.dim(`${this.profile.channelId} · ${this.status.runtime} · ${this.status.mode}${presentation} · ${awareness}`), 1, 0));
 		this.header.addChild(new DynamicBorder((value) => chalk.dim(value)));
 		this.ui.requestRender();
@@ -1103,7 +1119,8 @@ export class TroublemakerTuiApp {
 
 	private rebuildFooter(): void {
 		this.footer.clear();
-		this.footer.addChild(new Text(chalk.dim("enter send · esc stop · ctrl-c exit · /help"), 1, 0));
+		const toolHelp = this.piPresentation ? " · ctrl-t # tool detail" : "";
+		this.footer.addChild(new Text(chalk.dim(`enter send · esc stop · ctrl-c exit${toolHelp} · /help`), 1, 0));
 	}
 
 	private registerSignals(): void {
@@ -1145,7 +1162,10 @@ function createToolLabel(label: string, state: "pending" | "success" | "error"):
 	return box;
 }
 
-function toPiAssistantMessage(snapshot: RuntimeAssistantSnapshotEntry, content: TextContent[]): AssistantMessage {
+function toPiAssistantMessage(
+	snapshot: RuntimeAssistantSnapshotEntry,
+	content: Array<TextContent | ThinkingContent>,
+): AssistantMessage {
 	const stopReason = snapshot.stopReason === "length" || snapshot.stopReason === "error" || snapshot.stopReason === "aborted"
 		? snapshot.stopReason
 		: "stop";

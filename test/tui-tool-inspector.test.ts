@@ -63,7 +63,7 @@ assert(first && second);
 assert.equal(first.selector, 1);
 assert.equal(second.selector, 2);
 assert.equal(first.expanded, false);
-assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] ▸ → Inspecting files$/);
+assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] → Inspecting files$/);
 assert.doesNotMatch(stripTerminalSequences(formatToolLabel(first)), /RAW_ARGUMENT|RAW_OUTPUT|VISIBLE_OUTPUT/);
 
 assert.equal(registry.toggle(2), true);
@@ -94,7 +94,7 @@ assert.equal(completedViews.get(2), second, "a stable tool id retains its sessio
 assert.equal(completedViews.get(2)?.expanded, true, "expansion survives cumulative snapshot repaint");
 assert.equal(completedViews.get(2)?.state, "success");
 assert.equal(completedViews.get(0)?.state, "unknown", "a final snapshot without a matching result never implies success");
-assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] ▸ \? Inspecting files$/, "final no-result state is visibly unknown");
+assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] \? Inspecting files$/, "final no-result state is visibly unknown");
 assert.match(stripTerminalSequences(formatToolDetails(second)), /VISIBLE_RESULT/);
 assert.doesNotMatch(stripTerminalSequences(formatToolDetails(second)), /RAW_RESULT_MUST_NOT_RENDER/);
 
@@ -120,7 +120,7 @@ assert.equal(interruptedView?.state, "pending");
 const interruptedFinal = interruptedRegistry.updateSnapshot({ ...interruptedStart, isStreaming: false }, false).get(0);
 assert.equal(interruptedFinal, interruptedView, "interrupted final snapshots retain the same mounted tool view");
 assert.equal(interruptedFinal?.state, "unknown", "an interrupted final snapshot without an abort reason stays explicitly unknown");
-assert.match(stripTerminalSequences(formatToolLabel(interruptedFinal!)), /^\[1\] ▸ \? Interrupted operation$/);
+assert.match(stripTerminalSequences(formatToolLabel(interruptedFinal!)), /^\[1\] \? Interrupted operation$/);
 assert.doesNotMatch(stripTerminalSequences(formatToolLabel(interruptedFinal!)), /✓/);
 
 const abortedRegistry = new TerminalToolCallRegistry();
@@ -132,7 +132,7 @@ const abortedView = abortedRegistry.updateSnapshot({
 	content: [{ type: "toolCall", id: "tool-aborted", name: "read", label: "Aborted operation", arguments: {} }],
 }, false).get(0);
 assert.equal(abortedView?.state, "cancelled", "an aborted no-result tool is explicitly cancelled");
-assert.match(stripTerminalSequences(formatToolLabel(abortedView!)), /^\[1\] ▸ − Aborted operation$/);
+assert.match(stripTerminalSequences(formatToolLabel(abortedView!)), /^\[1\] − Aborted operation$/);
 assert.doesNotMatch(stripTerminalSequences(formatToolLabel(abortedView!)), /✓/);
 
 const boundedRegistry = new TerminalToolCallRegistry();
@@ -157,8 +157,9 @@ const stream = new TerminalToolCallStream([first, second]);
 first.expanded = false;
 second.expanded = false;
 const wide = stream.render(120);
-assert.equal(wide.length, 1, "consecutive collapsed tool calls share one wide terminal line");
-assert.match(stripTerminalSequences(wide[0] || ""), /\[1\].*\[2\]/);
+assert.equal(wide.length, 2, "collapsed tool calls settle into one compact line each");
+assert.match(stripTerminalSequences(wide[0] || ""), /\[1\].*Inspecting files/);
+assert.match(stripTerminalSequences(wide[1] || ""), /\[2\].*Searching/);
 
 const narrow = stream.render(24);
 assert(narrow.length > 1, "the inline tool stream wraps at narrow terminal widths");
