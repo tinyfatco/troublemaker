@@ -7,6 +7,7 @@
  */
 
 import * as log from "./log.js";
+import { HANDOFF_CLOSE, HANDOFF_OPEN } from "./handoff-compaction.js";
 import { isValidImageBase64 } from "./image-content.js";
 
 interface ContentBlock {
@@ -37,10 +38,15 @@ interface Message {
 export function sanitizeMessages(messages: Message[]): Message[] {
 	const result: Message[] = [];
 	let stripped = 0;
+	let strippedPrivateCheckpoints = 0;
 	let invalidImages = 0;
 
 	for (let i = 0; i < messages.length; i++) {
 		const msg = messages[i];
+		if (isPrivateCheckpointMessage(msg)) {
+			strippedPrivateCheckpoints++;
+			continue;
+		}
 
 		// Check toolResult messages for matching tool calls
 		if (msg.role === "toolResult" || (msg.role === "user" && hasToolResults(msg))) {
@@ -77,6 +83,9 @@ export function sanitizeMessages(messages: Message[]): Message[] {
 	if (stripped > 0) {
 		log.logWarning(`[sanitize] Stripped ${stripped} message(s) with orphaned tool_results`);
 	}
+	if (strippedPrivateCheckpoints > 0) {
+		log.logInfo(`[sanitize] Withheld ${strippedPrivateCheckpoints} private checkpoint message(s) from provider context`);
+	}
 	if (invalidImages > 0) {
 		log.logWarning(`[sanitize] Replaced ${invalidImages} invalid image block(s)`);
 	}
@@ -110,6 +119,21 @@ function sanitizeContentBlocks(content: ContentBlock[]): { content: ContentBlock
 	});
 
 	return { content: changed ? sanitized : content, invalidImages };
+}
+
+function isPrivateCheckpointMessage(msg: Message): boolean {
+	if (msg.role !== "assistant") return false;
+	if (typeof msg.content === "string") {
+		return msg.content.includes(HANDOFF_OPEN.slice(0, 12)) || msg.content.includes(HANDOFF_CLOSE);
+	}
+	if (!Array.isArray(msg.content)) return false;
+	const text = msg.content
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => String(block.text))
+		.join("");
+	return text.includes(HANDOFF_OPEN.slice(0, 12))
+		|| text.includes(HANDOFF_CLOSE)
+		|| msg.content.some((block) => block.type === "toolCall" && block.name === "handoff_context");
 }
 
 function hasToolResults(msg: Message): boolean {
