@@ -52,12 +52,13 @@ try {
 	const runner = await getOrCreateRunner({type: "host"}, join(root, "awareness"), "Be concise.");
 	const store = new ChannelStore({workingDir: root, botToken: ""});
 	assert.equal((await runner.run(ctx, store)).stopReason, "stop");
-	ctx.message = {...ctx.message, text: "Finish the fixture", rawText: "Finish the fixture", ts: "2"};
-	assert.equal((await runner.run(ctx, store)).stopReason, "stop");
+	ctx.message = {...ctx.message, text: "Finish the fixture", rawText: "Finish the fixture", ts: "2", sourceEventType: "heartbeat"};
+	assert.equal((await runner.run(ctx, store)).stopReason, "stop", "heartbeat pressure uses the same handoff path");
 	assert.equal(requests.length, 3, "warm checkpoint must automatically continue in the new context");
 	assert.deepEqual(requests[1].messages.slice(0, requests[0].messages.length), requests[0].messages, "checkpoint retains the provider's original prompt prefix");
 	assert.deepEqual(requests[1].tools, requests[0].tools, "checkpoint tool schema prefix remains stable");
-	assert(JSON.stringify(requests[1].messages).includes("PRIVATE CONTINUITY CHECKPOINT"));
+	const checkpointInstructionCount = JSON.stringify(requests[1].messages).split("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW").length - 1;
+	assert.equal(checkpointInstructionCount, 1, "one pressure event must inject exactly one checkpoint instruction");
 	assert(JSON.stringify(requests[2].messages).includes(HANDOFF_RESUME_INSTRUCTION));
 	assert(!JSON.stringify(requests[2]).includes("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW"), "checkpoint command must not leak into the resumed context");
 	assert(finals.includes("Fixture complete."));

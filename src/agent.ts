@@ -684,7 +684,6 @@ async function createRunner(
 			toolLoopGuard.extension,
 			handoffContextExtension,
 			dynamicRuntimeContextExtension,
-			handoffContextExtension,
 			deferredToolsExtension,
 			hostGmailExtension,
 			hostSitesExtension,
