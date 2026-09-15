@@ -14,6 +14,7 @@ export const MAX_HANDOFF_ITEMS = 200;
 export const MAX_HANDOFF_STRING_LENGTH = 8 * 1024;
 export const DEFAULT_LOCAL_PREFILL_LIMIT_TOKENS = 24_000;
 export const LOCAL_HANDOFF_SAFETY_TOKENS = 4_000;
+export const DEFAULT_PRIVATE_HANDOFF_INPUT_TOKENS = 2_048;
 
 export interface StructuredHandoff {
 	version: 1;
@@ -163,6 +164,13 @@ export function localPrefillLimitTokens(value = process.env.TROUBLEMAKER_LOCAL_P
 	return Number.isSafeInteger(parsed) && parsed >= 4096 && parsed <= 200_000
 		? parsed
 		: DEFAULT_LOCAL_PREFILL_LIMIT_TOKENS;
+}
+
+export function privateHandoffInputTokens(value = process.env.TROUBLEMAKER_PRIVATE_HANDOFF_INPUT_TOKENS): number {
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed >= 1024 && parsed <= 12_000
+		? parsed
+		: DEFAULT_PRIVATE_HANDOFF_INPUT_TOKENS;
 }
 
 /** Rotate early enough that a cache miss can still stay below the local prefill ceiling. */

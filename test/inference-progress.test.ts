@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { exceedsLocalPrefillLimit, inferenceProgressURL, progressFromSnapshot, parseInferenceProgress, uncachedPrefillTokens, watchInferenceProgress } from "../src/inference-progress.js";
+import { cancelInferenceRequest, exceedsLocalPrefillLimit, inferenceProgressURL, progressFromSnapshot, parseInferenceProgress, uncachedPrefillTokens, watchInferenceProgress } from "../src/inference-progress.js";
 import { projectConversationTurnEvent } from "../src/console/conversation-projection.js";
 const p={phase:"prefill",processedTokens:512,totalTokens:1024,cachedTokens:0,elapsedSeconds:2};
 assert.deepEqual(parseInferenceProgress({...p,secret:"must not propagate"}),p);
@@ -19,7 +19,12 @@ assert.ok(inferenceProgressURL("http://127.0.0.1:1234/v1/mtplx/snapshot"));
 const projected=projectConversationTurnEvent({type:"status",status:"processing",processing:{...p,secret:"private"}});
 assert.deepEqual(projected,{type:"state",state:"thinking",processing:p});
 let authorization: string | undefined;
-const server=createServer((request,response)=>{authorization=typeof request.headers.authorization==="string"?request.headers.authorization:undefined;response.setHeader("Content-Type","application/json");response.end(JSON.stringify(snapshot));});
+let lastMethod = "", lastPath = "";
+const server=createServer((request,response)=>{
+	authorization=typeof request.headers.authorization==="string"?request.headers.authorization:undefined;
+	lastMethod=request.method || ""; lastPath=request.url || "";
+	response.setHeader("Content-Type","application/json");response.end(JSON.stringify(snapshot));
+});
 await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));
 try {
 	const address=server.address();
@@ -33,6 +38,10 @@ try {
 		},{apiKey:"synthetic-key"});
 	});
 	assert.equal(samples,1);
+	assert.equal(authorization,"Bearer synthetic-key");
+	assert.equal(await cancelInferenceRequest(new URL(`http://127.0.0.1:${address.port}/v1/mtplx/snapshot`),"request/id",{apiKey:"synthetic-key"}),true);
+	assert.equal(lastMethod,"POST");
+	assert.equal(lastPath,"/v1/mtplx/cancel/request%2Fid");
 	assert.equal(authorization,"Bearer synthetic-key");
 } finally {await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));}
 console.log("inference progress: ok");

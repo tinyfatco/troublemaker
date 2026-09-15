@@ -26,6 +26,7 @@ import {
 	appendHandoffInstruction,
 	estimateHandoffContextTokens,
 	localPrefillLimitTokens,
+	privateHandoffInputTokens,
 	shouldRequestBoundedHandoff,
 	shouldRequestHandoff,
 	writeHandoffJournal,
@@ -81,6 +82,9 @@ assert.equal(shouldRequestHandoff(163_999, 200_000, 16_000, 20_000), false);
 assert.equal(localPrefillLimitTokens(undefined), 24_000);
 assert.equal(localPrefillLimitTokens("18000"), 18_000);
 assert.equal(localPrefillLimitTokens("3000"), 24_000, "unsafe local limits fall back to the supported default");
+assert.equal(privateHandoffInputTokens(undefined), 2_048);
+assert.equal(privateHandoffInputTokens("4096"), 4_096);
+assert.equal(privateHandoffInputTokens("999"), 2_048);
 assert.equal(shouldRequestBoundedHandoff(19_999, 65_536, 16_384, 12_000, 24_000), false);
 assert.equal(shouldRequestBoundedHandoff(20_000, 65_536, 16_384, 12_000, 24_000), true,
 	"local inference rotates before an uncached request can cross the hard ceiling");

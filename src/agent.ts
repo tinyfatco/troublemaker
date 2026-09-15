@@ -23,7 +23,7 @@ import { copyFile, mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
-import { exceedsLocalPrefillLimit, inferenceProgressURL, uncachedPrefillTokens, watchInferenceProgress } from "./inference-progress.js";
+import { cancelInferenceRequest, exceedsLocalPrefillLimit, inferenceProgressURL, uncachedPrefillTokens, watchInferenceProgress } from "./inference-progress.js";
 import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
 import { InputBudget } from "./core/input-budget.js";
 import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
@@ -92,8 +92,8 @@ import {
 	estimateHandoffContextTokens,
 	handoffToolInstruction,
 	handoffJournalPath,
-	LOCAL_HANDOFF_SAFETY_TOKENS,
 	localPrefillLimitTokens,
+	privateHandoffInputTokens,
 	readHandoffJournal,
 	replayHandoffRotation,
 	selectBoundedCheckpointTranscript,
@@ -587,6 +587,9 @@ async function createRunner(
 				maxRetries: 0,
 				headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId },
 			};
+			prefillAbort.signal.addEventListener("abort", () => {
+				void cancelInferenceRequest(localProgressURL!, requestId, { apiKey: normalizedOptions?.apiKey });
+			}, { once: true });
 		}
 		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
 		const result = streamSimple(
@@ -825,9 +828,13 @@ async function createRunner(
 		currentModel: typeof model,
 		routing: { channel: string; replyTarget: string | null },
 	) => {
-		const inputLimit = Math.max(4096, (localPrefillLimit ?? localPrefillLimitTokens()) - LOCAL_HANDOFF_SAFETY_TOKENS);
-		const currentRuntimeSnapshot: AgentMessage | null = activeRuntimeContext.trim() ? {
-			role: "custom", customType: "runtime-context", content: activeRuntimeContext, display: false, timestamp: 0,
+		const inputLimit = privateHandoffInputTokens();
+		const runtimeCharLimit = Math.max(1024, Math.floor(inputLimit * 0.35) * 4);
+		const boundedRuntimeContext = activeRuntimeContext.length <= runtimeCharLimit
+			? activeRuntimeContext
+			: `${activeRuntimeContext.slice(0, Math.floor(runtimeCharLimit * 0.6))}\n[Middle workspace snapshot omitted by private prefill budget]\n${activeRuntimeContext.slice(-Math.floor(runtimeCharLimit * 0.4))}`;
+		const currentRuntimeSnapshot: AgentMessage | null = boundedRuntimeContext.trim() ? {
+			role: "custom", customType: "runtime-context", content: boundedRuntimeContext, display: false, timestamp: 0,
 		} : null;
 		const runtimeTokens = currentRuntimeSnapshot ? estimateHandoffContextTokens([currentRuntimeSnapshot]) : 0;
 		const transcript = selectBoundedCheckpointTranscript(messages, Math.max(1024, inputLimit - runtimeTokens));
@@ -879,6 +886,7 @@ async function createRunner(
 			if (localProgressURL) stopProgress = watchInferenceProgress(localProgressURL, requestId, (progress) => {
 				if (localPrefillLimit !== undefined && exceedsLocalPrefillLimit(progress, localPrefillLimit)) {
 					const uncached = uncachedPrefillTokens(progress);
+					void cancelInferenceRequest(localProgressURL, requestId, { apiKey });
 					controller.abort(new Error(`Private checkpoint prefill rejected: ${uncached} uncached tokens exceeds ${localPrefillLimit}`));
 				}
 			}, { apiKey });
@@ -899,6 +907,10 @@ async function createRunner(
 		} finally {
 			clearTimeout(timer);
 			stopProgress();
+			if (controller.signal.aborted && localProgressURL) {
+				const cancelled = await cancelInferenceRequest(localProgressURL, requestId, { apiKey });
+				log.logInfo(`[handoff] Server-side cancellation ${cancelled ? "accepted" : "unavailable"} for ${requestId}`);
+			}
 			if (privateHandoffAbortController === controller) privateHandoffAbortController = null;
 		}
 	};

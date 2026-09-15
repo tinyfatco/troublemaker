@@ -53,6 +53,30 @@ export function inferenceProgressURL(value: string | undefined): URL | undefined
 	} catch { return; }
 }
 
+export async function cancelInferenceRequest(
+	snapshotUrl: URL,
+	requestId: string,
+	options: { apiKey?: string; timeoutMs?: number } = {},
+): Promise<boolean> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 3000);
+	timeout.unref?.();
+	try {
+		const url = new URL(`/v1/mtplx/cancel/${encodeURIComponent(requestId)}`, snapshotUrl);
+		const response = await fetch(url, {
+			method: "POST",
+			signal: controller.signal,
+			redirect: "error",
+			headers: options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : undefined,
+		});
+		return response.ok;
+	} catch {
+		return false;
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 /** Read-only, opt-in local telemetry; failures must never fail or delay inference. */
 export function watchInferenceProgress(
 	url: URL,
