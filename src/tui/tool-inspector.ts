@@ -10,6 +10,7 @@ import {
 import { isNativeModifierPressed } from "@earendil-works/pi-tui/dist/native-modifiers.js";
 import chalk from "chalk";
 import { mergeToolExecutionDetails } from "../console/tool-detail-projection.js";
+import { readableToolName } from "../tools/tool-label.js";
 import type {
 	RuntimeAssistantSnapshotContent,
 	RuntimeAssistantSnapshotEntry,
@@ -302,7 +303,8 @@ function toolIdentity(snapshot: RuntimeAssistantSnapshotEntry, toolCallId: strin
 
 function toolLabel(block: Extract<RuntimeAssistantSnapshotContent, { type: "toolCall" }>): string {
 	const argumentLabel = typeof block.arguments.label === "string" ? block.arguments.label.trim() : "";
-	return block.label?.trim() || argumentLabel || block.name.trim() || "tool";
+	const explicit = block.label?.trim() || argumentLabel;
+	return explicit && explicit !== block.name ? explicit : readableToolName(block.name);
 }
 
 function oneLine(value: string): string {

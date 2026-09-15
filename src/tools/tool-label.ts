@@ -1,18 +1,18 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type TSchema } from "typebox";
 
-const DEFAULT_LABEL_DESCRIPTION = "Brief, safe, human-readable description of what this tool call is doing";
+const DEFAULT_LABEL_DESCRIPTION = "Strongly recommended: brief, safe, human-readable description of what this tool call is doing. If omitted or blank, the runtime uses the tool name so execution still proceeds.";
 const wrappedTools = new WeakSet<object>();
 
+/**
+ * Compatibility name retained for extensions. The label is deliberately
+ * optional and permissive; execution always has a readable runtime fallback.
+ */
 export function requiredToolLabelSchema(description = DEFAULT_LABEL_DESCRIPTION): TSchema {
-	return Type.String({
-		description,
-		minLength: 1,
-		pattern: "\\S",
-	});
+	return Type.Optional(Type.String({ description: encouragedDescription(description) }));
 }
 
-/** Add a required, nonblank presentation label to an object-shaped tool schema. */
+/** Add an encouraged, non-fatal presentation label to an object-shaped schema. */
 export function addRequiredToolLabelToSchema<T>(schema: T): T {
 	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
 		return Type.Object({ label: requiredToolLabelSchema() }) as T;
@@ -26,10 +26,10 @@ export function addRequiredToolLabelToSchema<T>(schema: T): T {
 		? properties.label as Record<string, unknown>
 		: {};
 	const description = typeof existingLabel.description === "string" && existingLabel.description.trim()
-		? existingLabel.description
+		? encouragedDescription(existingLabel.description)
 		: DEFAULT_LABEL_DESCRIPTION;
 	const required = Array.isArray(record.required)
-		? record.required.filter((entry): entry is string => typeof entry === "string")
+		? record.required.filter((entry): entry is string => typeof entry === "string" && entry !== "label")
 		: [];
 
 	return {
@@ -37,29 +37,25 @@ export function addRequiredToolLabelToSchema<T>(schema: T): T {
 		type: "object",
 		properties: {
 			...properties,
-			label: {
-				...existingLabel,
-				...requiredToolLabelSchema(description),
-			},
+			label: requiredToolLabelSchema(description),
 		},
-		required: Array.from(new Set([...required, "label"])),
+		required,
 	} as T;
 }
 
+/** Resolve a safe display label without ever rejecting an otherwise valid call. */
 export function requireNonblankToolLabel(params: unknown, toolName = "Tool"): string {
 	const label = params && typeof params === "object" && !Array.isArray(params)
 		? (params as Record<string, unknown>).label
 		: undefined;
-	if (typeof label !== "string" || !label.trim()) {
-		throw new Error(`${toolName} requires a nonblank label.`);
-	}
-	return label.trim();
+	if (typeof label === "string" && label.trim()) return label.trim();
+	return readableToolName(toolName);
 }
 
 /**
- * Enforce the label contract both in the schema shown to the model and at the
- * execution boundary. Mutating in place also covers tools loaded by the Pi
- * extension registry after the base tool array was created.
+ * Encourage the label in model-facing schemas and inject a readable fallback
+ * at the execution boundary. Mutating in place also covers tools registered by
+ * Pi extensions after the base tool array was created.
  */
 export function enforceRequiredToolLabel<T extends AgentTool<any>>(tool: T): T {
 	if (wrappedTools.has(tool as object)) return tool;
@@ -69,15 +65,15 @@ export function enforceRequiredToolLabel<T extends AgentTool<any>>(tool: T): T {
 	if (originalPrepare) {
 		tool.prepareArguments = ((input: unknown) => {
 			const prepared = originalPrepare.call(tool, input);
-			requireNonblankToolLabel(prepared, tool.name);
-			return prepared;
+			return withResolvedToolLabel(prepared, tool.name);
 		}) as typeof tool.prepareArguments;
 	}
 
 	const originalExecute = tool.execute;
 	tool.execute = (async (...args: unknown[]) => {
-		requireNonblankToolLabel(args[1], tool.name);
-		return (originalExecute as (...executeArgs: unknown[]) => unknown).apply(tool, args);
+		const resolved = [...args];
+		resolved[1] = withResolvedToolLabel(args[1], tool.name);
+		return (originalExecute as (...executeArgs: unknown[]) => unknown).apply(tool, resolved);
 	}) as typeof tool.execute;
 
 	wrappedTools.add(tool as object);
@@ -95,4 +91,23 @@ export function stripToolPresentationArgs(params: unknown): Record<string, unkno
 		: {};
 	const { label: _label, show: _show, ...forwarded } = source;
 	return forwarded;
+}
+
+function withResolvedToolLabel(params: unknown, toolName: string): Record<string, unknown> {
+	const source = params && typeof params === "object" && !Array.isArray(params)
+		? params as Record<string, unknown>
+		: {};
+	return { ...source, label: requireNonblankToolLabel(source, toolName) };
+}
+
+function encouragedDescription(description: string): string {
+	const trimmed = description.trim();
+	if (/strongly recommended/i.test(trimmed)) return trimmed;
+	return `${trimmed} Strongly recommended, but omission or blank text never blocks execution.`;
+}
+
+export function readableToolName(toolName: string): string {
+	const leaf = toolName.split("__").at(-1) || toolName;
+	const words = leaf.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim() || "Tool";
+	return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }

@@ -252,8 +252,8 @@ function jsonSchemaToTypebox(schema: McpToolDef["inputSchema"]): TSchema {
 		}
 	}
 
-	// Pi requires a "label" parameter on all tools. `show` is local display
-	// metadata and must never be forwarded to the MCP server.
+	// Pi strongly encourages a display label, but omission must never block an
+	// otherwise valid tool call. `show` and `label` stay local and are not forwarded.
 	properties.label = requiredToolLabelSchema("Brief description of what you're doing with this tool");
 	properties.show = Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." }));
 

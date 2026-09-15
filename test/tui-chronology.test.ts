@@ -55,6 +55,29 @@ function harness(presentation: "pi" | "pi-thinking" | "compact", channel: string
 	return { app, emit, input, awareness, snapshot, rendered, ordered, content, finish: () => requests.forEach((resolve) => resolve()) };
 }
 
+test("Pi updates one context-transition row from preparing to completed", () => {
+	const h = harness("pi-thinking", terminalChannel);
+	const preparing = {
+		version: 1 as const,
+		id: "handoff-example",
+		kind: "handoff" as const,
+		trigger: "agent" as const,
+		state: "preparing" as const,
+		revision: 1,
+		startedAt: timestamp,
+		updatedAt: timestamp,
+	};
+	h.emit({ type: "status", status: "compacting", message: "Preparing context handoff...", contextTransition: preparing });
+	assert.equal((h.rendered().match(/Preparing context handoff/g) || []).length, 1);
+	h.emit({ type: "status", status: "streaming", message: "Context handed off", contextTransition: {
+		...preparing,
+		state: "completed",
+		revision: 2,
+	} });
+	assert.doesNotMatch(h.rendered(), /Preparing context handoff/);
+	assert.equal((h.rendered().match(/Context handed off/g) || []).length, 1);
+});
+
 test("Pi paints each cumulative assistant text update immediately", () => {
 	const h = harness("pi", terminalChannel);
 	h.content[0] = { type: "text", text: "BEFORE_INPUT FIRST_TEXT_FRAGMENT" };

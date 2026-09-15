@@ -33,7 +33,7 @@ import type {
 	UserInfo,
 } from "./types.js";
 
-const mcpToolLabelSchema = z.string().trim().min(1, "label must not be blank").describe("Brief, safe, human-readable description of what this tool call is doing");
+const mcpToolLabelSchema = z.string().trim().optional().describe("Strongly recommended: brief, safe, human-readable description of what this tool call is doing. Omission or blank text never blocks execution.");
 
 interface PhoneGroupMessageAdapter extends PlatformAdapter {
 	postMessageToRecipients(channel: string, text: string, recipients: string[], attachments?: Array<{ filePath: string; filename: string }>): Promise<string>;

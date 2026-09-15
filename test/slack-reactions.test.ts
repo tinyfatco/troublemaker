@@ -462,16 +462,17 @@ try {
 	assert.equal(Check(reactTool.parameters, {
 		target: "slack:C5555555555:1710000005.000600",
 		emoji: "thumbsup",
-	}), false, "react_to_message requires a label");
+	}), true, "react_to_message keeps a label optional");
 	assert.equal(Check(reactTool.parameters, {
 		label: "   ",
 		target: "slack:C5555555555:1710000005.000600",
 		emoji: "thumbsup",
-	}), false, "react_to_message schema rejects an unsafe blank label");
-	await assert.rejects(
-		(reactTool.execute as any)("blank-label", { label: "  ", target: "slack:C5555555555:1710000005.000600", emoji: "thumbsup" }),
-		/requires a nonblank label/,
-	);
+	}), true, "blank presentation labels remain non-fatal");
+	await (reactTool.execute as any)("blank-label", {
+		label: "  ",
+		target: "slack:C5555555555:1710000005.000600",
+		emoji: "thumbsup",
+	});
 	await assert.rejects(
 		(reactTool.execute as any)("non-slack", { label: "Reject another platform", target: "mattermost:mmmmmmmmmmmmmmmmmmmmmmmmmm:nnnnnnnnnnnnnnnnnnnnnnnnnn", emoji: "thumbsup" }),
 		/exact Slack message target/,
@@ -493,7 +494,11 @@ try {
 		channel: "C5555555555",
 		messageTs: "1710000005.000600",
 		emoji: "thumbsup",
-	}], "react_to_message normalizes the emoji and calls the Slack reaction API exactly once");
+	}, {
+		channel: "C5555555555",
+		messageTs: "1710000005.000600",
+		emoji: "thumbsup",
+	}], "react_to_message executes both fallback-labeled and explicitly labeled calls");
 	assert.equal(postedText, 0, "react_to_message never posts Slack text");
 
 	const live = new LiveThreadSlackAdapter({

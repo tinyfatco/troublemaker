@@ -66,6 +66,18 @@ assert.equal(first.expanded, false);
 assert.match(stripTerminalSequences(formatToolLabel(first)), /^\[1\] → Inspecting files$/);
 assert.doesNotMatch(stripTerminalSequences(formatToolLabel(first)), /RAW_ARGUMENT|RAW_OUTPUT|VISIBLE_OUTPUT/);
 
+const unlabeledRegistry = new TerminalToolCallRegistry();
+const unlabeled = unlabeledRegistry.updateSnapshot({
+	id: "assistant-unlabeled",
+	type: "message",
+	timestamp: "2026-01-02T03:04:05Z",
+	role: "assistant",
+	isStreaming: true,
+	content: [{ type: "toolCall", id: "tool-unlabeled", name: "computer-use__list_apps", arguments: {} }],
+}, false).get(0);
+assert(unlabeled);
+assert.match(stripTerminalSequences(formatToolLabel(unlabeled)), /^\[1\] → List apps$/, "an unlabeled call still streams immediately with a readable fallback");
+
 assert.equal(registry.toggle(2), true);
 assert.equal(first.expanded, false, "toggling one selector leaves other calls collapsed");
 assert.equal(second.expanded, true, "the selected call expands");

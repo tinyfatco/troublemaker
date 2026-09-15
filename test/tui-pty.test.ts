@@ -558,7 +558,7 @@ expect eof
 	assert.doesNotMatch(rendered, /Reply target:/);
 	assert.doesNotMatch(rendered, /PERSISTED_TERMINAL_ECHO/);
 	assert.match(rendered, /\[slack:#general\] Taylor/);
-	assert.match(rendered, /awareness live/);
+	assert.match(rendered, /awareness\s+live/, "narrow terminals may wrap the Pi-thinking header");
 	assert.match(rendered, /\[terminal:demo-agent\] you/);
 	assert.doesNotMatch(rendered, /TOP_SECRET_COMMAND/);
 	assert.doesNotMatch(rendered, /EXTERNAL_PRIVATE_COMMAND/);

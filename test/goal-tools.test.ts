@@ -68,10 +68,11 @@ try {
 		() => (setGoal.execute as any)("set-3", { label: "Reject an empty objective", goal: "   " }),
 		/non-empty goal/,
 	);
-	await assert.rejects(
-		() => (setGoal.execute as any)("set-4", { goal: "Missing the required presentation label" }),
-		/requires a nonblank label/,
-	);
+	const unlabeledResult = await (setGoal.execute as any)("set-4", {
+		goal: "Missing presentation label still executes",
+	});
+	assert.equal(resultText(unlabeledResult), "Set active goal: Missing presentation label still executes");
+	assert.equal(setCallbacks, 3);
 
 	console.log("goal tools: ok");
 } finally {

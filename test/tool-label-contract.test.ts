@@ -23,27 +23,26 @@ const baseTool: AgentTool<any> = {
 };
 
 const enforced = enforceRequiredToolLabel(baseTool);
-assert.equal(Check(enforced.parameters, { value: "x" }), false, "surfaced schemas require label");
-assert.equal(Check(enforced.parameters, { label: "", value: "x" }), false, "surfaced schemas reject empty label");
-assert.equal(Check(enforced.parameters, { label: "   ", value: "x" }), false, "surfaced schemas reject whitespace-only label");
-assert.equal(Check(enforced.parameters, { label: "Do the thing", value: "x" }), true, "surfaced schemas accept nonblank label");
+assert.equal(Check(enforced.parameters, { value: "x" }), true, "missing labels never reject an otherwise valid call");
+assert.equal(Check(enforced.parameters, { label: "", value: "x" }), true, "blank labels fall back at execution instead of failing schema validation");
+assert.equal(Check(enforced.parameters, { label: "   ", value: "x" }), true, "whitespace labels remain non-fatal");
+assert.equal(Check(enforced.parameters, { label: "Do the thing", value: "x" }), true, "surfaced schemas accept useful labels");
+assert.match(JSON.stringify(enforced.parameters), /Strongly recommended/i, "model-facing schema still strongly encourages a label");
 
-await assert.rejects(
-	(enforced.execute as any)("missing", { value: "x" }),
-	/requires a nonblank label/,
-	"runtime rejects missing labels even when execution bypasses schema validation",
-);
-await assert.rejects(
-	(enforced.execute as any)("blank", { label: " \n ", value: "x" }),
-	/requires a nonblank label/,
-	"runtime rejects blank labels even when execution bypasses schema validation",
-);
-await (enforced.execute as any)("valid", { label: "Do the thing", value: "x" });
-assert.equal(calls.length, 1, "only nonblank labeled calls reach the underlying tool");
+await (enforced.execute as any)("missing", { value: "x" });
+await (enforced.execute as any)("blank", { label: " \n ", value: "x" });
+await (enforced.execute as any)("valid", { label: "  Do the thing  ", value: "x" });
+assert.deepEqual(calls, [
+	{ value: "x", label: "Unlabeled extension tool" },
+	{ label: "Unlabeled extension tool", value: "x" },
+	{ label: "Do the thing", value: "x" },
+], "runtime injects a readable fallback and trims useful labels before execution");
 assert.equal(requireNonblankToolLabel({ label: "  Visible step  " }), "Visible step", "runtime returns a trimmed label");
+assert.equal(requireNonblankToolLabel({}, "read_file"), "Read file", "runtime resolves an omitted label from the tool name");
 
 const augmented = addRequiredToolLabelToSchema(Type.Object({ target: Type.String() }));
-assert.equal(Check(augmented, { target: "C123" }), false, "schema augmentation makes label required");
+assert.equal(Check(augmented, { target: "C123" }), true, "schema augmentation keeps label optional");
+assert.equal(Check(augmented, { label: "", target: "C123" }), true, "blank presentation metadata does not reject the call");
 assert.equal(Check(augmented, { label: "Send update", target: "C123" }), true, "schema augmentation preserves original fields");
 assert.deepEqual(
 	stripToolPresentationArgs({ label: "Visible", show: true, target: "C123", nested: { ok: true } }),
@@ -68,18 +67,17 @@ const wrapped = wrapMcpTool("fixture", {
 	},
 } as any, fakeClient);
 
-assert.equal(Check(wrapped.parameters, { target: "one" }), false, "wrapped MCP schema requires label");
-assert.equal(Check(wrapped.parameters, { label: "  ", target: "one" }), false, "wrapped MCP schema rejects blank label");
-await assert.rejects(
-	(wrapped.execute as any)("wrapped-missing", { target: "one" }),
-	/requires a nonblank label/,
-	"wrapped MCP runtime rejects missing label",
-);
+assert.equal(Check(wrapped.parameters, { target: "one" }), true, "wrapped MCP schema keeps label optional");
+assert.equal(Check(wrapped.parameters, { label: "  ", target: "one" }), true, "blank MCP labels remain non-fatal");
+await (wrapped.execute as any)("wrapped-missing", { target: "one" });
 await (wrapped.execute as any)("wrapped-valid", { label: "Run remote action", show: true, target: "one" });
 assert.deepEqual(
 	forwarded,
-	[{ name: "remote_action", arguments: { target: "one" } }],
-	"wrapped MCP forwarding strips label and show",
+	[
+		{ name: "remote_action", arguments: { target: "one" } },
+		{ name: "remote_action", arguments: { target: "one" } },
+	],
+	"wrapped MCP forwarding strips fallback labels and show metadata",
 );
 
 console.log("tool label contract ok");

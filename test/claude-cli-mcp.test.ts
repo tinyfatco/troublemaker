@@ -92,9 +92,12 @@ try {
 	const listed = await client.listTools();
 	assert.deepEqual(listed.tools.map((tool) => tool.name).sort(), ["fail_runtime_tool", "send_message"]);
 	for (const tool of listed.tools) {
-		assert.equal(tool.inputSchema.required?.includes("label"), true, `${tool.name} exposes label as required`);
-		assert.equal((tool.inputSchema.properties?.label as { minLength?: number })?.minLength, 1, `${tool.name} rejects empty labels in its schema`);
-		assert.equal((tool.inputSchema.properties?.label as { pattern?: string })?.pattern, "\\S", `${tool.name} rejects whitespace-only labels in its schema`);
+		assert.notEqual(tool.inputSchema.required?.includes("label"), true, `${tool.name} keeps label non-fatal`);
+		assert.match(
+			String((tool.inputSchema.properties?.label as { description?: string })?.description),
+			/strongly recommended/i,
+			`${tool.name} still encourages a useful presentation label`,
+		);
 	}
 
 	const result = await client.callTool({
@@ -110,19 +113,19 @@ try {
 	assert.equal(outputEvents[0]?.text, "delivery progress");
 	assert.equal(outputEvents[0]?.toolCallId, calls[0]?.id);
 
-	const invalid = await client.callTool({
+	const missing = await client.callTool({
 		name: "send_message",
 		arguments: { target: "C123", text: "missing label" },
 	});
-	assert.equal(invalid.isError, true);
-	assert.match((invalid.content[0] as { type: string; text: string }).text, /Invalid arguments for send_message/);
+	assert.equal(missing.isError, undefined);
 	const blank = await client.callTool({
 		name: "send_message",
 		arguments: { label: "  ", target: "C123", text: "blank label" },
 	});
-	assert.equal(blank.isError, true);
-	assert.match((blank.content[0] as { type: string; text: string }).text, /Invalid arguments for send_message/);
-	assert.equal(calls.length, 1, "missing and blank labels never reach the runtime tool");
+	assert.equal(blank.isError, undefined);
+	assert.equal(calls.length, 3, "missing and blank labels reach the runtime with readable fallbacks");
+	assert.equal((calls[1]?.args as { label?: string }).label, "Send message");
+	assert.equal((calls[2]?.args as { label?: string }).label, "Send message");
 
 	const failure = await client.callTool({ name: "fail_runtime_tool", arguments: { label: "Exercise failure path" } });
 	assert.equal(failure.isError, true);
@@ -154,7 +157,7 @@ try {
 	});
 	assert.equal(result.isError, undefined);
 	assert.equal((result.content[0] as { type: string; text: string }).text, "sent:C456");
-	assert.equal(calls.length, 2, "stdio proxy reaches the live Troublemaker tool instance");
+	assert.equal(calls.length, 4, "stdio proxy reaches the live Troublemaker tool instance");
 } finally {
 	await proxyClient.close();
 	await bridge.close();
