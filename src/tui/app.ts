@@ -31,6 +31,7 @@ import type {
 	RuntimeStreamEvent,
 	RuntimeUserInputEntry,
 } from "../core/runtime-contract.js";
+import type { ContextTransition } from "../context-transition.js";
 import { isCompactGeneratedInput } from "../user-input-display.js";
 import { TroublemakerTuiClient, type TuiAgentStatus, type TuiRunStatus } from "./client.js";
 import type { TuiAgentProfile } from "./config.js";
@@ -135,6 +136,7 @@ export class TroublemakerTuiApp {
 		expiresAt: number;
 	}> = [];
 	private readonly deferredAwarenessAssistantLines = new Map<string, string>();
+	private readonly contextTransitionViews = new Map<string, { target: Container; revision: number }>();
 	private readonly liveRuns = new Map<string, LiveRunView>();
 	private readonly runtimeEchoGraceByChannel = new Map<string, number>();
 	private liveSequence = 0;
@@ -375,6 +377,11 @@ export class TroublemakerTuiApp {
 			return;
 		}
 		if (event.type === "status") {
+			if (event.contextTransition) {
+				this.renderContextTransition(event.contextTransition);
+				this.clearLoader();
+				return;
+			}
 			if (event.status === "accepted") return;
 			const message = event.status === "steering" ? "Steering..." : event.message || "Working...";
 			if (this.activeAbort) this.showLoader(message);
@@ -796,6 +803,40 @@ export class TroublemakerTuiApp {
 		this.ui.requestRender();
 	}
 
+	private renderContextTransition(transition: ContextTransition): void {
+		const existing = this.contextTransitionViews.get(transition.id);
+		if (existing && transition.revision <= existing.revision) return;
+		const target = existing?.target || new Container();
+		if (!existing) {
+			this.chat.addChild(new Spacer(1));
+			this.chat.addChild(target);
+		}
+		target.clear();
+		const icon = transition.state === "preparing"
+			? "↻"
+			: transition.state === "completed"
+				? "✓"
+				: transition.state === "failed"
+					? "×"
+					: "−";
+		const color = transition.state === "preparing"
+			? chalk.yellow
+			: transition.state === "completed"
+				? chalk.green
+				: transition.state === "failed"
+					? chalk.red
+					: chalk.dim;
+		target.addChild(new Text(`${color(icon)} ${chalk.dim(contextTransitionTitle(transition))}`, 1, 0));
+		this.contextTransitionViews.set(transition.id, { target, revision: transition.revision });
+		while (this.contextTransitionViews.size > 128) {
+			const oldest = this.contextTransitionViews.keys().next().value;
+			if (typeof oldest !== "string") break;
+			this.contextTransitionViews.delete(oldest);
+		}
+		this.lastTranscriptContent = "text";
+		this.ui.requestRender();
+	}
+
 	private addError(message: string, target: Container): void {
 		target.addChild(new Spacer(1));
 		target.addChild(new Text(chalk.red(`Error: ${message}`), 1, 0));
@@ -1152,6 +1193,18 @@ export class TroublemakerTuiApp {
 		this.resolveDone?.();
 		this.resolveDone = null;
 	}
+}
+
+function contextTransitionTitle(transition: ContextTransition): string {
+	if (transition.state === "preparing") {
+		return transition.kind === "handoff" ? "Preparing context handoff…" : "Compacting context…";
+	}
+	if (transition.state === "completed") {
+		return transition.kind === "handoff" ? "Context handed off" : "Context compacted";
+	}
+	if (transition.state === "aborted") return "Context transition stopped";
+	if (transition.state === "skipped") return "Context transition skipped";
+	return "Context transition failed";
 }
 
 function createToolLabel(label: string, state: "pending" | "success" | "error"): Box {

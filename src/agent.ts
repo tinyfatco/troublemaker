@@ -65,7 +65,7 @@ import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js
 import { ChannelStore } from "./store.js";
 import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
-import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
+import { enforceRequiredToolLabel, enforceRequiredToolLabels, readableToolName } from "./tools/tool-label.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
@@ -212,12 +212,15 @@ function normalizeStreamingToolCall(raw: unknown, contentIndex?: number): Stream
 	const normalizedArgs = args && typeof args === "object" && !Array.isArray(args)
 		? args as Record<string, unknown>
 		: {};
-	const label = cleanToolCallLabel(toolCall.label) || cleanToolCallLabel(normalizedArgs.label);
+	const name = typeof toolCall.name === "string" ? toolCall.name : "tool";
+	const label = cleanToolCallLabel(toolCall.label)
+		|| cleanToolCallLabel(normalizedArgs.label)
+		|| readableToolName(name);
 	return {
 		type: "toolCall",
 		id: typeof toolCall.id === "string" ? toolCall.id : "",
-		name: typeof toolCall.name === "string" ? toolCall.name : "tool",
-		...(label ? { label } : {}),
+		name,
+		label,
 		arguments: normalizedArgs,
 		...(typeof contentIndex === "number" ? { contentIndex } : {}),
 	};
@@ -991,7 +994,7 @@ async function createRunner(
 			const args = agentEvent.args && typeof agentEvent.args === "object"
 				? agentEvent.args as Record<string, unknown>
 				: {};
-			const label = cleanToolCallLabel(args.label) || agentEvent.toolName;
+			const label = cleanToolCallLabel(args.label) || readableToolName(agentEvent.toolName);
 			const show = args.show === true || agentEvent.toolName === "send_message";
 
 			pendingTools.set(agentEvent.toolCallId, {

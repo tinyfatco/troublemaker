@@ -17,6 +17,7 @@ import {
 import { collectEmailThreadListings } from "../src/adapters/email/thread-ledger.js";
 import type { PlatformAdapter } from "../src/adapters/types.js";
 import { Check } from "typebox/value";
+import { enforceRequiredToolLabel } from "../src/tools/tool-label.js";
 
 let passed = 0;
 let failed = 0;
@@ -34,10 +35,10 @@ function assert(condition: boolean, msg: string) {
 const workingDir = mkdtempSync(join(tmpdir(), "tm-read-thread-"));
 
 try {
-	const readThreadTool = createReadThreadTool(workingDir);
-	assert(!Check(readThreadTool.parameters, {
+	const readThreadTool = enforceRequiredToolLabel(createReadThreadTool(workingDir));
+	assert(Check(readThreadTool.parameters, {
 		target: "slack:C0123456789:1700000010.000100",
-	}), "read_thread rejects calls without a visible label");
+	}), "read_thread accepts calls without a visible label and supplies a fallback");
 	assert(Check(readThreadTool.parameters, {
 		label: "Reading the deploy QA thread",
 		show: true,
