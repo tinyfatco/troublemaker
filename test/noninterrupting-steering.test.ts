@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import type { MomEvent, PlatformAdapter } from "../src/adapters/types.js";
+import { formatDeliveryContext } from "../src/delivery-context.js";
 import {
 	formatBusyMessageSteer,
 	formatLocalTimestamp,
@@ -37,6 +38,15 @@ assert.match(prompt, /Use send_message with this exact target/);
 assert.match(prompt, new RegExp(`\\[${formatLocalTimestamp(receivedAt).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\] \\[slack:#agents\\] \\[sample-user\\]`));
 assert.match(prompt, /fold this into what you are doing/);
 assert.match(prompt, /<attachments>\nuploads\/example\.txt\n<\/attachments>/);
+
+const callStart = formatDeliveryContext({ sourceEventType: "computer_voice_call_started" });
+assert.match(callStart, /Alex has just started a live call/);
+assert.match(callStart, /canonical agent model and tools/);
+assert.match(callStart, /admitted as steering/);
+const callTurn = formatDeliveryContext({ sourceEventType: "computer_voice_call_turn" });
+assert.match(callTurn, /continuing a live call/);
+assert.match(callTurn, /may be steering for work already in progress/);
+assert.match(callTurn, /do not invoke a separate speech tool/);
 
 const actions: string[] = [];
 assert.equal(routeBusyMessageWithoutInterrupt({

@@ -24,6 +24,15 @@ export function formatDeliveryContext(message: DeliveryContextMessage): string {
 
 	const lines: string[] = [];
 	if (message.sourceEventType) lines.push(`Source event: ${message.sourceEventType}`);
+	if (message.sourceEventType === "computer_voice_call_started") {
+		lines.push("Voice interaction: Alex has just started a live call with you; the user message is the first finalized utterance.");
+		lines.push("Computer owns microphone, transcription, and speech playback. Continue using the canonical agent model and tools; do not invoke a separate speech tool.");
+		lines.push("Answer naturally for listening. Later finalized utterances may be admitted as steering while you are still working; incorporate them without discarding safe completed work.");
+	} else if (message.sourceEventType === "computer_voice_call_turn") {
+		lines.push("Voice interaction: Alex is continuing a live call with you; the user message is the latest finalized utterance.");
+		lines.push("Computer owns microphone, transcription, and speech playback. Continue using the canonical agent model and tools; do not invoke a separate speech tool.");
+		lines.push("This utterance may be steering for work already in progress; incorporate it without discarding safe completed work.");
+	}
 	if (message.deliveryId && /^[A-Za-z0-9._:-]{8,128}$/.test(message.deliveryId)) {
 		lines.push(`Delivery ID: ${message.deliveryId}`);
 	}

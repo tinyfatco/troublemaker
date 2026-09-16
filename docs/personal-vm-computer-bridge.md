@@ -47,8 +47,9 @@ Phase one keeps STT on the host:
 2. At end of utterance, Computer submits the final transcript to the guest using the existing message contract.
 3. The guest executes one canonical agent turn.
 4. Computer renders streamed text and tool activity and may perform host-side speech playback according to the guest's bounded client preference.
+5. In Computer call mode, the first finalized utterance uses `computer_voice_call_started`; later utterances use `computer_voice_call_turn`. Troublemaker adds hidden call/steering instructions while preserving the exact human transcript. The same canonical agent receives ordinary turns, call turns, heartbeats, tools, and continuation events. Computer remains the speaking layer and must not invoke a second runtime speech tool.
 
-This avoids a virtual microphone, guest microphone TCC, and raw-audio retention. A later optional mode can use the existing `computer.voice-session.v1` contract to stream mono 16 kHz PCM to guest-owned STT without changing agent delivery semantics.
+This creates an explicit thinking/speaking split: the guest's configured agent model owns reasoning, memory, tools, heartbeats, and steering, while the host owns microphone capture, transcription, sentence-level synthesis, playback, and interruption. This avoids a virtual microphone, guest microphone TCC, and raw-audio retention. A later optional mode can use the existing `computer.voice-session.v1` contract to stream mono 16 kHz PCM to guest-owned STT without changing agent delivery semantics.
 
 ## Context policy for the local vision model
 
