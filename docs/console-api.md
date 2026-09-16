@@ -255,3 +255,23 @@ bounded reasoning text to that Pi projection; reasoning signatures are always
 removed. These privileged projections exist only while a matching subscriber
 is connected and never become durable live history or conversation-surface
 content.
+
+### Optional runtime diagnostics
+
+Authenticated `GET /api/v2/agents/:agentId/status` may include `diagnostics`:
+`phase` (idle/running/compacting), `queuedInputs`, `context`, and `inference`.
+Context contains the selected model/provider, configured window, message count,
+last-response usage (input/output/cacheRead/cacheWrite), and Pi `contextUsage`
+(tokens/window/percent). Pi tokens are an estimate and may be null after
+compaction; legacy contextTokens describes the last response, not live occupancy.
+Clients must distinguish missing diagnostics from zero usage.
+
+Inference health is opt-in with `TROUBLEMAKER_INFERENCE_HEALTH_URL` (loopback HTTP
+only), or `/health` on the existing inference-progress URL origin. It reports
+reachable/unavailable/not_configured independently of the agent connection.
+Supported scheduler metadata includes resident model kind, active work kind,
+queue count, available memory, checkpoint counts/duration, and a fault boolean.
+No prompts, request IDs, cache contents, addresses, credentials, or raw errors
+are relayed. Probes are bounded, single-flight, cached for five seconds, and
+never submit inference or mutate the scheduler. Unknown health schemas report
+reachability only. Older servers may omit the entire diagnostics object.
