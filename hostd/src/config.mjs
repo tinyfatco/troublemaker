@@ -1,6 +1,7 @@
 import { createPrivateKey } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isIP } from "node:net";
+import { isAbsolute, resolve } from "node:path";
 
 function object(value, label) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -176,6 +177,62 @@ function httpUrl(value, label) {
 		throw new Error(`${label} must be an http or https URL without embedded credentials`);
 	}
 	return parsed.toString().replace(/\/$/, "");
+}
+
+function tailnetIp(value, label) {
+	const candidate = text(value, label).toLowerCase();
+	const family = isIP(candidate);
+	if (family === 4) {
+		const octets = candidate.split(".").map(Number);
+		if (octets[0] !== 100 || octets[1] < 64 || octets[1] > 127) {
+			throw new Error(`${label} must use the CGNAT tailnet range`);
+		}
+		return candidate;
+	}
+	if (family === 6 && /^(?:fc|fd)/.test(candidate)) return candidate;
+	throw new Error(`${label} must be a CGNAT or unique-local tailnet IP`);
+}
+
+function tunnelLoopbackBaseUrl(value, label) {
+	const candidate = httpUrl(value, label);
+	const parsed = new URL(candidate);
+	if (parsed.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(parsed.hostname)) {
+		throw new Error(`${label} must use one loopback end of the supervised tunnel`);
+	}
+	if (parsed.pathname !== "/" || parsed.search || parsed.hash) {
+		throw new Error(`${label} must not contain a path, query, or fragment`);
+	}
+	if (!parsed.port) throw new Error(`${label} must include an explicit port`);
+	return candidate;
+}
+
+function tailnetHostname(value, label) {
+	const candidate = text(value, label).toLowerCase();
+	if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(candidate)) {
+		throw new Error(`${label} must be one exact tailnet hostname label`);
+	}
+	return candidate;
+}
+
+function commandArray(value, label) {
+	if (!Array.isArray(value) || value.length < 1 || value.length > 32) {
+		throw new Error(`${label} must contain an executable and bounded arguments`);
+	}
+	const command = value.map((entry, index) => {
+		const candidate = text(entry, `${label}[${index}]`);
+		if (candidate.length > 4096 || candidate.includes("\0")) throw new Error(`${label}[${index}] is invalid`);
+		return candidate;
+	});
+	if (!isAbsolute(command[0])) throw new Error(`${label}[0] must be an absolute executable path`);
+	return command;
+}
+
+function runtimeIdentity(value, label) {
+	const candidate = text(value, label);
+	if (!/^[a-z0-9][a-z0-9._:-]{0,127}$/i.test(candidate)) {
+		throw new Error(`${label} is invalid`);
+	}
+	return candidate;
 }
 
 function mattermostId(value, label) {
@@ -553,18 +610,86 @@ function targetConfig(raw, index, environment) {
 		throw new Error(`targets[${index}].id contains unsupported characters`);
 	}
 	const driver = text(target.driver, `targets[${index}].driver`);
-	if (driver !== "oci") {
-		throw new Error(`targets[${index}].driver must be oci`);
+	if (!["oci", "resident"].includes(driver)) {
+		throw new Error(`targets[${index}].driver must be oci or resident`);
 	}
 	const protocol = text(target.protocol, `targets[${index}].protocol`);
-	if (protocol !== "email-webhook") {
-		throw new Error(`targets[${index}].protocol must be email-webhook`);
+	if (!["email-webhook", "gmail-history"].includes(protocol)) {
+		throw new Error(`targets[${index}].protocol must be email-webhook or gmail-history`);
+	}
+	if (driver === "oci" && protocol !== "email-webhook") {
+		throw new Error(`targets[${index}].protocol gmail-history requires a resident target`);
+	}
+	if (driver === "resident" && protocol !== "gmail-history") {
+		throw new Error(`targets[${index}].protocol email-webhook is not supported for a resident target`);
+	}
+	if (driver === "resident") {
+		if (target.gmailToolsOnly === true) {
+			throw new Error(`targets[${index}].gmailToolsOnly is not supported for a resident target`);
+		}
+		if (target.inboundTokenEnv !== undefined || target.outboundTokenEnv !== undefined) {
+			throw new Error(`targets[${index}] resident targets use one dedicated applicationTokenEnv`);
+		}
+		const applicationToken = envSecret(
+			target.applicationTokenEnv,
+			`targets[${index}].applicationTokenEnv`,
+			environment,
+		);
+		if (Buffer.byteLength(applicationToken, "utf8") < 32) {
+			throw new Error(`targets[${index}].applicationTokenEnv must contain at least 32 bytes`);
+		}
+		const headscaleNodeId = integer(
+			target.headscaleNodeId,
+			target.headscaleNodeId,
+			`targets[${index}].headscaleNodeId`,
+			1,
+			Number.MAX_SAFE_INTEGER,
+		);
+		const tailnetAddress = tailnetIp(target.tailnetAddress, `targets[${index}].tailnetAddress`);
+		const hostname = tailnetHostname(target.tailnetHostname, `targets[${index}].tailnetHostname`);
+		const headscaleControlCommand = commandArray(
+			target.headscaleControlCommand,
+			`targets[${index}].headscaleControlCommand`,
+		);
+		const tailnetStatusCommand = commandArray(
+			target.tailnetStatusCommand,
+			`targets[${index}].tailnetStatusCommand`,
+		);
+		const baseUrl = tunnelLoopbackBaseUrl(
+			target.residentBaseUrl,
+			`targets[${index}].residentBaseUrl`,
+		);
+		const contextId = runtimeIdentity(target.contextId, `targets[${index}].contextId`);
+		const mailbox = normalizeAddress(target.mailbox, `targets[${index}].mailbox`);
+		return {
+			id,
+			driver,
+			protocol,
+			inboundToken: applicationToken,
+			outboundToken: applicationToken,
+			headscaleNodeId,
+			tailnetAddress,
+			tailnetHostname: hostname,
+			headscaleControlCommand,
+			tailnetStatusCommand,
+			residentBaseUrl: baseUrl,
+			contextId,
+			mailbox,
+			runtimeIdentity: runtimeIdentity(target.runtimeIdentity, `targets[${index}].runtimeIdentity`),
+			receiptBaseUrl: tunnelLoopbackBaseUrl(target.receiptBaseUrl, `targets[${index}].receiptBaseUrl`),
+			endpoint: `${baseUrl}/email/inbound`,
+			identityEndpoint: `${baseUrl}/email/identity`,
+			healthEndpoint: `${baseUrl}/health`,
+			statusEndpoint: `${baseUrl}/status`,
+			gmailToolsOnly: false,
+		};
 	}
 	const common = {
 		id,
 		driver,
 		protocol,
 		inboundToken: envSecret(target.inboundTokenEnv, `targets[${index}].inboundTokenEnv`, environment),
+		outboundToken: envSecret(target.outboundTokenEnv, `targets[${index}].outboundTokenEnv`, environment),
 	};
 	const basePort = integer(target.basePort, 32000, `targets[${index}].basePort`, 1024, 65535);
 	const maxPort = integer(target.maxPort, basePort + 999, `targets[${index}].maxPort`, basePort, 65535);
@@ -603,7 +728,6 @@ function targetConfig(raw, index, environment) {
 			"host.containers.internal",
 			`targets[${index}].hostGateway`,
 		),
-		outboundToken: envSecret(target.outboundTokenEnv, `targets[${index}].outboundTokenEnv`, environment),
 		runtimeEnv,
 	};
 }
@@ -624,8 +748,6 @@ export async function loadConfig(path, environment = process.env) {
 	const targetIds = new Set(targets.map((target) => target.id));
 	const actorTarget = text(routing.actorTarget, "routing.actorTarget");
 	if (!targetIds.has(actorTarget)) throw new Error(`routing.actorTarget references unknown target ${actorTarget}`);
-	const selectedTarget = targets.find((target) => target.id === actorTarget);
-	if (selectedTarget?.driver !== "oci") throw new Error("routing.actorTarget must reference an OCI target");
 	const knownPrincipals = routing.knownPrincipals === undefined ? [] : routing.knownPrincipals;
 	if (!Array.isArray(knownPrincipals)) throw new Error("routing.knownPrincipals must be an array");
 	const knownPhonePrincipals = routing.knownPhonePrincipals === undefined ? [] : routing.knownPhonePrincipals;

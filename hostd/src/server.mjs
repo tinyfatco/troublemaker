@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { GmailToolError, HostGmailTools } from "./gmail-tools.mjs";
 import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
-import { bearerMatches, contextCapability } from "./security.mjs";
+import { bearerMatches, contextCapability, emailAddresses } from "./security.mjs";
 import { HostSites, HostSitesError } from "./sites.mjs";
 
 async function readJson(request, maximumBytes = 2 * 1024 * 1024) {
@@ -23,10 +24,22 @@ function json(response, status, body) {
 	response.end(JSON.stringify(body));
 }
 
+function exactIdentifier(value, label) {
+	const normalized = typeof value === "string" ? value.trim() : "";
+	if (!/^[A-Za-z0-9._:@+-]{1,512}$/.test(normalized)) throw new Error(`${label} is invalid`);
+	return normalized;
+}
+
+function oneEmail(value, label) {
+	const addresses = emailAddresses(value);
+	if (addresses.length !== 1) throw new Error(`${label} must contain one email address`);
+	return addresses[0];
+}
+
 function authenticateContext(request, config, contextId, purpose) {
 	const targetId = contextId.split(":", 1)[0];
 	const target = config.targetsById.get(targetId);
-	if (!target || target.driver !== "oci") return null;
+	if (!target) return null;
 	const baseSecret = purpose === "inbound" ? target.inboundToken : target.outboundToken;
 	const expected = contextCapability(baseSecret, purpose, contextId);
 	return bearerMatches(request.headers.authorization, expected) ? target : null;
@@ -82,6 +95,70 @@ export function createHostServer({
 				json(response, 200, { ok: true, draining });
 				return;
 			}
+			if (request.method === "POST" && url.pathname === "/v1/inbound/gmail-history") {
+				if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+					json(response, 415, { error: "json_required" });
+					return;
+				}
+				const body = await readJson(request, 2 * 1024 * 1024);
+				const contextId = exactIdentifier(body.contextId, "context ID");
+				const target = authenticateContext(request, config, contextId, "gmail-history-ingress");
+				if (!target || target.driver !== "resident" || target.protocol !== "gmail-history") {
+					json(response, 401, { error: "unauthorized" });
+					return;
+				}
+				if (contextId !== target.contextId) {
+					json(response, 403, { error: "context_scope_denied" });
+					return;
+				}
+				const mailbox = oneEmail(body.mailbox, "mailbox");
+				if (mailbox !== target.mailbox) {
+					json(response, 403, { error: "mailbox_scope_denied" });
+					return;
+				}
+				const historyId = exactIdentifier(body.historyId, "history ID");
+				const providerMessageId = exactIdentifier(body.providerMessageId, "provider message ID");
+				const providerThreadId = exactIdentifier(body.providerThreadId, "provider thread ID");
+				const sender = oneEmail(body.sender, "sender");
+				const payload = {
+					mailbox,
+					historyId,
+					providerMessageId,
+					providerThreadId,
+					sender,
+					fromFull: typeof body.fromFull === "string" ? body.fromFull.slice(0, 4_000) : sender,
+					to: typeof body.to === "string" ? body.to.slice(0, 4_000) : mailbox,
+					cc: typeof body.cc === "string" ? body.cc.slice(0, 4_000) : "",
+					subject: typeof body.subject === "string" ? body.subject.slice(0, 998) : "(no subject)",
+					body: typeof body.body === "string" ? body.body.slice(0, 2_000_000) : "",
+					allRecipients: Array.isArray(body.allRecipients)
+						? body.allRecipients.flatMap((value) => emailAddresses(String(value))).slice(0, 100)
+						: [],
+				};
+				const existing = store.getEventByProviderMessage("gmail-history", providerMessageId);
+				const eventId = `gmail-history-${createHash("sha256")
+					.update(target.id).update("\0").update(providerMessageId).digest("hex").slice(0, 32)}`;
+				const stored = store.upsertEvent({
+					id: eventId,
+					source: "gmail-history",
+					providerMessageId,
+					providerThreadId,
+					principalHash: createHash("sha256").update(target.id).update("\0").update(sender).digest("hex"),
+					targetId: target.id,
+					contextId,
+					payload,
+				});
+				store.markSeen("gmail-history-position", `${contextId}:${historyId}`, providerMessageId);
+				scheduler.pump();
+				json(response, 202, {
+					accepted: true,
+					duplicate: Boolean(existing),
+					eventId: stored.id,
+					providerMessageId,
+					historyId,
+				});
+				return;
+			}
 			const receiptMatch = url.pathname.match(/^\/v1\/events\/([^/]+)\/receipt$/);
 			if (request.method === "POST" && receiptMatch) {
 				const event = store.getEvent(decodeURIComponent(receiptMatch[1]));
@@ -100,6 +177,14 @@ export function createHostServer({
 				const body = await readJson(request, 64 * 1024);
 				const leaseToken = typeof body.lease_token === "string" ? body.lease_token : "";
 				const status = typeof body.status === "string" ? body.status : "";
+				if (
+					status === "completed"
+					&& event.status === "completed"
+					&& event.completionLeaseToken === leaseToken
+				) {
+					json(response, 200, { ok: true, status: "completed", duplicate: true });
+					return;
+				}
 				if (!leaseToken || event.leaseToken !== leaseToken) {
 					json(response, 409, { error: "stale_event_lease" });
 					return;

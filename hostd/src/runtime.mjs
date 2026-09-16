@@ -168,7 +168,7 @@ async function waitForHealth(url, timeout = 90_000) {
 	let lastError = "not ready";
 	while (Date.now() - started < timeout) {
 		try {
-			const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
+			const response = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(3000) });
 			if (response.ok) return;
 			lastError = `HTTP ${response.status}`;
 		} catch (error) {
@@ -177,6 +177,101 @@ async function waitForHealth(url, timeout = 90_000) {
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
 	}
 	throw new Error(`runtime health check timed out: ${lastError}`);
+}
+
+function nodeAddresses(node) {
+	const raw = node?.ip_addresses ?? node?.ipAddresses ?? node?.IPAddresses ?? node?.TailscaleIPs;
+	return Array.isArray(raw) ? raw.map(String) : [];
+}
+
+export function assertHeadscaleControlIdentity(target, status) {
+	const rawNodes = Array.isArray(status) ? status : status?.nodes ?? status?.Nodes;
+	const nodes = Array.isArray(rawNodes) ? rawNodes : [];
+	const matches = nodes.filter((node) => nodeAddresses(node).includes(target.tailnetAddress));
+	if (matches.length !== 1) throw new Error("exact Headscale control-plane address was not uniquely present");
+	const node = matches[0];
+	if (String(node?.id ?? node?.ID ?? "") !== String(target.headscaleNodeId)) {
+		throw new Error("Headscale control-plane node ID mismatch");
+	}
+	const hostname = String(node?.name ?? node?.hostname ?? node?.HostName ?? "").toLowerCase();
+	if (hostname !== target.tailnetHostname) throw new Error("Headscale control-plane hostname mismatch");
+	return node;
+}
+
+export function assertTailnetPeerIdentity(target, status) {
+	const rawPeers = status?.Peer ?? status?.peer;
+	const peers = Array.isArray(rawPeers)
+		? rawPeers
+		: rawPeers && typeof rawPeers === "object" ? Object.values(rawPeers) : [];
+	const matches = peers.filter((peer) => nodeAddresses(peer).includes(target.tailnetAddress));
+	if (matches.length !== 1) throw new Error("exact tailnet peer address was not uniquely present");
+	const peer = matches[0];
+	if (String(peer?.HostName ?? peer?.hostname ?? "").toLowerCase() !== target.tailnetHostname) {
+		throw new Error("tailnet peer hostname mismatch");
+	}
+	if (peer?.Online !== true && peer?.online !== true) throw new Error("tailnet peer is not online");
+	return peer;
+}
+
+async function commandJson(commandArray, label) {
+	const [command, ...args] = commandArray;
+	const result = await run(command, args, { timeout: 5_000 });
+	if (Buffer.byteLength(result.stdout, "utf8") > 2 * 1024 * 1024) {
+		throw new Error(`${label} output exceeded its limit`);
+	}
+	try {
+		return JSON.parse(result.stdout);
+	} catch {
+		throw new Error(`${label} output was invalid JSON`);
+	}
+}
+
+async function verifyHeadscalePeer(target) {
+	const control = await commandJson(target.headscaleControlCommand, "Headscale control-plane status");
+	assertHeadscaleControlIdentity(target, control);
+	const tailnet = await commandJson(target.tailnetStatusCommand, "tailnet peer status");
+	assertTailnetPeerIdentity(target, tailnet);
+}
+
+function assertResidentIdentity(target, value) {
+	if (!value || typeof value !== "object") throw new Error("resident runtime identity response is invalid");
+	if (String(value.headscaleNodeId ?? "") !== String(target.headscaleNodeId)) {
+		throw new Error("resident runtime Headscale node identity mismatch");
+	}
+	if (value.runtimeIdentity !== target.runtimeIdentity) {
+		throw new Error("resident runtime identity mismatch");
+	}
+}
+
+async function verifyResidentIdentity(target) {
+	const response = await fetch(target.identityEndpoint, {
+		redirect: "error",
+		headers: { authorization: `Bearer ${target.inboundToken}` },
+		signal: AbortSignal.timeout(3_000),
+	});
+	const text = await response.text();
+	if (!response.ok) throw new Error(`resident identity check returned HTTP ${response.status}`);
+	if (Buffer.byteLength(text, "utf8") > 4_096) throw new Error("resident identity response is too large");
+	let identity;
+	try {
+		identity = JSON.parse(text);
+	} catch {
+		throw new Error("resident runtime identity response is invalid");
+	}
+	assertResidentIdentity(target, identity);
+}
+
+function verifyResidentAcceptance(target, text, deliveryId) {
+	let receipt;
+	try {
+		receipt = JSON.parse(text);
+	} catch {
+		throw new Error("resident acceptance response is invalid");
+	}
+	assertResidentIdentity(target, receipt);
+	if (receipt.deliveryId !== deliveryId || receipt.accepted !== true) {
+		throw new Error("resident acceptance receipt mismatch");
+	}
 }
 
 async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
@@ -214,7 +309,7 @@ export class RuntimeManager {
 	async acceptEvent(event) {
 		const target = this.config.targetsById.get(event.targetId);
 		if (!target) throw new Error(`unknown target ${event.targetId}`);
-		const context = await this.ensureOciContext(target, event.contextId);
+		const context = await this.ensureTargetContext(target, event.contextId);
 		if (event.deliveryMode === "steer") {
 			await waitForSteeringReady(
 				context.statusEndpoint,
@@ -224,6 +319,10 @@ export class RuntimeManager {
 		const payload = event.payloadJson ? JSON.parse(event.payloadJson) : {};
 		if (event.source === "gmail") {
 			await this.deliverEmailWebhook(target, context, event, payload);
+			return;
+		}
+		if (event.source === "gmail-history") {
+			await this.deliverGuestGmailWebhook(target, context, event, payload);
 			return;
 		}
 		if (event.source === "mattermost") {
@@ -249,9 +348,30 @@ export class RuntimeManager {
 		throw new Error(`unsupported event source ${event.source}`);
 	}
 
-	hostReceipt(target, event) {
+	async ensureTargetContext(target, contextId) {
+		if (target.driver === "resident") return await this.ensureResidentContext(target, contextId);
+		if (target.driver === undefined || target.driver === "oci") return await this.ensureOciContext(target, contextId);
+		throw new Error(`unsupported runtime driver ${target.driver}`);
+	}
+
+	async ensureResidentContext(target, contextId) {
+		if (contextId !== target.contextId) throw new Error("resident context identity mismatch");
+		await verifyHeadscalePeer(target);
+		await verifyResidentIdentity(target);
+		await waitForHealth(target.healthEndpoint, 5_000);
 		return {
-			url: `http://${target.hostGateway}:${this.config.server.port}/v1/events/${encodeURIComponent(event.id)}/receipt`,
+			contextId,
+			endpoint: target.endpoint,
+			statusEndpoint: target.statusEndpoint,
+		};
+	}
+
+	hostReceipt(target, event) {
+		const baseUrl = target.driver === "resident"
+			? target.receiptBaseUrl
+			: `http://${target.hostGateway}:${this.config.server.port}`;
+		return {
+			url: new URL(`/v1/events/${encodeURIComponent(event.id)}/receipt`, `${baseUrl}/`).toString(),
 			token: contextCapability(target.inboundToken, "receipt", event.contextId),
 			leaseToken: event.leaseToken,
 		};
@@ -262,6 +382,7 @@ export class RuntimeManager {
 		const inboundToken = contextCapability(target.inboundToken, "inbound", context.contextId);
 		const response = await fetch(context.endpoint, {
 			method: "POST",
+			redirect: "error",
 			headers: {
 				authorization: `Bearer ${inboundToken}`,
 				"content-type": "application/json",
@@ -288,6 +409,42 @@ export class RuntimeManager {
 		if (!response.ok) {
 			throw new Error(`email runtime returned HTTP ${response.status}: ${text.slice(0, 200)}`);
 		}
+		if (target.driver === "resident") verifyResidentAcceptance(target, text, event.id);
+	}
+
+	async deliverGuestGmailWebhook(target, context, event, input) {
+		if (target.driver !== "resident" || target.protocol !== "gmail-history") {
+			throw new Error("guest Gmail event requires a resident gmail-history target");
+		}
+		const response = await fetch(context.endpoint, {
+			method: "POST",
+			redirect: "error",
+			headers: {
+				authorization: `Bearer ${contextCapability(target.inboundToken, "inbound", context.contextId)}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				from: input.sender,
+				fromFull: input.fromFull || input.sender,
+				to: input.to || input.mailbox,
+				cc: input.cc || "",
+				subject: input.subject || "(no subject)",
+				body: input.body || "",
+				text: input.body || "",
+				allRecipients: input.allRecipients || [],
+				providerMessageId: input.providerMessageId,
+				providerThreadId: input.providerThreadId,
+				deliveryId: event.id,
+				hostContextId: event.contextId,
+				hostReceipt: this.hostReceipt(target, event),
+			}),
+			signal: AbortSignal.timeout(30_000),
+		});
+		const text = await response.text();
+		if (!response.ok) {
+			throw new Error(`guest Gmail runtime returned HTTP ${response.status}`);
+		}
+		verifyResidentAcceptance(target, text, event.id);
 	}
 
 	async deliverMattermostWebhook(target, context, event, input) {

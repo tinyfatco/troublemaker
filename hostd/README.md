@@ -124,6 +124,110 @@ troublemaker-hostd status --config /etc/troublemaker-hostd/config.json
 `serve` binds its API to loopback by default. OCI ports must also be published
 on loopback only. Do not expose the host API or child gateway ports publicly.
 
+## Headscale-pinned resident runtime
+
+A `resident` target sends one normalized provider stream to one existing
+canonical Troublemaker context. Hostd stays server-side. The Gmail credential,
+History calls, and message reads stay guest-local. No OCI lifecycle,
+`hostGateway`, DNS fallback, redirect, LAN listener, public listener, or second
+resident is involved.
+
+The supervised strict-host-key tunnel has two explicit loopback ends:
+`residentBaseUrl` is Hostd's local end for runtime delivery, while
+`receiptBaseUrl` is the URL embedded for the guest to return receipts through
+the same tunnel. Loopback is transport plumbing only, never identity. Before
+each delivery Hostd first verifies the exact numeric node ID, hostname, and IP
+against the Headscale control plane, then independently requires the local
+tailnet peer with that hostname and IP to be online. Tailscale's opaque stable
+peer ID is never confused with Headscale's numeric database ID. Hostd then
+verifies the resident's independent runtime identity with the dedicated
+application bearer.
+
+```json
+{
+  "id": "example-resident",
+  "driver": "resident",
+  "protocol": "gmail-history",
+  "contextId": "example-resident",
+  "mailbox": "resident@example.com",
+  "headscaleNodeId": 42,
+  "tailnetAddress": "100.64.0.42",
+  "tailnetHostname": "example-resident",
+  "headscaleControlCommand": [
+    "/usr/bin/sudo",
+    "-n",
+    "/usr/local/libexec/troublemaker-headscale-node-status",
+    "42"
+  ],
+  "tailnetStatusCommand": [
+    "/usr/local/bin/tailscale",
+    "--socket=/run/example/tailscaled.sock",
+    "status",
+    "--json"
+  ],
+  "residentBaseUrl": "http://127.0.0.1:13120",
+  "receiptBaseUrl": "http://127.0.0.1:13121",
+  "runtimeIdentity": "example-resident",
+  "applicationTokenEnv": "EXAMPLE_RESIDENT_APPLICATION_TOKEN"
+}
+```
+
+Do not grant the Hostd user direct access to Headscale's control socket or broad
+`headscale`/`sudo` execution. The example assumes a root-owned, non-writable
+`0755` helper whose only accepted argument is one decimal node ID. The helper
+runs a fixed absolute `headscale nodes list --output json` command against the
+fixed server configuration, selects exactly that ID, and emits a one-element
+JSON array in the verified node schema. A root-owned sudoers rule may authorize
+only the exact noninteractive helper command and configured ID, with no shell,
+free-form arguments, lifecycle verbs, key operations, or mutation authority.
+The helper exits nonzero for an absent/duplicate node or malformed output.
+
+The base application bearer authenticates only the identity endpoint.
+Provider-event ingress, resident delivery, outbound calls, and receipts use
+separate context-derived capabilities. Every HTTP hop disables redirects.
+Identity, peer, context, mailbox, delivery ID, or receipt mismatch fails closed.
+Outbound Gmail remains disabled during inbound acceptance.
+
+### Guest-local Gmail History source
+
+The guest runs one persistent watcher around its protected `gog` credential.
+On first start it records a current History cursor and bounded recent message-ID
+set without replaying mail. An actually empty mailbox instead gets a durable
+initialized-empty marker; the first later inbox message is delivered and
+acknowledged before its History position becomes the cursor. It then keeps one
+poll in flight at a 2-second active cadence with bounded jitter and exponential
+backoff. Only `messagesAdded` inbox records become normalized events.
+
+The watcher posts each provider message ID, thread ID, History position,
+envelope, and body to `/v1/inbound/gmail-history` through the guest's loopback
+end of the supervised tunnel. Hostd validates the exact context-derived
+capability, mailbox, and canonical context, inserts or deduplicates the event in
+its durable store, immediately pumps the scheduler, and returns an exact
+provider-message/history receipt. The guest advances its durable cursor only
+after that receipt. A crash or lost receipt therefore causes safe redelivery,
+which Hostd deduplicates.
+
+An expired History cursor never guesses continuity from a bounded search. It
+fsyncs a durable `rebaseline-required` state, retains the last acknowledged
+cursor, and stops provider calls until an explicit reviewed rebaseline. A
+malformed provider message is durably quarantined by opaque message ID and
+History position so later valid mail can continue. A message permanently gone
+between History listing and fetch is quarantined only when the provider returns
+an explicit 404; transport errors and provider 5xx responses remain retryable
+and stop cursor advancement. State replacement fsyncs both the file and its
+parent directory, and shutdown terminates and awaits the one in-flight `gog`
+process.
+
+The watcher subprocess allowlist contains read-only Gmail commands only. It
+never marks mail read, changes labels, sends, drafts, replies, exports
+credentials, or copies OAuth material to Hostd. The bridge preserves Hostd's
+`hostReceipt` for the canonical runtime, which alone reports running and
+completed after the model turn. Durable pending completion receipts are retried
+under the same delivery ID after tunnel loss or runtime restart and are never
+downgraded to `failed` after accepted work. Google Pub/Sub resources are not
+part of this path; propose them separately only if an end-to-end canary cannot
+meet the measured five-second provider-visibility-to-runtime-acceptance gate.
+
 ## Routing
 
 Ordinary Gmail identity comes only from normalized `From`, `To`, and `Cc`
@@ -156,9 +260,11 @@ no global customer context and no privileged master runtime.
 }
 ```
 
-The actor target uses the `oci` driver. One runtime is lazily created per
-principal/project scope, while all runtimes share the same actor template and
-external mailbox identity.
+An `oci` actor lazily creates one runtime per principal/project scope. A
+`resident` actor instead routes those durable provider bindings into one
+pre-existing canonical runtime after the pinned Headscale and application
+identity checks above. OCI mailbox mode may retain Hostd-owned Gmail credentials;
+the `gmail-history` resident mode keeps OAuth and provider calls guest-local.
 
 ## Direct SMS
 

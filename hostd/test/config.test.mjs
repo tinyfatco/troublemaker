@@ -14,6 +14,7 @@ const ENVIRONMENT = {
 	ZULIP_HOSTD_PROJECTOR_API_KEY: "fake-projector-key",
 	FRONT_DESK_RUNTIME_INBOUND_TOKEN: "fake-inbound-token",
 	FRONT_DESK_RUNTIME_OUTBOUND_TOKEN: "fake-outbound-token",
+	EXAMPLE_RESIDENT_APPLICATION_TOKEN: "test-resident-application-token-at-least-32-bytes",
 	CONTACT_RELAY_SECRET: "test-contact-relay-secret-at-least-32-bytes",
 	PHONE_WEBHOOK_SECRET: "test-phone-webhook-secret-at-least-24-bytes",
 	PHONE_API_KEY: "test-phone-api-key",
@@ -51,6 +52,97 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		},
 		relay: undefined,
 	});
+});
+
+test("loads a Headscale-pinned resident Gmail runtime target", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-resident-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.targets = [{
+			id: "example-resident",
+			driver: "resident",
+			protocol: "gmail-history",
+			headscaleNodeId: 42,
+			tailnetAddress: "100.64.0.42",
+			tailnetHostname: "example-resident",
+			headscaleControlCommand: ["/usr/local/bin/headscale", "nodes", "list", "--output", "json"],
+			tailnetStatusCommand: ["/usr/local/bin/tailscale", "status", "--json"],
+			residentBaseUrl: "http://127.0.0.1:13120",
+			runtimeIdentity: "example-resident",
+			contextId: "example-resident",
+			mailbox: "resident@example.com",
+			receiptBaseUrl: "http://127.0.0.1:13121",
+			applicationTokenEnv: "EXAMPLE_RESIDENT_APPLICATION_TOKEN",
+		}];
+		raw.routing.actorTarget = "example-resident";
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(config.targets[0], {
+			id: "example-resident",
+			driver: "resident",
+			protocol: "gmail-history",
+			inboundToken: "test-resident-application-token-at-least-32-bytes",
+			outboundToken: "test-resident-application-token-at-least-32-bytes",
+			headscaleNodeId: 42,
+			tailnetAddress: "100.64.0.42",
+			tailnetHostname: "example-resident",
+			headscaleControlCommand: ["/usr/local/bin/headscale", "nodes", "list", "--output", "json"],
+			tailnetStatusCommand: ["/usr/local/bin/tailscale", "status", "--json"],
+			residentBaseUrl: "http://127.0.0.1:13120",
+			contextId: "example-resident",
+			mailbox: "resident@example.com",
+			runtimeIdentity: "example-resident",
+			receiptBaseUrl: "http://127.0.0.1:13121",
+			endpoint: "http://127.0.0.1:13120/email/inbound",
+			identityEndpoint: "http://127.0.0.1:13120/email/identity",
+			healthEndpoint: "http://127.0.0.1:13120/health",
+			statusEndpoint: "http://127.0.0.1:13120/status",
+			gmailToolsOnly: false,
+		});
+
+		raw.targets[0].tailnetAddress = "192.0.2.42";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /tailnetAddress must use the CGNAT tailnet range/);
+
+		raw.targets[0].tailnetAddress = "100.64.0.42";
+		raw.targets[0].residentBaseUrl = "http://example.com:13120";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /residentBaseUrl must use one loopback end/);
+
+		raw.targets[0].residentBaseUrl = "http://127.0.0.1:13120/redirect";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /residentBaseUrl must not contain a path/);
+
+		raw.targets[0].residentBaseUrl = "http://127.0.0.1:13120";
+		raw.targets[0].receiptBaseUrl = "http://example.com:3099";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /receiptBaseUrl must use one loopback end/);
+
+		raw.targets[0].receiptBaseUrl = "http://127.0.0.1:13121";
+		raw.targets[0].headscaleControlCommand = ["tailscale", "status", "--json"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /headscaleControlCommand\[0\] must be an absolute/);
+
+		raw.targets[0].headscaleControlCommand = ["/usr/local/bin/headscale", "nodes", "list", "--output", "json"];
+		raw.targets[0].tailnetStatusCommand = ["tailscale", "status", "--json"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /tailnetStatusCommand\[0\] must be an absolute/);
+
+		raw.targets[0].tailnetStatusCommand = ["/usr/local/bin/tailscale", "status", "--json"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, {
+			...ENVIRONMENT,
+			EXAMPLE_RESIDENT_APPLICATION_TOKEN: "too-short",
+		}), /applicationTokenEnv must contain at least 32 bytes/);
+
+		raw.targets[0].gmailToolsOnly = true;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /gmailToolsOnly is not supported/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });
 
 test("loads encrypted edge relay polling without a public Hostd listener", async () => {

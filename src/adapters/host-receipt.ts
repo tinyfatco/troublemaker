@@ -15,15 +15,19 @@ export interface HostReceiptProgress {
 	markRunning(): Promise<void>;
 }
 
-export interface HostReceiptOptions {
+export interface HostReceiptOptions<T = unknown> {
 	/**
 	 * Most host deliveries report running immediately. Ordered collaboration
 	 * bridges can defer it until the adapter has actually routed the event.
 	 */
 	deferRunning?: boolean;
+	/** Persist terminal receipt intent after work succeeds and before reporting completion. */
+	beforeCompleted?: (result: T, receipt: HostDeliveryReceipt) => Promise<void> | void;
+	/** Clear persisted terminal receipt intent only after Hostd acknowledges completion. */
+	afterCompleted?: (result: T, receipt: HostDeliveryReceipt) => Promise<void> | void;
 }
 
-function validReceipt(value: unknown): value is HostDeliveryReceipt {
+export function isValidHostReceipt(value: unknown): value is HostDeliveryReceipt {
 	if (!value || typeof value !== "object") return false;
 	const receipt = value as Partial<HostDeliveryReceipt>;
 	if (typeof receipt.url !== "string" || typeof receipt.token !== "string" || typeof receipt.leaseToken !== "string") {
@@ -37,9 +41,10 @@ function validReceipt(value: unknown): value is HostDeliveryReceipt {
 	}
 }
 
-async function report(receipt: HostDeliveryReceipt, status: string, error?: string): Promise<void> {
+export async function reportHostReceipt(receipt: HostDeliveryReceipt, status: string, error?: string): Promise<void> {
 	const response = await fetch(receipt.url, {
 		method: "POST",
+		redirect: "error",
 		headers: {
 			authorization: `Bearer ${receipt.token}`,
 			"content-type": "application/json",
@@ -57,39 +62,45 @@ async function report(receipt: HostDeliveryReceipt, status: string, error?: stri
 export async function withHostReceipt<T>(
 	rawReceipt: unknown,
 	work: (progress: HostReceiptProgress) => Promise<T>,
-	options: HostReceiptOptions = {},
+	options: HostReceiptOptions<T> = {},
 ): Promise<T> {
-	if (!validReceipt(rawReceipt)) {
+	if (!isValidHostReceipt(rawReceipt)) {
 		return await work({ markRunning: async () => {} });
 	}
 	const receipt = rawReceipt;
 	let runningReport: Promise<void> | null = null;
 	const progress: HostReceiptProgress = {
 		markRunning: () => {
-			runningReport ??= report(receipt, "running");
+			runningReport ??= reportHostReceipt(receipt, "running");
 			return runningReport;
 		},
 	};
 	if (!options.deferRunning) await progress.markRunning();
 	const timer = setInterval(() => {
-		void report(receipt, "heartbeat").catch((error) => {
+		void reportHostReceipt(receipt, "heartbeat").catch((error) => {
 			log.logWarning("Host delivery heartbeat failed", error instanceof Error ? error.message : String(error));
 		});
 	}, 30_000);
 	timer.unref();
+	let workCompleted = false;
 	try {
 		const result = await work(progress);
+		workCompleted = true;
+		await options.beforeCompleted?.(result, receipt);
 		await progress.markRunning();
-		await report(receipt, "completed");
+		await reportHostReceipt(receipt, "completed");
+		await options.afterCompleted?.(result, receipt);
 		return result;
 	} catch (error) {
-		try {
-			await report(receipt, "failed", error instanceof Error ? error.message : String(error));
-		} catch (receiptError) {
-			log.logWarning(
-				"Host delivery failure receipt failed",
-				receiptError instanceof Error ? receiptError.message : String(receiptError),
-			);
+		if (!workCompleted) {
+			try {
+				await reportHostReceipt(receipt, "failed", error instanceof Error ? error.message : String(error));
+			} catch (receiptError) {
+				log.logWarning(
+					"Host delivery failure receipt failed",
+					receiptError instanceof Error ? receiptError.message : String(receiptError),
+				);
+			}
 		}
 		throw error;
 	} finally {

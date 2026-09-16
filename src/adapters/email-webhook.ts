@@ -1,4 +1,14 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+	appendFileSync,
+	closeSync,
+	existsSync,
+	fsyncSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
+} from "fs";
 import { randomUUID, timingSafeEqual } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
 import { basename, join } from "path";
@@ -13,7 +23,12 @@ import {
 	latestInboundEmailThreadEvent,
 	parseEmailThreadTarget,
 } from "./email/thread-ledger.js";
-import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
+import {
+	isValidHostReceipt,
+	reportHostReceipt,
+	withHostReceipt,
+	type HostDeliveryReceipt,
+} from "./host-receipt.js";
 import type { ChannelInfo, MomContext, MomEvent, MomHandler, PlatformAdapter, UserInfo } from "./types.js";
 
 const MAXIMUM_WEBHOOK_BYTES = 16 * 1024 * 1024;
@@ -103,6 +118,12 @@ interface EmailThreadTurn {
 	sentAt?: string;
 }
 
+interface PendingHostCompletion {
+	deliveryId: string;
+	receipt: HostDeliveryReceipt;
+	completedAt: string;
+}
+
 export function matchesBearerToken(header: string | undefined, expected: string): boolean {
 	const actualBytes = Buffer.from(/^Bearer ([^\s]+)$/i.exec(header || "")?.[1] || "");
 	const expectedBytes = Buffer.from(expected);
@@ -135,6 +156,9 @@ Keep responses concise and professional. The user will receive one email with yo
 	/** Active reply contexts used by send_message to preserve email threading */
 	private activeReplyContexts = new Map<string, ActiveEmailReplyContext>();
 	private completedDeliveryIds?: Set<string>;
+	private pendingHostCompletions?: Map<string, PendingHostCompletion>;
+	private receiptReconcileTimer?: NodeJS.Timeout;
+	private receiptReconcileInFlight?: Promise<void>;
 
 	constructor(config: EmailWebhookAdapterConfig) {
 		this.workingDir = config.workingDir;
@@ -151,12 +175,23 @@ Keep responses concise and professional. The user will receive one email with yo
 
 	async start(): Promise<void> {
 		if (!this.handler) throw new Error("EmailWebhookAdapter: handler not set. Call setHandler() before start().");
+		await this.reconcileHostCompletions().catch((error) => {
+			log.logWarning("Host completion reconciliation deferred", error instanceof Error ? error.message : String(error));
+		});
+		this.receiptReconcileTimer = setInterval(() => {
+			void this.reconcileHostCompletions().catch((error) => {
+				log.logWarning("Host completion reconciliation deferred", error instanceof Error ? error.message : String(error));
+			});
+		}, 15_000);
+		this.receiptReconcileTimer.unref();
 		log.logInfo("Email webhook adapter ready");
 		log.logConnected();
 	}
 
 	async stop(): Promise<void> {
-		// No-op — gateway owns the HTTP server
+		if (this.receiptReconcileTimer) clearInterval(this.receiptReconcileTimer);
+		this.receiptReconcileTimer = undefined;
+		await this.receiptReconcileInFlight?.catch(() => {});
 	}
 
 	// ==========================================================================
@@ -213,8 +248,19 @@ Keep responses concise and professional. The user will receive one email with yo
 					return { duplicate: true };
 				}
 				await this.processEmail(payload);
-				if (payload.deliveryId) this.markDeliveryCompleted(payload.deliveryId);
+				if (payload.deliveryId && !isValidHostReceipt(payload.hostReceipt)) {
+					this.markDeliveryCompleted(payload.deliveryId);
+				}
 				return { duplicate: false };
+			}, {
+				beforeCompleted: async (_result, receipt) => {
+					if (!payload.deliveryId) return;
+					this.persistPendingHostCompletion(payload.deliveryId, receipt);
+					this.markDeliveryCompleted(payload.deliveryId);
+				},
+				afterCompleted: async (_result, receipt) => {
+					if (payload.deliveryId) this.clearPendingHostCompletion(payload.deliveryId, receipt);
+				},
 			});
 
 			if (waitForCompletion) {
@@ -273,6 +319,97 @@ Keep responses concise and professional. The user will receive one email with yo
 			{ mode: 0o600 },
 		);
 		ids.add(deliveryId);
+	}
+
+	private hostCompletionJournalPath(): string {
+		return join(this.workingDir, "email-host-completions.json");
+	}
+
+	private loadPendingHostCompletions(): Map<string, PendingHostCompletion> {
+		if (this.pendingHostCompletions) return this.pendingHostCompletions;
+		const pending = new Map<string, PendingHostCompletion>();
+		try {
+			const source = readFileSync(this.hostCompletionJournalPath(), "utf8");
+			if (Buffer.byteLength(source, "utf8") > 4 * 1024 * 1024) {
+				throw new Error("host completion journal is too large");
+			}
+			const parsed = JSON.parse(source) as unknown;
+			if (!Array.isArray(parsed) || parsed.length > 10_000) {
+				throw new Error("host completion journal must contain a bounded array");
+			}
+			for (const raw of parsed) {
+				if (!raw || typeof raw !== "object") throw new Error("host completion journal entry is invalid");
+				const entry = raw as Partial<PendingHostCompletion>;
+				if (
+					typeof entry.deliveryId !== "string"
+					|| !entry.deliveryId
+					|| typeof entry.completedAt !== "string"
+					|| !entry.receipt
+					|| typeof entry.receipt.url !== "string"
+					|| typeof entry.receipt.token !== "string"
+					|| typeof entry.receipt.leaseToken !== "string"
+				) throw new Error("host completion journal entry is invalid");
+				pending.set(entry.deliveryId, entry as PendingHostCompletion);
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+		this.pendingHostCompletions = pending;
+		return pending;
+	}
+
+	private writePendingHostCompletions(): void {
+		mkdirSync(this.workingDir, { recursive: true, mode: 0o700 });
+		const target = this.hostCompletionJournalPath();
+		const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+		const file = openSync(temporary, "wx", 0o600);
+		try {
+			writeFileSync(file, `${JSON.stringify([...this.loadPendingHostCompletions().values()])}\n`, "utf8");
+			fsyncSync(file);
+		} finally {
+			closeSync(file);
+		}
+		renameSync(temporary, target);
+		const directory = openSync(this.workingDir, "r");
+		try {
+			fsyncSync(directory);
+		} finally {
+			closeSync(directory);
+		}
+	}
+
+	private persistPendingHostCompletion(deliveryId: string, receipt: HostDeliveryReceipt): void {
+		this.loadPendingHostCompletions().set(deliveryId, {
+			deliveryId,
+			receipt,
+			completedAt: new Date().toISOString(),
+		});
+		this.writePendingHostCompletions();
+	}
+
+	private clearPendingHostCompletion(deliveryId: string, receipt: HostDeliveryReceipt): void {
+		const pending = this.loadPendingHostCompletions();
+		const current = pending.get(deliveryId);
+		if (!current || current.receipt.leaseToken !== receipt.leaseToken) return;
+		pending.delete(deliveryId);
+		this.writePendingHostCompletions();
+	}
+
+	private async reconcileHostCompletions(): Promise<void> {
+		if (this.receiptReconcileInFlight) return this.receiptReconcileInFlight;
+		const reconcile = (async () => {
+			for (const entry of [...this.loadPendingHostCompletions().values()]) {
+				this.markDeliveryCompleted(entry.deliveryId);
+				await reportHostReceipt(entry.receipt, "completed");
+				this.clearPendingHostCompletion(entry.deliveryId, entry.receipt);
+			}
+		})();
+		this.receiptReconcileInFlight = reconcile;
+		try {
+			await reconcile;
+		} finally {
+			if (this.receiptReconcileInFlight === reconcile) this.receiptReconcileInFlight = undefined;
+		}
 	}
 
 	// ==========================================================================

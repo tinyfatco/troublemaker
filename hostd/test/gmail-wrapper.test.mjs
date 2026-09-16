@@ -12,7 +12,11 @@ let input = "";
 try { input = fs.readFileSync(0, "utf8"); } catch {}
 fs.appendFileSync(process.env.GOG_RECORD, JSON.stringify({ args, input }) + "\\n");
 const has = (...parts) => parts.every((part) => args.includes(part));
-if (has("gmail", "search")) {
+if (has("messages", "search")) {
+  console.log(JSON.stringify({ messages: [{ id: "message-1", threadId: "thread-1" }] }));
+} else if (has("gmail", "history")) {
+  console.log(JSON.stringify({ history: [{ id: "101", messagesAdded: [{ message: { id: "message-2", threadId: "thread-2" } }] }], historyId: "101", nextPageToken: "next-page" }));
+} else if (has("gmail", "search")) {
   console.log(JSON.stringify({ threads: [{ id: "thread-1", date: "2026-07-23", from: "person@example.com", subject: "Example", messageCount: 2 }] }));
 } else if (has("thread", "get")) {
   console.log(JSON.stringify({ thread: { messages: [{
@@ -26,7 +30,7 @@ if (has("gmail", "search")) {
     body: "Thread body"
   }] } }));
 } else if (has("gmail", "get") && !args.includes("drafts")) {
-  console.log(JSON.stringify({ message: { payload: { headers: [
+  console.log(JSON.stringify({ message: { id: "message-1", threadId: "thread-1", historyId: "101", payload: { headers: [
     { name: "From", value: "TinyFat <noreply@example.com>" },
     { name: "To", value: "agent@example.com" },
     { name: "Reply-To", value: "person@example.com" },
@@ -63,6 +67,15 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 	});
 
 	try {
+		assert.deepEqual(await gmail.searchMessages("in:inbox newer_than:2d", 25), [{
+			id: "message-1",
+			threadId: "thread-1",
+		}]);
+		assert.deepEqual(await gmail.listHistory("100", { maximum: 25 }), {
+			messages: [{ id: "message-2", threadId: "thread-2", historyId: "101" }],
+			nextPageToken: "next-page",
+			historyId: "101",
+		});
 		assert.deepEqual(await gmail.searchThreads("newer_than:30d", 4), [{
 			id: "thread-1",
 			date: "2026-07-23",
@@ -70,6 +83,11 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			subject: "Example",
 			messageCount: 2,
 		}]);
+		assert.deepEqual(await gmail.getMessageEnvelope("message-1"), {
+			id: "message-1",
+			threadId: "thread-1",
+			historyId: "101",
+		});
 		assert.deepEqual(await gmail.getMetadata("message-1"), {
 			from: "TinyFat <noreply@example.com>",
 			to: "agent@example.com",
@@ -94,6 +112,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			subject: "Example",
 			body: "Draft body",
 			replyToMessageId: "message-1",
+			attachments: ["/tmp/example-image.png"],
 		}), { draftId: "draft-1", messageId: "draft-message-1", threadId: "thread-1" });
 		assert.deepEqual(await gmail.getDraft("draft-1"), {
 			draftId: "draft-1",
@@ -121,6 +140,7 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 			"person@example.com,owner@example.com",
 		);
 		assert.equal(create.args.at(create.args.indexOf("--cc") + 1), "archive@example.com");
+		assert.equal(create.args.at(create.args.indexOf("--attach") + 1), "/tmp/example-image.png");
 		const bodyHtml = create.args.at(create.args.indexOf("--body-html") + 1);
 		assert.ok(bodyHtml.includes("<body style=\"margin:0;padding:0\">"));
 		assert.ok(!bodyHtml.includes("max-width"));
@@ -132,8 +152,9 @@ test("gog wrapper keeps draft writes send-disabled and enables only draft send f
 
 		const read = calls.find((call) => call.args.includes("get"));
 		assert.ok(read.args.includes("--gmail-no-send"));
-		const metadata = calls.find((call) => call.args.includes("--format"));
-		assert.equal(metadata.args.at(metadata.args.indexOf("--format") + 1), "full");
+		assert.equal(calls.some((call) => call.args.some((arg) => arg.includes("gmail.mark-read"))), false);
+		const metadata = calls.find((call) => call.args.at(call.args.indexOf("--format") + 1) === "full");
+		assert.ok(metadata);
 		assert.ok(!metadata.args.includes("--headers"));
 	} finally {
 		rmSync(directory, { recursive: true, force: true });

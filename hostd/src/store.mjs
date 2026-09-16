@@ -157,6 +157,7 @@ export class HostStore {
 				last_error TEXT,
 				received_at TEXT NOT NULL,
 				completed_at TEXT,
+				completion_lease_token TEXT,
 				UNIQUE (source, provider_message_id)
 			);
 
@@ -352,6 +353,7 @@ export class HostStore {
 		add("events", "accepted_at TEXT");
 		add("events", "started_at TEXT");
 		add("events", "updated_at TEXT");
+		add("events", "completion_lease_token TEXT");
 		add("outbox", "body_sha256 TEXT");
 		add("gmail_drafts", "to_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
@@ -1684,6 +1686,7 @@ export class HostStore {
 				last_error AS lastError, received_at AS receivedAt, completed_at AS completedAt,
 				payload_json AS payloadJson, available_at AS availableAt,
 				lease_token AS leaseToken, lease_expires_at AS leaseExpiresAt,
+				completion_lease_token AS completionLeaseToken,
 				accepted_at AS acceptedAt, started_at AS startedAt, updated_at AS updatedAt
 			FROM events WHERE source = ? AND provider_message_id = ?
 		`).get(source, messageId);
@@ -1698,6 +1701,7 @@ export class HostStore {
 				last_error AS lastError, received_at AS receivedAt, completed_at AS completedAt,
 				payload_json AS payloadJson, available_at AS availableAt,
 				lease_token AS leaseToken, lease_expires_at AS leaseExpiresAt,
+				completion_lease_token AS completionLeaseToken,
 				accepted_at AS acceptedAt, started_at AS startedAt, updated_at AS updatedAt
 			FROM events WHERE id = ?
 		`).get(id);
@@ -1712,6 +1716,7 @@ export class HostStore {
 				last_error AS lastError, received_at AS receivedAt, completed_at AS completedAt,
 				payload_json AS payloadJson, available_at AS availableAt,
 				lease_token AS leaseToken, lease_expires_at AS leaseExpiresAt,
+				completion_lease_token AS completionLeaseToken,
 				accepted_at AS acceptedAt, started_at AS startedAt, updated_at AS updatedAt
 			FROM events WHERE status IN ('queued', 'failed')
 			ORDER BY received_at
@@ -1953,8 +1958,8 @@ export class HostStore {
 			}
 			this.database.prepare(`
 				UPDATE events SET status = 'leased', attempts = attempts + 1,
-					lease_token = ?, lease_expires_at = ?, last_error = NULL,
-					updated_at = ?
+					lease_token = ?, lease_expires_at = ?, completion_lease_token = NULL,
+					last_error = NULL, updated_at = ?
 				WHERE id = ? AND status IN ('queued', 'failed')
 			`).run(leaseToken, future(leaseSeconds), timestamp, row.id);
 			this.database.exec("COMMIT");
@@ -1991,10 +1996,11 @@ export class HostStore {
 		if (!leaseToken) return this.getEvent(id);
 		const result = this.database.prepare(`
 			UPDATE events SET status = 'completed', completed_at = ?, updated_at = ?,
-				lease_token = NULL, lease_expires_at = NULL, last_error = NULL
+				completion_lease_token = ?, lease_token = NULL, lease_expires_at = NULL,
+				last_error = NULL
 			WHERE id = ? AND lease_token = ?
 				AND status IN ('leased', 'accepted', 'running')
-		`).run(now(), now(), id, leaseToken);
+		`).run(now(), now(), leaseToken, id, leaseToken);
 		const event = this.getEvent(id);
 		if (result.changes && event) {
 			this.updateContext(event.contextId, {

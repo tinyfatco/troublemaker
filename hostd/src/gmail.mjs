@@ -2,11 +2,21 @@ import { spawn } from "node:child_process";
 import { plainTextEmailHtml } from "./email-body.mjs";
 import { emailAddresses } from "./security.mjs";
 
-const READ_COMMANDS = "gmail.messages.search,gmail.search,gmail.get,gmail.thread.get,gmail.mark-read,gmail.drafts.get";
+const READ_COMMANDS = "gmail.messages.search,gmail.search,gmail.get,gmail.thread.get,gmail.history,gmail.drafts.get";
+const MARK_READ_COMMANDS = "gmail.mark-read";
 const DIRECT_SEND_COMMANDS = "gmail.send";
 const DRAFT_WRITE_COMMANDS = "gmail.drafts.create,gmail.drafts.update,gmail.drafts.delete";
 const DRAFT_SEND_COMMANDS = "gmail.drafts.send";
 const PROVIDER_ID = /^[A-Za-z0-9_-]+$/;
+
+export class GogCommandError extends Error {
+	constructor(message, { exitCode, stderr } = {}) {
+		super(message);
+		this.name = "GogCommandError";
+		this.exitCode = exitCode;
+		this.stderr = stderr || "";
+	}
+}
 
 function clean(value, maximum) {
 	return typeof value === "string" ? value.replaceAll("\u0000", "").trim().slice(0, maximum) : "";
@@ -78,6 +88,15 @@ export class GogGmail {
 		this.account = config.account;
 		this.gogPath = config.gogPath;
 		this.environment = environment;
+		this.children = new Set();
+	}
+
+	terminate() {
+		for (const child of this.children) child.kill("SIGTERM");
+		const timer = setTimeout(() => {
+			for (const child of this.children) child.kill("SIGKILL");
+		}, 1_000);
+		timer.unref();
 	}
 
 	async json(args, { timeout = 120_000, commands = READ_COMMANDS, allowSend = false, input } = {}) {
@@ -92,6 +111,7 @@ export class GogGmail {
 				stdio: ["pipe", "pipe", "pipe"],
 				env: this.environment,
 			});
+			this.children.add(child);
 			const stdout = [];
 			const stderr = [];
 			let outputBytes = 0;
@@ -101,6 +121,7 @@ export class GogGmail {
 			}, timeout);
 			child.on("error", (error) => {
 				clearTimeout(timer);
+				this.children.delete(child);
 				reject(new Error(`gog command failed: ${error.message}`));
 			});
 			child.stdout.on("data", (chunk) => {
@@ -115,6 +136,7 @@ export class GogGmail {
 			child.stderr.on("data", (chunk) => stderr.push(chunk));
 			child.on("close", (code) => {
 				clearTimeout(timer);
+				this.children.delete(child);
 				resolve({
 					status: code ?? -1,
 					stdout: Buffer.concat(stdout).toString("utf8"),
@@ -125,7 +147,11 @@ export class GogGmail {
 			else child.stdin.end();
 		});
 		if (result.status !== 0) {
-			throw new Error(`gog command exited ${result.status}: ${result.stderr.trim().slice(0, 1000)}`);
+			const stderr = result.stderr.trim().slice(0, 1000);
+			throw new GogCommandError(`gog command exited ${result.status}: ${stderr}`, {
+				exitCode: result.status,
+				stderr,
+			});
 		}
 		try {
 			return JSON.parse(result.stdout);
@@ -134,7 +160,10 @@ export class GogGmail {
 		}
 	}
 
-	async searchMessages(query) {
+	async searchMessages(query, maximum = 100) {
+		if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 500) {
+			throw new Error("Gmail search maximum must be an integer from 1 to 500");
+		}
 		const parsed = await this.json([
 			"gmail",
 			"messages",
@@ -142,7 +171,8 @@ export class GogGmail {
 			"--account",
 			this.account,
 			query,
-			"--all",
+			"--max",
+			String(maximum),
 		]);
 		if (!Array.isArray(parsed?.messages)) throw new Error("gog search response omitted messages");
 		return parsed.messages.map((raw) => {
@@ -151,6 +181,44 @@ export class GogGmail {
 			if (!PROVIDER_ID.test(id) || !PROVIDER_ID.test(threadId)) return null;
 			return { id, threadId };
 		}).filter(Boolean);
+	}
+
+	async listHistory(since, { maximum = 100, page } = {}) {
+		const historyId = providerId(since, "history start ID");
+		if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 500) {
+			throw new Error("Gmail history maximum must be an integer from 1 to 500");
+		}
+		const parsed = await this.json([
+			"gmail",
+			"history",
+			"--account",
+			this.account,
+			"--since",
+			historyId,
+			"--max",
+			String(maximum),
+			...(page ? ["--page", providerId(page, "history page token")] : []),
+		]);
+		const records = Array.isArray(parsed?.history) ? parsed.history : [];
+		const messages = [];
+		for (const record of records) {
+			const recordHistoryId = clean(record?.id, 256);
+			if (!PROVIDER_ID.test(recordHistoryId)) continue;
+			const additions = Array.isArray(record?.messagesAdded) ? record.messagesAdded : [];
+			for (const entry of additions.map((item) => item?.message)) {
+				if (Array.isArray(entry?.labelIds) && !entry.labelIds.includes("INBOX")) continue;
+				const id = clean(entry?.id, 256);
+				const threadId = clean(entry?.threadId, 256);
+				if (PROVIDER_ID.test(id) && PROVIDER_ID.test(threadId)) {
+					messages.push({ id, threadId, historyId: recordHistoryId });
+				}
+			}
+		}
+		return {
+			messages: [...new Map(messages.map((message) => [message.id, message])).values()],
+			nextPageToken: clean(parsed?.nextPageToken, 2048) || null,
+			historyId: clean(parsed?.historyId, 256) || null,
+		};
 	}
 
 	async searchThreads(query, limit = 10) {
@@ -175,6 +243,23 @@ export class GogGmail {
 				messageCount: Number.isInteger(raw?.messageCount) ? raw.messageCount : 0,
 			};
 		}).filter(Boolean);
+	}
+
+	async getMessageEnvelope(messageId) {
+		const parsed = await this.json([
+			"gmail",
+			"get",
+			"--account",
+			this.account,
+			messageId,
+			"--format",
+			"metadata",
+		]);
+		return {
+			id: providerId(parsed?.message?.id, "message ID"),
+			threadId: providerId(parsed?.message?.threadId, "thread ID"),
+			historyId: providerId(parsed?.message?.historyId, "message history ID"),
+		};
 	}
 
 	async getMetadata(messageId) {
@@ -230,10 +315,12 @@ export class GogGmail {
 	}
 
 	async markRead(messageId) {
-		await this.json(["gmail", "mark-read", "--account", this.account, messageId]);
+		await this.json(["gmail", "mark-read", "--account", this.account, messageId], {
+			commands: MARK_READ_COMMANDS,
+		});
 	}
 
-	async createDraft({ to, cc = [], subject, body, replyToMessageId }) {
+	async createDraft({ to, cc = [], subject, body, replyToMessageId, attachments = [] }) {
 		const toAddresses = Array.isArray(to) ? to : [to];
 		const parsed = await this.json([
 			"gmail",
@@ -247,6 +334,7 @@ export class GogGmail {
 			"--subject",
 			subject,
 			...(replyToMessageId ? ["--reply-to-message-id", replyToMessageId] : []),
+			...attachments.flatMap((path) => ["--attach", path]),
 			"--body-file",
 			"-",
 			"--body-html",

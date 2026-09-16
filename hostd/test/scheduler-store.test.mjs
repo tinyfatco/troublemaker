@@ -177,6 +177,7 @@ test("completion receipts are fenced by their lease token", () => {
 		assert.equal(subject.store.getEvent(event.id).status, "leased");
 		subject.store.completeEvent(event.id, event.leaseToken);
 		assert.equal(subject.store.getEvent(event.id).status, "completed");
+		assert.equal(subject.store.getEvent(event.id).completionLeaseToken, event.leaseToken);
 	} finally {
 		subject.close();
 	}
