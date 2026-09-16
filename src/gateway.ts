@@ -1,3 +1,4 @@
+import type { RuntimeDiagnostics } from "./console/runtime-diagnostics.js";
 import { readContextTransitions } from "./context-transition.js";
 import { timingSafeEqual } from "crypto";
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "http";
@@ -240,6 +241,12 @@ export function isTrustedStandaloneWebSocketRequest(req: Pick<IncomingMessage, "
 }
 
 export class Gateway {
+	private diagnosticsProvider?: () => Promise<RuntimeDiagnostics>;
+
+	setDiagnosticsProvider(provider: () => Promise<RuntimeDiagnostics>): void {
+		this.diagnosticsProvider = provider;
+	}
+
 	private routes = new Map<string, RouteHandler>();
 	private getRoutes = new Map<string, RouteHandler>();
 	private upgradeRoutes = new Map<string, UpgradeHandler>();
@@ -463,12 +470,15 @@ export class Gateway {
 		res.end(JSON.stringify(service.getAgents()));
 	}
 
-	private handleConsoleStatus(_req: IncomingMessage, res: ServerResponse): void {
+	private async handleConsoleStatus(_req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const service = this.requireConsoleService(res);
 		if (!service) return;
 		try {
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify(service.getStatus()));
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			const status = service.getStatus();
+			let diagnostics: RuntimeDiagnostics | undefined;
+			try { diagnostics = await this.diagnosticsProvider?.(); } catch { /* Optional telemetry must not fail status. */ }
+			res.end(JSON.stringify({ ...status, diagnostics }));
 		} catch (err) {
 			this.sendConsoleError(res, err, 503);
 		}
@@ -1269,7 +1279,7 @@ export class Gateway {
 			}
 
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/status")) {
-				this.handleConsoleStatus(req, res);
+				void this.handleConsoleStatus(req, res);
 				return;
 			}
 

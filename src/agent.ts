@@ -118,6 +118,8 @@ export interface ContextInfo {
 	messageCount: number;
 	contextTokens: number;
 	contextPercent: number;
+	/** Pi estimate; null tokens means usage is unknown after compaction. */
+	contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 	usage?: {
 		input: number;
 		output: number;
@@ -2138,6 +2140,7 @@ async function createRunner(
 				messageCount: messages.length,
 				contextTokens,
 				contextPercent,
+				contextUsage: session?.getContextUsage(),
 				usage,
 			};
 		},

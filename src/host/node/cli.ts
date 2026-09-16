@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createInferenceHealthReader } from "../../console/runtime-diagnostics.js";
 
 import { createHash, randomUUID } from "crypto";
 import type { IncomingMessage } from "http";
@@ -1783,6 +1784,21 @@ if (scheduledPromptIngress) {
 	scheduledPromptIngress.setHandler(handler);
 	gateway.register("/scheduled-prompt/inbound", (req, res) => scheduledPromptIngress.dispatch(req, res));
 }
+
+// Explicit health URL, or the existing opt-in inference telemetry origin.
+const inferenceHealthURL = process.env.TROUBLEMAKER_INFERENCE_HEALTH_URL
+    ?? (() => {
+        try { return process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL
+            ? new URL("/health", process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL).href : undefined; }
+        catch { return undefined; }
+    })();
+const readInferenceHealth = createInferenceHealthReader(inferenceHealthURL);
+gateway.setDiagnosticsProvider(async () => ({
+    phase: awareness?.runner.getCompactionStatus() ? "compacting" : isRunBusy() ? "running" : "idle",
+    queuedInputs: pendingInterrupts.length + (voiceContract?.pendingCount ?? 0),
+    context: awareness?.runner.getContextInfo(),
+    inference: await readInferenceHealth(),
+}));
 
 // Status endpoint — reports whether the agent is currently running.
 gateway.registerGet("/status", async (_req, res) => {
