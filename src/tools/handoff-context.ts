@@ -27,7 +27,7 @@ export function createHandoffContextTool(stage: (summary: StructuredHandoff, res
   name: 'handoff_context', label: 'Hand off context',
   description: 'Save a concise continuity summary and rotate into fresh context at the end of this tool sequence. Use when the user requests a handoff, or when a long task needs a fresh context. Write the summary from the current conversation; do not reread all history. Completed work must not be repeated. No more tools should follow this call.',
   parameters: Type.Object({
-   label: Type.String(),
+   label: Type.Optional(Type.String()),
    summary: Type.String({ maxLength: 12000, description: 'Concise handoff: goal, constraints, completed work, decisions, uncertainties, exact necessary references, and next steps. No raw tool output or secrets.' }),
    nextSteps: Type.Union([Type.String(), Type.Array(Type.String(), { maxItems: 12 })], { description: "Next actions as plain text or a list. An empty string or list means no remaining steps." }),
    continue: Type.Boolean({ description: 'Continue unfinished work after rotation; false means wait for the user.' }),
@@ -41,4 +41,34 @@ export function createHandoffContextTool(stage: (summary: StructuredHandoff, res
    return { content: [{type:'text',text:'Handoff staged. The harness will archive and rotate at the safe turn boundary.'}], details: {}, terminate: true };
   },
  };
+}
+
+/** Private completions are never published or executed as general tool calls.
+ * Accept presentation variations, but require one unambiguous validated summary.
+ */
+export function parsePrivateCheckpointResponse(
+ content: readonly { type: string; name?: string; arguments?: unknown; text?: string }[],
+ routing: StructuredHandoff['routing'],
+): { handoff: StructuredHandoff; resume: boolean } {
+ const calls = content.filter(part => part.type === 'toolCall' && part.name === 'handoff_context');
+ const candidates: unknown[] = calls.map(part => part.arguments);
+ if (!calls.length) {
+  const text = content.filter(part => part.type === 'text').map(part => part.text ?? '').join('\n').trim();
+  // Recover JSON emitted as text; never turn arbitrary prose or reasoning into state.
+  const fenced = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+  const values = fenced.length ? fenced.map(match => match[1]) : [text];
+  for (const value of values) {
+   try { candidates.push(JSON.parse(value)); } catch { /* Not a structured checkpoint. */ }
+  }
+ }
+ const parsed = candidates.flatMap(candidate => {
+  try {
+   const value = typeof candidate === 'string' ? JSON.parse(candidate) : candidate;
+   return [parseHandoffContextArguments(value, routing)];
+  } catch { return []; }
+ });
+ if (!parsed.length) throw new Error('Private checkpoint did not contain a usable summary and next steps');
+ const unique = new Map(parsed.map(value => [JSON.stringify(value), value]));
+ if (unique.size !== 1) throw new Error('Private checkpoint contained conflicting summaries');
+ return parsed[0];
 }

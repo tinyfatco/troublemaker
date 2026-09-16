@@ -1,3 +1,4 @@
+import "./private-checkpoint-response.test.js";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from "node:fs";
@@ -45,6 +46,7 @@ const server = createServer(async (req, res) => {
    send([{index: 0, delta: {role: "assistant", content: "invalid checkpoint prose"}, finish_reason: null}]);
    send([{index: 0, delta: {}, finish_reason: "stop"}], {prompt_tokens: 1800, completion_tokens: 10, total_tokens: 1810});
   } else {
+   send([{index: 0, delta: {role: "assistant", content: "Saving the synthetic checkpoint.", reasoning_content: "Synthetic private reasoning."}, finish_reason: null}]);
    send([{index: 0, delta: {role: "assistant", tool_calls: [{index: 0, id: `private-${requests.length}`, type: "function", function: {
     name: "handoff_context", arguments: JSON.stringify({label: "Save synthetic checkpoint", summary, nextSteps: ["Reply fixture complete"], continue: true}),
    }}]}, finish_reason: null}]);
@@ -93,11 +95,13 @@ try {
  assert.deepEqual(pressure.tools?.map(tool => tool.function?.name), ["handoff_context"], "private request exposes exactly one tool");
  assert.equal(pressure.tool_choice?.function?.name, "handoff_context");
  assert.equal(pressure.temperature, 0);
- assert.equal(pressure.enable_thinking, false);
+ assert.equal(pressure.enable_thinking, undefined, "handoff must not disable backend thinking defaults");
  assert.equal(JSON.stringify(pressure.messages).split("PRIVATE CONTINUITY CHECKPOINT REQUIRED NOW").length - 1, 1);
  assert(JSON.stringify(requests[2].messages).includes(HANDOFF_RESUME_INSTRUCTION));
  assert(!JSON.stringify(projections).includes(summary), "private checkpoint arguments never enter Computer/TUI projections");
  assert(!JSON.stringify(projections).includes("handoff_context"), "private checkpoint has no visible tool row");
+ assert(!JSON.stringify(projections).includes("Saving the synthetic checkpoint."));
+ assert(!JSON.stringify(projections).includes("Synthetic private reasoning."));
  assert(finals.includes("Fixture complete."));
  const durableAfterSuccess = readFileSync(join(root, "awareness/context.jsonl"), "utf8");
  assert(durableAfterSuccess.includes("troublemaker.continuity-handoff.v1"));

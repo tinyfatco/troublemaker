@@ -1,7 +1,7 @@
 import { createCodexCliStream, getCodexCliRuntimeAuth, isCodexCliProvider, registerCodexCliRuntimeAuth, resetCodexCliSession } from "./codex-cli.js";
 import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
 import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
-import { createHandoffContextTool, parseHandoffContextArguments } from "./tools/handoff-context.js";
+import { createHandoffContextTool, parsePrivateCheckpointResponse } from "./tools/handoff-context.js";
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
@@ -562,11 +562,10 @@ async function createRunner(
 		if (runState.handoffRequested) {
 			normalizedOptions = {
 				...normalizedOptions,
-				maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536),
+				maxTokens: Math.min(normalizedOptions?.maxTokens ?? 8192, 8192),
 				temperature: 0,
 				samplingParams: {
 					...normalizedOptions?.samplingParams,
-					enable_thinking: false,
 					tool_choice: { type: "function", function: { name: "handoff_context" } },
 				},
 			};
@@ -821,7 +820,7 @@ async function createRunner(
 
 	const privateCheckpointTimeoutMs = (() => {
 		const value = Number(process.env.TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS);
-		return Number.isSafeInteger(value) && value >= 10_000 && value <= 300_000 ? value : 120_000;
+		return Number.isSafeInteger(value) && value >= 10_000 && value <= 1_800_000 ? value : 600_000;
 	})();
 	const generatePrivateCheckpoint = async (
 		messages: readonly AgentMessage[],
@@ -869,15 +868,14 @@ async function createRunner(
 				signal: controller.signal,
 				timeoutMs: privateCheckpointTimeoutMs,
 				maxRetries: 0,
-				maxTokens: 1536,
+				maxTokens: 8192,
 				temperature: 0,
-				reasoning: "minimal",
+				reasoning: agent.state.thinkingLevel === "off" ? undefined : agent.state.thinkingLevel,
 				headers: localProgressURL ? {
 					"x-mtplx-request-id": requestId,
 					"x-mtplx-session-id": requestId,
 				} : undefined,
 				samplingParams: {
-					enable_thinking: false,
 					tool_choice: { type: "function", function: { name: "handoff_context" } },
 				},
 			});
@@ -894,14 +892,7 @@ async function createRunner(
 			if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
 				throw new Error(assistant.errorMessage || `Private checkpoint ${assistant.stopReason}`);
 			}
-			const calls = assistant.content.filter((part) => part.type === "toolCall");
-			const leaked = assistant.content.some((part) =>
-				(part.type === "text" && part.text.trim())
-				|| (part.type === "thinking" && part.thinking.trim()));
-			if (calls.length !== 1 || calls[0].name !== "handoff_context" || leaked) {
-				throw new Error("Private checkpoint returned an invalid structured response");
-			}
-			const parsed = parseHandoffContextArguments(calls[0].arguments, routing);
+			const parsed = parsePrivateCheckpointResponse(assistant.content, routing);
 			log.logInfo(`[handoff] Private checkpoint validated source_tokens=${sourceTokens} projected_tokens=${projectedTokens}`);
 			return { ...parsed, sourceTokens, projectedTokens };
 		} finally {
