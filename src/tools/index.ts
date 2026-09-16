@@ -1,6 +1,7 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { HostServices } from "../core/host.js";
 import type { Executor } from "../sandbox.js";
+import { createImagegenTool } from "./imagegen.js";
 import { attachTool } from "./attach.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
@@ -28,6 +29,7 @@ export function createMomTools(executor: Executor, workspaceDir = process.cwd())
 		createEditTool(executor),
 		createWriteTool(executor),
 		createSpeakTool(workspaceDir),
+		createImagegenTool(workspaceDir),
 		attachTool,
 	]);
 }
