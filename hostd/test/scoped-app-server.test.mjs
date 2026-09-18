@@ -368,6 +368,12 @@ test("same-organization admin revocation cancels and tombstones an active member
 		await dispatch(subject, envelope("chat.send", { turnId, text: "Long synthetic task" }, { scope: memberScope }));
 		const memberKeys = scopedAppScopeKeys(ROUTING_KEY, TARGET.id, memberScope);
 		await waitFor(() => subject.runtimeCalls.length === 1, "active member runtime");
+		const webchatRevocations = [];
+		subject.gateway.setWebchat({
+			async revokeMembership(accountKey, membershipKey, maximumVersion) {
+				webchatRevocations.push({ accountKey, membershipKey, maximumVersion });
+			},
+		});
 
 		const adminScope = scope({
 			leaseId: "a90313c5-a6ec-42a9-a273-8e0a7711ad42",
@@ -382,6 +388,11 @@ test("same-organization admin revocation cancels and tombstones an active member
 		const revoked = await dispatch(subject, revoke, REVOKE_TOKEN);
 		assert.equal(revoked.status, 200);
 		assert.deepEqual(await revoked.json(), { revoked: true });
+		assert.deepEqual(webchatRevocations, [{
+			accountKey: memberKeys.accountKey,
+			membershipKey: memberKeys.membershipKey,
+			maximumVersion: memberScope.membershipVersion,
+		}]);
 		await waitFor(() => subject.store.getTurn(memberKeys.contextId, turnId)?.status === "cancelled", "turn cancellation");
 		assert(subject.store.listEvents(memberKeys.contextId, 0).events.some((event) => event.type === "revocation"));
 		assert.throws(() => subject.store.acceptMembership(

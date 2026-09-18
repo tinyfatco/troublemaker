@@ -1,5 +1,6 @@
 import { createPrivateKey } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
 	HOSTD_OPENAI_DEFAULT_MODEL,
@@ -144,6 +145,30 @@ function envSecret(name, label, environment) {
 		throw new Error(`${label} references unavailable environment variable ${key}`);
 	}
 	return value.trim();
+}
+
+async function protectedFileSecret(value, label) {
+	const path = text(value, label);
+	if (resolve(path) !== path) throw new Error(`${label} must be an absolute path`);
+	let file;
+	try {
+		file = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		const metadata = await file.stat();
+		if (!metadata.isFile() || metadata.size < 1 || metadata.size > 16 * 1024) {
+			throw new Error(`${label} must reference one bounded regular file`);
+		}
+		if ((metadata.mode & 0o077) !== 0) {
+			throw new Error(`${label} must not be accessible by group or others`);
+		}
+		const secret = (await file.readFile("utf8")).trim();
+		if (!secret) throw new Error(`${label} references an empty file`);
+		return secret;
+	} catch (error) {
+		if (error instanceof Error && error.message.startsWith(`${label} `)) throw error;
+		throw new Error(`${label} could not be read safely`);
+	} finally {
+		await file?.close().catch(() => undefined);
+	}
 }
 
 function normalizeAddress(value, label) {
@@ -337,7 +362,7 @@ function openAiContextId(value, label) {
 	return contextId;
 }
 
-function openAiConfig(raw, environment) {
+async function openAiConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const openAi = object(raw, "openAi");
 	const rawScope = object(openAi.scope, "openAi.scope");
@@ -413,8 +438,15 @@ function openAiConfig(raw, environment) {
 	if (limits.maximumConcurrentGlobal < limits.maximumConcurrentPerContext) {
 		throw new Error("openAi.maximumConcurrentGlobal must cover one context limit");
 	}
+	const keySources = [openAi.apiKeyEnv !== undefined, openAi.apiKeyFile !== undefined].filter(Boolean).length;
+	if (keySources !== 1) {
+		throw new Error("openAi requires exactly one of apiKeyEnv or apiKeyFile");
+	}
+	const apiKey = openAi.apiKeyFile !== undefined
+		? await protectedFileSecret(openAi.apiKeyFile, "openAi.apiKeyFile")
+		: envSecret(openAi.apiKeyEnv, "openAi.apiKeyEnv", environment);
 	return {
-		apiKey: envSecret(openAi.apiKeyEnv, "openAi.apiKeyEnv", environment),
+		apiKey,
 		scope: { mode: scopeMode, contextIds },
 		defaultModel,
 		contextModels,
@@ -967,17 +999,22 @@ function scopedAppConfig(raw, environment) {
 		"scopedApp.renewalTokenEnv",
 		environment,
 	);
+	const webchatToken = scopedApp.webchatTokenEnv === undefined
+		? undefined
+		: envSecret(scopedApp.webchatTokenEnv, "scopedApp.webchatTokenEnv", environment);
 	for (const [value, label] of [
 		[dispatchToken, "scopedApp.dispatchTokenEnv"],
 		[revokeToken, "scopedApp.revokeTokenEnv"],
 		[renewalToken, "scopedApp.renewalTokenEnv"],
+		...(webchatToken ? [[webchatToken, "scopedApp.webchatTokenEnv"]] : []),
 	]) {
 		if (Buffer.byteLength(value, "utf8") < 32) {
 			throw new Error(`${label} must contain at least 32 bytes`);
 		}
 	}
-	if (new Set([dispatchToken, revokeToken, renewalToken]).size !== 3) {
-		throw new Error("scopedApp dispatch, revoke, and renewal capabilities must be distinct");
+	const scopedCapabilities = [dispatchToken, revokeToken, renewalToken, ...(webchatToken ? [webchatToken] : [])];
+	if (new Set(scopedCapabilities).size !== scopedCapabilities.length) {
+		throw new Error("scopedApp dispatch, revoke, renewal, and webchat capabilities must be distinct");
 	}
 	const renewalUrl = new URL(httpUrl(scopedApp.renewalUrl, "scopedApp.renewalUrl"));
 	if (
@@ -993,6 +1030,18 @@ function scopedAppConfig(raw, environment) {
 	if (!/^\/[a-z0-9/_-]+$/i.test(dispatchPath) || dispatchPath.endsWith("/")) {
 		throw new Error("scopedApp.dispatchPath must be one absolute path without a trailing slash");
 	}
+	const webchatPath = scopedApp.webchatPath === undefined
+		? (webchatToken ? "/v1/scoped-app/webchat" : undefined)
+		: text(scopedApp.webchatPath, "scopedApp.webchatPath");
+	if (webchatPath && (!/^\/[a-z0-9/_-]+$/i.test(webchatPath) || webchatPath.endsWith("/"))) {
+		throw new Error("scopedApp.webchatPath must be one absolute path without a trailing slash");
+	}
+	if (webchatPath && !webchatToken) {
+		throw new Error("scopedApp.webchatPath requires scopedApp.webchatTokenEnv");
+	}
+	if (webchatPath === dispatchPath) {
+		throw new Error("scopedApp.webchatPath must differ from scopedApp.dispatchPath");
+	}
 	return {
 		host: listenerHost,
 		port: integer(scopedApp.port, 3130, "scopedApp.port", 1024, 65535),
@@ -1005,6 +1054,7 @@ function scopedAppConfig(raw, environment) {
 		dispatchPath,
 		dispatchToken,
 		revokeToken,
+		...(webchatPath ? { webchatPath, webchatToken } : {}),
 		renewalUrl: renewalUrl.toString(),
 		renewalToken,
 		maximumRequestBytes: integer(
@@ -1478,7 +1528,7 @@ export async function loadConfig(path, environment = process.env) {
 	const scheduler = object(raw.scheduler ?? {}, "scheduler");
 	const scheduledWakes = scheduledWakesConfig(raw.scheduledWakes);
 	const workersAi = workersAiConfig(raw.workersAi, environment);
-	const openAi = openAiConfig(raw.openAi, environment);
+	const openAi = await openAiConfig(raw.openAi, environment);
 	if (!Array.isArray(raw.targets) || raw.targets.length === 0) {
 		throw new Error("targets must contain at least one target");
 	}

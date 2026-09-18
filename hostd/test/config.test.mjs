@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,7 @@ const ENVIRONMENT = {
 	TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN: "test-scoped-dispatch-token-at-least-32-bytes",
 	TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN: "test-scoped-revoke-token-at-least-32-bytes",
 	TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN: "test-scoped-renewal-token-at-least-32-bytes",
+	TROUBLEMAKER_SCOPED_WEBCHAT_TOKEN: "test-scoped-webchat-token-at-least-32-bytes",
 	TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET: "test-crawdad-assertion-secret-at-least-32-bytes",
 	TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET: "test-fat-assertion-secret-at-least-32-bytes",
 	ROCKETCHAT_HOSTD_ADMIN_USER_ID: "example-admin-user",
@@ -290,6 +291,23 @@ test("requires an explicit organization credential, spend cap, and output bound 
 			loadConfig(path, { ...ENVIRONMENT, OPENAI_ORGANIZATION_API_KEY: undefined }),
 			/openAi\.apiKeyEnv references unavailable environment variable/,
 		);
+
+		const keyPath = join(directory, "openai-key");
+		await writeFile(keyPath, "synthetic-file-backed-openai-key\n", { mode: 0o600 });
+		delete raw.openAi.apiKeyEnv;
+		raw.openAi.apiKeyFile = keyPath;
+		await writeFile(path, JSON.stringify(raw));
+		assert.equal((await loadConfig(path, ENVIRONMENT)).openAi.apiKey, "synthetic-file-backed-openai-key");
+		raw.openAi.apiKeyEnv = "OPENAI_ORGANIZATION_API_KEY";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /exactly one of apiKeyEnv or apiKeyFile/);
+		delete raw.openAi.apiKeyEnv;
+		await chmod(keyPath, 0o644);
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must not be accessible by group or others/);
+		await chmod(keyPath, 0o600);
+		delete raw.openAi.apiKeyFile;
+		raw.openAi.apiKeyEnv = "OPENAI_ORGANIZATION_API_KEY";
 
 		delete raw.openAi.monthlySpendCapCents;
 		await writeFile(path, JSON.stringify(raw));
@@ -955,6 +973,8 @@ test("loads one loopback-only scoped app with distinct capabilities and target",
 			dispatchPath: "/v1/example/dispatch",
 			dispatchTokenEnv: "TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN",
 			revokeTokenEnv: "TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN",
+			webchatPath: "/v1/example/webchat",
+			webchatTokenEnv: "TROUBLEMAKER_SCOPED_WEBCHAT_TOKEN",
 			renewalUrl: "https://app.example.com/api/internal/hostd/lease/renew",
 			renewalTokenEnv: "TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN",
 		};
@@ -969,6 +989,8 @@ test("loads one loopback-only scoped app with distinct capabilities and target",
 			dispatchPath: "/v1/example/dispatch",
 			dispatchToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN,
 			revokeToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN,
+			webchatPath: "/v1/example/webchat",
+			webchatToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_WEBCHAT_TOKEN,
 			renewalUrl: "https://app.example.com/api/internal/hostd/lease/renew",
 			renewalToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN,
 			maximumRequestBytes: 128 * 1024,
@@ -1008,6 +1030,10 @@ test("loads one loopback-only scoped app with distinct capabilities and target",
 		await assert.rejects(loadConfig(path, {
 			...ENVIRONMENT,
 			TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN,
+		}), /capabilities must be distinct/);
+		await assert.rejects(loadConfig(path, {
+			...ENVIRONMENT,
+			TROUBLEMAKER_SCOPED_WEBCHAT_TOKEN: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN,
 		}), /capabilities must be distinct/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });

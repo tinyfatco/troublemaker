@@ -102,64 +102,20 @@ export interface AgentSettingsSnapshot {
 
 const DEFAULT_FETCH_TIMEOUT_MS = 8000;
 const OPERATOR_FETCH_TIMEOUT_MS = 75000;
-const EMBED_TOKEN_STORAGE_PREFIX = 'troublemaker.embedToken.';
 
 function currentAgentId(): string {
   const match = window.location.pathname.match(/\/agents\/([0-9a-f-]{36})(?:\/|$)/i);
   return match?.[1] ?? 'current';
 }
 
-function embedTokenStorageKey(): string {
-  return `${EMBED_TOKEN_STORAGE_PREFIX}${currentAgentId()}`;
-}
-
-function readEmbedTokenFromHash(): string | null {
-  const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
-  if (!hash) return null;
-
-  const params = new URLSearchParams(hash);
-  const token = params.get('embed_token') || params.get('embedToken');
-  if (!token) return null;
-
-  params.delete('embed_token');
-  params.delete('embedToken');
-  try {
-    sessionStorage.setItem(embedTokenStorageKey(), token);
-  } catch {
-    // If storage is unavailable, keep using the fragment token for this load.
-  }
-
-  const nextHash = params.toString();
-  const nextUrl = `${window.location.pathname}${window.location.search}${nextHash ? `#${nextHash}` : ''}`;
-  window.history.replaceState(null, '', nextUrl);
-  return token;
-}
-
-function embedToken(): string | null {
-  const fromHash = readEmbedTokenFromHash();
-  if (fromHash) return fromHash;
-  try {
-    return sessionStorage.getItem(embedTokenStorageKey());
-  } catch {
-    return null;
-  }
-}
-
 export function isEmbedMode(): boolean {
-  return window.location.pathname.includes('/embed/agents/') || !!embedToken();
-}
-
-function appendEmbedToken(url: string): string {
-  const token = embedToken();
-  if (!token) return url;
-  const separator = url.includes('?') ? '&' : '?';
-  return `${url}${separator}embed_token=${encodeURIComponent(token)}`;
+  return window.location.pathname.includes('/embed/agents/');
 }
 
 export function consoleAgentUrl(endpoint: string): string {
   const suffix = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   const base = isEmbedMode() ? '/embed/api/agents' : '/api/v2/agents';
-  return appendEmbedToken(`${base}/${encodeURIComponent(currentAgentId())}${suffix}`);
+  return `${base}/${encodeURIComponent(currentAgentId())}${suffix}`;
 }
 
 export function agentWorkspaceUrl(endpoint: string): string {
@@ -508,7 +464,6 @@ export function postMessageUrl(): string {
 }
 
 export async function stopActiveMessage(channelId = 'web'): Promise<void> {
-  if (isEmbedMode()) return;
   const resp = await fetch(consoleAgentUrl('/messages/stop'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

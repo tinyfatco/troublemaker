@@ -29,6 +29,7 @@ import { ScopedAppEvidence } from "./scoped-app-evidence.mjs";
 import { ScopedAppGateway } from "./scoped-app-gateway.mjs";
 import { createScopedAppServer } from "./scoped-app-server.mjs";
 import { ScopedAppStore } from "./scoped-app-store.mjs";
+import { ScopedWebchat } from "./scoped-webchat.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
 import { WebChatGateway } from "./web-chat.mjs";
@@ -138,6 +139,17 @@ async function components(configPath) {
 			evidence: scopedAppEvidence,
 		})
 		: undefined;
+	const scopedWebchat = config.scopedApp?.webchatToken
+		? new ScopedWebchat({
+			config,
+			gateway: scopedAppGateway,
+			store: scopedAppStore,
+			runtime,
+			routingKey,
+			target: scopedAppTarget,
+		})
+		: undefined;
+	scopedAppGateway?.setWebchat(scopedWebchat);
 	const mcp = config.mcp
 		? new HostMcp({
 			config,
@@ -217,6 +229,7 @@ async function components(configPath) {
 		runtime,
 		scopedAppStore,
 		scopedAppGateway,
+		scopedWebchat,
 		mcp,
 		mcpOutbound,
 		mattermost,
@@ -248,6 +261,7 @@ async function serve(configPath) {
 			config: state.config,
 			gateway: state.scopedAppGateway,
 			target: state.config.targetsById.get(state.config.scopedApp.targetId),
+			webchat: state.scopedWebchat,
 		})
 		: undefined;
 	const mcpEdgeServer = state.config.mcp ? createMcpEdgeServer(state) : undefined;
@@ -369,6 +383,7 @@ async function serve(configPath) {
 		if (mcpEdgeServer) {
 			await new Promise((resolvePromise) => mcpEdgeServer.close(resolvePromise));
 		}
+		await state.scopedWebchat?.shutdown();
 		await state.scopedAppGateway?.shutdown();
 		await new Promise((resolvePromise) => server.close(resolvePromise));
 		state.scopedAppStore?.close();

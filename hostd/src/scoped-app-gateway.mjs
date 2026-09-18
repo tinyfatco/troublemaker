@@ -91,6 +91,11 @@ export class ScopedAppGateway {
 		this.fetchImpl = fetchImpl;
 		this.activeTurns = new Map();
 		this.renewalLocks = new Map();
+		this.webchat = undefined;
+	}
+
+	setWebchat(webchat) {
+		this.webchat = webchat;
 	}
 
 	scopeKeys(scope) {
@@ -144,7 +149,10 @@ export class ScopedAppGateway {
 			case "context.read":
 				return this.store.readContext(keys.accountKey);
 			case "context.write":
-				if (this.store.activeTurnsForAccount(keys.accountKey).length > 0) {
+				if (
+					this.store.activeTurnsForAccount(keys.accountKey).length > 0
+					|| this.webchat?.hasActiveAccount(keys.accountKey)
+				) {
 					throw new ScopedAppGatewayError("conflict", 409);
 				}
 				return this.store.writeContext(
@@ -193,7 +201,11 @@ export class ScopedAppGateway {
 
 	async captureEvidence(envelope, keys) {
 		if (!this.evidence?.available) throw new ScopedAppGatewayError("unavailable", 503);
-		if (this.store.activeTurnsForContext(keys.contextId).length > 0 || this.activeTurns.has(keys.contextId)) {
+		if (
+			this.store.activeTurnsForContext(keys.contextId).length > 0
+			|| this.activeTurns.has(keys.contextId)
+			|| this.webchat?.hasActiveTurn(keys.contextId)
+		) {
 			throw new ScopedAppGatewayError("conflict", 409);
 		}
 		let currentScope = envelope.scope;
@@ -309,10 +321,18 @@ export class ScopedAppGateway {
 		)) {
 			await this.cancelTurn(turn.contextId, turn.turnId, "membership_revoked", { revocation: true });
 		}
+		await this.webchat?.revokeMembership(
+			initiator.accountKey,
+			targetKeys.membershipKey,
+			envelope.payload.membershipVersion,
+		);
 		return { revoked: true };
 	}
 
 	queueTurn(scope, keys, payload) {
+		if (this.webchat?.hasActiveTurn(keys.contextId)) {
+			throw new ScopedAppGatewayError("conflict", 409);
+		}
 		const turn = this.store.startTurn({
 			contextId: keys.contextId,
 			turnId: payload.turnId,

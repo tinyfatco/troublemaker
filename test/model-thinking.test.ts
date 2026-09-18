@@ -88,14 +88,14 @@ assert.equal(
 	"migrated Sol compaction preserves the locked xhigh-thinking policy",
 );
 process.env.MOM_MODEL_ID = "gpt-5.6-luna";
-process.env.MOM_THINKING = "max";
+process.env.MOM_THINKING = "xhigh";
 assert.equal(
 	boundCompactionStreamOptions(
 		{ systemPrompt: "You are a context summarization assistant. Only summarize." },
 		ordinaryOptions,
 	)?.reasoning,
-	"max",
-	"migrated Luna compaction preserves the locked max-thinking policy",
+	"xhigh",
+	"migrated Luna compaction preserves the locked xhigh-thinking policy",
 );
 if (previousMigrated === undefined) delete process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED;
 else process.env.TROUBLEMAKER_HOSTD_OPENAI_MIGRATED = previousMigrated;

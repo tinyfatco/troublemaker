@@ -146,14 +146,14 @@ try {
 	);
 
 	process.env.MOM_MODEL_ID = "gpt-5.6-luna";
-	process.env.MOM_THINKING = "max";
+	process.env.MOM_THINKING = "xhigh";
 	const proxiedLuna = resolveModelWithAuth(workingDir, unavailableRegistry as any);
 	assert.equal(proxiedLuna.id, "gpt-5.6-luna");
 	assert.equal(proxiedLuna.maxTokens, 32_768);
 	assert.equal(
 		resolveThinkingLevel({ readText: () => '{"thinking_level":"low"}' } as any),
-		"max",
-		"the Hostd Luna max lock overrides workspace settings",
+		"xhigh",
+		"the Hostd Luna xhigh lock overrides workspace settings",
 	);
 	let lunaRequestPayload: Record<string, unknown> | undefined;
 	const lunaRequest = streamSimpleOpenAIResponses(
@@ -162,7 +162,7 @@ try {
 		{
 			apiKey: "synthetic-context-capability",
 			maxTokens: proxiedLuna.maxTokens,
-			reasoning: "max",
+			reasoning: "xhigh",
 			maxRetries: 0,
 			onPayload: (payload) => { lunaRequestPayload = payload as Record<string, unknown>; },
 			fetch: async () => { throw new Error("synthetic fetch stop"); },
@@ -170,9 +170,9 @@ try {
 	);
 	await lunaRequest.result();
 	assert.equal(lunaRequestPayload?.model, "gpt-5.6-luna");
-	assert.deepEqual(lunaRequestPayload?.reasoning, { effort: "max", summary: "auto" });
+	assert.deepEqual(lunaRequestPayload?.reasoning, { effort: "xhigh", summary: "auto" });
 
-	process.env.MOM_THINKING = "xhigh";
+	process.env.MOM_THINKING = "max";
 	assert.throws(
 		() => resolveThinkingLevel({ readText: () => undefined } as any),
 		/invalid model\/thinking policy/,

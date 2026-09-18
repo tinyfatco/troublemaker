@@ -41,7 +41,7 @@ export const HOSTD_OPENAI_MODELS = Object.freeze({
 	}),
 	"gpt-5.6-luna": policy({
 		id: "gpt-5.6-luna",
-		thinking: "max",
+		thinking: "xhigh",
 		input: 0.2,
 		cachedInput: 0.02,
 		output: 1.2,

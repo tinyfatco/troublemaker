@@ -3,7 +3,7 @@ export const HOSTD_OPENAI_DEFAULT_MODEL_ID = "gpt-5.6-luna";
 
 export const HOSTD_OPENAI_MODEL_POLICIES = {
 	"gpt-5.6-sol": { thinking: "xhigh" },
-	"gpt-5.6-luna": { thinking: "max" },
+	"gpt-5.6-luna": { thinking: "xhigh" },
 } as const;
 
 export type HostdOpenAiModelId = keyof typeof HOSTD_OPENAI_MODEL_POLICIES;

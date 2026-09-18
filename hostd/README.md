@@ -135,10 +135,15 @@ that capability for another relationship.
 }
 ```
 
+For a file-mounted credential, replace `apiKeyEnv` with one absolute
+`apiKeyFile` path. Hostd opens that path without following a symlink, requires
+one regular file with no group/other access, and rejects configurations that
+specify both credential sources or neither.
+
 `defaultModel` applies to every OpenAI-scoped context without an exact
 `contextModels` entry. Hostd defaults existing and future contexts to
-`gpt-5.6-luna` with `max` thinking, while still allowing an exact context to be
-assigned `gpt-5.6-sol` with `xhigh` thinking. Each proxy request must use the
+`gpt-5.6-luna` with exact `xhigh` thinking, while still allowing an exact context
+to be assigned `gpt-5.6-sol` with `xhigh` thinking. Each proxy request must use the
 model and thinking assigned to its authenticated context, stream its response,
 disable response storage, use the default service tier, and stay at or below
 `maximumOutputTokens`. Hostd rejects `openai-codex`, hosted OpenAI tools, model
@@ -179,6 +184,30 @@ its exact durable context ID to `contextModels`, drain new work, stop that idle
 context, and run a no-customer-send canary before resuming it. Unknown contexts
 and assignments outside a limited canary scope fail at startup instead of
 silently using the default model.
+
+## Scoped native Web UI
+
+An optional `scopedApp.webchatTokenEnv` enables a fourth capability that is
+independent from ordinary dispatch, revocation, and renewal. Configure its
+loopback-only base path with `scopedApp.webchatPath`. A signed-in application
+backend, not the browser, sends exact short-lived scoped-app leases to the
+server-only `bootstrap`, `status`, `events`, `events-stream`, `live`,
+`messages`, and `messages-stop` actions below that path.
+
+The browser-facing application remains responsible for its own session cookie,
+active-organization check, same-origin iframe routes, and static native UI
+bundle. It must never expose the Hostd webchat capability. Hostd derives one
+opaque agent UUID and one OCI context from the organization/user pair. It pins
+channel identity, organization mounts, model, and thinking on the host side;
+the browser cannot choose a context or runtime.
+
+Native history uses bounded JSON. Awareness, live state, and message output use
+unbuffered Server-Sent Events. Hostd renews membership while each stream is
+open, aborts all related streams and the active model turn when renewal fails,
+and unmounts the per-user runtime when the last stream closes. The compact UI
+capability profile exposes chat and awareness only. File, terminal, desktop,
+voice, calendar, display, arbitrary WebSocket upgrades, and browser token
+bootstrap remain disabled.
 
 ## Per-principal Cloudflare Workers AI
 

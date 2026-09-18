@@ -2,6 +2,7 @@ import { formatChannel } from '../types';
 
 const CHANNEL_COLORS: Record<string, string> = {
   slack: '#611BBD',
+  teams: '#6264A7',
   telegram: '#2AABEE',
   email: '#22c55e',
   web: '#8a8a88',

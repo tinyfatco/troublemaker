@@ -78,7 +78,7 @@ function requestBody(overrides = {}) {
 		stream: true,
 		store: false,
 		reasoning: {
-			effort: model === LUNA_MODEL ? "max" : "xhigh",
+			effort: "xhigh",
 			summary: "auto",
 		},
 		prompt_cache_key: "synthetic-session",
@@ -212,7 +212,7 @@ test("OpenAI runtime selection defaults to Luna and preserves context-only proxy
 		assert.deepEqual(selected, {
 			provider: "openai",
 			id: "gpt-5.6-luna",
-			thinking: "max",
+			thinking: "xhigh",
 			maximumOutputTokens: 32_768,
 		});
 		const environment = runtimeModelEnvironment(
@@ -230,7 +230,7 @@ test("OpenAI runtime selection defaults to Luna and preserves context-only proxy
 		}, {
 			provider: "openai",
 			model: "gpt-5.6-luna",
-			thinking: "max",
+			thinking: "xhigh",
 			maximumOutputTokens: "32768",
 			migrated: "1",
 		});
@@ -296,7 +296,7 @@ test("OpenAI runtime selection defaults to Luna and preserves context-only proxy
 	}
 });
 
-test("synthetic no-customer-send canary enforces isolation, exact Luna model, max thinking, and output bounds", async () => {
+test("synthetic no-customer-send canary enforces isolation, exact Luna model, xhigh thinking, and output bounds", async () => {
 	const state = fixture({ scope: { mode: "contexts", contextIds: [CONTEXT_A] } });
 	const upstreamRequests = [];
 	let customerSends = 0;
@@ -339,7 +339,7 @@ test("synthetic no-customer-send canary enforces isolation, exact Luna model, ma
 		for (const body of [
 			requestBody({ model: "gpt-5.6-sol" }),
 			requestBody({ reasoning: { effort: "high" } }),
-			requestBody({ reasoning: { effort: "xhigh" } }),
+			requestBody({ reasoning: { effort: "max" } }),
 			requestBody({ max_output_tokens: 32_769 }),
 			requestBody({ tools: [{ type: "web_search" }] }),
 			requestBody({ tool_choice: { type: "web_search" } }),
@@ -358,7 +358,7 @@ test("synthetic no-customer-send canary enforces isolation, exact Luna model, ma
 		assert.equal(upstream.headers.get("authorization"), `Bearer ${state.config.openAi.apiKey}`);
 		assert.notEqual(upstream.headers.get("authorization"), `Bearer ${tokenA}`);
 		assert.equal(upstream.body.model, "gpt-5.6-luna");
-		assert.equal(upstream.body.reasoning.effort, "max");
+		assert.equal(upstream.body.reasoning.effort, "xhigh");
 		assert.equal(upstream.body.max_output_tokens, 32_768);
 		assert.equal(upstream.body.stream, true);
 		assert.equal(upstream.body.store, false);
@@ -421,7 +421,7 @@ test("one exact context can use Sol xhigh without changing its default Luna neig
 			CONTEXT_A,
 		);
 		assert.equal(luna.id, LUNA_MODEL);
-		assert.equal(luna.thinking, "max");
+		assert.equal(luna.thinking, "xhigh");
 		const status = state.store.openAiStatus(state.config.openAi);
 		assert.equal(status.chargedMicrodollars, 838);
 		assert.deepEqual(status.usageByModel.map((row) => ({
