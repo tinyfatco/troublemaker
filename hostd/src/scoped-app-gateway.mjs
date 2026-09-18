@@ -244,6 +244,10 @@ export class ScopedAppGateway {
 			this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "completed", { clearScope: true });
 			return { status: "queued", turnId: envelope.payload.turnId };
 		} catch (error) {
+			console.error(
+				"troublemaker-hostd: scoped evidence capture failed:",
+				error instanceof Error ? error.message : String(error),
+			);
 			const current = this.store.getTurn(keys.contextId, envelope.payload.turnId);
 			if (current && !TERMINAL_TURN_STATES.has(current.status)) {
 				this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "failed", {
