@@ -398,6 +398,58 @@ export class ScopedAppStore {
 		});
 	}
 
+	startEvidenceTurn({ contextId, turnId, accountKey, userKey, membershipKey, membershipVersion, request, scope }) {
+		const requestSha256 = digest(request);
+		return this.transaction(() => {
+			const existing = this.getTurn(contextId, turnId);
+			if (existing) {
+				if (
+					existing.requestSha256 !== requestSha256
+					|| existing.accountKey !== accountKey
+					|| existing.userKey !== userKey
+					|| existing.membershipKey !== membershipKey
+				) throw new ScopedAppStoreError("turn_id_conflict", 409);
+				if (["failed", "cancelled"].includes(existing.status)) {
+					this.database.prepare(`
+						UPDATE scoped_app_turns
+						SET status = 'running', membership_version = ?, scope_json = ?,
+							last_error = NULL, updated_at = ?, completed_at = NULL
+						WHERE context_id = ? AND turn_id = ?
+					`).run(membershipVersion, JSON.stringify(scope), now(), contextId, turnId);
+					return { ...this.getTurn(contextId, turnId), duplicate: false, retried: true };
+				}
+				return { ...existing, duplicate: true };
+			}
+			const active = this.database.prepare(`
+				SELECT COUNT(*) AS count FROM scoped_app_turns
+				WHERE context_id = ? AND status IN ('queued', 'running')
+			`).get(contextId).count;
+			if (active >= this.maximumActiveTurnsPerContext) {
+				throw new ScopedAppStoreError("too_many_active_turns", 429);
+			}
+			const timestamp = now();
+			this.database.prepare(`
+				INSERT INTO scoped_app_turns(
+					context_id, turn_id, account_key, user_key, membership_key,
+					membership_version, request_sha256, input_text, status,
+					scope_json, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, '', 'running', ?, ?, ?)
+			`).run(
+				contextId,
+				turnId,
+				accountKey,
+				userKey,
+				membershipKey,
+				membershipVersion,
+				requestSha256,
+				JSON.stringify(scope),
+				timestamp,
+				timestamp,
+			);
+			return { ...this.getTurn(contextId, turnId), duplicate: false };
+		});
+	}
+
 	setTurnStatus(contextId, turnId, status, { error, clearScope = false } = {}) {
 		return this.transaction(() => {
 			const current = this.getTurn(contextId, turnId);

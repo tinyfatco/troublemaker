@@ -196,23 +196,29 @@ export class ScopedAppGateway {
 		if (this.store.activeTurnsForContext(keys.contextId).length > 0 || this.activeTurns.has(keys.contextId)) {
 			throw new ScopedAppGatewayError("conflict", 409);
 		}
-		const turn = this.store.getTurn(keys.contextId, envelope.payload.turnId);
-		if (
-			!turn
-			|| turn.accountKey !== keys.accountKey
-			|| turn.userKey !== keys.userKey
-			|| !TERMINAL_TURN_STATES.has(turn.status)
-		) throw new ScopedAppGatewayError("invalid", 400);
 		let currentScope = envelope.scope;
 		const source = await this.evidence.verifySource(envelope.payload);
 		currentScope = await this.renewEvidenceScope(currentScope, keys);
-		const organization = await this.materializeOrganizationContext(keys.accountKey);
+		const evidenceTurn = this.store.startEvidenceTurn({
+			contextId: keys.contextId,
+			turnId: envelope.payload.turnId,
+			accountKey: keys.accountKey,
+			userKey: keys.userKey,
+			membershipKey: keys.membershipKey,
+			membershipVersion: currentScope.membershipVersion,
+			request: JSON.stringify(envelope.payload),
+			scope: currentScope,
+		});
+		if (evidenceTurn.duplicate && evidenceTurn.status === "completed") {
+			return { status: "queued", turnId: envelope.payload.turnId };
+		}
 		const artifactId = stablePrivateKey(
 			this.routingKey,
 			"scoped-app-evidence",
 			envelope.requestId,
 		).slice(0, 40);
 		try {
+			const organization = await this.materializeOrganizationContext(keys.accountKey);
 			await this.runtime.ensureScopedOciContext(this.target, keys.contextId, organization);
 			currentScope = await this.renewEvidenceScope(currentScope, keys);
 			const captured = await this.evidence.capture(keys.contextId, {
@@ -237,7 +243,17 @@ export class ScopedAppGateway {
 				artifact: captured.artifact,
 			});
 			this.store.appendEvent(keys.contextId, envelope.payload.turnId, "evidence", undefined, { artifactId });
+			this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "completed", { clearScope: true });
 			return { status: "queued", turnId: envelope.payload.turnId };
+		} catch (error) {
+			const current = this.store.getTurn(keys.contextId, envelope.payload.turnId);
+			if (current && !TERMINAL_TURN_STATES.has(current.status)) {
+				this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "failed", {
+					error: error instanceof ScopedAppAuthorizationError ? "authorization_revoked" : "evidence_failed",
+					clearScope: true,
+				});
+			}
+			throw error;
 		} finally {
 			await this.runtime.stopScopedOciContext?.(this.target, keys.contextId).catch(() => undefined);
 		}

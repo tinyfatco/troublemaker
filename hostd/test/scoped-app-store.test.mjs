@@ -185,3 +185,39 @@ test("active turn limits, bounded events, and restart recovery are durable", asy
 		await subject.close();
 	}
 });
+
+test("independent evidence turns are private, idempotent, and exactly retryable after failure", async () => {
+	const subject = await fixture();
+	try {
+		const keys = scopedAppScopeKeys(ROUTING_KEY, TARGET_ID, SCOPE_A);
+		const turn = {
+			contextId: keys.contextId,
+			turnId: "bf7c145d-c066-472b-ab05-2c63f3ebec1e",
+			accountKey: keys.accountKey,
+			userKey: keys.userKey,
+			membershipKey: keys.membershipKey,
+			membershipVersion: 1,
+			request: JSON.stringify({ grantId: "synthetic-grant-a", exactQuote: "Synthetic quote" }),
+			scope: SCOPE_A,
+		};
+		const first = subject.store.startEvidenceTurn(turn);
+		assert.equal(first.duplicate, false);
+		assert.equal(first.inputText, "");
+		assert.deepEqual(subject.store.listEvents(keys.contextId, 0).events, []);
+		subject.store.setTurnStatus(turn.contextId, turn.turnId, "failed", { error: "evidence_failed", clearScope: true });
+		const retried = subject.store.startEvidenceTurn(turn);
+		assert.equal(retried.duplicate, false);
+		assert.equal(retried.retried, true);
+		assert.equal(retried.status, "running");
+		subject.store.setTurnStatus(turn.contextId, turn.turnId, "completed", { clearScope: true });
+		const replay = subject.store.startEvidenceTurn(turn);
+		assert.equal(replay.duplicate, true);
+		assert.equal(replay.status, "completed");
+		assert.throws(
+			() => subject.store.startEvidenceTurn({ ...turn, request: "conflict" }),
+			(error) => error instanceof ScopedAppStoreError && error.code === "turn_id_conflict",
+		);
+	} finally {
+		await subject.close();
+	}
+});

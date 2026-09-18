@@ -242,18 +242,21 @@ test("evidence is captured with fresh scope and remains private to one user", as
 		const keys = scopedAppScopeKeys(ROUTING_KEY, TARGET.id, scope());
 		await waitFor(() => subject.store.getTurn(keys.contextId, turnId)?.status === "completed", "turn completion");
 
+		const evidenceTurnId = "bf7c145d-c066-472b-ab05-2c63f3ebec1e";
 		const capture = await dispatch(subject, envelope("evidence.capture", {
-			turnId,
+			turnId: evidenceTurnId,
 			grantId: "synthetic-grant-a",
 			sourceUrl: "https://example.com/grants/synthetic",
 			field: "title",
 			exactQuote: "Synthetic fixture only",
 		}));
 		assert.equal(capture.status, 200);
-		assert.deepEqual(await capture.json(), { status: "queued", turnId });
+		assert.deepEqual(await capture.json(), { status: "queued", turnId: evidenceTurnId });
 		const events = subject.store.listEvents(keys.contextId, 0).events;
 		const evidenceEvent = events.find((event) => event.type === "evidence");
 		assert.match(evidenceEvent.data.artifactId, /^[a-f0-9]{40}$/);
+		assert.equal(subject.store.getTurn(keys.contextId, evidenceTurnId).status, "completed");
+		assert.equal(subject.store.getTurn(keys.contextId, evidenceTurnId).inputText, "");
 
 		const receiptResponse = await dispatch(subject, envelope("evidence.read", {
 			artifactId: evidenceEvent.data.artifactId,
