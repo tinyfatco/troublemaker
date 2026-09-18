@@ -44,7 +44,12 @@ test("evidence backend activates only for a computer-enabled runtime and preserv
 		await evidence.verifySource({ sourceUrl: "https://example.com/grants", exactQuote: "Synthetic quote" }),
 		{ sourceUrl: "https://example.com/grants", sourceSha256: "a".repeat(64) },
 	);
-	await evidence.capture("example-context", { artifactId: "synthetic-artifact" });
+	const captured = await evidence.capture("example-context", { artifactId: "synthetic-artifact" });
+	assert.deepEqual(captured.receipt, {
+		artifactId: "synthetic-artifact",
+		representation: "derived_quote_rendering",
+		originalSourceScreenshot: false,
+	});
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0].contextId, "example-context");
 	assert.equal(new ScopedAppEvidence({ runtime, target: { ...target, computer: { enabled: false } } }).available, false);

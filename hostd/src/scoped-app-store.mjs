@@ -326,7 +326,19 @@ export class ScopedAppStore {
 			WHERE artifact_id = ? AND context_id = ? AND account_key = ? AND user_key = ?
 		`).get(artifactId, contextId, accountKey, userKey);
 		if (!row) throw new ScopedAppStoreError("artifact_not_found", 404);
-		return JSON.parse(row.receiptJson);
+		const receipt = JSON.parse(row.receiptJson);
+		if (receipt.representation === undefined && receipt.originalSourceScreenshot === undefined) {
+			return {
+				...receipt,
+				representation: "derived_quote_rendering",
+				originalSourceScreenshot: false,
+			};
+		}
+		if (
+			receipt.representation !== "derived_quote_rendering"
+			|| receipt.originalSourceScreenshot !== false
+		) throw new ScopedAppStoreError("artifact_metadata_invalid", 500);
+		return receipt;
 	}
 
 	readArtifact(artifactId, contextId, accountKey, userKey) {

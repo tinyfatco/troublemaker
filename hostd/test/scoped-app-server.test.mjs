@@ -150,6 +150,8 @@ async function fixture({ gateRuntime = false, withEvidence = false } = {}) {
 					highlight: { method: "selection", rects: [{ x: 0, y: 0, width: 1, height: 1 }] },
 					toolVersion: "SYNTHETIC-TEST-BACKEND",
 					reviewState: "unreviewed",
+					representation: "derived_quote_rendering",
+					originalSourceScreenshot: false,
 					synthetic: false,
 				},
 				artifact: {
@@ -268,6 +270,8 @@ test("evidence is captured with fresh scope and remains private to one user", as
 		assert.equal(receipt.accountId, "synthetic-org-a");
 		assert.equal(receipt.userId, "synthetic-user-a");
 		assert.equal(receipt.synthetic, false);
+		assert.equal(receipt.representation, "derived_quote_rendering");
+		assert.equal(receipt.originalSourceScreenshot, false);
 
 		const artifactResponse = await dispatch(subject, envelope("artifact.read", {
 			artifactId: evidenceEvent.data.artifactId,

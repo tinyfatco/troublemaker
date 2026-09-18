@@ -196,6 +196,15 @@ export class ScopedAppEvidence {
 
 	async capture(contextId, input) {
 		if (!this.available) reject();
-		return await this.runtime.captureScopedEvidence(this.target, contextId, input);
+		const captured = await this.runtime.captureScopedEvidence(this.target, contextId, input);
+		if (!captured?.receipt || !captured?.artifact) reject();
+		return {
+			...captured,
+			receipt: {
+				...captured.receipt,
+				representation: "derived_quote_rendering",
+				originalSourceScreenshot: false,
+			},
+		};
 	}
 }

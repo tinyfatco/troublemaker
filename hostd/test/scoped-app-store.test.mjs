@@ -221,3 +221,45 @@ test("independent evidence turns are private, idempotent, and exactly retryable 
 		await subject.close();
 	}
 });
+
+test("legacy derived quote receipts are classified on read and conflicting metadata fails closed", async () => {
+	const subject = await fixture();
+	try {
+		const keys = scopedAppScopeKeys(ROUTING_KEY, TARGET_ID, SCOPE_A);
+		const artifactId = "legacy-derived-artifact";
+		const turnId = "bf7c145d-c066-472b-ab05-2c63f3ebec1e";
+		subject.store.startEvidenceTurn({
+			contextId: keys.contextId,
+			turnId,
+			accountKey: keys.accountKey,
+			userKey: keys.userKey,
+			membershipKey: keys.membershipKey,
+			membershipVersion: 1,
+			request: JSON.stringify({ artifactId }),
+			scope: SCOPE_A,
+		});
+		subject.store.putEvidence({
+			artifactId,
+			contextId: keys.contextId,
+			accountKey: keys.accountKey,
+			userKey: keys.userKey,
+			turnId,
+			receipt: { artifactId, synthetic: false },
+			artifact: { mediaType: "image/png", sha256: "a".repeat(64), bytes: Buffer.from("synthetic") },
+		});
+		assert.deepEqual(subject.store.readEvidence(artifactId, keys.contextId, keys.accountKey, keys.userKey), {
+			artifactId,
+			synthetic: false,
+			representation: "derived_quote_rendering",
+			originalSourceScreenshot: false,
+		});
+		subject.store.database.prepare("UPDATE scoped_app_evidence SET receipt_json = ? WHERE artifact_id = ?")
+			.run(JSON.stringify({ artifactId, representation: "original_source_page", originalSourceScreenshot: true }), artifactId);
+		assert.throws(
+			() => subject.store.readEvidence(artifactId, keys.contextId, keys.accountKey, keys.userKey),
+			(error) => error instanceof ScopedAppStoreError && error.code === "artifact_metadata_invalid",
+		);
+	} finally {
+		await subject.close();
+	}
+});
