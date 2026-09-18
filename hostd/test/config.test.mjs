@@ -976,6 +976,15 @@ test("loads one loopback-only scoped app with distinct capabilities and target",
 			maximumActiveTurnsPerContext: 1,
 		});
 
+		delete raw.webApp;
+		delete raw.phone;
+		raw.routing.knownPhonePrincipals = [];
+		await writeFile(path, JSON.stringify(raw));
+		const scopedOnly = await loadConfig(path, ENVIRONMENT);
+		assert.equal(scopedOnly.webApp, undefined);
+		assert.equal(scopedOnly.phone, undefined);
+		assert.equal(scopedOnly.scopedApp.port, 3130);
+
 		raw.scopedApp.host = "0.0.0.0";
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /scopedApp.host must remain loopback-only/);

@@ -1604,7 +1604,7 @@ export async function loadConfig(path, environment = process.env) {
 	if (webApp?.port === serverPort) {
 		throw new Error("webApp.port must differ from server.port");
 	}
-	if (webApp?.port === phone?.ingress?.port) {
+	if (webApp && phone?.ingress && webApp.port === phone.ingress.port) {
 		throw new Error("webApp.port must differ from phone.ingress.port");
 	}
 	if (scopedApp?.port === serverPort) {
