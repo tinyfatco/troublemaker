@@ -47,6 +47,11 @@ const callTurn = formatDeliveryContext({ sourceEventType: "computer_voice_call_t
 assert.match(callTurn, /continuing a live call/);
 assert.match(callTurn, /may be steering for work already in progress/);
 assert.match(callTurn, /do not invoke a separate speech tool/);
+const duplexDelegation = formatDeliveryContext({ sourceEventType: "computer_local_duplex_delegation" });
+assert.match(duplexDelegation, /canonical agent runtime/);
+assert.match(duplexDelegation, /only audible speaker/);
+assert.match(duplexDelegation, /Do not invoke speech\/TTS/);
+assert.match(duplexDelegation, /one natural reply/);
 
 const actions: string[] = [];
 assert.equal(routeBusyMessageWithoutInterrupt({

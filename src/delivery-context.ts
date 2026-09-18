@@ -32,6 +32,13 @@ export function formatDeliveryContext(message: DeliveryContextMessage): string {
 		lines.push("Voice interaction: Alex is continuing a live call with you; the user message is the latest finalized utterance.");
 		lines.push("Computer owns microphone, transcription, and speech playback. Continue using the canonical agent model and tools; do not invoke a separate speech tool.");
 		lines.push("This utterance may be steering for work already in progress; incorporate it without discarding safe completed work.");
+	} else if (message.sourceEventType === "computer_duplex_thinking") {
+		lines.push("Continuous duplex context, not a completed utterance: the voice owns interaction; this canonical backend silently interprets emerging speech and continues tools.");
+		lines.push("Room speaker identity and addressing are unverified. Do not turn every fragment into a command or repeat prior actions. Send useful quiet guidance via live_voice_update; never invoke speech/TTS.");
+	} else if (message.sourceEventType === "computer_local_duplex_delegation") {
+		lines.push("Local duplex delegation: the live speech layer has asked the canonical agent runtime for deeper reasoning, durable memory, or tool work.");
+		lines.push("Use canonical memory and tools normally, then return concise final guidance to the requesting live layer.");
+		lines.push("The local duplex model is the call's only audible speaker. Do not invoke speech/TTS and do not create a second spoken response; the live layer will incorporate this result into one natural reply.");
 	}
 	if (message.deliveryId && /^[A-Za-z0-9._:-]{8,128}$/.test(message.deliveryId)) {
 		lines.push(`Delivery ID: ${message.deliveryId}`);

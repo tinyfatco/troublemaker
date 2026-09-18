@@ -100,6 +100,13 @@ import { createElevenLabsVoiceSessionSpeechProvider } from "./elevenlabs-voice-s
 import { ComputerVoiceCanonicalSubmitter } from "../../console/voice-session-canonical.js";
 import { VoiceSessionRuntime } from "../../console/voice-session-runtime.js";
 import { VoiceSessionStore } from "../../console/voice-session-store.js";
+import { LocalDuplexIngress } from "../../local-duplex-ingress.js";
+import { LiveObservationJournal } from "../../live-observation-journal.js";
+import { LiveThinkingBridge } from "../../live-thinking-bridge.js";
+import { LiveThinkingRouter } from "../../live-thinking-router.js";
+import { LiveThinkingIngress } from "../../live-thinking-ingress.js";
+import { createLiveThinkingAdapter } from "../../adapters/live-thinking.js";
+import { createLiveVoiceUpdateTool } from "../../tools/live-voice-update.js";
 
 // ============================================================================
 // Channel labeling — human-readable names for messages in the awareness context
@@ -1121,6 +1128,7 @@ async function getAwareness(channelId: string, adapter: PlatformAdapter, formatI
 			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
+			createLiveVoiceUpdateTool((id, text) => liveThinkingBridge.publish(id, text)),
 			...mcpBridge.tools(),
 		];
 
@@ -1761,6 +1769,65 @@ const gateway = new Gateway({
 	ownerPushAvailable: false,
 });
 
+// Two logical harnesses, one canonical runner/tool owner. Fragment receipt is
+// synchronous and durable; steering never waits on the active operation queue.
+const liveThinkingAdapter = createLiveThinkingAdapter(workingDir, (id, text) => {
+	if (liveThinkingBridge.isActive(id)) liveThinkingBridge.publish(id, text);
+});
+const liveThinkingRouter = new LiveThinkingRouter({
+	steer: (prompt, deliveryId) => {
+		const completion = awareness?.running ? awareness.runner.steer(prompt, { projectionId: deliveryId, deliveryId }) : null;
+		if (!completion) return false;
+		// Accepted inputs are never automatically replayed, even after failure.
+		void completion.catch(() => log.logWarning("[live-thinking] Steering completion unverified; no automatic retry"));
+		return true;
+	},
+	queue: (id, takePrompt) => {
+		void withGlobalRunSlot(`live-thinking:${id}`, async () => {
+			const batch = takePrompt();
+			if (!batch) return;
+			const event: MomEvent = { type: "dm", channel: "duplex-thinking", user: "live-voice-harness",
+				ts: String(Date.now()), text: batch.prompt, sessionId: id,
+				sourceEventType: "computer_duplex_thinking", deliveryId: batch.deliveryId, directlyAddressed: false };
+			// Ending audio does not cancel already accepted canonical work.
+			await runEventInSlot(event, liveThinkingAdapter, false);
+		}).catch(() => {
+			if (liveThinkingBridge.isActive(id)) liveThinkingBridge.publish(id,
+				"The thinking backend failed. Completion is unverified; do not retry actions automatically.");
+		});
+	},
+});
+const liveThinkingBridge = new LiveThinkingBridge(join(workingDir, "awareness", "live-thinking"), input => liveThinkingRouter.accept(input));
+const liveThinkingPath = "/api/v2/agents/current/live-thinking";
+const liveThinkingIngress = new LiveThinkingIngress(liveThinkingBridge);
+gateway.register(liveThinkingPath, (req, res) => liveThinkingIngress.dispatch(req, res));
+gateway.registerGet(liveThinkingPath, (req, res) => liveThinkingIngress.dispatch(req, res));
+gateway.markReady(liveThinkingPath);
+
+const localDuplexIngressPath = "/api/v2/agents/current/local-duplex";
+const localDuplexTarget = {
+	append: async (turn: import("../../agent.js").LocalDuplexTranscriptTurn) => {
+		const state = await getAwareness("computer-mac", heartbeatAdapter, heartbeatAdapter.formatInstructions);
+		await state.runner.appendLocalDuplexTranscript(turn);
+	},
+	close: async (sessionId: string) => {
+		const state = await getAwareness("computer-mac", heartbeatAdapter, heartbeatAdapter.formatInstructions);
+		await state.runner.closeLocalDuplexTranscriptSession(sessionId);
+	},
+};
+const liveObservationJournal = new LiveObservationJournal(
+	join(workingDir, "awareness", "live-observations", "journal.json"), localDuplexTarget,
+);
+const localDuplexIngress = new LocalDuplexIngress({
+	...localDuplexTarget,
+	observe: turn => liveObservationJournal.accept(turn),
+	closeObservation: id => liveObservationJournal.close(id),
+	observationsHealthy: () => liveObservationJournal.healthy,
+});
+gateway.register(localDuplexIngressPath, (req, res) => localDuplexIngress.dispatch(req, res));
+gateway.registerGet(localDuplexIngressPath, (req, res) => localDuplexIngress.dispatch(req, res));
+gateway.markReady(localDuplexIngressPath);
+
 const hostOwnsDelayedSchedules = process.env.MOM_HOSTD_SCHEDULE_OWNER === "host";
 const scheduledPromptToken = process.env.MOM_SCHEDULED_PROMPT_INBOUND_TOKEN?.trim();
 const hostContextId = process.env.TROUBLEMAKER_CONTEXT_ID;
@@ -1869,6 +1936,7 @@ function realtimeHostTools() {
 			createBlockGoalTool(workingDir),
 			createAbandonGoalTool(workingDir),
 			createYieldNoActionTool(),
+			createLiveVoiceUpdateTool((id, text) => liveThinkingBridge.publish(id, text)),
 			...mcpBridge.tools(),
 		]
 			.filter((tool) => tool.name !== "speak")

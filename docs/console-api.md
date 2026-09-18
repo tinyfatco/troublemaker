@@ -27,6 +27,7 @@ GET  /api/v2/agents/:id/live
 POST /api/v2/agents/:id/messages
 POST /api/v2/agents/:id/messages/stop
 POST /api/v2/agents/:id/transcriptions
+POST /api/v2/agents/current/local-duplex       # standalone local extension
 POST /api/v2/agents/:id/voice-sessions
 GET  /api/v2/agents/:id/voice-sessions/:session-id/events?after=:sequence
 POST /api/v2/agents/:id/voice-sessions/:session-id/events
@@ -118,6 +119,32 @@ Successful results are durably reconciled by transcription ID and audio digest:
 an exact replay returns the same transcript without another provider call,
 while reuse of an ID for different audio fails with `409`. This lets clients
 recover from a lost response without guessing or duplicating paid work.
+
+Standalone Troublemaker also exposes authenticated
+`POST /api/v2/agents/current/local-duplex` for a host-local speech-to-speech
+process. A `transcript` body carries `session_id`, zero-based `sequence`,
+`role` (`user` or `assistant`), exact finalized `text`, and `timestamp_ms`.
+A `session.closed` body carries only `session_id`. The runner serializes these
+appends with canonical model operations but never starts inference. Exact
+retries are idempotent; sequence gaps, conflicting replays, invalid roles,
+and turns after close fail closed. This endpoint accepts no audio and is not a
+hosted or device-grant surface.
+
+A `transcript.observation` event uses the same fields with `role:user`, but
+`text` contains exact timestamped room/assistant **fragments**, not completed
+turns. It is appended only as untrusted historical context: no directly-addressed
+user claim, assistant final, inference, speech, or action. Clients must not relabel
+fragments as finalized `transcript` events. Responses include
+`live_observations:true`; a content-free authenticated GET on the same endpoint
+checks support before opening a live microphone, without waiting on the model's
+operation queue. `observation.closed` closes an observation session. Observations
+are durably accepted into an owner-only journal before HTTP acknowledgment;
+canonical appends then drain through the normal operation queue without inference.
+The journal is bounded to 4 MiB/4,096 pending events and 64 sessions. If interrupted
+during an ambiguous append, it retains the content and fails closed for explicit
+reconciliation rather than guessing/replaying it. This supports conversation
+while backend reasoning/tools continue. Cloud clients must never
+export prior private history to populate this context.
 
 When `capabilities.voice_session` is true, native clients use
 `computer.voice-session.v1` through the four `/voice-sessions` routes above.
@@ -255,3 +282,36 @@ bounded reasoning text to that Pi projection; reasoning signatures are always
 removed. These privileged projections exist only while a matching subscriber
 is connected and never become durable live history or conversation-surface
 content.
+
+### Continuous duplex thinking (standalone resident extension)
+
+`/api/v2/agents/current/live-thinking` shares the established gateway loopback /
+bearer-token boundary. GET returns `{ok:true,thinking_bridge:1}`. POST accepts:
+
+- `thinking.open`: `session_id` (fresh ephemeral ID; one active session).
+- `thinking.input`: `session_id`, monotonic zero-based `sequence`, and
+  `fragments:[{id,role:"room"|"assistant",text,start_ms,end_ms}]`.
+- `thinking.close`: `session_id`. Ending voice does not cancel accepted tools.
+
+GET with `?session_id=...` opens the sole session output SSE stream, containing
+only `{id,text}` deliberate quiet guidance. `live_voice_update(session_id,text)`
+returns interim/final results to it. Raw reasoning and arbitrary awareness output
+are never subscribed or forwarded. Closing/disconnecting the stream retires the
+voice session; late results cannot reach a replacement session.
+
+Receipt acknowledgement is **not action completion**. Ordered exact retries and
+fragment IDs are deduplicated, validated and fsynced before dispatch. Receipt
+files are owner-only, bounded to 4096 batches / 4MiB per session, and are not
+replayed after a crash; a used session ID is rejected after restart. The client
+must visibly pause and explicitly open a fresh session. There is no automatic
+retry of uncertain actions.
+
+The canonical runner receives developing room context via its existing
+noninterrupting steering API, or one coalesced headless run if unavailable.
+Steering is consumed at a model/tool-safe boundary, not in the middle of an
+in-flight model request. Assistant-only batches are retained but do not wake
+inference. Fragments are not completed utterances, speaker verification, or
+blanket authorization. The thinking harness interprets intent and preserves
+normal confirmation requirements. Legacy dictation webhook and local finalized
+transcript paths remain separate; a live provider delegation does not create a
+second action request.
