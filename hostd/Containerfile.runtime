@@ -53,10 +53,11 @@ COPY hostd/runtime/evidence-capture.mjs /opt/troublemaker/hostd-evidence-capture
 COPY hostd/runtime/runtime-entrypoint.sh /usr/local/bin/troublemaker-runtime-entrypoint
 COPY hostd/runtime/xfce-xstartup.sh /usr/local/bin/troublemaker-xfce-xstartup
 
-RUN chmod 0555 \
-	/usr/local/bin/troublemaker-runtime-entrypoint \
-	/usr/local/bin/troublemaker-xfce-xstartup \
-	/opt/troublemaker/hostd-evidence-capture.mjs \
+RUN chmod -R a+rX /opt/troublemaker/dist \
+	&& chmod 0555 \
+		/usr/local/bin/troublemaker-runtime-entrypoint \
+		/usr/local/bin/troublemaker-xfce-xstartup \
+		/opt/troublemaker/hostd-evidence-capture.mjs \
 	&& chmod 0444 \
 		/etc/troublemaker/cua-capabilities.yaml \
 		/etc/troublemaker/cua-evidence-capabilities.yaml
