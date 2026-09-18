@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:http";
+import { Gateway } from "../src/gateway.js";
 import { LiveThinkingBridge, liveThinkingPrompt, type LiveThinkingInput } from "../src/live-thinking-bridge.js";
 import { LiveThinkingRouter } from "../src/live-thinking-router.js";
 import { LiveThinkingIngress } from "../src/live-thinking-ingress.js";
@@ -104,5 +105,27 @@ try {
 		assert.equal((await fetch(`${base}?session_id=http-synthetic`)).status, 409);
 		assert.equal((await post({ type: "thinking.open", session_id: "../bad" })).status, 400);
 	} finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+	// The production route must pass through gateway authentication, including
+	// the query-bearing SSE path (not just a standalone HTTP test server).
+	const gatewayBridge = new LiveThinkingBridge(join(root, "gateway"), () => {});
+	const gatewayIngress = new LiveThinkingIngress(gatewayBridge);
+	const gateway = new Gateway({ consoleToken: "synthetic-thinking-token-0123456789" });
+	const path = "/api/v2/agents/current/live-thinking";
+	gateway.register(path, (req, res) => gatewayIngress.dispatch(req, res));
+	gateway.registerGet(path, (req, res) => gatewayIngress.dispatch(req, res));
+	gateway.markReady(path);
+	await gateway.start(address.port, "127.0.0.1");
+	try {
+		const url = `http://127.0.0.1:${address.port}${path}`;
+		assert.equal((await fetch(url)).status, 401);
+		assert.equal((await fetch(`${url}?session_id=gateway-synthetic`)).status, 401);
+		const headers = { authorization: "Bearer synthetic-thinking-token-0123456789", "content-type": "application/json" };
+		assert.equal((await (await fetch(url, { headers })).json()).thinking_bridge, 1);
+		assert.equal((await fetch(url, { method: "POST", headers, body: JSON.stringify({ type: "thinking.open", session_id: "gateway-synthetic" }) })).status, 200);
+		const stream = await fetch(`${url}?session_id=gateway-synthetic`, { headers });
+		assert.equal(stream.status, 200);
+		assert.equal(stream.headers.get("content-type"), "text/event-stream");
+		gatewayBridge.close("gateway-synthetic"); await stream.text();
+	} finally { await gateway.stop(); }
 	console.log("live thinking: continuous admission, dedupe, correction steering, quiet scoped return, restart/hangup boundaries OK");
 } finally { await rm(root, { recursive: true, force: true }); }
