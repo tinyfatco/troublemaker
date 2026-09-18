@@ -146,6 +146,34 @@ test("message proxy pins scope, streams natively, and performs real cancellation
 	}
 });
 
+test("concurrent native backlog and live streams share one runtime startup", async () => {
+	const { subject } = fixture();
+	try {
+		const { agentId } = await subject.bootstrap(envelope());
+		let active = 0;
+		let maximum = 0;
+		let calls = 0;
+		subject.runtime.ensureScopedOciContext = async () => {
+			calls += 1;
+			active += 1;
+			maximum = Math.max(maximum, active);
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+			active -= 1;
+			return { port: 34567 };
+		};
+		const [events, live] = await Promise.all([
+			subject.proxy(envelope(agentId, { limit: 50 }), "events"),
+			subject.proxy(envelope(agentId, {}), "live"),
+		]);
+		assert.equal(calls, 1);
+		assert.equal(maximum, 1);
+		await events.close({ completed: true });
+		await live.close({ completed: true });
+	} finally {
+		await subject.shutdown();
+	}
+});
+
 test("an early browser message-stream disconnect stops model work", async () => {
 	const { subject, requests } = fixture();
 	try {

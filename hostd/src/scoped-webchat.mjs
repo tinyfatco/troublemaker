@@ -82,6 +82,7 @@ export class ScopedWebchat {
 		this.connections = new Map();
 		this.activeMessages = new Map();
 		this.idleTimers = new Map();
+		this.runtimeStarts = new Map();
 	}
 
 	hasActiveContext(contextId) {
@@ -179,12 +180,21 @@ export class ScopedWebchat {
 	}
 
 	async ensureRuntime(authorized) {
-		const organization = await this.gateway.materializeOrganizationContext(authorized.keys.accountKey);
-		const runtime = await this.runtime.ensureScopedOciContext(
-			this.target,
-			authorized.keys.contextId,
-			organization,
-		);
+		const contextId = authorized.keys.contextId;
+		let start = this.runtimeStarts.get(contextId);
+		if (!start) {
+			start = (async () => {
+				const organization = await this.gateway.materializeOrganizationContext(authorized.keys.accountKey);
+				return await this.runtime.ensureScopedOciContext(this.target, contextId, organization);
+			})();
+			this.runtimeStarts.set(contextId, start);
+		}
+		let runtime;
+		try {
+			runtime = await start;
+		} finally {
+			if (this.runtimeStarts.get(contextId) === start) this.runtimeStarts.delete(contextId);
+		}
 		const refreshed = await this.gateway.renewScope(authorized.scope);
 		if (
 			refreshed.keys.contextId !== authorized.keys.contextId
