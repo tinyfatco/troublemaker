@@ -19,6 +19,7 @@ interface Session {
 	fragments: Map<string, string>;
 	updates: LiveThinkingUpdate[]; updateDigests: Set<string>;
 	listeners: Set<(update: LiveThinkingUpdate | null) => void>;
+	attachmentDeadline?: ReturnType<typeof setTimeout>;
 }
 
 /** One ephemeral interaction over the canonical runner, never a second agent.
@@ -46,6 +47,12 @@ export class LiveThinkingBridge {
 		if (existsSync(join(this.directory, `${id}.json`))) throw new Error("Live session cannot be replayed after restart");
 		const state: Session = { id, next: 0, closed: false, failed: false, receipts: [], fragments: new Map(), updates: [], updateDigests: new Set(), listeners: new Set() };
 		this.persist(state); this.current = state;
+		// A client that crashes between POST open and GET SSE must not reserve
+		// the resident forever. This lease never starts inference or reconnects.
+		state.attachmentDeadline = setTimeout(() => {
+			if (this.isActive(id) && !state.listeners.size) this.close(id);
+		}, 45_000);
+		state.attachmentDeadline.unref();
 	}
 	accept(input: LiveThinkingInput): void {
 		const state = this.require(input.session_id);
@@ -87,6 +94,7 @@ export class LiveThinkingBridge {
 	subscribe(id: string, listener: (update: LiveThinkingUpdate | null) => void): () => void {
 		const state = this.require(id);
 		if (state.listeners.size) throw new Error("Live output already attached");
+		clearTimeout(state.attachmentDeadline); state.attachmentDeadline = undefined;
 		state.listeners.add(listener);
 		for (const update of state.updates) listener(update);
 		return () => state.listeners.delete(listener);
@@ -95,7 +103,7 @@ export class LiveThinkingBridge {
 		if (this.current?.id === id && this.current.closed) return;
 		const state = this.require(id); state.closed = true; this.persist(state); this.endListeners(state);
 	}
-	private endListeners(state: Session): void { for (const listener of state.listeners) listener(null); state.listeners.clear(); }
+	private endListeners(state: Session): void { clearTimeout(state.attachmentDeadline); for (const listener of state.listeners) listener(null); state.listeners.clear(); }
 	private persist(state: Session): void {
 		const path = join(this.directory, `${state.id}.json`); const temporary = `${path}.${randomUUID()}.tmp`;
 		try {
