@@ -1,0 +1,111 @@
+{
+  "note": "Synthetic fixture only; refresh scope timestamps for integration testing.",
+  "scope": {
+    "leaseId": "6f77f5fa-9375-4341-801c-f17e7814fa70",
+    "accountId": "synthetic-org-a",
+    "userId": "synthetic-user-a",
+    "membershipId": "synthetic-member-a",
+    "membershipVersion": 1,
+    "role": "member",
+    "authorizedAt": "2026-09-18T05:00:00.000Z",
+    "expiresAt": "2026-09-18T05:00:30.000Z"
+  },
+  "requests": {
+    "send": {
+      "version": "vectors.v1",
+      "requestId": "a90313c5-a6ec-42a9-a273-8e0a7711ad42",
+      "scope": {
+        "leaseId": "6f77f5fa-9375-4341-801c-f17e7814fa70",
+        "accountId": "synthetic-org-a",
+        "userId": "synthetic-user-a",
+        "membershipId": "synthetic-member-a",
+        "membershipVersion": 1,
+        "role": "member",
+        "authorizedAt": "2026-09-18T05:00:00.000Z",
+        "expiresAt": "2026-09-18T05:00:30.000Z"
+      },
+      "operation": "chat.send",
+      "payload": {
+        "turnId": "af7c145d-c066-472b-ab05-2c63f3ebec1e",
+        "text": "Help me describe a synthetic walking organization."
+      }
+    },
+    "contextWrite": {
+      "version": "vectors.v1",
+      "requestId": "84e67dbd-4c0d-4885-8298-10741f03d3e0",
+      "scope": {
+        "leaseId": "6f77f5fa-9375-4341-801c-f17e7814fa70",
+        "accountId": "synthetic-org-a",
+        "userId": "synthetic-user-a",
+        "membershipId": "synthetic-member-a",
+        "membershipVersion": 1,
+        "role": "member",
+        "authorizedAt": "2026-09-18T05:00:00.000Z",
+        "expiresAt": "2026-09-18T05:00:30.000Z"
+      },
+      "operation": "context.write",
+      "payload": {
+        "markdown": "# Synthetic organization\nUnknown mission.\n",
+        "expectedRevision": 0,
+        "reviewed": true
+      }
+    },
+    "renew": {
+      "version": "vectors.v1",
+      "scope": {
+        "leaseId": "6f77f5fa-9375-4341-801c-f17e7814fa70",
+        "accountId": "synthetic-org-a",
+        "userId": "synthetic-user-a",
+        "membershipId": "synthetic-member-a",
+        "membershipVersion": 1,
+        "role": "member",
+        "authorizedAt": "2026-09-18T05:00:00.000Z",
+        "expiresAt": "2026-09-18T05:00:30.000Z"
+      }
+    }
+  },
+  "responses": {
+    "capabilities": {
+      "runtime": "hostd",
+      "protocol": "vectors.v1",
+      "durableChat": true,
+      "contextCas": true,
+      "revocation": true,
+      "cua": false
+    },
+    "send": {
+      "turnId": "af7c145d-c066-472b-ab05-2c63f3ebec1e",
+      "status": "queued",
+      "events": []
+    },
+    "events": {
+      "events": [
+        {
+          "sequence": 1,
+          "turnId": "af7c145d-c066-472b-ab05-2c63f3ebec1e",
+          "type": "message",
+          "text": "What is your organization’s mission?",
+          "data": {
+            "role": "assistant"
+          }
+        }
+      ],
+      "nextCursor": 1
+    },
+    "context": {
+      "markdown": "",
+      "revision": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "cancel": {
+      "turnId": "af7c145d-c066-472b-ab05-2c63f3ebec1e",
+      "status": "cancelled"
+    },
+    "conflict": {
+      "error": {
+        "code": "conflict",
+        "message": "Revision conflict"
+      }
+    }
+  }
+}

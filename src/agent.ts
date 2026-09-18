@@ -34,6 +34,7 @@ import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contra
 import * as log from "./log.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { runWithModelCredentialGate } from "./model-auth-gate.js";
+import { requireRuntimeAuthorization } from "./runtime-authorization.js";
 import {
 	applyMigratedHostdStreamPolicy,
 	boundCompactionStreamOptions,
@@ -1212,6 +1213,7 @@ async function createRunner(
 				const gated = await runWithModelCredentialGate({
 					resolveCredential: resolveCurrentModelCredential,
 					prompt: async () => {
+						await requireRuntimeAuthorization("model");
 						acceptsSteering = true;
 						await withToolOutputStream(claudeCliToolOutputHandler, async () => {
 							await currentSession.prompt(finalUserMessage, {
@@ -1279,6 +1281,7 @@ async function createRunner(
 						const gated = await runWithModelCredentialGate({
 							resolveCredential: resolveCurrentModelCredential,
 							prompt: async () => {
+								await requireRuntimeAuthorization("model");
 								acceptsSteering = true;
 								await withToolOutputStream(claudeCliToolOutputHandler, async () => {
 									await currentSession.prompt(retryInstruction, {

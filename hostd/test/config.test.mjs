@@ -23,6 +23,9 @@ const ENVIRONMENT = {
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
+	TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN: "test-scoped-dispatch-token-at-least-32-bytes",
+	TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN: "test-scoped-revoke-token-at-least-32-bytes",
+	TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN: "test-scoped-renewal-token-at-least-32-bytes",
 	TROUBLEMAKER_HOSTD_MCP_CRAWDAD_ASSERTION_SECRET: "test-crawdad-assertion-secret-at-least-32-bytes",
 	TROUBLEMAKER_HOSTD_MCP_FAT_ASSERTION_SECRET: "test-fat-assertion-secret-at-least-32-bytes",
 	ROCKETCHAT_HOSTD_ADMIN_USER_ID: "example-admin-user",
@@ -932,6 +935,71 @@ test("loads bounded scheduled wake shadow and exact host ownership", async () =>
 		};
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /maximumScanFilesPerTick must be an integer from 1 to 2/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("loads one loopback-only scoped app with distinct capabilities and target", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-scoped-app-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.scopedApp = {
+			host: "127.0.0.1",
+			port: 3130,
+			targetId: "front-desk",
+			databasePath: join(directory, "scoped.sqlite"),
+			organizationsDirectory: join(directory, "organizations"),
+			dispatchPath: "/v1/example/dispatch",
+			dispatchTokenEnv: "TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN",
+			revokeTokenEnv: "TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN",
+			renewalUrl: "https://app.example.com/api/internal/hostd/lease/renew",
+			renewalTokenEnv: "TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN",
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(config.scopedApp, {
+			host: "127.0.0.1",
+			port: 3130,
+			targetId: "front-desk",
+			databasePath: join(directory, "scoped.sqlite"),
+			organizationsDirectory: join(directory, "organizations"),
+			dispatchPath: "/v1/example/dispatch",
+			dispatchToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN,
+			revokeToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN,
+			renewalUrl: "https://app.example.com/api/internal/hostd/lease/renew",
+			renewalToken: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_RENEWAL_TOKEN,
+			maximumRequestBytes: 128 * 1024,
+			maximumEventsPerContext: 2_000,
+			maximumActiveTurnsPerContext: 1,
+		});
+
+		raw.scopedApp.host = "0.0.0.0";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /scopedApp.host must remain loopback-only/);
+		raw.scopedApp.host = "127.0.0.1";
+
+		raw.scopedApp.port = raw.server.port;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /scopedApp.port must differ from server.port/);
+		raw.scopedApp.port = 3130;
+
+		raw.scopedApp.renewalUrl = "http://app.example.com/api/internal/hostd/lease/renew";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must use HTTPS outside loopback/);
+		raw.scopedApp.renewalUrl = "https://app.example.com/api/internal/hostd/lease/renew";
+
+		raw.scopedApp.targetId = "missing";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must reference an OCI target/);
+		raw.scopedApp.targetId = "front-desk";
+
+		await assert.rejects(loadConfig(path, {
+			...ENVIRONMENT,
+			TROUBLEMAKER_SCOPED_APP_REVOKE_TOKEN: ENVIRONMENT.TROUBLEMAKER_SCOPED_APP_DISPATCH_TOKEN,
+		}), /capabilities must be distinct/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

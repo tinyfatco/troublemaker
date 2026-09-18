@@ -1,5 +1,6 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type, type TSchema } from "typebox";
+import { requireRuntimeAuthorization } from "../runtime-authorization.js";
 
 const DEFAULT_LABEL_DESCRIPTION = "Brief, safe, human-readable description of what this tool call is doing";
 const wrappedTools = new WeakSet<object>();
@@ -77,6 +78,8 @@ export function enforceRequiredToolLabel<T extends AgentTool<any>>(tool: T): T {
 	const originalExecute = tool.execute;
 	tool.execute = (async (...args: unknown[]) => {
 		requireNonblankToolLabel(args[1], tool.name);
+		const signal = args[2] instanceof AbortSignal ? args[2] : undefined;
+		await requireRuntimeAuthorization("tool", signal);
 		return (originalExecute as (...executeArgs: unknown[]) => unknown).apply(tool, args);
 	}) as typeof tool.execute;
 

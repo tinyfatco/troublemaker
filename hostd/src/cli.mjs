@@ -25,6 +25,10 @@ import { readRoutingKey, stablePrivateKey } from "./security.mjs";
 import { EventScheduler } from "./scheduler.mjs";
 import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
 import { createHostServer } from "./server.mjs";
+import { ScopedAppEvidence } from "./scoped-app-evidence.mjs";
+import { ScopedAppGateway } from "./scoped-app-gateway.mjs";
+import { createScopedAppServer } from "./scoped-app-server.mjs";
+import { ScopedAppStore } from "./scoped-app-store.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
 import { WebChatGateway } from "./web-chat.mjs";
@@ -115,6 +119,25 @@ async function components(configPath) {
 		routingKey,
 		sites,
 	});
+	const scopedAppStore = config.scopedApp
+		? new ScopedAppStore(config.scopedApp.databasePath, config.scopedApp)
+		: undefined;
+	const scopedAppTarget = config.scopedApp
+		? config.targetsById.get(config.scopedApp.targetId)
+		: undefined;
+	const scopedAppEvidence = config.scopedApp
+		? new ScopedAppEvidence({ runtime, target: scopedAppTarget })
+		: undefined;
+	const scopedAppGateway = config.scopedApp
+		? new ScopedAppGateway({
+			config: config.scopedApp,
+			store: scopedAppStore,
+			runtime,
+			routingKey,
+			target: scopedAppTarget,
+			evidence: scopedAppEvidence,
+		})
+		: undefined;
 	const mcp = config.mcp
 		? new HostMcp({
 			config,
@@ -192,6 +215,8 @@ async function components(configPath) {
 		routingKey,
 		router,
 		runtime,
+		scopedAppStore,
+		scopedAppGateway,
 		mcp,
 		mcpOutbound,
 		mattermost,
@@ -215,8 +240,16 @@ async function components(configPath) {
 
 async function serve(configPath) {
 	const state = await components(configPath);
+	await state.scopedAppGateway?.recoverInterrupted();
 	const server = createHostServer(state);
 	const webAppServer = state.config.webApp ? createWebAppServer(state) : undefined;
+	const scopedAppServer = state.config.scopedApp
+		? createScopedAppServer({
+			config: state.config,
+			gateway: state.scopedAppGateway,
+			target: state.config.targetsById.get(state.config.scopedApp.targetId),
+		})
+		: undefined;
 	const mcpEdgeServer = state.config.mcp ? createMcpEdgeServer(state) : undefined;
 	await new Promise((resolvePromise, reject) => {
 		server.once("error", reject);
@@ -240,6 +273,30 @@ async function serve(configPath) {
 			);
 		} catch (error) {
 			await new Promise((resolvePromise) => server.close(resolvePromise));
+			state.scopedAppStore?.close();
+			state.store.close();
+			throw error;
+		}
+	}
+	if (scopedAppServer) {
+		try {
+			await new Promise((resolvePromise, reject) => {
+				scopedAppServer.once("error", reject);
+				scopedAppServer.listen(
+					state.config.scopedApp.port,
+					state.config.scopedApp.host,
+					resolvePromise,
+				);
+			});
+			console.log(
+				`troublemaker-hostd: scoped app gateway listening on ${state.config.scopedApp.host}:${state.config.scopedApp.port}`,
+			);
+		} catch (error) {
+			if (webAppServer) {
+				await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
+			}
+			await new Promise((resolvePromise) => server.close(resolvePromise));
+			state.scopedAppStore?.close();
 			state.store.close();
 			throw error;
 		}
@@ -261,7 +318,11 @@ async function serve(configPath) {
 			if (webAppServer) {
 				await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
 			}
+			if (scopedAppServer) {
+				await new Promise((resolvePromise) => scopedAppServer.close(resolvePromise));
+			}
 			await new Promise((resolvePromise) => server.close(resolvePromise));
+			state.scopedAppStore?.close();
 			state.store.close();
 			throw error;
 		}
@@ -302,10 +363,15 @@ async function serve(configPath) {
 		if (webAppServer) {
 			await new Promise((resolvePromise) => webAppServer.close(resolvePromise));
 		}
+		if (scopedAppServer) {
+			await new Promise((resolvePromise) => scopedAppServer.close(resolvePromise));
+		}
 		if (mcpEdgeServer) {
 			await new Promise((resolvePromise) => mcpEdgeServer.close(resolvePromise));
 		}
+		await state.scopedAppGateway?.shutdown();
 		await new Promise((resolvePromise) => server.close(resolvePromise));
+		state.scopedAppStore?.close();
 		state.store.close();
 	};
 	process.once("SIGTERM", () => void stop("SIGTERM"));

@@ -14,8 +14,12 @@ import {
 	initializeMattermostWorkingOutput,
 	initializeNamedAgentIdentity,
 	initializeNamedAgentInstructions,
+	initializeScopedAppInstructions,
 	readComputerControlState,
 	RuntimeManager,
+	scopedAppRuntimeEnvironment,
+	scopedAppRuntimeMountArgs,
+	scopedAppRuntimeVersionSuffix,
 	runtimeEngineRunFlags,
 	scheduledWakeRuntimeVersion,
 	serializeRuntimeEnvironment,
@@ -594,4 +598,97 @@ test("runtime engine flags keep Docker and rootless Podman launchers distinct", 
 		"--userns=keep-id",
 		"--network=slirp4netns:allow_host_loopback=true",
 	]);
+});
+
+test("scoped app runtime authority is exact-context and organization mount is read-only", () => {
+	const contextId = "example-agent:0123456789abcdef0123456789abcdef01234567:scoped-app";
+	const target = {
+		inboundToken: "example-runtime-inbound-capability",
+		hostGateway: "host.containers.internal",
+	};
+	const config = { scopedApp: { port: 3130 } };
+	const organization = {
+		organizationKey: "a".repeat(40),
+		revision: 2,
+		sha256: "b".repeat(64),
+		path: `/srv/example/organizations/${"a".repeat(40)}/CONTEXT.md`,
+	};
+	assert.deepEqual(scopedAppRuntimeEnvironment(config, target, contextId, organization), {
+		MOM_WEB_INPUT_TOKEN: contextCapability(target.inboundToken, "web-app", contextId),
+		TROUBLEMAKER_RUNTIME_AUTHORIZATION_URL:
+			`http://host.containers.internal:3130/v1/scoped-app/runtime/${encodeURIComponent(contextId)}/authorize`,
+		TROUBLEMAKER_RUNTIME_AUTHORIZATION_TOKEN: contextCapability(
+			target.inboundToken,
+			"scoped-app-runtime-authorization",
+			contextId,
+		),
+		TROUBLEMAKER_SCOPED_CONTEXT_FILE: "/run/troublemaker-hostd/organization/CONTEXT.md",
+	});
+	assert.deepEqual(scopedAppRuntimeMountArgs(organization), [
+		"--volume",
+		`/srv/example/organizations/${"a".repeat(40)}:/run/troublemaker-hostd/organization:ro`,
+	]);
+	assert.deepEqual(scopedAppRuntimeEnvironment(config, target, contextId, undefined), {});
+	assert.deepEqual(scopedAppRuntimeMountArgs(undefined), []);
+	assert.notEqual(
+		scopedAppRuntimeVersionSuffix(organization),
+		scopedAppRuntimeVersionSuffix({ ...organization, revision: 3 }),
+	);
+});
+
+test("scoped app instructions preserve personal/shared boundaries idempotently", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-scoped-instructions-"));
+	try {
+		await writeFile(join(directory, "AGENTS.md"), "# Existing\n\nKeep this.\n");
+		assert.equal(await initializeScopedAppInstructions(directory), true);
+		assert.equal(await initializeScopedAppInstructions(directory), false);
+		const instructions = await readFile(join(directory, "AGENTS.md"), "utf8");
+		assert.match(instructions, /exactly one authenticated web user/);
+		assert.match(instructions, /organization\/CONTEXT\.md/);
+		assert.match(instructions, /read-only/);
+		assert.match(instructions, /Keep this\./);
+		assert.equal((instructions.match(/hostd:scoped-app:start/g) || []).length, 1);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("scoped context provisioning rejects mount escape before starting a runtime", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-scoped-mount-"));
+	try {
+		const organizationsDirectory = join(directory, "organizations");
+		const organizationKey = "a".repeat(40);
+		const organizationDirectory = join(organizationsDirectory, organizationKey);
+		const path = join(organizationDirectory, "CONTEXT.md");
+		await mkdir(organizationDirectory, { recursive: true });
+		await writeFile(path, "# Synthetic\n");
+		const manager = new RuntimeManager({
+			scopedApp: { targetId: "example-agent", organizationsDirectory },
+		}, {}, {});
+		let ensured = false;
+		manager.ensureOciContext = async () => {
+			ensured = true;
+			return { port: 32100 };
+		};
+		const target = { id: "example-agent" };
+		const contextId = "example-agent:synthetic:scoped-app";
+		assert.deepEqual(await manager.ensureScopedOciContext(target, contextId, {
+			organizationKey,
+			revision: 0,
+			sha256: "b".repeat(64),
+			path,
+		}), { port: 32100 });
+		assert.equal(ensured, true);
+		await assert.rejects(
+			manager.ensureScopedOciContext(target, contextId, {
+				organizationKey,
+				revision: 0,
+				sha256: "b".repeat(64),
+				path: join(directory, "CONTEXT.md"),
+			}),
+			/escaped its configured directory/,
+		);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
 });

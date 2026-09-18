@@ -48,13 +48,18 @@ RUN npm ci --omit=dev --ignore-scripts \
 
 COPY dist ./dist
 COPY hostd/runtime/cua-capabilities.yaml /etc/troublemaker/cua-capabilities.yaml
+COPY hostd/runtime/cua-evidence-capabilities.yaml /etc/troublemaker/cua-evidence-capabilities.yaml
+COPY hostd/runtime/evidence-capture.mjs /opt/troublemaker/hostd-evidence-capture.mjs
 COPY hostd/runtime/runtime-entrypoint.sh /usr/local/bin/troublemaker-runtime-entrypoint
 COPY hostd/runtime/xfce-xstartup.sh /usr/local/bin/troublemaker-xfce-xstartup
 
 RUN chmod 0555 \
 	/usr/local/bin/troublemaker-runtime-entrypoint \
 	/usr/local/bin/troublemaker-xfce-xstartup \
-	&& chmod 0444 /etc/troublemaker/cua-capabilities.yaml
+	/opt/troublemaker/hostd-evidence-capture.mjs \
+	&& chmod 0444 \
+		/etc/troublemaker/cua-capabilities.yaml \
+		/etc/troublemaker/cua-evidence-capabilities.yaml
 
 ENV NODE_ENV=production
 

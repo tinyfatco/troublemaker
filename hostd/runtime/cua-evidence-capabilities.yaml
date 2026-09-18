@@ -1,0 +1,13 @@
+version: 3
+expires_after: 1h
+idle_timeout: 15m
+
+allow:
+  tools:
+    - start_session
+    - end_session
+    - list_windows
+
+resources:
+  desktop:
+    display: true

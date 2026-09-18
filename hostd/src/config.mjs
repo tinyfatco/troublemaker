@@ -948,6 +948,89 @@ function webAppConfig(raw, environment) {
 	};
 }
 
+function scopedAppConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const scopedApp = object(raw, "scopedApp");
+	const listenerHost = loopbackHost(scopedApp.host, "127.0.0.1", "scopedApp.host");
+	const dispatchToken = envSecret(
+		scopedApp.dispatchTokenEnv,
+		"scopedApp.dispatchTokenEnv",
+		environment,
+	);
+	const revokeToken = envSecret(
+		scopedApp.revokeTokenEnv,
+		"scopedApp.revokeTokenEnv",
+		environment,
+	);
+	const renewalToken = envSecret(
+		scopedApp.renewalTokenEnv,
+		"scopedApp.renewalTokenEnv",
+		environment,
+	);
+	for (const [value, label] of [
+		[dispatchToken, "scopedApp.dispatchTokenEnv"],
+		[revokeToken, "scopedApp.revokeTokenEnv"],
+		[renewalToken, "scopedApp.renewalTokenEnv"],
+	]) {
+		if (Buffer.byteLength(value, "utf8") < 32) {
+			throw new Error(`${label} must contain at least 32 bytes`);
+		}
+	}
+	if (new Set([dispatchToken, revokeToken, renewalToken]).size !== 3) {
+		throw new Error("scopedApp dispatch, revoke, and renewal capabilities must be distinct");
+	}
+	const renewalUrl = new URL(httpUrl(scopedApp.renewalUrl, "scopedApp.renewalUrl"));
+	if (
+		renewalUrl.protocol !== "https:"
+		&& !["127.0.0.1", "localhost", "::1"].includes(renewalUrl.hostname)
+	) throw new Error("scopedApp.renewalUrl must use HTTPS outside loopback");
+	if (renewalUrl.search || renewalUrl.hash) {
+		throw new Error("scopedApp.renewalUrl cannot include query parameters or a fragment");
+	}
+	const dispatchPath = scopedApp.dispatchPath === undefined
+		? "/v1/scoped-app/dispatch"
+		: text(scopedApp.dispatchPath, "scopedApp.dispatchPath");
+	if (!/^\/[a-z0-9/_-]+$/i.test(dispatchPath) || dispatchPath.endsWith("/")) {
+		throw new Error("scopedApp.dispatchPath must be one absolute path without a trailing slash");
+	}
+	return {
+		host: listenerHost,
+		port: integer(scopedApp.port, 3130, "scopedApp.port", 1024, 65535),
+		targetId: text(scopedApp.targetId, "scopedApp.targetId"),
+		databasePath: resolve(text(scopedApp.databasePath, "scopedApp.databasePath")),
+		organizationsDirectory: resolve(text(
+			scopedApp.organizationsDirectory,
+			"scopedApp.organizationsDirectory",
+		)),
+		dispatchPath,
+		dispatchToken,
+		revokeToken,
+		renewalUrl: renewalUrl.toString(),
+		renewalToken,
+		maximumRequestBytes: integer(
+			scopedApp.maximumRequestBytes,
+			128 * 1024,
+			"scopedApp.maximumRequestBytes",
+			1024,
+			1024 * 1024,
+		),
+		maximumEventsPerContext: integer(
+			scopedApp.maximumEventsPerContext,
+			2_000,
+			"scopedApp.maximumEventsPerContext",
+			100,
+			100_000,
+		),
+		maximumActiveTurnsPerContext: integer(
+			scopedApp.maximumActiveTurnsPerContext,
+			1,
+			"scopedApp.maximumActiveTurnsPerContext",
+			1,
+			8,
+		),
+	};
+}
+
 function mcpConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const mcp = object(raw, "mcp");
@@ -1438,6 +1521,7 @@ export async function loadConfig(path, environment = process.env) {
 	const metaContact = metaContactConfig(raw.metaContact, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
 	const webApp = webAppConfig(raw.webApp, environment);
+	const scopedApp = scopedAppConfig(raw.scopedApp, environment);
 	const mcp = mcpConfig(raw.mcp, environment);
 	const sites = await sitesConfig(raw.sites, environment);
 	if (phone?.ingress && !/^\/[a-z0-9/_-]+$/i.test(phone.ingress.path)) {
@@ -1523,6 +1607,15 @@ export async function loadConfig(path, environment = process.env) {
 	if (webApp?.port === phone?.ingress?.port) {
 		throw new Error("webApp.port must differ from phone.ingress.port");
 	}
+	if (scopedApp?.port === serverPort) {
+		throw new Error("scopedApp.port must differ from server.port");
+	}
+	if (scopedApp && (
+		scopedApp.port === phone?.ingress?.port
+		|| scopedApp.port === webApp?.port
+	)) {
+		throw new Error("scopedApp.port must differ from every other app/ingress listener");
+	}
 	if (mcp && mcp.edge.port === serverPort) {
 		throw new Error("mcp.edge.port must differ from server.port");
 	}
@@ -1531,6 +1624,18 @@ export async function loadConfig(path, environment = process.env) {
 	}
 	if (mcp && phone?.ingress && mcp.edge.port === phone.ingress.port) {
 		throw new Error("mcp.edge.port must differ from phone.ingress.port");
+	}
+	if (mcp && scopedApp && mcp.edge.port === scopedApp.port) {
+		throw new Error("mcp.edge.port must differ from scopedApp.port");
+	}
+	if (scopedApp) {
+		const selected = targets.find((target) => target.id === scopedApp.targetId);
+		if (!selected || selected.driver !== "oci") {
+			throw new Error("scopedApp.targetId must reference an OCI target");
+		}
+		if (!selected.agent) {
+			throw new Error("scopedApp.targetId must reference a target with named agent identity");
+		}
 	}
 
 	const configuredPrincipals = knownPrincipals.map((candidate, index) => {
@@ -1754,6 +1859,7 @@ export async function loadConfig(path, environment = process.env) {
 		phone,
 		metaContact,
 		webApp,
+		scopedApp,
 		mcp,
 		openAi,
 		workersAi,
