@@ -217,45 +217,73 @@ export class ScopedAppGateway {
 			"scoped-app-evidence",
 			envelope.requestId,
 		).slice(0, 40);
+		const controller = new AbortController();
+		this.activeTurns.set(keys.contextId, {
+			turnId: envelope.payload.turnId,
+			scope: currentScope,
+			keys,
+			controller,
+		});
+		void this.runEvidenceCapture(
+			keys.contextId,
+			envelope.payload.turnId,
+			envelope.payload,
+			source,
+			artifactId,
+		).catch(() => undefined);
+		return { status: "queued", turnId: envelope.payload.turnId };
+	}
+
+	async runEvidenceCapture(contextId, turnId, payload, source, artifactId) {
+		const active = this.activeTurns.get(contextId);
+		if (!active || active.turnId !== turnId) return;
+		const heartbeat = this.heartbeat(contextId, active.controller.signal).catch((error) => {
+			if (!active.controller.signal.aborted) active.controller.abort(error);
+		});
 		try {
-			currentScope = await this.renewEvidenceScope(currentScope, keys);
-			const captured = await this.evidence.capture(keys.contextId, {
+			let currentScope = await this.renewActiveTurn(contextId);
+			const captured = await this.evidence.capture(contextId, {
 				artifactId,
 				accountId: currentScope.accountId,
 				userId: currentScope.userId,
-				turnId: envelope.payload.turnId,
-				grantId: envelope.payload.grantId,
-				field: envelope.payload.field,
-				exactQuote: envelope.payload.exactQuote,
+				turnId,
+				grantId: payload.grantId,
+				field: payload.field,
+				exactQuote: payload.exactQuote,
 				sourceUrl: source.sourceUrl,
 				sourceSha256: source.sourceSha256,
 			});
-			currentScope = await this.renewEvidenceScope(currentScope, keys);
+			if (active.controller.signal.aborted) throw active.controller.signal.reason;
+			currentScope = await this.renewActiveTurn(contextId);
+			const current = this.store.getTurn(contextId, turnId);
+			if (!current || current.status !== "running") throw new ScopedAppAuthorizationError();
 			this.store.putEvidence({
 				artifactId,
-				contextId: keys.contextId,
-				accountKey: keys.accountKey,
-				userKey: keys.userKey,
-				turnId: envelope.payload.turnId,
+				contextId,
+				accountKey: active.keys.accountKey,
+				userKey: active.keys.userKey,
+				turnId,
 				receipt: captured.receipt,
 				artifact: captured.artifact,
 			});
-			this.store.appendEvent(keys.contextId, envelope.payload.turnId, "evidence", undefined, { artifactId });
-			this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "completed", { clearScope: true });
-			return { status: "queued", turnId: envelope.payload.turnId };
+			this.store.appendEvent(contextId, turnId, "evidence", undefined, { artifactId });
+			this.store.setTurnStatus(contextId, turnId, "completed", { clearScope: true });
 		} catch (error) {
 			console.error(
 				"troublemaker-hostd: scoped evidence capture failed:",
 				error instanceof Error ? error.message : String(error),
 			);
-			const current = this.store.getTurn(keys.contextId, envelope.payload.turnId);
+			const current = this.store.getTurn(contextId, turnId);
 			if (current && !TERMINAL_TURN_STATES.has(current.status)) {
-				this.store.setTurnStatus(keys.contextId, envelope.payload.turnId, "failed", {
+				this.store.setTurnStatus(contextId, turnId, "failed", {
 					error: error instanceof ScopedAppAuthorizationError ? "authorization_revoked" : "evidence_failed",
 					clearScope: true,
 				});
 			}
-			throw error;
+		} finally {
+			active.controller.abort(new Error("evidence finished"));
+			await heartbeat.catch(() => undefined);
+			if (this.activeTurns.get(contextId) === active) this.activeTurns.delete(contextId);
 		}
 	}
 

@@ -252,8 +252,10 @@ test("evidence is captured with fresh scope and remains private to one user", as
 		}));
 		assert.equal(capture.status, 200);
 		assert.deepEqual(await capture.json(), { status: "queued", turnId: evidenceTurnId });
-		const events = subject.store.listEvents(keys.contextId, 0).events;
-		const evidenceEvent = events.find((event) => event.type === "evidence");
+		const evidenceEvent = await waitFor(
+			() => subject.store.listEvents(keys.contextId, 0).events.find((event) => event.type === "evidence"),
+			"evidence completion",
+		);
 		assert.match(evidenceEvent.data.artifactId, /^[a-f0-9]{40}$/);
 		assert.equal(subject.store.getTurn(keys.contextId, evidenceTurnId).status, "completed");
 		assert.equal(subject.store.getTurn(keys.contextId, evidenceTurnId).inputText, "");
