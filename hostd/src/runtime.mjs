@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { cp, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { cp, mkdir, open, readFile, rename, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
@@ -723,13 +723,67 @@ export class RuntimeManager {
 			|| this.config.scopedApp.targetId !== target.id
 			|| target.computer?.enabled !== true
 		) throw new Error("scoped evidence runtime is not configured");
-		const context = this.store.getContext(contextId);
-		if (!context || context.targetId !== target.id || context.status !== "online" || !context.runtimeName) {
-			throw new Error("scoped evidence runtime is not online");
-		}
-		const artifactPath = join(contextWorkspacePath(target, contextId), ".evidence", `${input.artifactId}.png`);
+		const contextDirectory = dirname(contextWorkspacePath(target, contextId));
+		const evidenceRoot = resolve(contextDirectory, "evidence-runs");
+		const scratch = resolve(evidenceRoot, input.artifactId);
+		if (!`${scratch}/`.startsWith(`${evidenceRoot}/`)) throw new Error("scoped evidence path escaped its context");
+		const artifactPath = join(scratch, ".evidence", `${input.artifactId}.png`);
+		const evidenceName = `troublemaker-evidence-${createHash("sha256")
+			.update(`${contextId}\0${input.artifactId}`, "utf8")
+			.digest("hex")
+			.slice(0, 24)}`;
 		let artifactFile;
 		try {
+			await mkdir(scratch, { recursive: true, mode: 0o700 });
+			const engineIsolation = usesDockerEngine(target.engine)
+				? []
+				: ["--replace", "--userns=keep-id"];
+			await run(target.engine, [
+				"run",
+				"--detach",
+				"--name",
+				evidenceName,
+				...engineIsolation,
+				"--network=none",
+				"--memory",
+				target.memory,
+				"--pids-limit",
+				"1024",
+				"--cap-drop=all",
+				"--security-opt=no-new-privileges",
+				"--shm-size",
+				"512m",
+				"--env",
+				"HOME=/data",
+				"--env",
+				"TROUBLEMAKER_COMPUTER_ENABLED=1",
+				"--env",
+				`TROUBLEMAKER_COMPUTER_DISPLAY=${target.computer.display}`,
+				"--env",
+				`TROUBLEMAKER_COMPUTER_WEBSOCKET_PORT=${target.computer.websocketPort}`,
+				"--volume",
+				`${scratch}:/data:rw`,
+				target.image,
+				"sleep",
+				"infinity",
+			], { timeout: 180_000 });
+			let ready = false;
+			for (let attempt = 0; attempt < 60; attempt += 1) {
+				const probe = await run(target.engine, [
+					"exec",
+					"--env",
+					`DISPLAY=${target.computer.display}`,
+					evidenceName,
+					"xset",
+					"q",
+				], { allowFailure: true, timeout: 5_000 });
+				if (probe.code === 0) {
+					ready = true;
+					break;
+				}
+				await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+			}
+			if (!ready) throw new Error("scoped evidence desktop was not ready");
 			const result = await run(target.engine, [
 				"exec",
 				"--interactive",
@@ -737,7 +791,7 @@ export class RuntimeManager {
 				`DISPLAY=${target.computer.display}`,
 				"--env",
 				"XDG_RUNTIME_DIR=/tmp/cua-runtime",
-				context.runtimeName,
+				evidenceName,
 				"node",
 				"/opt/troublemaker/hostd-evidence-capture.mjs",
 			], {
@@ -781,7 +835,11 @@ export class RuntimeManager {
 			return { receipt, artifact: { mediaType: "image/png", bytes, sha256 } };
 		} finally {
 			await artifactFile?.close().catch(() => undefined);
-			await unlink(artifactPath).catch(() => undefined);
+			await run(target.engine, ["rm", "--force", evidenceName], {
+				allowFailure: true,
+				timeout: 30_000,
+			}).catch(() => undefined);
+			await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
 		}
 	}
 

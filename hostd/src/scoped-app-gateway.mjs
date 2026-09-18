@@ -218,8 +218,6 @@ export class ScopedAppGateway {
 			envelope.requestId,
 		).slice(0, 40);
 		try {
-			const organization = await this.materializeOrganizationContext(keys.accountKey);
-			await this.runtime.ensureScopedOciContext(this.target, keys.contextId, organization);
 			currentScope = await this.renewEvidenceScope(currentScope, keys);
 			const captured = await this.evidence.capture(keys.contextId, {
 				artifactId,
@@ -254,8 +252,6 @@ export class ScopedAppGateway {
 				});
 			}
 			throw error;
-		} finally {
-			await this.runtime.stopScopedOciContext?.(this.target, keys.contextId).catch(() => undefined);
 		}
 	}
 

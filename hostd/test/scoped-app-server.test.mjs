@@ -277,6 +277,8 @@ test("evidence is captured with fresh scope and remains private to one user", as
 			artifactId: evidenceEvent.data.artifactId,
 		}, { scope: scope({ userId: "synthetic-user-b" }) }));
 		assert.equal(otherUser.status, 400);
+		assert.equal(subject.runtimeCalls.length, 1);
+		assert.equal(subject.stopCalls.length, 1);
 	} finally {
 		await subject.close();
 	}
