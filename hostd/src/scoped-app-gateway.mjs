@@ -386,6 +386,9 @@ export class ScopedAppGateway {
 	}
 
 	async authorizeRuntime(contextId) {
+		if (this.webchat?.hasActiveTurn(contextId)) {
+			return await this.webchat.authorizeRuntime(contextId);
+		}
 		const scope = await this.renewActiveTurn(contextId);
 		return { ok: true, expiresAt: scope.expiresAt };
 	}

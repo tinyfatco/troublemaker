@@ -96,6 +96,22 @@ export class ScopedWebchat {
 		return [...this.activeMessages.values()].some((connection) => connection.keys.accountKey === accountKey);
 	}
 
+	async authorizeRuntime(contextId) {
+		const active = this.activeMessages.get(contextId);
+		if (!active || active.closed || active.controller.signal.aborted) {
+			throw new ScopedAppAuthorizationError();
+		}
+		const renewed = await this.gateway.renewScope(active.scope);
+		if (
+			renewed.keys.contextId !== contextId
+			|| renewed.keys.accountKey !== active.keys.accountKey
+			|| renewed.keys.userKey !== active.keys.userKey
+			|| renewed.keys.membershipKey !== active.keys.membershipKey
+		) throw new ScopedAppAuthorizationError("renewal_scope_mismatch", 403);
+		active.scope = renewed.scope;
+		return { ok: true, expiresAt: renewed.scope.expiresAt };
+	}
+
 	agentId(keys) {
 		return deterministicUuid(stablePrivateKey(
 			this.routingKey,

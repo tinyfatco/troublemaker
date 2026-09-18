@@ -133,8 +133,13 @@ test("message proxy pins scope, streams natively, and performs real cancellation
 		assert.equal(sent.channelId, `scoped-webchat:${KEYS.accountKey}`);
 		assert.equal(sent.deliveryId, envelope().requestId);
 		assert.doesNotMatch(JSON.stringify(sent), /untrusted/);
+		assert.deepEqual(await subject.authorizeRuntime(KEYS.contextId), {
+			ok: true,
+			expiresAt: SCOPE.expiresAt,
+		});
 		assert.deepEqual(await subject.stop(envelope(agentId)), { ok: true, cancelled: true });
 		assert.match(requests[1].url, /messages\/stop$/);
+		await assert.rejects(subject.authorizeRuntime(KEYS.contextId));
 		await proxy.close();
 	} finally {
 		await subject.shutdown();

@@ -360,6 +360,42 @@ test("chat is queued, renewed at runtime boundaries, persisted, and unmounted", 
 	}
 });
 
+test("runtime authorization delegates to an active native message turn", async () => {
+	const subject = await fixture();
+	try {
+		const keys = scopedAppScopeKeys(ROUTING_KEY, TARGET.id, scope());
+		const calls = [];
+		subject.gateway.setWebchat({
+			hasActiveTurn(contextId) { return contextId === keys.contextId; },
+			async authorizeRuntime(contextId) {
+				calls.push(contextId);
+				return { ok: true, expiresAt: "2099-01-01T00:00:20.000Z" };
+			},
+		});
+		const authorizationToken = contextCapability(
+			TARGET.inboundToken,
+			"scoped-app-runtime-authorization",
+			keys.contextId,
+		);
+		const response = await fetch(
+			`${subject.base}/v1/scoped-app/runtime/${encodeURIComponent(keys.contextId)}/authorize`,
+			{
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${authorizationToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ version: "1", boundary: "model" }),
+			},
+		);
+		assert.equal(response.status, 200);
+		assert.deepEqual(await response.json(), { ok: true, expiresAt: "2099-01-01T00:00:20.000Z" });
+		assert.deepEqual(calls, [keys.contextId]);
+	} finally {
+		await subject.close();
+	}
+});
+
 test("same-organization admin revocation cancels and tombstones an active member", async () => {
 	const subject = await fixture({ gateRuntime: true });
 	try {
