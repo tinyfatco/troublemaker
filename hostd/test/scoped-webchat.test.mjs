@@ -29,6 +29,7 @@ function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalInterval
 	const requests = [];
 	const stops = [];
 	let renewals = 0;
+	let activityProbe = () => false;
 	const gateway = {
 		async renewScope(scope) {
 			renewals += 1;
@@ -41,6 +42,7 @@ function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalInterval
 		},
 	};
 	const runtime = {
+		addExternalActivityProbe(probe) { activityProbe = probe; return () => { activityProbe = () => false; }; },
 		async ensureScopedOciContext(target, contextId, organization) {
 			assert.equal(target, TARGET);
 			assert.equal(contextId, KEYS.contextId);
@@ -81,7 +83,7 @@ function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalInterval
 		renewalIntervalMs,
 		idleStopDelayMs,
 	});
-	return { subject, requests, stops };
+	return { subject, requests, stops, isRuntimeActive: (contextId) => activityProbe(contextId) };
 }
 
 function envelope(agentId, payload = {}) {
@@ -175,7 +177,7 @@ test("concurrent native backlog and live streams share one runtime startup", asy
 });
 
 test("EventSource reconnect reuses the warm runtime and cancels idle stop", async () => {
-	const { subject, stops } = fixture({ idleStopDelayMs: 30 });
+	const { subject, stops, isRuntimeActive } = fixture({ idleStopDelayMs: 30 });
 	const ensure = subject.runtime.ensureScopedOciContext;
 	let starts = 0;
 	subject.runtime.ensureScopedOciContext = async (...args) => {
@@ -185,7 +187,9 @@ test("EventSource reconnect reuses the warm runtime and cancels idle stop", asyn
 	try {
 		const { agentId } = await subject.bootstrap(envelope());
 		const first = await subject.proxy(envelope(agentId), "events-stream");
+		assert.equal(isRuntimeActive(KEYS.contextId), true);
 		await first.close({ completed: true });
+		assert.equal(isRuntimeActive(KEYS.contextId), true);
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
 		const replacement = await subject.proxy(envelope(agentId), "events-stream");
 		assert.equal(starts, 1);
@@ -194,6 +198,7 @@ test("EventSource reconnect reuses the warm runtime and cancels idle stop", asyn
 		await replacement.close({ completed: true });
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
 		assert.equal(stops.some((row) => row.contextId === KEYS.contextId), true);
+		assert.equal(isRuntimeActive(KEYS.contextId), false);
 	} finally {
 		await subject.shutdown();
 	}

@@ -84,10 +84,16 @@ export class ScopedWebchat {
 		this.idleTimers = new Map();
 		this.runtimeStarts = new Map();
 		this.warmRuntimes = new Map();
+		this.removeActivityProbe = this.runtime.addExternalActivityProbe?.(
+			(contextId) => this.hasActiveContext(contextId),
+		) ?? (() => {});
 	}
 
 	hasActiveContext(contextId) {
-		return (this.connections.get(contextId)?.size ?? 0) > 0 || this.activeMessages.has(contextId);
+		return (this.connections.get(contextId)?.size ?? 0) > 0
+			|| this.activeMessages.has(contextId)
+			|| this.idleTimers.has(contextId)
+			|| this.warmRuntimes.has(contextId);
 	}
 
 	hasActiveTurn(contextId) {
@@ -435,6 +441,7 @@ export class ScopedWebchat {
 			await this.runtime.stopScopedOciContext(this.target, contextId).catch(() => undefined);
 		}
 		this.warmRuntimes.clear();
+		this.removeActivityProbe();
 	}
 }
 

@@ -664,7 +664,9 @@ export class RuntimeManager {
 		this.zulip = zulip;
 		this.routingKey = routingKey;
 		this.sites = sites;
-		this.externalActivityProbe = () => false;
+		this.externalActivityProbes = new Set();
+		this.externalActivityProbe = (contextId) => [...this.externalActivityProbes]
+			.some((probe) => probe(contextId));
 		this.mcp = undefined;
 		this.contextStartupLocks = new Map();
 		this.pendingMcpRefresh = new Set();
@@ -672,7 +674,14 @@ export class RuntimeManager {
 	}
 
 	setExternalActivityProbe(probe) {
-		this.externalActivityProbe = typeof probe === "function" ? probe : () => false;
+		this.externalActivityProbes.clear();
+		if (typeof probe === "function") this.externalActivityProbes.add(probe);
+	}
+
+	addExternalActivityProbe(probe) {
+		if (typeof probe !== "function") return () => {};
+		this.externalActivityProbes.add(probe);
+		return () => this.externalActivityProbes.delete(probe);
 	}
 
 	setMcp(mcp) {

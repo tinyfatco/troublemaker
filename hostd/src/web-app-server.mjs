@@ -364,10 +364,13 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 	const assertionVerifier = verifier ?? new WebAppAssertionVerifier(state.config.webApp);
 	const desktopConnections = new Map();
 	const humanLeases = new Map();
-	state.runtime.setExternalActivityProbe?.((contextId) => (
+	const activityProbe = (contextId) => (
 		(desktopConnections.get(contextId) ?? 0) > 0
 			|| (humanLeases.get(contextId) ?? 0) > Date.now()
-	));
+	);
+	const removeActivityProbe = state.runtime.addExternalActivityProbe
+		? state.runtime.addExternalActivityProbe(activityProbe)
+		: (() => { state.runtime.setExternalActivityProbe?.(activityProbe); return () => state.runtime.setExternalActivityProbe?.(); })();
 	const server = createServer(async (request, response) => {
 		const method = request.method || "GET";
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
@@ -560,5 +563,6 @@ export function createWebAppServer(state, { fetchImpl = fetch, verifier } = {}) 
 		}
 	});
 
+	server.once("close", removeActivityProbe);
 	return server;
 }
