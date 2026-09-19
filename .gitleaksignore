@@ -9,6 +9,7 @@
 # Synthetic credentials confined to isolated unit-test fixtures.
 162a4a87cf0478b06572ee522b5e02f9ba53479d:hostd/test/config.test.mjs:generic-api-key:25
 209bfbbe3287c41baee02987eeafe84888251f06:test/mcp-ingress-security.test.ts:generic-api-key:20
+d1a4b30854c493302b0def298f5072afe6400f72:test/mcp-ingress-security.test.ts:generic-api-key:20
 4a31dd1f7d01f71ec959a0893de2ddd8891424ed:hostd/test/meta-contact.test.mjs:generic-api-key:12
 4a31dd1f7d01f71ec959a0893de2ddd8891424ed:hostd/test/phone.test.mjs:generic-api-key:313
 4a31dd1f7d01f71ec959a0893de2ddd8891424ed:hostd/test/phone.test.mjs:generic-api-key:413
