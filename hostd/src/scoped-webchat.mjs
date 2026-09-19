@@ -83,6 +83,7 @@ export class ScopedWebchat {
 		this.activeMessages = new Map();
 		this.idleTimers = new Map();
 		this.runtimeStarts = new Map();
+		this.warmRuntimes = new Map();
 	}
 
 	hasActiveContext(contextId) {
@@ -181,19 +182,23 @@ export class ScopedWebchat {
 
 	async ensureRuntime(authorized) {
 		const contextId = authorized.keys.contextId;
-		let start = this.runtimeStarts.get(contextId);
-		if (!start) {
-			start = (async () => {
-				const organization = await this.gateway.materializeOrganizationContext(authorized.keys.accountKey);
-				return await this.runtime.ensureScopedOciContext(this.target, contextId, organization);
-			})();
-			this.runtimeStarts.set(contextId, start);
-		}
-		let runtime;
-		try {
-			runtime = await start;
-		} finally {
-			if (this.runtimeStarts.get(contextId) === start) this.runtimeStarts.delete(contextId);
+		let runtime = this.warmRuntimes.get(contextId);
+		if (runtime) {
+			await this.gateway.materializeOrganizationContext(authorized.keys.accountKey);
+		} else {
+			let start = this.runtimeStarts.get(contextId);
+			if (!start) {
+				start = (async () => {
+					const organization = await this.gateway.materializeOrganizationContext(authorized.keys.accountKey);
+					return await this.runtime.ensureScopedOciContext(this.target, contextId, organization);
+				})();
+				this.runtimeStarts.set(contextId, start);
+			}
+			try {
+				runtime = await start;
+			} finally {
+				if (this.runtimeStarts.get(contextId) === start) this.runtimeStarts.delete(contextId);
+			}
 		}
 		const refreshed = await this.gateway.renewScope(authorized.scope);
 		if (
@@ -203,6 +208,7 @@ export class ScopedWebchat {
 			|| refreshed.keys.membershipKey !== authorized.keys.membershipKey
 		) throw new ScopedAppAuthorizationError("renewal_scope_mismatch", 403);
 		authorized.scope = refreshed.scope;
+		this.warmRuntimes.set(contextId, runtime);
 		return runtime;
 	}
 
@@ -277,12 +283,16 @@ export class ScopedWebchat {
 			? this.trackConnection(authorized, action, undefined, controller)
 			: undefined;
 		if (action === "messages" && connection) this.activeMessages.set(authorized.keys.contextId, connection);
+		let runtime;
 		try {
-			const runtime = await this.ensureRuntime(authorized);
+			runtime = await this.ensureRuntime(authorized);
 			if (controller.signal.aborted) {
 				const others = [...(this.connections.get(authorized.keys.contextId) ?? [])]
 					.some((candidate) => candidate !== connection && !candidate.closed && !candidate.controller.signal.aborted);
-				if (!others) await this.runtime.stopScopedOciContext(this.target, authorized.keys.contextId).catch(() => undefined);
+				if (!others) {
+					this.warmRuntimes.delete(authorized.keys.contextId);
+					await this.runtime.stopScopedOciContext(this.target, authorized.keys.contextId).catch(() => undefined);
+				}
 				throw controller.signal.reason ?? new Error("webchat_proxy_closed");
 			}
 			if (connection) connection.runtime = runtime;
@@ -311,8 +321,17 @@ export class ScopedWebchat {
 				},
 			};
 		} catch (error) {
+			const runtimeFailed = runtime && !controller.signal.aborted;
 			controller.abort(error);
 			detach();
+			if (runtimeFailed) {
+				const others = [...(this.connections.get(authorized.keys.contextId) ?? [])]
+					.some((candidate) => candidate !== connection && !candidate.closed && !candidate.controller.signal.aborted);
+				if (!others) {
+					this.warmRuntimes.delete(authorized.keys.contextId);
+					await this.runtime.stopScopedOciContext(this.target, authorized.keys.contextId).catch(() => undefined);
+				}
+			}
 			if (connection) await this.finishConnection(connection);
 			else this.scheduleIdleStop(authorized.keys.contextId);
 			throw error;
@@ -375,6 +394,7 @@ export class ScopedWebchat {
 		this.idleTimers.set(contextId, setTimeout(() => {
 			this.idleTimers.delete(contextId);
 			if ((this.connections.get(contextId)?.size ?? 0) > 0 || this.activeMessages.has(contextId)) return;
+			this.warmRuntimes.delete(contextId);
 			void this.runtime.stopScopedOciContext(this.target, contextId).catch(() => undefined);
 		}, this.idleStopDelayMs));
 	}
@@ -390,6 +410,7 @@ export class ScopedWebchat {
 			await this.finishConnection(connection);
 		}
 		this.cancelIdleStop(contextId);
+		this.warmRuntimes.delete(contextId);
 		await this.runtime.stopScopedOciContext(this.target, contextId).catch(() => undefined);
 	}
 
@@ -413,6 +434,7 @@ export class ScopedWebchat {
 		for (const contextId of idleContexts) {
 			await this.runtime.stopScopedOciContext(this.target, contextId).catch(() => undefined);
 		}
+		this.warmRuntimes.clear();
 	}
 }
 

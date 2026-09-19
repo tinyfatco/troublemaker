@@ -174,14 +174,21 @@ test("concurrent native backlog and live streams share one runtime startup", asy
 	}
 });
 
-test("EventSource reconnect cancels idle stop before the runtime is torn down", async () => {
+test("EventSource reconnect reuses the warm runtime and cancels idle stop", async () => {
 	const { subject, stops } = fixture({ idleStopDelayMs: 30 });
+	const ensure = subject.runtime.ensureScopedOciContext;
+	let starts = 0;
+	subject.runtime.ensureScopedOciContext = async (...args) => {
+		starts += 1;
+		return await ensure(...args);
+	};
 	try {
 		const { agentId } = await subject.bootstrap(envelope());
 		const first = await subject.proxy(envelope(agentId), "events-stream");
 		await first.close({ completed: true });
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
 		const replacement = await subject.proxy(envelope(agentId), "events-stream");
+		assert.equal(starts, 1);
 		await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
 		assert.equal(stops.length, 0);
 		await replacement.close({ completed: true });
