@@ -107,6 +107,7 @@ async function proxyWebchatResponse(response, upstream, action) {
 		connection: "keep-alive",
 		"x-accel-buffering": "no",
 	});
+	response.flushHeaders?.();
 	if (upstream.body) {
 		for await (const chunk of upstream.body) {
 			if (!response.write(chunk)) {

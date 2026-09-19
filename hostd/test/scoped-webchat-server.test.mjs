@@ -24,7 +24,7 @@ function body(action, payload = {}) {
 	return action === "bootstrap" ? base : { ...base, agentId: AGENT_ID, payload };
 }
 
-async function fixture() {
+async function fixture({ stalledStream = false } = {}) {
 	const calls = [];
 	const webchat = {
 		async bootstrap(envelope) {
@@ -36,11 +36,16 @@ async function fixture() {
 			return { agent_id: AGENT_ID, mode: "hosted", display_mode: "terminal", agent_name: "Example", capabilities: { embed: true } };
 		},
 		async stop(envelope) { calls.push({ action: "messages-stop", envelope }); return { ok: true, cancelled: true }; },
-		async proxy(envelope, action) {
+		async proxy(envelope, action, signal) {
 			calls.push({ action, envelope });
+			const stalled = new ReadableStream({
+				start(controller) {
+					signal?.addEventListener("abort", () => controller.error(new Error("synthetic downstream closed")), { once: true });
+				},
+			});
 			const upstream = action === "events"
 				? new Response(JSON.stringify({ lines: [], total: 0, offset: 0 }), { status: 200, headers: { "content-type": "application/json" } })
-				: new Response("data: {\"type\":\"status\",\"status\":\"accepted\"}\n\ndata: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
+				: new Response(stalledStream ? stalled : "data: {\"type\":\"status\",\"status\":\"accepted\"}\n\ndata: [DONE]\n\n", { status: 200, headers: { "content-type": "text/event-stream" } });
 			return { upstream, close: async () => calls.push({ action: `${action}:closed` }) };
 		},
 	};
@@ -74,6 +79,23 @@ async function post(base, action, input, { token = TOKEN, origin } = {}) {
 		body: JSON.stringify(input),
 	});
 }
+
+test("native SSE proxy flushes headers before a stalled upstream body emits data", async () => {
+	const subject = await fixture({ stalledStream: true });
+	try {
+		const started = Date.now();
+		const response = await Promise.race([
+			post(subject.base, "events-stream", body("events-stream")),
+			new Promise((_, reject) => setTimeout(() => reject(new Error("synthetic header timeout")), 200)),
+		]);
+		assert.equal(response.status, 200);
+		assert.equal(response.headers.get("content-type"), "text/event-stream");
+		assert(Date.now() - started < 200);
+		await response.body?.cancel();
+	} finally {
+		await new Promise((resolvePromise) => subject.server.close(resolvePromise));
+	}
+});
 
 test("native webchat bridge is server-only, exact-action scoped, and preserves SSE bytes", async () => {
 	const subject = await fixture();
