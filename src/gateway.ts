@@ -667,7 +667,7 @@ export class Gateway {
 		// Heartbeat to keep connection alive
 		const heartbeat = setInterval(() => {
 			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
-		}, 15000);
+		}, 3_000);
 
 		// Clean up on disconnect
 		res.on("close", () => {
@@ -726,7 +726,7 @@ export class Gateway {
 
 		const heartbeat = setInterval(() => {
 			try { res.write(": heartbeat\n\n"); } catch { /* client gone */ }
-		}, 15_000);
+		}, 3_000);
 
 		res.on("close", () => {
 			clearInterval(heartbeat);
