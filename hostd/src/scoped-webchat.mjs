@@ -265,20 +265,28 @@ export class ScopedWebchat {
 			}
 		}
 		this.cancelIdleStop(authorized.keys.contextId);
-		const runtime = await this.ensureRuntime(authorized);
 		const controller = new AbortController();
 		const abort = () => controller.abort(externalSignal?.reason ?? new Error("downstream_closed"));
+		const detach = () => externalSignal?.removeEventListener("abort", abort);
 		if (externalSignal) {
 			if (externalSignal.aborted) abort();
 			else externalSignal.addEventListener("abort", abort, { once: true });
 		}
 		const tracked = STREAM_ACTIONS.has(action);
 		const connection = tracked
-			? this.trackConnection(authorized, action, runtime, controller)
+			? this.trackConnection(authorized, action, undefined, controller)
 			: undefined;
 		if (action === "messages" && connection) this.activeMessages.set(authorized.keys.contextId, connection);
-		const route = runtimeRoute(action, envelope.payload);
 		try {
+			const runtime = await this.ensureRuntime(authorized);
+			if (controller.signal.aborted) {
+				const others = [...(this.connections.get(authorized.keys.contextId) ?? [])]
+					.some((candidate) => candidate !== connection && !candidate.closed && !candidate.controller.signal.aborted);
+				if (!others) await this.runtime.stopScopedOciContext(this.target, authorized.keys.contextId).catch(() => undefined);
+				throw controller.signal.reason ?? new Error("webchat_proxy_closed");
+			}
+			if (connection) connection.runtime = runtime;
+			const route = runtimeRoute(action, envelope.payload);
 			const upstream = await this.fetchImpl(`http://127.0.0.1:${runtime.port}${route.path}`, {
 				method: route.method,
 				headers: {
@@ -297,12 +305,14 @@ export class ScopedWebchat {
 						await this.cancelRuntimeMessage(connection).catch(() => undefined);
 					}
 					controller.abort(new Error("webchat_proxy_closed"));
+					detach();
 					if (connection) await this.finishConnection(connection);
 					else this.scheduleIdleStop(authorized.keys.contextId);
 				},
 			};
 		} catch (error) {
 			controller.abort(error);
+			detach();
 			if (connection) await this.finishConnection(connection);
 			else this.scheduleIdleStop(authorized.keys.contextId);
 			throw error;
@@ -310,6 +320,7 @@ export class ScopedWebchat {
 	}
 
 	async cancelRuntimeMessage(connection) {
+		if (!connection.runtime) return;
 		const response = await this.fetchImpl(
 			`http://127.0.0.1:${connection.runtime.port}/api/v2/agents/current/messages/stop`,
 			{

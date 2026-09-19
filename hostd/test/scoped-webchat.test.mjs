@@ -174,6 +174,88 @@ test("concurrent native backlog and live streams share one runtime startup", asy
 	}
 });
 
+test("browser disconnect during pending headers stops and unmounts cold startup", async () => {
+	const { subject, stops } = fixture();
+	let enteredResolve;
+	let releaseResolve;
+	const entered = new Promise((resolvePromise) => { enteredResolve = resolvePromise; });
+	const release = new Promise((resolvePromise) => { releaseResolve = resolvePromise; });
+	subject.runtime.ensureScopedOciContext = async () => {
+		enteredResolve();
+		await release;
+		return { port: 34567 };
+	};
+	try {
+		const { agentId } = await subject.bootstrap(envelope());
+		const external = new AbortController();
+		const pending = subject.proxy(envelope(agentId, { message: "Synthetic pending startup" }), "messages", external.signal);
+		await entered;
+		assert.equal(subject.hasActiveTurn(KEYS.contextId), true);
+		external.abort(new Error("synthetic browser disconnected"));
+		releaseResolve();
+		await assert.rejects(pending);
+		assert.equal(stops.some((row) => row.contextId === KEYS.contextId), true);
+		assert.equal(subject.hasActiveTurn(KEYS.contextId), false);
+	} finally {
+		releaseResolve();
+		await subject.shutdown();
+	}
+});
+
+test("lease revocation during pending headers aborts and unmounts cold startup", async () => {
+	const { subject, stops } = fixture({ renewFailureAfter: 2, renewalIntervalMs: 5 });
+	let enteredResolve;
+	let releaseResolve;
+	const entered = new Promise((resolvePromise) => { enteredResolve = resolvePromise; });
+	const release = new Promise((resolvePromise) => { releaseResolve = resolvePromise; });
+	subject.runtime.ensureScopedOciContext = async () => {
+		enteredResolve();
+		await release;
+		return { port: 34567 };
+	};
+	try {
+		const { agentId } = await subject.bootstrap(envelope());
+		const pending = subject.proxy(envelope(agentId, { message: "Synthetic pending startup" }), "messages");
+		await entered;
+		for (let attempt = 0;attempt < 40 && subject.hasActiveTurn(KEYS.contextId);attempt += 1) {
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
+		}
+		assert.equal(subject.hasActiveTurn(KEYS.contextId), false);
+		assert.equal(stops.some((row) => row.contextId === KEYS.contextId), true);
+		releaseResolve();
+		await assert.rejects(pending);
+	} finally {
+		releaseResolve();
+		await subject.shutdown();
+	}
+});
+
+test("membership revocation during pending headers aborts and unmounts cold startup", async () => {
+	const { subject, stops } = fixture();
+	let enteredResolve;
+	let releaseResolve;
+	const entered = new Promise((resolvePromise) => { enteredResolve = resolvePromise; });
+	const release = new Promise((resolvePromise) => { releaseResolve = resolvePromise; });
+	subject.runtime.ensureScopedOciContext = async () => {
+		enteredResolve();
+		await release;
+		return { port: 34567 };
+	};
+	try {
+		const { agentId } = await subject.bootstrap(envelope());
+		const pending = subject.proxy(envelope(agentId, { message: "Synthetic pending startup" }), "messages");
+		await entered;
+		await subject.revokeMembership(KEYS.accountKey, KEYS.membershipKey, SCOPE.membershipVersion);
+		assert.equal(subject.hasActiveTurn(KEYS.contextId), false);
+		assert.equal(stops.some((row) => row.contextId === KEYS.contextId), true);
+		releaseResolve();
+		await assert.rejects(pending);
+	} finally {
+		releaseResolve();
+		await subject.shutdown();
+	}
+});
+
 test("an early browser message-stream disconnect stops model work", async () => {
 	const { subject, requests } = fixture();
 	try {
