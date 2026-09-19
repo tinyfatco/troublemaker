@@ -59,6 +59,8 @@ async function run() {
 
   const headersReady = await waitForStreamHeaders(1000);
   assert(headersReady, "stream handshake completes before the first awareness event");
+  const liveHeadersReady = await waitForStreamHeaders(1000, "/api/v2/agents/current/live");
+  assert(liveHeadersReady, "unified live handshake emits an immediate SSE comment");
 
   const livePromise = collectEvents(1, 5000);
   await sleep(200); // Let connection establish before appending new content
@@ -164,7 +166,7 @@ async function run() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-function waitForStreamHeaders(timeoutMs: number): Promise<boolean> {
+function waitForStreamHeaders(timeoutMs: number, path = "/awareness/stream"): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value: boolean) => {
@@ -174,8 +176,10 @@ function waitForStreamHeaders(timeoutMs: number): Promise<boolean> {
       req.destroy();
       resolve(value);
     };
-    const req = http.get(`http://localhost:${PORT}/awareness/stream`, (res) => {
-      finish(res.statusCode === 200 && res.headers["content-type"] === "text/event-stream");
+    const req = http.get(`http://localhost:${PORT}${path}`, (res) => {
+      res.once("data", (chunk: Buffer) => {
+        finish(res.statusCode === 200 && res.headers["content-type"] === "text/event-stream" && chunk.toString().includes(": connected"));
+      });
     });
     req.on("error", () => finish(false));
     const timer = setTimeout(() => finish(false), timeoutMs);

@@ -643,6 +643,7 @@ export class Gateway {
 			"X-Accel-Buffering": "no",
 		});
 		res.flushHeaders?.();
+		res.write(": connected\n\n");
 
 		// Skip backlog — client fetches recent entries via /awareness/backlog instead.
 		// Just record the current file size so the watcher only sends new lines.
@@ -702,6 +703,7 @@ export class Gateway {
 			"X-Accel-Buffering": "no",
 		});
 		res.flushHeaders?.();
+		res.write(": connected\n\n");
 
 		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 		const headerCursor = Array.isArray(req.headers["last-event-id"])
