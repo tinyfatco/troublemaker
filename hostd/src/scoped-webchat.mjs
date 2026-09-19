@@ -4,7 +4,7 @@ import { resolveContextRuntimeModel } from "./runtime-model.mjs";
 import { SCOPED_WEBCHAT_PROTOCOL } from "./scoped-webchat-contract.mjs";
 
 const LEASE_RENEWAL_INTERVAL_MS = 8_000;
-const IDLE_STOP_DELAY_MS = 1_500;
+const IDLE_STOP_DELAY_MS = 15_000;
 const STREAM_ACTIONS = new Set(["events-stream", "live", "messages"]);
 
 export class ScopedWebchatError extends Error {

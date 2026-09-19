@@ -25,7 +25,7 @@ const TARGET = {
 	outboundToken: "synthetic-outbound-capability-at-least-32-bytes",
 };
 
-function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalIntervalMs = 8_000 } = {}) {
+function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalIntervalMs = 8_000, idleStopDelayMs = 5 } = {}) {
 	const requests = [];
 	const stops = [];
 	let renewals = 0;
@@ -79,7 +79,7 @@ function fixture({ renewFailureAfter = Number.POSITIVE_INFINITY, renewalInterval
 		target: TARGET,
 		fetchImpl,
 		renewalIntervalMs,
-		idleStopDelayMs: 5,
+		idleStopDelayMs,
 	});
 	return { subject, requests, stops };
 }
@@ -169,6 +169,24 @@ test("concurrent native backlog and live streams share one runtime startup", asy
 		assert.equal(maximum, 1);
 		await events.close({ completed: true });
 		await live.close({ completed: true });
+	} finally {
+		await subject.shutdown();
+	}
+});
+
+test("EventSource reconnect cancels idle stop before the runtime is torn down", async () => {
+	const { subject, stops } = fixture({ idleStopDelayMs: 30 });
+	try {
+		const { agentId } = await subject.bootstrap(envelope());
+		const first = await subject.proxy(envelope(agentId), "events-stream");
+		await first.close({ completed: true });
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+		const replacement = await subject.proxy(envelope(agentId), "events-stream");
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
+		assert.equal(stops.length, 0);
+		await replacement.close({ completed: true });
+		await new Promise((resolvePromise) => setTimeout(resolvePromise, 35));
+		assert.equal(stops.some((row) => row.contextId === KEYS.contextId), true);
 	} finally {
 		await subject.shutdown();
 	}
