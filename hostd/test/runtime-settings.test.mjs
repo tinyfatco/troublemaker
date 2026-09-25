@@ -644,8 +644,17 @@ test("scoped app instructions preserve personal/shared boundaries idempotently",
 		assert.equal(await initializeScopedAppInstructions(directory), false);
 		const instructions = await readFile(join(directory, "AGENTS.md"), "utf8");
 		assert.match(instructions, /exactly one authenticated web user/);
+		assert.match(instructions, /sole product job.*draft a concise, reviewable `CONTEXT\.md`/);
+		assert.match(instructions, /Runtime tools are intentionally unavailable/);
+		assert.match(instructions, /Do not attempt shell, network, browser, computer, file, messaging, or search tools/);
+		assert.match(instructions, /Do not search for, browse for, rank, recommend, or evaluate grants/);
+		assert.match(instructions, /Do not assess eligibility, competitiveness, or funding likelihood/);
+		assert.match(instructions, /exactly one proposed `CONTEXT\.md` in a fenced Markdown block/);
+		assert.match(instructions, /has not been saved/);
+		assert.match(instructions, /unknown legal status, budget, staffing, geography, credentials, outcomes, fiscal sponsorship/);
 		assert.match(instructions, /organization\/CONTEXT\.md/);
 		assert.match(instructions, /read-only/);
+		assert.match(instructions, /human-reviewed compare-and-swap/);
 		assert.match(instructions, /Keep this\./);
 		assert.equal((instructions.match(/hostd:scoped-app:start/g) || []).length, 1);
 	} finally {
