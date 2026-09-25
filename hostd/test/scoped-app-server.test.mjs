@@ -341,11 +341,25 @@ test("chat is queued, renewed at runtime boundaries, persisted, and unmounted", 
 					authorization: `Bearer ${authorizationToken}`,
 					"content-type": "application/json",
 				},
-				body: JSON.stringify({ version: "1", boundary: "tool" }),
+				body: JSON.stringify({ version: "1", boundary: "model" }),
 			},
 		);
 		assert.equal(authorized.status, 200);
 		assert.equal((await authorized.json()).ok, true);
+
+		const deniedTool = await fetch(
+			`${subject.base}/v1/scoped-app/runtime/${encodeURIComponent(keys.contextId)}/authorize`,
+			{
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${authorizationToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ version: "1", boundary: "tool" }),
+			},
+		);
+		assert.equal(deniedTool.status, 403);
+		assert.deepEqual(await deniedTool.json(), { error: { code: "forbidden", message: "Forbidden" } });
 
 		subject.releaseRuntime();
 		await waitFor(() => subject.store.getTurn(keys.contextId, turnId)?.status === "completed", "turn completion");
@@ -390,6 +404,19 @@ test("runtime authorization delegates to an active native message turn", async (
 		);
 		assert.equal(response.status, 200);
 		assert.deepEqual(await response.json(), { ok: true, expiresAt: "2099-01-01T00:00:20.000Z" });
+		const toolResponse = await fetch(
+			`${subject.base}/v1/scoped-app/runtime/${encodeURIComponent(keys.contextId)}/authorize`,
+			{
+				method: "POST",
+				headers: {
+					authorization: `Bearer ${authorizationToken}`,
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ version: "1", boundary: "tool" }),
+			},
+		);
+		assert.equal(toolResponse.status, 403);
+		assert.deepEqual(await toolResponse.json(), { error: { code: "forbidden", message: "Forbidden" } });
 		assert.deepEqual(calls, [keys.contextId]);
 	} finally {
 		await subject.close();

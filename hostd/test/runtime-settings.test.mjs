@@ -645,6 +645,8 @@ test("scoped app instructions preserve personal/shared boundaries idempotently",
 		const instructions = await readFile(join(directory, "AGENTS.md"), "utf8");
 		assert.match(instructions, /exactly one authenticated web user/);
 		assert.match(instructions, /sole product job.*draft a concise, reviewable `CONTEXT\.md`/);
+		assert.match(instructions, /Runtime tools are intentionally unavailable/);
+		assert.match(instructions, /Do not attempt shell, network, browser, computer, file, messaging, or search tools/);
 		assert.match(instructions, /Do not search for, browse for, rank, recommend, or evaluate grants/);
 		assert.match(instructions, /Do not assess eligibility, competitiveness, or funding likelihood/);
 		assert.match(instructions, /exactly one proposed `CONTEXT\.md` in a fenced Markdown block/);

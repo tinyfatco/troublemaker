@@ -262,7 +262,13 @@ export function createScopedAppServer({ config, gateway, target, webchat }) {
 					errorResponse(response, 401, "unauthorized");
 					return;
 				}
-				parseRuntimeAuthorization(await readBody(request, 1024));
+				const authorization = parseRuntimeAuthorization(await readBody(request, 1024));
+				// The vectors agent is a context interviewer, not an autonomous researcher.
+				// Evidence capture is a separate Hostd-owned path, so no runtime tool is needed.
+				if (authorization.boundary === "tool") {
+					errorResponse(response, 403, "forbidden");
+					return;
+				}
 				json(response, 200, await gateway.authorizeRuntime(contextId));
 				return;
 			}
