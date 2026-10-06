@@ -16,4 +16,4 @@ const server=createServer(async(req,res)=>{
   res.setHeader('content-type','application/json');res.end(JSON.stringify({provider,key}));
  }catch{res.writeHead(503);res.end()}
 });
-server.listen(Number(process.env.MODEL_CREDENTIAL_PORT),'127.0.0.1');
+server.listen(Number(process.env.MODEL_CREDENTIAL_PORT),'127.0.0.1',()=>process.send?.({port:server.address().port}));

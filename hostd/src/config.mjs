@@ -407,6 +407,11 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("phone.ingress.port must differ from server.port");
 	}
 
+	if (raw.workQueue?.modelCredentialUrl) {
+		const endpoint = new URL(httpUrl(raw.workQueue.modelCredentialUrl, "workQueue.modelCredentialUrl"));
+		if (!["127.0.0.1", "localhost", "[::1]"].includes(endpoint.hostname)) throw new Error("Model credential broker must be loopback-only");
+		if (!targets.find(t => t.id === raw.workQueue.targetId)?.stopAfterTurn) throw new Error("Broker-backed work targets must stop after each turn to refresh credentials");
+	}
 	if (raw.workQueue && !targets.some(t => t.id === raw.workQueue.targetId)) throw new Error("workQueue target must exist");
 	if (raw.workQueue && (!zulip || !zulip.memberEmails.includes(raw.workQueue.managerEmail?.toLowerCase()))) throw new Error("workQueue manager must be a configured Zulip member");
 	return {

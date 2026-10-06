@@ -47,3 +47,11 @@ test('failed workspace initialization leaves no partial workspace and retries sa
  await initializeWorkspace(join(dir,'missing'),workspace);assert.equal(existsSync(workspace),true);
  } finally {rmSync(dir,{recursive:true,force:true})}
 });
+test('work-context native messages include the actual message ID without truncating content',async()=>{
+ const {RuntimeManager}=await import('../src/runtime.mjs');let sent;let bound=true;
+ const runtime=new RuntimeManager({targetsById:new Map([['operator',{}]])},{getMeta:()=>bound?'binding':null});
+ runtime.ensureOciContext=async()=>({});runtime.deliverZulipWebhook=async(t,c,e,p)=>{sent=p};
+ const content='complete message '+ 'x'.repeat(10000);const event={targetId:'operator',contextId:'example:work',source:'zulip',payloadJson:JSON.stringify({message:{id:42,raw_content:content}})};
+ await runtime.acceptEvent(event);assert.ok(sent.message.raw_content.startsWith('[Host routing metadata: native Zulip message ID 42]'));assert.ok(sent.message.raw_content.endsWith(content));
+ bound=false;await runtime.acceptEvent(event);assert.equal(sent.message.raw_content,content);
+});

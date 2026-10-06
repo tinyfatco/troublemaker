@@ -7,7 +7,7 @@ export class WorkQueue {
  }
  async upstream(operation,body) {
   const response=await this.fetcher(`${this.config.workQueue.url}/${operation}`,{method:'POST',headers:{authorization:`Bearer ${this.config.workQueue.token}`,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(20000)});
-  const value=await response.json();if(!response.ok)throw new Error(`Work queue ${operation} failed (${response.status})`);return value;
+  const value=await response.json();if(!response.ok){const error=new Error(`Work queue ${operation} failed (${response.status})`);error.status=response.status;error.detail=typeof value.error==='string'?value.error:'Work action failed';throw error;}return value;
  }
  async start(){ await this.tick();this.timer=setInterval(()=>void this.tick(),10000); }
  stop(){clearInterval(this.timer)}
@@ -51,13 +51,15 @@ export class WorkQueue {
   const bindingRaw=this.store.getMeta(`work-binding:${contextId}`);if(!bindingRaw)return {status:403,value:{error:'Not a work context'}};
   const binding=JSON.parse(bindingRaw);
   if(!body||typeof body!=='object'||Array.isArray(body)||!['get','drivers','offer','assign','escalate'].includes(body.action))return {status:400,value:{error:'Invalid work action'}};
-  const input={action:body.action,driver:body.driver,context:contextId,workId:binding.workId};
+  const input={action:body.action,driver:body.driver??body.driver_id,context:contextId,workId:binding.workId};
   if(body.action==='assign'){
    if(!Number.isSafeInteger(body.managerMessageId)||body.managerMessageId<=0)return {status:400,value:{error:'Manager message required'}};
    const {message}=await this.zulip.request(`messages/${body.managerMessageId}`);
    if(message?.type!=='stream'||Number(message.stream_id)!==Number(binding.channelId)||message.sender_email?.toLowerCase()!==this.config.workQueue.managerEmail)return {status:403,value:{error:'Acceptance must come from the configured manager in this work channel'}};
    input.manager_ref=`zulip:${body.managerMessageId}`;
   }
-  return {status:200,value:await this.upstream('actions',input)};
+  try { const value=await this.upstream('actions',input);
+   if(body.action==='get')value.actionExamples=[{action:'drivers'},{action:'offer',driver:'driver UUID'},{action:'assign',driver:'driver UUID',managerMessageId:123},{action:'escalate'}];
+   return {status:200,value}; } catch(error) { return {status:error.status||502,value:{error:error.detail||'Work service unavailable'}}; }
  }
 }
