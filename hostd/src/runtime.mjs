@@ -1,8 +1,18 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, open, readFile, stat } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { cp, mkdir, mkdtemp, open, readFile, rename, rm, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
+
+export async function initializeWorkspace(template, workspace) {
+	if (await exists(workspace)) return;
+	await mkdir(dirname(workspace), { recursive: true, mode: 0o700 });
+	const staging = await mkdtemp(join(dirname(workspace), ".workspace-init-"));
+	try {
+		await cp(template, join(staging, "ready"), { recursive: true, errorOnExist: true, preserveTimestamps: true });
+		await rename(join(staging, "ready"), workspace);
+	} finally { await rm(staging, { recursive: true, force: true }); }
+}
 
 function safeRuntimeName(contextId) {
 	const normalized = contextId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/-+/g, "-");
@@ -391,14 +401,7 @@ export class RuntimeManager {
 
 		const contextDirectory = resolve(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"));
 		const workspace = join(contextDirectory, "workspace");
-		if (!(await exists(workspace))) {
-			await mkdir(contextDirectory, { recursive: true, mode: 0o700 });
-			await cp(target.workspaceTemplate, workspace, {
-				recursive: true,
-				errorOnExist: true,
-				preserveTimestamps: true,
-			});
-		}
+		await initializeWorkspace(target.workspaceTemplate, workspace);
 		if (mattermost) {
 			await initializeMattermostWorkingOutput(workspace, mattermost.channelId);
 		}

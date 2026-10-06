@@ -38,3 +38,12 @@ test('crash after upstream ack recovers from the host journal without another up
  await assert.rejects(()=>f.queue.accept(f.job));assert.equal(f.pumps(),0);
  await f.queue.tick();assert.equal(f.store.database.prepare('SELECT count(*) n FROM events').get().n,1);assert.equal(f.pumps(),1);f.store.close();
 });
+test('failed workspace initialization leaves no partial workspace and retries safely',async()=>{
+ const {initializeWorkspace}=await import('../src/runtime.mjs');const {writeFileSync,existsSync,readFileSync}=await import('node:fs');
+ const dir=mkdtempSync(join(tmpdir(),'work-init-'));const workspace=join(dir,'workspace');
+ try {await assert.rejects(()=>initializeWorkspace(join(dir,'missing'),workspace));assert.equal(existsSync(workspace),false);
+ const template=join(dir,'template');const {mkdirSync}=await import('node:fs');mkdirSync(template);writeFileSync(join(template,'AGENTS.md'),'Synthetic instructions');
+ await initializeWorkspace(template,workspace);assert.equal(readFileSync(join(workspace,'AGENTS.md'),'utf8'),'Synthetic instructions');
+ await initializeWorkspace(join(dir,'missing'),workspace);assert.equal(existsSync(workspace),true);
+ } finally {rmSync(dir,{recursive:true,force:true})}
+});
