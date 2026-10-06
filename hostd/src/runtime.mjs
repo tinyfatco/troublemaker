@@ -402,6 +402,18 @@ export class RuntimeManager {
 		const contextDirectory = resolve(target.contextsDirectory, contextId.replace(/[^a-z0-9_.-]/gi, "_"));
 		const workspace = join(contextDirectory, "workspace");
 		await initializeWorkspace(target.workspaceTemplate, workspace);
+		if (target.id === this.config.workQueue?.targetId && this.config.workQueue.modelCredentialUrl) {
+			const response = await fetch(this.config.workQueue.modelCredentialUrl, {
+				headers: { authorization: `Bearer ${this.config.workQueue.modelCredentialToken}` }, signal: AbortSignal.timeout(20000),
+			});
+			if (!response.ok) throw new Error("Model credential unavailable; work must remain queued");
+			const credential = await response.json();
+			if (typeof credential.provider !== "string" || typeof credential.key !== "string" || !credential.key) throw new Error("Invalid model credential response");
+			const authDirectory = join(workspace, ".pi", "agent");
+			await mkdir(authDirectory, { recursive: true, mode: 0o700 });
+			await writePrivateFile(join(authDirectory, "auth.json"), JSON.stringify({[credential.provider]: {type: "api_key", key: credential.key}}));
+		}
+
 		if (mattermost) {
 			await initializeMattermostWorkingOutput(workspace, mattermost.channelId);
 		}

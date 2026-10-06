@@ -417,6 +417,8 @@ export async function loadConfig(path, environment = process.env) {
 			token: envSecret(raw.workQueue.tokenEnv, "workQueue.tokenEnv", environment),
 			managerEmail: normalizeAddress(raw.workQueue.managerEmail, "workQueue.managerEmail"),
 			instructions: text(raw.workQueue.instructions, "workQueue.instructions"),
+			modelCredentialUrl: raw.workQueue.modelCredentialUrl ? httpUrl(raw.workQueue.modelCredentialUrl, "workQueue.modelCredentialUrl") : undefined,
+			modelCredentialToken: raw.workQueue.modelCredentialUrl ? envSecret(raw.workQueue.modelCredentialTokenEnv, "workQueue.modelCredentialTokenEnv", environment) : undefined,
 		} : undefined,
 		company: {
 			id: text(company.id, "company.id"),
