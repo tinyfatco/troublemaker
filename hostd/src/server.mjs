@@ -42,6 +42,7 @@ export function createHostServer({
 	zulipGateway,
 	phoneGateway,
 	routingKey,
+	workQueue,
 }) {
 	const gmailTools = routingKey && gmail && config.gmail
 		? new HostGmailTools({ config, store, gmail, routingKey })
@@ -49,6 +50,11 @@ export function createHostServer({
 	return createServer(async (request, response) => {
 		const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
 		try {
+			const workMatch = url.pathname.match(/^\/v1\/work\/([^/]+)\/actions$/);
+			if (request.method === "POST" && workMatch && workQueue) {
+				const result = await workQueue.action(decodeURIComponent(workMatch[1]), request.headers.authorization, await readJson(request, 16384));
+				json(response, result.status, result.value); return;
+			}
 			if (request.method === "GET" && url.pathname === "/health") {
 				response.writeHead(200, { "content-type": "text/plain", "cache-control": "no-store" });
 				response.end("ok");

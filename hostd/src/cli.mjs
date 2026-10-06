@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { WorkQueue } from "./work-queue.mjs";
 import { chmod } from "node:fs/promises";
 import { resolve } from "node:path";
 import { ChannelControlNotifier } from "./channel-control-notifier.mjs";
@@ -111,7 +112,9 @@ async function components(configPath) {
 			controlNotifier,
 		})
 		: undefined;
+	const workQueue = config.workQueue ? new WorkQueue({ config, store, routingKey, runtime, zulip, scheduler }) : undefined;
 	return {
+		workQueue,
 		config,
 		store,
 		gmail,
@@ -147,12 +150,14 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
+	await state.workQueue?.start();
 
 	let stopped = false;
 	let pollTimer;
 	let schedulerTimer;
 	const stop = async (signal) => {
 		if (stopped) return;
+		state.workQueue?.stop();
 		stopped = true;
 		if (pollTimer) clearInterval(pollTimer);
 		if (schedulerTimer) clearInterval(schedulerTimer);

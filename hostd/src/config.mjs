@@ -407,8 +407,17 @@ export async function loadConfig(path, environment = process.env) {
 		throw new Error("phone.ingress.port must differ from server.port");
 	}
 
+	if (raw.workQueue && !targets.some(t => t.id === raw.workQueue.targetId)) throw new Error("workQueue target must exist");
+	if (raw.workQueue && (!zulip || !zulip.memberEmails.includes(raw.workQueue.managerEmail?.toLowerCase()))) throw new Error("workQueue manager must be a configured Zulip member");
 	return {
 		path: resolve(path),
+		workQueue: raw.workQueue ? {
+			targetId: text(raw.workQueue.targetId, "workQueue.targetId"),
+			url: httpUrl(raw.workQueue.url, "workQueue.url"),
+			token: envSecret(raw.workQueue.tokenEnv, "workQueue.tokenEnv", environment),
+			managerEmail: normalizeAddress(raw.workQueue.managerEmail, "workQueue.managerEmail"),
+			instructions: text(raw.workQueue.instructions, "workQueue.instructions"),
+		} : undefined,
 		company: {
 			id: text(company.id, "company.id"),
 			actor: text(company.actor, "company.actor"),
