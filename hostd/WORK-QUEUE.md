@@ -11,3 +11,22 @@ The queue is paused by normal hostd drain. Start it only after collaboration ing
 Optional `modelCredentialUrl` and `modelCredentialTokenEnv` enable a loopback-only broker running under an existing model-account owner. `model-credential-server.mjs` uses `MODEL_AUTH_MODULE`, `MODEL_PROVIDER`, `MODEL_CREDENTIAL_TOKEN`, and `MODEL_CREDENTIAL_PORT`. It refreshes using the account owner's existing auth storage and returns only the access key. The host writes that key to the isolated workspace before startup; refresh credentials never enter the context. Broker-backed targets must use `stopAfterTurn: true` so each turn can obtain fresh credentials. Missing model credentials fail the queued delivery before runtime acceptance.
 
 Work-context native messages include their original message IDs in internal routing metadata. The scoped `get` response supplies exact action examples; upstream validation errors are returned to the agent so it can correct a request without guessing the schema.
+
+## Verified customer signup
+
+The poller also supports `onboarding_claim`, `onboarding_contact`,
+`onboarding_ack`, and `onboarding_retry`. A claim contains only an opaque event
+ID, lease, and `kind: customer_signup`. The host resolves the verified contact,
+reuses its existing SMS context (including any active work binding), journals
+intake and acknowledges upstream before scheduling one internal signup event.
+Contact addresses never enter the event payload. Opted-out contacts are
+acknowledged without waking a runtime.
+
+The internal event distinguishes an unpaid website draft from a confirmed work
+item and labels customer fields untrusted. It asks the agent for one brief
+introduction/help offer without repeating the website's automated welcome.
+Existing work uses its scoped customer action. A new SMS context uses the host's
+scoped outbound endpoint with a stable signup key, so it works before the
+customer's first inbound SMS has registered a runtime phone channel. Signup does
+not authorize driver outreach or assignment. Native customer replies retain the
+same routing. Duplicate delivery and crash recovery reuse the event and context.

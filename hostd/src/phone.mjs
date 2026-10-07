@@ -441,14 +441,16 @@ export class PhoneGateway {
 			return "quarantined:empty";
 		}
 
+		const workBindingRaw=this.store.getMeta(`phone-work:${conversation.threadTarget}`);
+        const workBinding=workBindingRaw?JSON.parse(workBindingRaw):null;
 		this.store.upsertEventWithControlNotification({
 			id: `phone:${providerMessageId}`,
 			source: "phone",
 			providerMessageId,
 			providerThreadId: conversation.providerThreadId,
 			principalHash: conversation.principalHash,
-			targetId: conversation.targetId,
-			contextId: conversation.contextId,
+			targetId: workBinding?.targetId || conversation.targetId,
+			contextId: workBinding?.contextId || conversation.contextId,
 			payload: {
 				direction: "inbound",
 				sender: `Phone ending ${conversation.contactLastFour}`,

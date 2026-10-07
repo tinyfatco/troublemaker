@@ -283,3 +283,15 @@ test("polls encrypted edge relay events without opening an ingress listener", as
 		state.close();
 	}
 });
+
+test('verified work binding routes a reply to that work while preserving duplicate and opt-out handling',async()=>{
+ const state=subject();try{
+ const conversation=state.gateway.ensureConversation(CONTACT_NUMBER);
+ state.store.setMeta(`phone-work:${conversation.threadTarget}`,JSON.stringify({targetId:'front-desk',contextId:'example:work',workId:'synthetic-work'}));
+ assert.equal(await state.gateway.acceptWebhook(inbound()),'queued');
+ assert.equal(state.store.listRetryableEvents()[0].contextId,'example:work');
+ assert.equal(await state.gateway.acceptWebhook(inbound()),'duplicate');
+ const stop=inbound({id:'synthetic-stop',text:'STOP'});stop.id='synthetic-stop-event';await state.gateway.acceptWebhook(stop);
+ await assert.rejects(()=>state.gateway.sendDirect(conversation,'Synthetic update'),/opted out/i);
+ }finally{state.close()}
+});

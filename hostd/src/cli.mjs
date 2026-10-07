@@ -112,7 +112,7 @@ async function components(configPath) {
 			controlNotifier,
 		})
 		: undefined;
-	const workQueue = config.workQueue ? new WorkQueue({ config, store, routingKey, runtime, zulip, scheduler }) : undefined;
+	const workQueue = config.workQueue ? new WorkQueue({ config, store, routingKey, runtime, zulip, scheduler, phoneGateway }) : undefined;
 	return {
 		workQueue,
 		config,

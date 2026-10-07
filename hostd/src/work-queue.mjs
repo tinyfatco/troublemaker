@@ -1,8 +1,11 @@
+import { CustomerStart } from './customer-start.mjs';
+import { WorkPhone } from './work-phone.mjs';
 import { stablePrivateKey, contextCapability, bearerMatches } from './security.mjs';
 
 // Host-owned durable work intake. Upstream credentials never enter runtimes.
 export class WorkQueue {
- constructor({config,store,routingKey,runtime,zulip,scheduler,fetcher=fetch}) { Object.assign(this,{config,store,routingKey,runtime,zulip,scheduler,fetcher});this.busy=false;
+ constructor({config,store,routingKey,runtime,zulip,scheduler,phoneGateway,fetcher=fetch}) { Object.assign(this,{config,store,routingKey,runtime,zulip,scheduler,fetcher});this.busy=false;this.customer=new WorkPhone({store,phoneGateway,upstream:(...args)=>this.upstream(...args)});
+  this.signup=new CustomerStart({store,config,runtime,scheduler,phoneGateway,upstream:(...args)=>this.upstream(...args)});
   this.store.database.exec("CREATE TABLE IF NOT EXISTS work_intake (id TEXT PRIMARY KEY, envelope TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0)");
  }
  async upstream(operation,body) {
@@ -16,14 +19,17 @@ export class WorkQueue {
   this.busy=true;let job;
   try {
    for(const row of this.store.database.prepare('SELECT envelope FROM work_intake WHERE completed=0 LIMIT 10').all()) { try { await this.accept(JSON.parse(row.envelope)); } catch { /* Reclaim expired upstream leases below. */ } }
-   ({job}=await this.upstream('claim',{}));if(!job)return;
-   await this.accept(job);
+   ({job}=await this.upstream('claim',{}));
+   if(job)await this.accept(job);
+   ({job}=await this.upstream('onboarding_claim',{}));
+   if(job)await this.accept(job);
   } catch(error) {
    console.error('hostd work queue:',error.message);
-   if(job)await this.upstream('retry',{id:job.id,lease:job.lease}).catch(()=>{});
+   if(job)await this.upstream(job.kind==='customer_signup'?'onboarding_retry':'retry',{id:job.id,lease:job.lease}).catch(()=>{});
   } finally {this.busy=false}
  }
  async accept(job){
+  if(job?.kind==='customer_signup')return this.signup.accept(job);
   if(!job?.work?.id||typeof job.work.id!=='string'||job.work.id.length>100||typeof job.id!=='string'||typeof job.lease!=='string')throw new Error('Invalid work envelope');
   this.store.database.prepare('INSERT INTO work_intake(id,envelope) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET envelope=excluded.envelope').run(job.id,JSON.stringify(job));
   const hash=stablePrivateKey(this.routingKey,'work',job.work.id);
@@ -40,6 +46,10 @@ export class WorkQueue {
   // Binding is durable before acknowledgement; no model wakes until upstream agrees.
   this.store.setMeta(key,JSON.stringify({workId:job.work.id,channelId:channel.channelId,eventId}));
   await this.upstream('ack',{id:job.id,lease:job.lease,context:contextId,channel:Number(channel.channelId),event:eventId});
+  if(job.work.customer_sms_enabled){
+   try{await this.customer.bind(contextId,job.work.id,target.id)}
+   catch{this.store.setMeta(`work-phone-error:${contextId}`,'Customer contact could not be bound; operator review required');}
+  }
   this.store.upsertEvent({id:eventId,source:'work',providerMessageId:job.id,providerThreadId:job.work.id,principalHash:hash.slice(0,24),targetId:target.id,contextId,payload:{work:job.work}});
   this.store.database.prepare('UPDATE work_intake SET completed=1 WHERE id=?').run(job.id);
   this.scheduler.pump();
@@ -50,7 +60,8 @@ export class WorkQueue {
   if(!target||!bearerMatches(authorization,contextCapability(target.outboundToken,'work',contextId)))return {status:401,value:{error:'Unauthorized'}};
   const bindingRaw=this.store.getMeta(`work-binding:${contextId}`);if(!bindingRaw)return {status:403,value:{error:'Not a work context'}};
   const binding=JSON.parse(bindingRaw);
-  if(!body||typeof body!=='object'||Array.isArray(body)||!['get','drivers','offer','assign','escalate'].includes(body.action))return {status:400,value:{error:'Invalid work action'}};
+  if(!body||typeof body!=='object'||Array.isArray(body)||!['get','drivers','offer','assign','escalate','message_customer'].includes(body.action))return {status:400,value:{error:'Invalid work action'}};
+  if(body.action==='message_customer'){try{return {status:200,value:await this.customer.send(contextId,binding.workId,target.id,body)}}catch(error){return {status:409,value:{error:error.message}}}}
   const input={action:body.action,driver:body.driver??body.driver_id,context:contextId,workId:binding.workId};
   if(body.action==='assign'){
    if(!Number.isSafeInteger(body.managerMessageId)||body.managerMessageId<=0)return {status:400,value:{error:'Manager message required'}};
@@ -59,6 +70,7 @@ export class WorkQueue {
    input.manager_ref=`zulip:${body.managerMessageId}`;
   }
   try { const value=await this.upstream('actions',input);
+   if(body.action==='get'){value.customerMessaging={available:!!this.store.getMeta(`work-phone:${contextId}`),error:this.store.getMeta(`work-phone-error:${contextId}`)||null,welcomeAccepted:this.store.getOutbox(`work-customer:${binding.workId}:welcome:once`)?.status==='completed'};}
    if(body.action==='get')value.actionExamples=[{action:'drivers'},{action:'offer',driver:'driver UUID'},{action:'assign',driver:'driver UUID',managerMessageId:123},{action:'escalate'}];
    return {status:200,value}; } catch(error) { return {status:error.status||502,value:{error:error.detail||'Work service unavailable'}}; }
  }
