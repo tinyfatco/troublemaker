@@ -8,6 +8,10 @@ import {
 	resolveMessageTarget,
 } from "../src/tools/send-message.js";
 import { registerToolDisplayBarrier } from "../src/streaming/tool-delivery-barrier.js";
+import {
+	currentUserVisibleDeliveryFailure,
+	resetUserVisibleDeliveryState,
+} from "../src/tools/user-visible-delivery-state.js";
 
 type SentMessage = { channel: string; text: string };
 type ThreadMessage = { channel: string; threadTs: string; text: string };
@@ -224,6 +228,37 @@ async function run() {
 	});
 	assertEqual(zulip.threadSent[0]?.channel, "4", "tool sends Zulip topic replies to the native channel");
 	assertEqual(zulip.threadSent[0]?.threadTs, "Road map / alpha", "tool preserves exact Zulip topic placement");
+	await (tool.execute as any)("call-zulip-progress-stripped", {
+		label: "Zulip topic with accidental phone metadata",
+		target: "zulip:4:topic:Road%20map%20%2F%20alpha",
+		text: "hello Zulip without phone progress",
+		relationship_progress: {
+			close_state: "request_answered",
+			next_step: "await_customer_choice",
+		},
+	});
+	assertEqual(zulip.threadSent.length, 2, "non-phone sends ignore accidental phone-only relationship progress");
+	assertEqual(zulip.threadSent[1]?.text, "hello Zulip without phone progress", "stripping phone progress preserves the user-visible Zulip reply");
+
+	resetUserVisibleDeliveryState();
+	const originalZulipPostInThread = zulip.adapter.postInThread;
+	zulip.adapter.postInThread = async () => {
+		throw new Error("synthetic scoped delivery denial");
+	};
+	const failedZulip = await (tool.execute as any)("call-zulip-failure", {
+		label: "synthetic Zulip failure",
+		target: "zulip:4:topic:Road%20map%20%2F%20alpha",
+		text: "this attempt should fail",
+	});
+	assertEqual(failedZulip.details?.delivered, false, "failed sends expose a stable undelivered marker");
+	assertEqual(currentUserVisibleDeliveryFailure()?.target, "zulip:4:topic:Road%20map%20%2F%20alpha", "failed sends retain their exact unresolved target");
+	zulip.adapter.postInThread = originalZulipPostInThread;
+	await (tool.execute as any)("call-zulip-recovery", {
+		label: "synthetic Zulip recovery",
+		target: "zulip:4:topic:Road%20map%20%2F%20alpha",
+		text: "the exact retry succeeded",
+	});
+	assertEqual(currentUserVisibleDeliveryFailure(), undefined, "confirmed delivery to the exact target clears its prior failure");
 
 	await (tool.execute as any)("call-email-thread", {
 		label: "email thread test",

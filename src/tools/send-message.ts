@@ -36,6 +36,10 @@ import {
 } from "../relationship-progress.js";
 import * as log from "../log.js";
 import { waitForToolDisplay } from "../streaming/tool-delivery-barrier.js";
+import {
+	recordUserVisibleDeliveryFailure,
+	recordUserVisibleDeliverySuccess,
+} from "./user-visible-delivery-state.js";
 
 const DISCORD_TARGET_RE = /^discord[:-](\d{17,20})$/;
 const DISCORD_SNOWFLAKE_RE = /^\d{17,20}$/;
@@ -154,7 +158,7 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 			next_step: Type.Union(RELATIONSHIP_NEXT_STEPS.map((value) => Type.Literal(value))),
 			milestone: Type.Optional(Type.Union(RELATIONSHIP_RUNTIME_MILESTONES.map((value) => Type.Literal(value)))),
 		}, {
-			description: "Hostd relationship turns only: one durable close state and one next step. Add a milestone only when the current inbound message or this provider-confirmed outbound delivery is exact evidence.",
+			description: "Exact direct Hostd phone turns only: one durable close state and one next step. Omit this field for every non-phone target. Add a milestone only when the current inbound message or this provider-confirmed outbound delivery is exact evidence.",
 			additionalProperties: false,
 		})),
 	});
@@ -181,33 +185,24 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				relationship_progress?: unknown;
 			};
 
-			if (signal?.aborted) throw new Error("Operation aborted");
+			const failDelivery = (failedTarget: string, message: string): never => {
+				const error = new Error(message);
+				recordUserVisibleDeliveryFailure(failedTarget, error);
+				throw error;
+			};
+
+			if (signal?.aborted) failDelivery(typeof target === "string" ? target : "unknown", "Operation aborted");
 
 			if (typeof target !== "string" || !target.trim()) {
-				throw new Error("send_message requires a target. Give me a destination such as rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>] or zulip:dm:<user IDs>, slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-....");
+				failDelivery("unknown", "send_message requires a target. Give me a destination such as rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>] or zulip:dm:<user IDs>, slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-....");
 			}
 			if (typeof text !== "string" || !text.trim()) {
-				throw new Error("send_message requires non-empty text.");
+				failDelivery(typeof target === "string" ? target : "unknown", "send_message requires non-empty text.");
 			}
-			const normalizedTarget = target.trim();
-			const hostDelivery = currentHostDeliveryScope();
-			const relationshipProgress = normalizeRelationshipProgress(relationship_progress);
-			if (relationshipProgress && hostDelivery?.source !== "hostd-phone") {
-				throw new Error("relationship_progress is available only inside an exact direct Hostd phone turn");
-			}
-			if (hostDelivery?.source === "hostd-phone" && !relationshipProgress) {
-				throw new Error("This direct Hostd relationship reply requires one exact close state and next step.");
-			}
-			if (hostDelivery) {
-				if (!hostDelivery.replyTarget || normalizedTarget !== hostDelivery.replyTarget) {
-					throw new Error("This Hostd relationship turn can send only to its exact bound reply target.");
-				}
-				if ((attachments?.length ?? 0) > 0 || (recipients?.length ?? 0) > 0 || subject) {
-					throw new Error("This Hostd relationship turn permits one direct plain-text relationship message only.");
-				}
-			}
+			const normalizedTarget = (target as string).trim();
+			const normalizedText = text as string;
 
-			if (isObsoleteSilentControlMessage(text)) {
+			if (isObsoleteSilentControlMessage(normalizedText)) {
 				log.logWarning(`[send_message] Suppressed obsolete [SILENT] message to ${target}`);
 				return {
 					content: [{ type: "text" as const, text: "Suppressed obsolete [SILENT] control marker; no user-visible message was sent. Use yield_no_action when no outbound message is needed." }],
@@ -215,9 +210,32 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 				};
 			}
 
-			const resolved = resolveMessageTarget(normalizedTarget, adapters);
-			if (!resolved) {
-				throw new Error(`No adapter found for target "${target}". Valid targets include rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
+			const resolvedCandidate = resolveMessageTarget(normalizedTarget, adapters);
+			if (!resolvedCandidate) {
+				failDelivery(normalizedTarget, `No adapter found for target "${normalizedTarget}". Valid targets include rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], zulip:<channel>[:topic:<encoded>], zulip:dm:<user IDs>, discord:<17-20 digit ID>, raw Discord snowflake, Telegram numeric chat ID, Slack C/D/G ID, slack:<channel>:<thread_ts>, email-thread:<id>, email-{address}, or phone-{hash}.`);
+			}
+			const resolved = resolvedCandidate as ResolvedMessageTarget;
+
+			const hostDelivery = currentHostDeliveryScope();
+			const relationshipProgress = resolved.adapter.name === "phone"
+				? normalizeRelationshipProgress(relationship_progress)
+				: undefined;
+			if (relationship_progress !== undefined && resolved.adapter.name !== "phone") {
+				log.logInfo(`[send_message] Ignored phone-only relationship_progress for ${resolved.adapter.name} target`);
+			}
+			if (relationshipProgress && hostDelivery?.source !== "hostd-phone") {
+				failDelivery(normalizedTarget, "relationship_progress is available only inside an exact direct Hostd phone turn");
+			}
+			if (hostDelivery?.source === "hostd-phone" && !relationshipProgress) {
+				failDelivery(normalizedTarget, "This direct Hostd relationship reply requires one exact close state and next step.");
+			}
+			if (hostDelivery) {
+				if (!hostDelivery.replyTarget || normalizedTarget !== hostDelivery.replyTarget) {
+					failDelivery(normalizedTarget, "This Hostd relationship turn can send only to its exact bound reply target.");
+				}
+				if ((attachments?.length ?? 0) > 0 || (recipients?.length ?? 0) > 0 || subject) {
+					failDelivery(normalizedTarget, "This Hostd relationship turn permits one direct plain-text relationship message only.");
+				}
 			}
 
 			try {
@@ -235,24 +253,26 @@ export function createSendMessageTool(adapters: PlatformAdapter[]): AgentTool<an
 
 				const ts = await withRelationshipProgressRequest(relationshipProgress, async () => (
 					resolved.threadTs
-						? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, text)
+						? await resolved.adapter.postInThread(resolved.channel, resolved.threadTs, normalizedText)
 						: phoneRecipients.length > 0
-							? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
-							: await resolved.adapter.postMessage(resolved.channel, text, attachmentObjects, subject)
+							? await phoneGroupAdapter(resolved.adapter).postMessageToRecipients(resolved.channel, normalizedText, phoneRecipients, attachmentObjects)
+							: await resolved.adapter.postMessage(resolved.channel, normalizedText, attachmentObjects, subject)
 				));
-				resolved.adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
+				recordUserVisibleDeliverySuccess(normalizedTarget);
+				resolved.adapter.logBotResponse(resolved.channel, normalizedText, ts, { threadTs: resolved.threadTs });
 
 				const attInfo = attachmentObjects?.length ? ` with ${attachmentObjects.length} attachment(s)` : "";
 				const recipientInfo = phoneRecipients.length ? ` to ${phoneRecipients.length + 1} phone participant(s)` : "";
 				const threadInfo = resolved.threadTs ? ` thread ${resolved.threadTs}` : "";
-				log.logInfo(`[send_message] Sent to ${resolved.adapter.name}:${resolved.channel}${threadInfo}${attInfo}${recipientInfo}: ${text.substring(0, 80)}`);
+				log.logInfo(`[send_message] Sent to ${resolved.adapter.name}:${resolved.channel}${threadInfo}${attInfo}${recipientInfo}: ${normalizedText.substring(0, 80)}`);
 
 				return {
-					content: [{ type: "text" as const, text: `Message sent to ${resolved.adapter.name} target ${target}${attInfo}${recipientInfo} (ts=${ts})` }],
+					content: [{ type: "text" as const, text: `Message sent to ${resolved.adapter.name} target ${normalizedTarget}${attInfo}${recipientInfo} (ts=${ts})` }],
 					details: { delivered: true },
 				};
 			} catch (err) {
 				const errMsg = err instanceof Error ? err.message : String(err);
+				recordUserVisibleDeliveryFailure(normalizedTarget, err);
 				log.logWarning(`[send_message] Failed to send to ${resolved.adapter.name}:${resolved.channel}`, errMsg);
 				return {
 					content: [{ type: "text" as const, text: `Failed to send message: ${errMsg}` }],

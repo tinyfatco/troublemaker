@@ -53,6 +53,11 @@ import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/too
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
 import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
 import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
+import {
+	finalizeUserVisibleDeliveryFailure,
+	resetUserVisibleDeliveryState,
+	USER_VISIBLE_DELIVERY_FAILURE_MESSAGE,
+} from "./tools/user-visible-delivery-state.js";
 import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
 import hostGmailExtension from "./extensions/host-gmail.js";
 import hostMcpConnectionsExtension from "./extensions/host-mcp-connections.js";
@@ -1110,6 +1115,7 @@ async function createRunner(
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
 			resetYield(); // Clear any stale yield from previous run
+			resetUserVisibleDeliveryState();
 
 			// Create queue for this run
 			let queueChain = Promise.resolve();
@@ -1314,11 +1320,48 @@ async function createRunner(
 			// Wait for queued messages
 			await queueChain;
 
+			// A directly addressed turn must not silently complete after its delivery
+			// tool fails. Force exactly one bounded source-channel error while leaving
+			// the successful run result intact, so Hostd completes rather than replays
+			// the inbound event.
+			let surfacedDeliveryFailure = false;
+			try {
+				const finalized = await finalizeUserVisibleDeliveryFailure({
+					completion: {
+						stopReason: runState.stopReason,
+						errorMessage: runState.errorMessage,
+					},
+					directlyAddressed: ctx.message.directlyAddressed === true,
+					yielded: wasYielded(),
+					sendFinalResponse: (text, options) => ctx.sendFinalResponse(text, options),
+					clearYield: resetYield,
+				});
+				runState.stopReason = finalized.stopReason;
+				runState.errorMessage = finalized.errorMessage;
+				if (finalized.failure) {
+					surfacedDeliveryFailure = true;
+					log.logWarning(
+						`Directly addressed turn tried to yield after delivery failed for ${finalized.failure.target}`,
+						finalized.failure.error,
+					);
+					const errorEvent = { type: "error" as const, message: USER_VISIBLE_DELIVERY_FAILURE_MESSAGE };
+					emitLiveEvent(errorEvent);
+					ctx.emitContentBlock?.(errorEvent);
+				}
+			} catch (err) {
+				surfacedDeliveryFailure = true;
+				resetYield();
+				const errMsg = err instanceof Error ? err.message : String(err);
+				log.logWarning("Failed to post delivery failure message", errMsg);
+			}
+
+			if (surfacedDeliveryFailure) {
+				// The forced source-channel error above is the one visible final.
 			// Handle error case. Missing model credentials are an operational
 			// condition, not assistant-authored conversation content. Failing quiet
 			// prevents one resident's auth outage from becoming another resident's
 			// inbound message and feedback-loop trigger.
-			if (runState.stopReason === "error" && runState.errorMessage) {
+			} else if (runState.stopReason === "error" && runState.errorMessage) {
 				if (runState.modelCredentialUnavailable) {
 					log.logWarning("Model credential unavailable; no user-visible runtime error posted");
 				} else {

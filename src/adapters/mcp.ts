@@ -22,6 +22,10 @@ import type { ChannelStore } from "../store.js";
 import { collectChannels, collectPhoneConversations, collectSlackThreads, formatChannelTable } from "../tools/list-channels.js";
 import { resolveSlackReactionTarget } from "../tools/react-to-message.js";
 import { resolveMessageTarget } from "../tools/send-message.js";
+import {
+	recordUserVisibleDeliveryFailure,
+	recordUserVisibleDeliverySuccess,
+} from "../tools/user-visible-delivery-state.js";
 import { currentHostDeliveryScope } from "./host-delivery-scope.js";
 import {
 	normalizeRelationshipProgress,
@@ -368,13 +372,14 @@ export class McpAdapter implements PlatformAdapter {
 						close_state: z.enum(RELATIONSHIP_CLOSE_STATES),
 						next_step: z.enum(RELATIONSHIP_NEXT_STEPS),
 						milestone: z.enum(RELATIONSHIP_RUNTIME_MILESTONES).optional(),
-					}).strict().optional().describe("Hostd relationship turns only: one durable close state and one next step, with an optional evidence-backed milestone."),
+					}).strict().optional().describe("Exact direct Hostd phone turns only: one durable close state and one next step, with an optional evidence-backed milestone. Omit for non-phone targets."),
 				},
 			},
 			async ({ target, text, subject, attachments, recipients, relationship_progress }: { target: string; text: string; subject?: string; attachments?: string[]; recipients?: string[]; relationship_progress?: unknown }) => {
 				log.logInfo(`[mcp] send_message: ${target} (${text.length} chars)`);
 
 				if (!target.trim()) {
+					recordUserVisibleDeliveryFailure("unknown", "send_message requires a target");
 					return {
 						content: [{ type: "text" as const, text: "send_message requires a target. Give me a destination such as rocket-chat:<room>[:<root>], mattermost:<channel>[:<root>], slack:<channel>:<thread_ts>, email-thread:<id>, email-user@example.com, or phone-...." }],
 						isError: true,
@@ -383,6 +388,7 @@ export class McpAdapter implements PlatformAdapter {
 
 				const resolved = resolveMessageTarget(target.trim(), this.peerAdapters);
 				if (!resolved) {
+					recordUserVisibleDeliveryFailure(target, `No adapter found for target "${target}"`);
 					return {
 						content: [{ type: "text" as const, text: `No adapter found for target "${target}". Valid patterns: rocket-chat:<room>[:<root>] (Rocket.Chat), mattermost:<channel>[:<root>] (Mattermost), discord:<17-20 digit ID> or raw 17-20 digit snowflake (Discord), shorter numeric (Telegram), C/D/G prefix (Slack), slack:<channel>:<thread_ts> (Slack thread), email-thread:<id> (existing Email thread), email-{address} (Email), phone-{hash} (SMS/iMessage).` }],
 						isError: true,
@@ -392,7 +398,12 @@ export class McpAdapter implements PlatformAdapter {
 
 				try {
 					const hostDelivery = currentHostDeliveryScope();
-					const relationshipProgress = normalizeRelationshipProgress(relationship_progress);
+					const relationshipProgress = adapter.name === "phone"
+						? normalizeRelationshipProgress(relationship_progress)
+						: undefined;
+					if (relationship_progress !== undefined && adapter.name !== "phone") {
+						log.logInfo(`[mcp] Ignored phone-only relationship_progress for ${adapter.name} target`);
+					}
 					if (relationshipProgress && hostDelivery?.source !== "hostd-phone") {
 						throw new Error("relationship_progress is available only inside an exact direct Hostd phone turn");
 					}
@@ -423,6 +434,7 @@ export class McpAdapter implements PlatformAdapter {
 								? await phoneGroupAdapter(adapter).postMessageToRecipients(resolved.channel, text, phoneRecipients, attachmentObjects)
 								: await adapter.postMessage(resolved.channel, text, attachmentObjects, subject)
 					));
+					recordUserVisibleDeliverySuccess(target);
 					adapter.logBotResponse(resolved.channel, text, ts, { threadTs: resolved.threadTs });
 
 					// Append to awareness so the agent sees it on its next run.
@@ -454,6 +466,7 @@ export class McpAdapter implements PlatformAdapter {
 					};
 				} catch (err) {
 					const errMsg = err instanceof Error ? err.message : String(err);
+					recordUserVisibleDeliveryFailure(target, err);
 					log.logWarning(`[mcp] send_message failed for ${adapter.name}:${resolved.channel}`, errMsg);
 					this.logToFile({
 						date: new Date().toISOString(),

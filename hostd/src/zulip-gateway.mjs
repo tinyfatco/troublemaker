@@ -24,6 +24,11 @@ function positiveId(value) {
 	return Number.isInteger(candidate) && candidate > 0 ? candidate : null;
 }
 
+function topicIsInActiveTurn(store, contextId, topic) {
+	return topic === ""
+		|| store.hasActiveZulipTopic?.(contextId, topic) === true;
+}
+
 function contextParts(contextId) {
 	const [targetId, principalHash] = contextId.split(":");
 	if (!targetId || !principalHash) throw new Error("Zulip binding has an invalid context ID");
@@ -236,10 +241,11 @@ export class ZulipGateway {
 		}
 		if (request.method === "POST" && path === "/messages") {
 			const input = new URLSearchParams((await readRawBody(request, 2 * 1024 * 1024)).toString("utf8"));
+			const topic = input.get("topic") ?? "";
 			if (
 				input.get("type") !== "channel"
 				|| Number(input.get("to")) !== Number(binding.channelId)
-				|| (input.get("topic") ?? "") !== ""
+				|| !topicIsInActiveTurn(this.store, contextId, topic)
 			) {
 				json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
 				return;
@@ -255,7 +261,7 @@ export class ZulipGateway {
 				form: new URLSearchParams({
 					type: "channel",
 					to: String(binding.channelId),
-					topic: "",
+					topic,
 					content,
 				}),
 			});
@@ -295,10 +301,11 @@ export class ZulipGateway {
 		}
 		if (request.method === "POST" && path === "/typing") {
 			const input = new URLSearchParams((await readRawBody(request, 64 * 1024)).toString("utf8"));
+			const topic = input.get("topic") ?? "";
 			if (
 				input.get("type") !== "channel"
 				|| Number(input.get("stream_id")) !== Number(binding.channelId)
-				|| (input.get("topic") ?? "") !== ""
+				|| !topicIsInActiveTurn(this.store, contextId, topic)
 			) {
 				json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
 				return;
@@ -309,7 +316,7 @@ export class ZulipGateway {
 				form: new URLSearchParams({
 					type: "channel",
 					stream_id: String(binding.channelId),
-					topic: "",
+					topic,
 					op: input.get("op") === "stop" ? "stop" : "start",
 				}),
 			}));

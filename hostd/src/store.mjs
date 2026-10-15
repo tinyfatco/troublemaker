@@ -2535,6 +2535,27 @@ export class HostStore {
 		`).get(contextId, source);
 	}
 
+	hasActiveZulipTopic(contextId, topic) {
+		if (typeof topic !== "string" || !topic) return false;
+		const active = this.database.prepare(`
+			SELECT payload_json AS payloadJson
+			FROM events
+			WHERE context_id = ? AND source = 'zulip'
+				AND status IN ('leased', 'accepted', 'running')
+				AND payload_json IS NOT NULL
+			ORDER BY awareness_sequence DESC, received_at DESC, id DESC
+		`).all(contextId);
+		return active.some(({ payloadJson }) => {
+			try {
+				const payload = JSON.parse(payloadJson);
+				return payload?.message?.type === "stream"
+					&& payload.message.subject === topic;
+			} catch {
+				return false;
+			}
+		});
+	}
+
 	touchRoute(source, threadId) {
 		this.database.prepare(`
 			UPDATE routes SET last_seen_at = ? WHERE source = ? AND provider_thread_id = ?
