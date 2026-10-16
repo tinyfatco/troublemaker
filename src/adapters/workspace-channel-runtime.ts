@@ -158,6 +158,12 @@ async function settleOwnedRouteWork({
 	markAccepted: () => Promise<void>;
 	awaitCompletion: boolean;
 }): Promise<void> {
+	// The work promise is already live on entry. Observe rejection before the
+	// first await so a delayed or stale receipt cannot create an unhandled gap.
+	const observedWork = work?.then(
+		() => ({ status: "fulfilled" as const }),
+		(error: unknown) => ({ status: "rejected" as const, error }),
+	);
 	let acceptanceError: unknown;
 	try {
 		await markAccepted();
@@ -166,7 +172,12 @@ async function settleOwnedRouteWork({
 	}
 	// Once this route starts asynchronous work, a stale or failed host receipt
 	// cannot detach it and let the delivery's outer capability finally close.
-	if (work && (awaitCompletion || acceptanceError)) await work;
+	if (observedWork && (awaitCompletion || acceptanceError)) {
+		const outcome = await observedWork;
+		// Work failure takes deterministic precedence when both work and the
+		// acceptance receipt fail; the receipt still cannot detach the work.
+		if (outcome.status === "rejected") throw outcome.error;
+	}
 	if (acceptanceError && !awaitCompletion) throw acceptanceError;
 }
 

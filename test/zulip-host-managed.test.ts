@@ -24,6 +24,11 @@ const source26130Lifecycle: string[] = [];
 let source26130CapabilityUseCount = 0;
 const staleControlLifecycle: string[] = [];
 const staleStopLifecycle: string[] = [];
+const rejectingModelLifecycle: string[] = [];
+const rejectingControlLifecycle: string[] = [];
+const rejectingStopLifecycle: string[] = [];
+const rejectingReceiptErrors = new Map<string, string[]>();
+const successfulWorkReceiptErrors = new Map<string, string[]>();
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
@@ -49,6 +54,14 @@ const upstream = createServer(async (request, response) => {
 		const body = JSON.parse((await readBody(request)).toString("utf8"));
 		receipts.push(body.status);
 		receiptBodies.push(body);
+		if (
+			typeof body.error === "string"
+			&& ["lease-26130-expired", "stale-control", "stale-stop"].includes(body.lease_token)
+		) {
+			const errors = successfulWorkReceiptErrors.get(body.lease_token) ?? [];
+			errors.push(body.error);
+			successfulWorkReceiptErrors.set(body.lease_token, errors);
+		}
 		if (body.lease_token === "lease-26130-expired") {
 			source26130Lifecycle.push(`stale-receipt:${body.status}`);
 			send(409, { error: "lease_expired" });
@@ -64,6 +77,24 @@ const upstream = createServer(async (request, response) => {
 			send(409, { error: "lease_expired" });
 			return;
 		}
+		const rejectingLifecycle = body.lease_token === "reject-model"
+			? rejectingModelLifecycle
+			: body.lease_token === "reject-control"
+				? rejectingControlLifecycle
+				: body.lease_token === "reject-stop"
+					? rejectingStopLifecycle
+					: undefined;
+		if (rejectingLifecycle) {
+			rejectingLifecycle.push(`receipt:${body.status}`);
+			if (typeof body.error === "string") {
+				const errors = rejectingReceiptErrors.get(body.lease_token) ?? [];
+				errors.push(body.error);
+				rejectingReceiptErrors.set(body.lease_token, errors);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 40));
+			send(409, { error: "lease_expired" });
+			return;
+		}
 		if (body.lease_token === "lease-26130-replacement") {
 			source26130Lifecycle.push(`replacement-receipt:${body.status}`);
 		}
@@ -76,6 +107,9 @@ const upstream = createServer(async (request, response) => {
 		if (decodedPath.includes("/zulip:26130/")) source26130Lifecycle.push("capability-close");
 		if (decodedPath.includes("/delivery-stale-control/")) staleControlLifecycle.push("capability-close");
 		if (decodedPath.includes("/delivery-stale-stop/")) staleStopLifecycle.push("capability-close");
+		if (decodedPath.includes("/delivery-reject-model/")) rejectingModelLifecycle.push("capability-close");
+		if (decodedPath.includes("/delivery-reject-control/")) rejectingControlLifecycle.push("capability-close");
+		if (decodedPath.includes("/delivery-reject-stop/")) rejectingStopLifecycle.push("capability-close");
 		send(200, { ok: true });
 		return;
 	}
@@ -199,6 +233,13 @@ const adapter = new ZulipWebhookAdapter({
 adapter.setHandler({
 	isRunning: () => running,
 	handleEvent: async (event: any) => {
+		if (event.ts === "117") {
+			handled.push(event);
+			rejectingModelLifecycle.push("work-start");
+			await Promise.resolve();
+			rejectingModelLifecycle.push("work-rejected");
+			throw new Error("owned-model-rejected");
+		}
 		if (event.ts === "114") {
 			handled.push(event);
 			source26130Lifecycle.push("claim-work-start");
@@ -243,6 +284,15 @@ adapter.setHandler({
 		return { yielded: false };
 	},
 	handleSlashCommand: async (event: any) => {
+		if (event.ts === "118") {
+			const pending = (async () => {
+				rejectingControlLifecycle.push("work-start");
+				await Promise.resolve();
+				rejectingControlLifecycle.push("work-rejected");
+				throw new Error("owned-control-rejected");
+			})();
+			return { handled: true, pending };
+		}
 		if (event.ts === "115") {
 			const pending = (async () => {
 				staleControlLifecycle.push("work-start");
@@ -263,6 +313,12 @@ adapter.setHandler({
 	handleSteer: (event: any) => steered.push(event),
 	handleStop: async (_channelId: string, _adapter: unknown, event: any) => {
 		stopped.push(event);
+		if (event.ts === "119") {
+			rejectingStopLifecycle.push("work-start");
+			await Promise.resolve();
+			rejectingStopLifecycle.push("work-rejected");
+			throw new Error("owned-stop-rejected");
+		}
 		if (event.ts === "116") {
 			staleStopLifecycle.push("work-start");
 			markStaleStopStarted?.();
@@ -646,6 +702,9 @@ try {
 	assert.equal(handled[3].threadTs, "Road map / alpha");
 	assert.equal(handled[3].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
 	assert.equal(handled[3].replyTargetDescription, "Zulip channel topic Road map / alpha");
+	for (let index = 0; index < 100 && outboundBodies.length < 1; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
 	assert.equal(outboundBodies.at(-1)?.get("topic"), "Road map / alpha");
 	assert.equal(outboundHeaders.at(-1)?.["x-troublemaker-zulip-delivery-id"], "delivery-topic");
 	assert.equal(
@@ -884,6 +943,7 @@ try {
 			await new Promise((resolve) => setTimeout(resolve, 10));
 		}
 		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert(successfulWorkReceiptErrors.get("lease-26130-expired")?.includes("host receipt returned HTTP 409"), "successful model work surfaces only its stale receipt error");
 		assert.deepEqual(unhandledSource26130, [], "stale receipt failure creates no detached task or unhandled rejection");
 		const source26130Ledger = readFileSync(join(workingDir, "zulip-inbound-deliveries.jsonl"), "utf8")
 			.split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -925,6 +985,10 @@ try {
 		assert.equal(outboundBodies[0].get("content"), "SCOPED_CONTROL_OK");
 		assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-stale-control");
 		assert(staleControlLifecycle.indexOf("work-settled") < staleControlLifecycle.indexOf("capability-close"), "pending control settles before scope close");
+		for (let index = 0; index < 100 && !(successfulWorkReceiptErrors.get("stale-control")?.length); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(successfulWorkReceiptErrors.get("stale-control")?.includes("host receipt returned HTTP 409"), "successful pending control surfaces only its stale receipt error");
 
 		outboundBodies.length = 0;
 		outboundHeaders.length = 0;
@@ -952,10 +1016,60 @@ try {
 		assert.equal(outboundBodies[0].get("content"), "SCOPED_STOP_OK");
 		assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-stale-stop");
 		assert(staleStopLifecycle.indexOf("work-settled") < staleStopLifecycle.indexOf("capability-close"), "stop settles before scope close");
+		for (let index = 0; index < 100 && !(successfulWorkReceiptErrors.get("stale-stop")?.length); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(successfulWorkReceiptErrors.get("stale-stop")?.includes("host receipt returned HTTP 409"), "successful stop surfaces only its stale receipt error");
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.deepEqual(unhandledScopedControls, [], "stale scoped receipts create no detached rejection");
 	} finally {
 		process.off("unhandledRejection", onUnhandledScopedControl);
+	}
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
+
+	const unhandledRejectingWork: unknown[] = [];
+	const handledLateRejectingWork: Promise<unknown>[] = [];
+	const onUnhandledRejectingWork = (reason: unknown) => { unhandledRejectingWork.push(reason); };
+	const onHandledLateRejectingWork = (promise: Promise<unknown>) => { handledLateRejectingWork.push(promise); };
+	process.on("unhandledRejection", onUnhandledRejectingWork);
+	process.on("rejectionHandled", onHandledLateRejectingWork);
+	try {
+		for (const [id, deliveryId, topic, leaseToken, lifecycle] of [
+			[117, "delivery-reject-model", "reject model", "reject-model", rejectingModelLifecycle],
+			[118, "delivery-reject-control", "reject control", "reject-control", rejectingControlLifecycle],
+			[119, "delivery-reject-stop", "stop", "reject-stop", rejectingStopLifecycle],
+		] as const) {
+			const closesBeforeReject = topicCapabilityCloseTokens.length;
+			const response = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+				method: "POST",
+				headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+				body: JSON.stringify(overlapPayload(id, deliveryId, topic, "z".repeat(48), leaseToken)),
+			});
+			assert.equal(response.status, 202);
+			for (let index = 0; index < 100 && !lifecycle.includes("capability-close"); index++) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert(lifecycle.includes("work-start"), `${deliveryId} starts owned work`);
+			assert(lifecycle.includes("work-rejected"), `${deliveryId} settles by rejection`);
+			assert(lifecycle.includes("receipt:running"), `${deliveryId} overlaps delayed stale receipt`);
+			assert(lifecycle.indexOf("work-start") < lifecycle.indexOf("receipt:running"), `${deliveryId} starts before receipt response`);
+			assert(lifecycle.indexOf("work-rejected") < lifecycle.indexOf("capability-close"), `${deliveryId} rejection settles before scope close`);
+			assert.equal(topicCapabilityCloseTokens.length, closesBeforeReject + 1, `${deliveryId} closes scope once`);
+			assert.equal(outboundBodies.length, 0, `${deliveryId} creates no duplicate output`);
+			for (let index = 0; index < 100 && !(rejectingReceiptErrors.get(leaseToken)?.length); index++) {
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
+		assert(rejectingReceiptErrors.get("reject-control")?.includes("owned-control-rejected"), "control work error takes precedence over stale receipt error");
+		assert(rejectingReceiptErrors.get("reject-stop")?.includes("owned-stop-rejected"), "stop work error takes precedence over stale receipt error");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.deepEqual(unhandledRejectingWork, [], "immediately observed owned work creates no unhandled rejection");
+		assert.deepEqual(handledLateRejectingWork, [], "immediately observed owned work creates no late rejectionHandled event");
+	} finally {
+		process.off("unhandledRejection", onUnhandledRejectingWork);
+		process.off("rejectionHandled", onHandledLateRejectingWork);
 	}
 	outboundBodies.length = 0;
 	outboundHeaders.length = 0;
@@ -1010,15 +1124,15 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 17, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(pulseRecords.length, 20, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
 	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
 	assert.equal(ambient[1].user, "10");
 	assert.equal(ambient[1].text, "Bot ambient update.");
 	assert.equal(ambient[1].directlyAddressed, false);
 	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
-	assert.equal(handled.length, 9, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[8].directlyAddressed, true);
-	assert.equal(handled[8].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 10, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[9].directlyAddressed, true);
+	assert.equal(handled[9].sourceEventType, "zulip_mention");
 
 	const restartClaimPayload = {
 		deliveryId: "delivery-restart-claim",
