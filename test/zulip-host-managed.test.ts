@@ -615,6 +615,12 @@ try {
 		new Promise((_, reject) => setTimeout(() => reject(new Error("overlap A did not start")), 2_000)),
 	]);
 	assert.equal(currentZulipTopicDeliveryScope(), undefined, "unrelated async work cannot observe A's capability");
+	const upstreamBeforeUnrelatedPost = outboundBodies.length;
+	await assert.rejects(
+		adapter.postInThread(OTHER_CHANNEL_ID, "Topic A", "Unrelated async must not borrow A."),
+		/requires the exact active inbound turn/,
+	);
+	assert.equal(outboundBodies.length, upstreamBeforeUnrelatedPost, "unrelated async never reaches the Zulip proxy");
 	const overlapB = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
 		method: "POST",
 		headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
@@ -1006,16 +1012,16 @@ try {
 	assert.equal(outboundBodies[1].get("type"), "direct");
 	assert.equal(outboundBodies[1].get("to"), "[8]");
 	assert.equal(outboundBodies[1].get("content"), "Direct review is ready.");
-	const topicPosted = await adapter.postInThread(OTHER_CHANNEL_ID, "Roadmap", "Topic update.");
-	assert.equal(topicPosted, "102");
-	assert.equal(outboundBodies[2].get("type"), "channel");
-	assert.equal(outboundBodies[2].get("to"), OTHER_CHANNEL_ID);
-	assert.equal(outboundBodies[2].get("topic"), "Roadmap");
+	await assert.rejects(
+		adapter.postInThread(OTHER_CHANNEL_ID, "Roadmap", "Topic update."),
+		/requires the exact active inbound turn/,
+	);
+	assert.equal(outboundBodies.length, 2, "a host-managed topic post cannot leave turn identity behind");
 	const groupDirectPosted = await adapter.postMessage("dm:8,12", "Group direct review is ready.");
-	assert.equal(groupDirectPosted, "103");
-	assert.equal(outboundBodies[3].get("type"), "direct");
-	assert.equal(outboundBodies[3].get("to"), "[8,12]");
-	assert.equal(outboundBodies[3].get("content"), "Group direct review is ready.");
+	assert.equal(groupDirectPosted, "102");
+	assert.equal(outboundBodies[2].get("type"), "direct");
+	assert.equal(outboundBodies[2].get("to"), "[8,12]");
+	assert.equal(outboundBodies[2].get("content"), "Group direct review is ready.");
 
 	const working = adapter.createWorkingOutputContext(
 		{ platform: "zulip", channelId: CHANNEL_ID },

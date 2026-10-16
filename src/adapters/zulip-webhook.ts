@@ -152,13 +152,13 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	private readonly channelPolicies = new Map<string, string>();
 	private readonly turndown = new TurndownService({ codeBlockStyle: "fenced" });
 	private readonly queues = new Map<string, WorkspaceChannelQueue>();
-	private readonly activeTopicCapabilities = new Map<string, ZulipTopicDeliveryScope>();
 	private readonly deliveryTails = new Map<string, Promise<void>>();
 	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	private handler!: MomHandler;
 	private botUserId: string | null = null;
 	private botEmail: string | null = null;
 	private channelRefreshTimer?: NodeJS.Timeout;
+	private requiresTopicCapability = false;
 
 	constructor(config: ZulipWebhookConfig) {
 		const parsed = new URL(config.url);
@@ -445,6 +445,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 					response.end("Missing exact Zulip topic capability");
 					return;
 				}
+				this.requiresTopicCapability = true;
 			} else if (topicCapability) {
 				response.writeHead(400);
 				response.end("Unexpected Zulip topic capability");
@@ -625,7 +626,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			awaitCompletion,
 			onAccepted,
 			...(topicCapability ? {
-				runWork: (work: () => Promise<void>) => this.withActiveTopicCapability(topicCapability, work),
+				runWork: (work: () => Promise<void>) => withZulipTopicDeliveryScope(topicCapability, work),
 			} : {}),
 		});
 	}
@@ -776,8 +777,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		const headers = new Headers();
 		const channelId = body.get("to") ?? "";
 		const topic = body.get("topic") ?? "";
-		const asyncScope = currentZulipTopicDeliveryScope();
-		const scope = asyncScope ?? this.activeTopicCapabilities.get(this.topicScopeKey(channelId, topic));
+		const scope = currentZulipTopicDeliveryScope();
 		if (scope) {
 			if (
 				body.get("type") !== "channel"
@@ -786,6 +786,8 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			) throw new Error("Zulip delivery scope permits only the exact inbound topic");
 			headers.set("x-troublemaker-zulip-delivery-id", scope.deliveryId);
 			headers.set("x-troublemaker-zulip-topic-capability", scope.capability);
+		} else if (this.requiresTopicCapability && body.get("type") === "channel" && topic) {
+			throw new Error("Zulip topic delivery requires the exact active inbound turn");
 		}
 		const result = await this.api<ZulipResponse>("/messages", {
 			method: "POST",
@@ -824,29 +826,6 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		} finally {
 			release();
 			if (this.deliveryTails.get(channelId) === tail) this.deliveryTails.delete(channelId);
-		}
-	}
-
-	private topicScopeKey(channelId: string, topic: string): string {
-		return `${channelId}\u0000${topic}`;
-	}
-
-	private async withActiveTopicCapability<T>(
-		scope: ZulipTopicDeliveryScope,
-		work: () => Promise<T>,
-	): Promise<T> {
-		const key = this.topicScopeKey(scope.channelId, scope.topic);
-		const existing = this.activeTopicCapabilities.get(key);
-		if (existing && existing.deliveryId !== scope.deliveryId) {
-			throw new Error("a different delivery already owns this Zulip topic turn");
-		}
-		this.activeTopicCapabilities.set(key, scope);
-		try {
-			return await withZulipTopicDeliveryScope(scope, work);
-		} finally {
-			if (this.activeTopicCapabilities.get(key) === scope) {
-				this.activeTopicCapabilities.delete(key);
-			}
 		}
 	}
 
