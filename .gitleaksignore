@@ -17,3 +17,6 @@ d1a4b30854c493302b0def298f5072afe6400f72:test/mcp-ingress-security.test.ts:gener
 60b98a276b60d84451c1cfc88a440274c20d7071:hostd/test/scoped-webchat-server.test.mjs:generic-api-key:57
 60b98a276b60d84451c1cfc88a440274c20d7071:hostd/test/scoped-webchat.test.mjs:generic-api-key:24
 60b98a276b60d84451c1cfc88a440274c20d7071:hostd/test/scoped-webchat.test.mjs:generic-api-key:25
+# Synthetic lease labels in the source-26130 lifecycle regression.
+193fb7ff551bf471f6b20ecd592ee026e37aa9c7:test/zulip-host-managed.test.ts:generic-api-key:55
+193fb7ff551bf471f6b20ecd592ee026e37aa9c7:test/zulip-host-managed.test.ts:generic-api-key:812
