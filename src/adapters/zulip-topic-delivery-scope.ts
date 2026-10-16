@@ -8,32 +8,14 @@ export interface ZulipTopicDeliveryScope {
 }
 
 const scopeStorage = new AsyncLocalStorage<ZulipTopicDeliveryScope>();
-let activeRuntimeScope: ZulipTopicDeliveryScope | undefined;
-
-function sameScope(left: ZulipTopicDeliveryScope, right: ZulipTopicDeliveryScope): boolean {
-	return left.deliveryId === right.deliveryId
-		&& left.channelId === right.channelId
-		&& left.topic === right.topic
-		&& left.capability === right.capability;
-}
 
 export function currentZulipTopicDeliveryScope(): ZulipTopicDeliveryScope | undefined {
-	return scopeStorage.getStore() ?? activeRuntimeScope;
+	return scopeStorage.getStore();
 }
 
-export async function withZulipTopicDeliveryScope<T>(
-	scope: ZulipTopicDeliveryScope | undefined,
+export function withZulipTopicDeliveryScope<T>(
+	scope: ZulipTopicDeliveryScope,
 	work: () => Promise<T>,
 ): Promise<T> {
-	if (!scope) return work();
-	const previous = activeRuntimeScope;
-	if (previous && !sameScope(previous, scope)) {
-		throw new Error("overlapping Zulip topic delivery scopes are not allowed");
-	}
-	activeRuntimeScope = scope;
-	try {
-		return await scopeStorage.run(scope, work);
-	} finally {
-		if (activeRuntimeScope === scope) activeRuntimeScope = previous;
-	}
+	return scopeStorage.run(scope, work);
 }

@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WorkspaceDeliveryLedger } from "../src/adapters/workspace-channel-runtime.js";
+import { currentZulipTopicDeliveryScope } from "../src/adapters/zulip-topic-delivery-scope.js";
 import { ZulipWebhookAdapter } from "../src/adapters/zulip-webhook.js";
 import { ChannelStore } from "../src/store.js";
 
@@ -18,7 +19,7 @@ const receipts: string[] = [];
 const receiptBodies: Array<{ status: string; lease_token: string }> = [];
 const outboundBodies: URLSearchParams[] = [];
 const outboundHeaders: Array<Record<string, string | string[] | undefined>> = [];
-let topicCapabilityCloseCount = 0;
+const topicCapabilityCloseTokens: string[] = [];
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
@@ -47,9 +48,8 @@ const upstream = createServer(async (request, response) => {
 		send(200, { ok: true });
 		return;
 	}
-	if (url.pathname === "/v1/zulip-topic-capabilities/context-example/delivery-topic/close") {
-		assert.equal(request.headers.authorization, "Bearer topic-capability-example-0123456789abcdef");
-		topicCapabilityCloseCount += 1;
+	if (/^\/v1\/zulip-topic-capabilities\/[^/]+\/[^/]+\/close$/.test(url.pathname)) {
+		topicCapabilityCloseTokens.push(String(request.headers.authorization || ""));
 		send(200, { ok: true });
 		return;
 	}
@@ -115,6 +115,14 @@ let releaseBatchRoute: (() => void) | undefined;
 const batchRouteGate = new Promise<void>((resolve) => {
 	releaseBatchRoute = resolve;
 });
+let releaseOverlapA: (() => void) | undefined;
+const overlapAGate = new Promise<void>((resolve) => {
+	releaseOverlapA = resolve;
+});
+let markOverlapAStarted: (() => void) | undefined;
+const overlapAStarted = new Promise<void>((resolve) => {
+	markOverlapAStarted = resolve;
+});
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -141,6 +149,16 @@ adapter.setHandler({
 				/exact inbound topic/,
 			);
 			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped topic reply.");
+		}
+		if (event.ts === "110") {
+			running = true;
+			markOverlapAStarted?.();
+			await overlapAGate;
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped A reply.");
+			running = false;
+		}
+		if (event.ts === "111") {
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped B reply.");
 		}
 		if (event.ts === "96") await restartClaimGate;
 		if (event.ts === "99") {
@@ -479,10 +497,11 @@ try {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 	assert.equal(stopped.length, 3, "DM and channel mentions both retain ergonomic stop behavior");
-	assert.equal(stopped[1].text, "stop");
-	assert.equal(stopped[1].sourceEventType, "zulip_dm");
-	assert.equal(stopped[2].text, "stop");
-	assert.equal(stopped[2].sourceEventType, "zulip_mention");
+	assert.deepEqual(stopped.slice(1).map((event) => event.text), ["stop", "stop"]);
+	assert.deepEqual(
+		stopped.slice(1).map((event) => event.sourceEventType).sort(),
+		["zulip_dm", "zulip_mention"],
+	);
 	assert.equal(steered.length, 0, "tagged Zulip stop commands never enter steering");
 	running = false;
 
@@ -535,12 +554,104 @@ try {
 		outboundHeaders.at(-1)?.["x-troublemaker-zulip-topic-capability"],
 		"topic-capability-example-0123456789abcdef",
 	);
-	assert.equal(topicCapabilityCloseCount, 1, "the exact runtime turn closes its topic capability");
+	for (let index = 0; index < 100 && topicCapabilityCloseTokens.length < 1; index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.deepEqual(topicCapabilityCloseTokens, ["Bearer topic-capability-example-0123456789abcdef"], "the exact runtime turn closes its topic capability");
 	assert.equal(pulseRecords.length, 8, "topic mentions retain direct pulse accounting after stop controls");
 	outboundBodies.length = 0;
 	outboundHeaders.length = 0;
 	nextMessageId = 100;
 
+	const overlapPayload = (
+		id: number,
+		deliveryId: string,
+		topic: string,
+		capability: string,
+		leaseToken: string,
+	) => ({
+		deliveryId,
+		topicCapability: {
+			deliveryId,
+			channelId: OTHER_CHANNEL_ID,
+			topic,
+			capability,
+			closeUrl: `http://127.0.0.1:${upstreamAddress.port}/v1/zulip-topic-capabilities/context-example/${deliveryId}/close`,
+		},
+		message: {
+			id,
+			type: "stream",
+			stream_id: Number(OTHER_CHANNEL_ID),
+			display_recipient: "projects",
+			subject: topic,
+			sender_id: 8,
+			sender_email: "casey@example.com",
+			sender_full_name: "Casey",
+			sender_is_bot: false,
+			timestamp: Math.floor(Date.now() / 1000),
+			content: `<p>${topic}</p>`,
+			flags: ["mentioned"],
+		},
+		hostReceipt: {
+			url: `http://127.0.0.1:${upstreamAddress.port}/receipt`,
+			token: RECEIPT_TOKEN,
+			leaseToken,
+		},
+	});
+	const overlapA = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+		body: JSON.stringify(overlapPayload(
+			110,
+			"delivery-overlap-a",
+			"Topic A",
+			"topic-capability-a-0123456789abcdef0123456789",
+			"lease-overlap-a",
+		)),
+	});
+	assert.equal(overlapA.status, 202);
+	await Promise.race([
+		overlapAStarted,
+		new Promise((_, reject) => setTimeout(() => reject(new Error("overlap A did not start")), 2_000)),
+	]);
+	assert.equal(currentZulipTopicDeliveryScope(), undefined, "unrelated async work cannot observe A's capability");
+	const overlapB = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+		body: JSON.stringify(overlapPayload(
+			111,
+			"delivery-overlap-b",
+			"Topic B",
+			"topic-capability-b-0123456789abcdef0123456789",
+			"lease-overlap-b",
+		)),
+	});
+	assert.equal(overlapB.status, 202);
+	await new Promise((resolve) => setTimeout(resolve, 40));
+	assert.equal(handled.some((event) => event.ts === "111"), false, "B waits for A's actual turn to close");
+	assert.equal(steered.some((event) => event.ts === "111"), false, "B cannot enter or borrow A's steering scope");
+	releaseOverlapA?.();
+	for (let index = 0; index < 200 && !handled.some((event) => event.ts === "111"); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(handled.some((event) => event.ts === "111"), true, "B starts only after A closes");
+	for (let index = 0; index < 200 && (outboundBodies.length < 2 || topicCapabilityCloseTokens.length < 3); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(outboundBodies.length, 2);
+	assert.equal(outboundBodies[0].get("topic"), "Topic A");
+	assert.equal(outboundBodies[1].get("topic"), "Topic B");
+	assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-overlap-a");
+	assert.equal(outboundHeaders[1]["x-troublemaker-zulip-delivery-id"], "delivery-overlap-b");
+	assert.deepEqual(topicCapabilityCloseTokens.slice(-2), [
+		"Bearer topic-capability-a-0123456789abcdef0123456789",
+		"Bearer topic-capability-b-0123456789abcdef0123456789",
+	]);
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
+
+	const completedBeforeBotMessages = receipts.filter((status) => status === "completed").length;
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
 		[91, ["mentioned"], "delivery-bot-mention", "lease-bot-mention"],
@@ -577,10 +688,10 @@ try {
 		});
 		assert.equal(response.status, 202);
 	}
-	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < 11; index++) {
+	for (let index = 0; index < 100 && receipts.filter((status) => status === "completed").length < completedBeforeBotMessages + 2; index++) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
-	assert.equal(receipts.filter((status) => status === "completed").length, 11);
+	assert.equal(receipts.filter((status) => status === "completed").length, completedBeforeBotMessages + 2);
 	const logEntries = readFileSync(join(workingDir, "log.jsonl"), "utf8")
 		.trim()
 		.split("\n")
@@ -589,15 +700,15 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 10, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(pulseRecords.length, 12, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
 	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
 	assert.equal(ambient[1].user, "10");
 	assert.equal(ambient[1].text, "Bot ambient update.");
 	assert.equal(ambient[1].directlyAddressed, false);
 	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
-	assert.equal(handled.length, 5, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[4].directlyAddressed, true);
-	assert.equal(handled[4].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 7, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[6].directlyAddressed, true);
+	assert.equal(handled[6].sourceEventType, "zulip_mention");
 
 	const restartClaimPayload = {
 		deliveryId: "delivery-restart-claim",
@@ -766,29 +877,35 @@ try {
 		}),
 	});
 	assert.equal(secondBatchResponse.status, 202);
-	for (let index = 0; index < 100 && !steered.some((event) => event.ts === "100"); index++) {
-		await new Promise((resolve) => setTimeout(resolve, 10));
-	}
+	await new Promise((resolve) => setTimeout(resolve, 40));
 	assert.equal(
-		steered.filter((event) => event.ts === "100").length,
-		1,
-		"a second accepted Zulip message steers the active run instead of becoming a sequential turn",
+		steered.some((event) => event.ts === "100"),
+		false,
+		"a distinct accepted Zulip delivery cannot borrow the active turn's scope",
+	);
+	assert.equal(
+		handled.some((event) => event.ts === "100"),
+		false,
+		"a distinct delivery waits for the active turn to close",
 	);
 	assert.equal(
 		receiptBodies.some((body) => body.lease_token === "lease-batch-first" && body.status === "completed"),
 		false,
-		"the first full-turn receipt remains pending while the follow-up is steered",
+		"the first full-turn receipt remains pending while the follow-up waits",
 	);
 	releaseBatchRoute?.();
 	for (
 		let index = 0;
-		index < 100 && !receiptBodies.some((body) =>
-			body.lease_token === "lease-batch-first" && body.status === "completed"
+		index < 200 && (
+			!receiptBodies.some((body) => body.lease_token === "lease-batch-first" && body.status === "completed")
+			|| !receiptBodies.some((body) => body.lease_token === "lease-batch-second" && body.status === "completed")
+			|| !handled.some((event) => event.ts === "100")
 		);
 		index++
 	) {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
+	assert.equal(handled.filter((event) => event.ts === "100").length, 1, "the waiting delivery starts one fresh turn after closure");
 
 	const handledBeforeBotDm = handled.length;
 	const ambientBeforeBotDm = ambient.length;

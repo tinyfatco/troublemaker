@@ -3873,11 +3873,6 @@ export class HostStore {
 				}
 			} else {
 				this.database.prepare(`
-					UPDATE zulip_topic_capabilities
-					SET status = 'closed', completed_at = ?
-					WHERE context_id = ? AND status = 'issued' AND delivery_id <> ?
-				`).run(timestamp, contextId, deliveryId);
-				this.database.prepare(`
 					INSERT INTO zulip_topic_capabilities(
 						delivery_id, context_id, channel_id, topic, capability_sha256,
 						status, expires_at, created_at

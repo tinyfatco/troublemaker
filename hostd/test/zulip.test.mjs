@@ -86,6 +86,32 @@ test("Zulip topic capabilities are exact, renewable only for one delivery, and c
 			capability,
 		});
 		assert.equal(issued.status, "issued");
+		store.upsertEvent({
+			id: "zulip:102",
+			source: "zulip",
+			providerMessageId: "102",
+			providerThreadId: "channel:7",
+			principalHash: "1234567890abcdef12345678",
+			targetId: "front-desk",
+			contextId,
+			payload: { message: { type: "stream", stream_id: 7, subject: "Second question" } },
+		});
+		const secondCapability = "capability-example-bcdef0123456789abcdef0123456789a";
+		store.issueZulipTopicCapability({
+			deliveryId: "zulip:102",
+			contextId,
+			channelId: 7,
+			topic: "Second question",
+			capability: secondCapability,
+		});
+		assert.equal(store.getZulipTopicCapability(deliveryId).status, "issued", "B cannot revoke A before runtime admission");
+		assert.equal(store.authorizeZulipTopicCapability({
+			deliveryId: "zulip:102",
+			contextId,
+			channelId: 7,
+			topic: "Second question",
+			capability: secondCapability,
+		})?.useCount, 1, "B retains its own independent capability");
 		assert.equal(store.authorizeZulipTopicCapability({
 			deliveryId,
 			contextId,
@@ -115,6 +141,11 @@ test("Zulip topic capabilities are exact, renewable only for one delivery, and c
 			topic: "Customer question",
 			capability,
 		}), undefined, "a completed runtime turn cannot reuse its capability");
+		assert.equal(store.closeZulipTopicCapability({
+			deliveryId: "zulip:102",
+			contextId,
+			capability: secondCapability,
+		})?.status, "closed");
 	} finally {
 		store.close();
 		rmSync(directory, { recursive: true, force: true });

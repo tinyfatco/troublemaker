@@ -152,6 +152,8 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	private readonly channelPolicies = new Map<string, string>();
 	private readonly turndown = new TurndownService({ codeBlockStyle: "fenced" });
 	private readonly queues = new Map<string, WorkspaceChannelQueue>();
+	private readonly activeTopicCapabilities = new Map<string, ZulipTopicDeliveryScope>();
+	private readonly deliveryTails = new Map<string, Promise<void>>();
 	private readonly deliveryLedger: WorkspaceDeliveryLedger;
 	private handler!: MomHandler;
 	private botUserId: string | null = null;
@@ -467,18 +469,21 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 					await receipt.markRunning();
 					return;
 				}
-				if (message.type !== "private" || this.directConversationIsInScope(message)) {
-					try {
-						await withZulipTopicDeliveryScope(topicCapability, async () => {
-							await this.handleMessage(message, true, receipt.markRunning);
-						});
-					} finally {
-						if (topicCapability) await this.closeTopicCapability(topicCapability);
+				const deliveryChannel = message.type === "stream"
+					? String(message.stream_id)
+					: this.directChannelForMessage(message);
+				await this.withSerializedDelivery(deliveryChannel, async () => {
+					if (message.type !== "private" || this.directConversationIsInScope(message)) {
+						try {
+							await this.handleMessage(message, true, receipt.markRunning, topicCapability);
+						} finally {
+							if (topicCapability) await this.closeTopicCapability(topicCapability);
+						}
+					} else {
+						await receipt.markRunning();
 					}
-				} else {
-					await receipt.markRunning();
-				}
-				if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
+					if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
+				});
 			}, { deferRunning: true }).catch((error) => {
 				log.logWarning("Zulip webhook processing error", error instanceof Error ? error.message : String(error));
 			});
@@ -529,6 +534,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		message: ZulipMessage,
 		awaitCompletion = false,
 		onAccepted?: () => void | Promise<void>,
+		topicCapability?: ZulipTopicCapability,
 	): Promise<void> {
 		const isDirect = message.type === "private";
 		const channel = isDirect
@@ -618,6 +624,9 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			queue: this.getQueue(channel),
 			awaitCompletion,
 			onAccepted,
+			...(topicCapability ? {
+				runWork: (work: () => Promise<void>) => this.withActiveTopicCapability(topicCapability, work),
+			} : {}),
 		});
 	}
 
@@ -765,12 +774,15 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 
 	private async sendMessageBody(body: URLSearchParams): Promise<string> {
 		const headers = new Headers();
-		const scope = currentZulipTopicDeliveryScope();
+		const channelId = body.get("to") ?? "";
+		const topic = body.get("topic") ?? "";
+		const asyncScope = currentZulipTopicDeliveryScope();
+		const scope = asyncScope ?? this.activeTopicCapabilities.get(this.topicScopeKey(channelId, topic));
 		if (scope) {
 			if (
 				body.get("type") !== "channel"
-				|| body.get("to") !== scope.channelId
-				|| body.get("topic") !== scope.topic
+				|| channelId !== scope.channelId
+				|| topic !== scope.topic
 			) throw new Error("Zulip delivery scope permits only the exact inbound topic");
 			headers.set("x-troublemaker-zulip-delivery-id", scope.deliveryId);
 			headers.set("x-troublemaker-zulip-topic-capability", scope.capability);
@@ -798,6 +810,44 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			this.queues.set(channelId, queue);
 		}
 		return queue;
+	}
+
+	private async withSerializedDelivery<T>(channelId: string, work: () => Promise<T>): Promise<T> {
+		const previous = this.deliveryTails.get(channelId) ?? Promise.resolve();
+		let release!: () => void;
+		const current = new Promise<void>((resolve) => { release = resolve; });
+		const tail = previous.catch(() => {}).then(() => current);
+		this.deliveryTails.set(channelId, tail);
+		await previous.catch(() => {});
+		try {
+			return await work();
+		} finally {
+			release();
+			if (this.deliveryTails.get(channelId) === tail) this.deliveryTails.delete(channelId);
+		}
+	}
+
+	private topicScopeKey(channelId: string, topic: string): string {
+		return `${channelId}\u0000${topic}`;
+	}
+
+	private async withActiveTopicCapability<T>(
+		scope: ZulipTopicDeliveryScope,
+		work: () => Promise<T>,
+	): Promise<T> {
+		const key = this.topicScopeKey(scope.channelId, scope.topic);
+		const existing = this.activeTopicCapabilities.get(key);
+		if (existing && existing.deliveryId !== scope.deliveryId) {
+			throw new Error("a different delivery already owns this Zulip topic turn");
+		}
+		this.activeTopicCapabilities.set(key, scope);
+		try {
+			return await withZulipTopicDeliveryScope(scope, work);
+		} finally {
+			if (this.activeTopicCapabilities.get(key) === scope) {
+				this.activeTopicCapabilities.delete(key);
+			}
+		}
 	}
 
 	private isTopicCapabilityCloseUrl(value: string): boolean {

@@ -132,6 +132,7 @@ export async function routeWorkspaceChannelEvent({
 	queue,
 	awaitCompletion = false,
 	onAccepted,
+	runWork,
 }: {
 	handler: MomHandler;
 	adapter: PlatformAdapter;
@@ -140,6 +141,8 @@ export async function routeWorkspaceChannelEvent({
 	awaitCompletion?: boolean;
 	/** Called once the event has entered its control, steer, or run route. */
 	onAccepted?: () => void | Promise<void>;
+	/** Optional exact-turn wrapper applied only when this event starts a fresh model run. */
+	runWork?: (work: () => Promise<void>) => Promise<void>;
 }): Promise<void> {
 	let accepted = false;
 	const markAccepted = async () => {
@@ -170,7 +173,9 @@ export async function routeWorkspaceChannelEvent({
 		return;
 	}
 	const work = queue.enqueue(async () => {
-		await handler.handleEvent(event, adapter);
+		const handle = async () => { await handler.handleEvent(event, adapter); };
+		if (runWork) await runWork(handle);
+		else await handle();
 	});
 	await markAccepted();
 	if (awaitCompletion) await work;
