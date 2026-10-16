@@ -54,10 +54,12 @@ test("expired Zulip event queues are detected and re-registered", async () => {
 	assert.deepEqual(requests, ["register"]);
 });
 
-test("active Zulip events authorize only their exact topic", () => {
-	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-zulip-topic-"));
+test("Zulip topic capabilities are exact, renewable only for one delivery, and closed by the turn", () => {
+	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-zulip-capability-"));
 	const store = new HostStore(join(directory, "state.sqlite"));
 	const contextId = "front-desk:1234567890abcdef12345678:relationship-operator";
+	const deliveryId = "zulip:101";
+	const capability = "capability-example-0123456789abcdef0123456789abcdef";
 	try {
 		store.createContext({
 			id: contextId,
@@ -67,29 +69,52 @@ test("active Zulip events authorize only their exact topic", () => {
 			port: 32123,
 		});
 		store.upsertEvent({
-			id: "zulip:101",
+			id: deliveryId,
 			source: "zulip",
 			providerMessageId: "101",
 			providerThreadId: "channel:7",
 			principalHash: "1234567890abcdef12345678",
 			targetId: "front-desk",
 			contextId,
-			payload: {
-				message: {
-					type: "stream",
-					subject: "Customer question",
-				},
-			},
+			payload: { message: { type: "stream", stream_id: 7, subject: "Customer question" } },
 		});
-		assert.equal(store.hasActiveZulipTopic(contextId, "Customer question"), false, "queued topics do not authorize outbound delivery");
-		const leased = store.claimNextEvent({ maximumActiveContexts: 1 });
-		assert.equal(store.hasActiveZulipTopic(contextId, "Customer question"), true, "the exact leased topic authorizes the active turn");
-		assert.equal(store.hasActiveZulipTopic(contextId, "Other topic"), false, "another topic in the same channel remains denied");
-		store.acceptEvent(leased.id, leased.leaseToken);
-		store.heartbeatEvent(leased.id, leased.leaseToken);
-		assert.equal(store.hasActiveZulipTopic(contextId, "Customer question"), true, "running turns retain their exact topic scope");
-		store.completeEvent(leased.id, leased.leaseToken);
-		assert.equal(store.hasActiveZulipTopic(contextId, "Customer question"), false, "completed turns release their topic scope");
+		const issued = store.issueZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 7,
+			topic: "Customer question",
+			capability,
+		});
+		assert.equal(issued.status, "issued");
+		assert.equal(store.authorizeZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 7,
+			topic: "Other topic",
+			capability,
+		}), undefined, "the capability cannot authorize another topic");
+		assert.equal(store.authorizeZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 7,
+			topic: "Customer question",
+			capability: "wrong-capability-0123456789abcdef0123456789abcdef",
+		}), undefined, "the wrong capability is denied");
+		assert.equal(store.authorizeZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 7,
+			topic: "Customer question",
+			capability,
+		})?.useCount, 1);
+		assert.equal(store.closeZulipTopicCapability({ deliveryId, contextId, capability })?.status, "closed");
+		assert.equal(store.authorizeZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 7,
+			topic: "Customer question",
+			capability,
+		}), undefined, "a completed runtime turn cannot reuse its capability");
 	} finally {
 		store.close();
 		rmSync(directory, { recursive: true, force: true });
@@ -467,39 +492,77 @@ test("an explicit Operator Zulip post is mirrored only when its context is a web
 });
 
 
-test("Operator proxy may reply only to a topic with an active inbound event", async () => {
+test("expired-lease duplicate completion cannot revoke the original turn's exact topic capability", async () => {
+	const directory = mkdtempSync(join(tmpdir(), "troublemaker-hostd-zulip-race-"));
+	const store = new HostStore(join(directory, "state.sqlite"));
 	const contextId = "front-desk:abcdef1234567890abcdef12:relationship-operator";
+	const deliveryId = "zulip:601";
+	const capability = "capability-race-0123456789abcdef0123456789abcdef";
 	const upstream = [];
-	const gateway = new ZulipGateway({
-		config: { zulip: {} },
-		store: {
-			hasActiveZulipTopic(candidateContextId, topic) {
-				return candidateContextId === contextId && topic === "Customer question";
-			},
-		},
-		scheduler: {},
-		provisioner: {
-			async runtimeBinding() {
-				return { contextId, channelId: 23, channelName: "customer · Example" };
-			},
-			async request(path, input) {
-				upstream.push({ path, input });
-				return { result: "success", id: 601 };
-			},
-		},
-	});
-	const server = createServer((request, response) => {
-		void gateway.proxy(request, response, contextId, request.url, "scoped-token");
-	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const address = server.address();
+	let server;
 	try {
+		store.createContext({
+			id: contextId,
+			targetId: "front-desk",
+			driver: "oci",
+			runtimeName: "runtime-zulip-race-example",
+			port: 32124,
+		});
+		store.upsertEvent({
+			id: deliveryId,
+			source: "zulip",
+			providerMessageId: "601",
+			providerThreadId: "channel:23",
+			principalHash: "abcdef1234567890abcdef12",
+			targetId: "front-desk",
+			contextId,
+			payload: { message: { type: "stream", stream_id: 23, subject: "Customer question" } },
+		});
+		store.issueZulipTopicCapability({
+			deliveryId,
+			contextId,
+			channelId: 23,
+			topic: "Customer question",
+			capability,
+		});
+		const firstLease = store.claimNextEvent({ maximumActiveContexts: 1 });
+		assert.equal(firstLease.attempts, 1);
+		store.failEvent(deliveryId, "cold start exceeded the first lease", firstLease.leaseToken, 0);
+		const secondLease = store.claimNextEvent({ maximumActiveContexts: 1 });
+		assert.equal(secondLease.attempts, 2);
+		store.acceptEvent(deliveryId, secondLease.leaseToken);
+		store.completeEvent(deliveryId, secondLease.leaseToken);
+		assert.equal(store.getEvent(deliveryId).status, "completed");
+		assert.equal(store.getEvent(deliveryId).attempts, 2);
+
+		const gateway = new ZulipGateway({
+			config: { zulip: {} },
+			store,
+			scheduler: {},
+			provisioner: {
+				async runtimeBinding() {
+					return { contextId, channelId: 23, channelName: "customer · Example" };
+				},
+				async request(path, input) {
+					upstream.push({ path, input });
+					return { result: "success", id: 602 };
+				},
+			},
+		});
+		server = createServer((request, response) => {
+			void gateway.proxy(request, response, contextId, request.url, "scoped-token");
+		});
+		await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const address = server.address();
+		const headers = {
+			authorization: "Bearer scoped-token",
+			"content-type": "application/x-www-form-urlencoded",
+			"x-troublemaker-zulip-delivery-id": deliveryId,
+			"x-troublemaker-zulip-topic-capability": capability,
+		};
 		const allowed = await fetch(`http://127.0.0.1:${address.port}/messages`, {
 			method: "POST",
-			headers: {
-				authorization: "Bearer scoped-token",
-				"content-type": "application/x-www-form-urlencoded",
-			},
+			headers,
 			body: new URLSearchParams({
 				type: "channel",
 				to: "23",
@@ -507,28 +570,41 @@ test("Operator proxy may reply only to a topic with an active inbound event", as
 				content: "Here is the answer.",
 			}),
 		});
-		assert.equal(allowed.status, 200);
+		assert.equal(allowed.status, 200, "the original run keeps its exact topic after attempt 2 completes");
 		assert.equal(upstream.length, 1);
-		assert.equal(upstream[0].path, "messages");
 		assert.equal(upstream[0].input.form.get("topic"), "Customer question");
 
 		const denied = await fetch(`http://127.0.0.1:${address.port}/messages`, {
 			method: "POST",
-			headers: {
-				authorization: "Bearer scoped-token",
-				"content-type": "application/x-www-form-urlencoded",
-			},
+			headers,
 			body: new URLSearchParams({
 				type: "channel",
 				to: "23",
 				topic: "Other topic",
-				content: "Must not leave the active topic.",
+				content: "Must not leave the delivered topic.",
 			}),
 		});
 		assert.equal(denied.status, 403);
-		assert.deepEqual(await denied.json(), { result: "error", msg: "zulip_channel_scope_denied" });
-		assert.equal(upstream.length, 1, "denied topics never reach Zulip");
+		assert.equal(upstream.length, 1, "another topic never reaches Zulip");
+
+		store.closeZulipTopicCapability({ deliveryId, contextId, capability });
+		const laterTurn = await fetch(`http://127.0.0.1:${address.port}/messages`, {
+			method: "POST",
+			headers,
+			body: new URLSearchParams({
+				type: "channel",
+				to: "23",
+				topic: "Customer question",
+				content: "The closed turn must not post again.",
+			}),
+		});
+		assert.equal(laterTurn.status, 403);
+		assert.equal(upstream.length, 1, "a later turn cannot reuse the closed capability");
 	} finally {
-		await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		if (server) {
+			await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+		}
+		store.close();
+		rmSync(directory, { recursive: true, force: true });
 	}
 });

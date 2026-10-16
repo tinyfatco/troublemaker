@@ -67,6 +67,11 @@ function authenticateContext(request, config, contextId, purpose) {
 	return bearerMatches(request.headers.authorization, expected) ? target : null;
 }
 
+function bearerValue(request) {
+	const match = /^Bearer ([^\s]+)$/i.exec(String(request.headers.authorization || ""));
+	return match?.[1] || "";
+}
+
 function activeMcpRelationshipScope(store, mcp, contextId) {
 	const active = store.activeMcpInstructionForContext(contextId);
 	if (!active) return null;
@@ -372,6 +377,30 @@ export function createHostServer({
 					`${rocketChatMatch[2]}${url.search}`,
 					contextCapability(target.outboundToken, "rocketchat", contextId),
 				);
+				return;
+			}
+			const zulipTopicCapabilityCloseMatch = url.pathname.match(
+				/^\/v1\/zulip-topic-capabilities\/([^/]+)\/([^/]+)\/close$/,
+			);
+			if (request.method === "POST" && zulipTopicCapabilityCloseMatch) {
+				const contextId = decodeURIComponent(zulipTopicCapabilityCloseMatch[1]);
+				const deliveryId = decodeURIComponent(zulipTopicCapabilityCloseMatch[2]);
+				const targetId = contextId.split(":", 1)[0];
+				const target = config.targetsById.get(targetId);
+				if (!target || target.driver !== "oci") {
+					json(response, 404, { error: "context_not_found" });
+					return;
+				}
+				const closed = store.closeZulipTopicCapability({
+					deliveryId,
+					contextId,
+					capability: bearerValue(request),
+				});
+				if (!closed) {
+					json(response, 403, { error: "zulip_topic_capability_denied" });
+					return;
+				}
+				json(response, 200, { ok: true });
 				return;
 			}
 			const zulipMatch = url.pathname.match(/^\/v1\/zulip\/([^/]+)\/api\/v1(\/.*)$/);

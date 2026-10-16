@@ -897,6 +897,33 @@ export class RuntimeManager {
 
 	async deliverZulipWebhook(target, context, event, input) {
 		const inboundToken = contextCapability(target.inboundToken, "zulip-inbound", context.contextId);
+		const message = input.message;
+		let topicCapability;
+		if (message?.type === "stream" && typeof message.subject === "string" && message.subject) {
+			const channelId = Number(message.stream_id);
+			if (!Number.isInteger(channelId) || channelId < 1) {
+				throw new Error("Zulip stream message omitted a valid channel ID");
+			}
+			const capability = contextCapability(
+				target.outboundToken,
+				`zulip-topic:${event.id}:${channelId}:${message.subject}`,
+				context.contextId,
+			);
+			this.store.issueZulipTopicCapability({
+				deliveryId: event.id,
+				contextId: context.contextId,
+				channelId,
+				topic: message.subject,
+				capability,
+			});
+			topicCapability = {
+				deliveryId: event.id,
+				channelId: String(channelId),
+				topic: message.subject,
+				capability,
+				closeUrl: `http://${target.hostGateway}:${this.config.server.port}/v1/zulip-topic-capabilities/${encodeURIComponent(context.contextId)}/${encodeURIComponent(event.id)}/close`,
+			};
+		}
 		const response = await fetch(context.zulipEndpoint, {
 			method: "POST",
 			headers: {
@@ -906,7 +933,8 @@ export class RuntimeManager {
 			body: JSON.stringify({
 				deliveryId: event.id,
 				hostContextId: event.contextId,
-				message: input.message,
+				message,
+				...(topicCapability ? { topicCapability } : {}),
 				hostReceipt: this.hostReceipt(target, event),
 			}),
 			signal: AbortSignal.timeout(30_000),

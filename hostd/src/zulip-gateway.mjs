@@ -24,9 +24,18 @@ function positiveId(value) {
 	return Number.isInteger(candidate) && candidate > 0 ? candidate : null;
 }
 
-function topicIsInActiveTurn(store, contextId, topic) {
-	return topic === ""
-		|| store.hasActiveZulipTopic?.(contextId, topic) === true;
+function topicIsAuthorized(request, store, contextId, channelId, topic) {
+	if (topic === "") return true;
+	const deliveryId = String(request.headers["x-troublemaker-zulip-delivery-id"] || "").trim();
+	const capability = String(request.headers["x-troublemaker-zulip-topic-capability"] || "").trim();
+	if (!deliveryId || deliveryId.length > 256 || !capability || capability.length > 512) return false;
+	return Boolean(store.authorizeZulipTopicCapability?.({
+		deliveryId,
+		contextId,
+		channelId,
+		topic,
+		capability,
+	}));
 }
 
 function contextParts(contextId) {
@@ -245,7 +254,7 @@ export class ZulipGateway {
 			if (
 				input.get("type") !== "channel"
 				|| Number(input.get("to")) !== Number(binding.channelId)
-				|| !topicIsInActiveTurn(this.store, contextId, topic)
+				|| !topicIsAuthorized(request, this.store, contextId, binding.channelId, topic)
 			) {
 				json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
 				return;
@@ -305,7 +314,7 @@ export class ZulipGateway {
 			if (
 				input.get("type") !== "channel"
 				|| Number(input.get("stream_id")) !== Number(binding.channelId)
-				|| !topicIsInActiveTurn(this.store, contextId, topic)
+				|| !topicIsAuthorized(request, this.store, contextId, binding.channelId, topic)
 			) {
 				json(response, 403, { result: "error", msg: "zulip_channel_scope_denied" });
 				return;

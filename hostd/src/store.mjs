@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, chmodSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -33,6 +33,7 @@ export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"mattermost_bindings",
 	"rocket_chat_bindings",
 	"zulip_bindings",
+	"zulip_topic_capabilities",
 	"rocket_chat_omnichannel_conversations",
 	"events",
 	"scheduled_prompts",
@@ -368,6 +369,22 @@ export class HostStore {
 				created_at TEXT NOT NULL,
 				last_seen_at TEXT NOT NULL,
 				FOREIGN KEY (context_id) REFERENCES contexts(id)
+			);
+
+			CREATE TABLE IF NOT EXISTS zulip_topic_capabilities (
+				delivery_id TEXT PRIMARY KEY,
+				context_id TEXT NOT NULL,
+				channel_id INTEGER NOT NULL,
+				topic TEXT NOT NULL,
+				capability_sha256 TEXT NOT NULL UNIQUE,
+				status TEXT NOT NULL DEFAULT 'issued',
+				expires_at TEXT NOT NULL,
+				created_at TEXT NOT NULL,
+				use_count INTEGER NOT NULL DEFAULT 0,
+				last_used_at TEXT,
+				completed_at TEXT,
+				FOREIGN KEY (context_id) REFERENCES contexts(id),
+				FOREIGN KEY (delivery_id) REFERENCES events(id)
 			);
 
 			CREATE TABLE IF NOT EXISTS rocket_chat_omnichannel_conversations (
@@ -2535,26 +2552,6 @@ export class HostStore {
 		`).get(contextId, source);
 	}
 
-	hasActiveZulipTopic(contextId, topic) {
-		if (typeof topic !== "string" || !topic) return false;
-		const active = this.database.prepare(`
-			SELECT payload_json AS payloadJson
-			FROM events
-			WHERE context_id = ? AND source = 'zulip'
-				AND status IN ('leased', 'accepted', 'running')
-				AND payload_json IS NOT NULL
-			ORDER BY awareness_sequence DESC, received_at DESC, id DESC
-		`).all(contextId);
-		return active.some(({ payloadJson }) => {
-			try {
-				const payload = JSON.parse(payloadJson);
-				return payload?.message?.type === "stream"
-					&& payload.message.subject === topic;
-			} catch {
-				return false;
-			}
-		});
-	}
 
 	touchRoute(source, threadId) {
 		this.database.prepare(`
@@ -3823,6 +3820,116 @@ export class HostStore {
 				created_at AS createdAt, last_seen_at AS lastSeenAt
 			FROM zulip_bindings WHERE channel_id = ?
 		`).get(Number(channelId));
+	}
+
+	getZulipTopicCapability(deliveryId) {
+		return this.database.prepare(`
+			SELECT delivery_id AS deliveryId, context_id AS contextId,
+				channel_id AS channelId, topic, capability_sha256 AS capabilitySha256,
+				status, expires_at AS expiresAt, created_at AS createdAt,
+				use_count AS useCount, last_used_at AS lastUsedAt,
+				completed_at AS completedAt
+			FROM zulip_topic_capabilities WHERE delivery_id = ?
+		`).get(deliveryId);
+	}
+
+	issueZulipTopicCapability({
+		deliveryId,
+		contextId,
+		channelId,
+		topic,
+		capability,
+		ttlSeconds = 30 * 60,
+	}) {
+		if (typeof deliveryId !== "string" || !deliveryId) throw new Error("Zulip delivery ID is required");
+		if (typeof contextId !== "string" || !contextId) throw new Error("Zulip context ID is required");
+		if (!Number.isInteger(Number(channelId)) || Number(channelId) < 1) {
+			throw new Error("Zulip channel ID must be a positive integer");
+		}
+		if (typeof topic !== "string" || !topic) throw new Error("Zulip topic is required");
+		if (typeof capability !== "string" || capability.length < 32) {
+			throw new Error("Zulip topic capability is invalid");
+		}
+		if (!Number.isFinite(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 60 * 60) {
+			throw new Error("Zulip topic capability TTL is invalid");
+		}
+		const capabilitySha256 = createHash("sha256").update(capability, "utf8").digest("hex");
+		const expiresAt = future(ttlSeconds);
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const existing = this.getZulipTopicCapability(deliveryId);
+			if (existing) {
+				if (
+					existing.contextId !== contextId
+					|| Number(existing.channelId) !== Number(channelId)
+					|| existing.topic !== topic
+					|| existing.capabilitySha256 !== capabilitySha256
+				) throw new Error("Zulip topic capability delivery binding changed");
+				if (existing.status === "issued") {
+					this.database.prepare(`
+						UPDATE zulip_topic_capabilities SET expires_at = ? WHERE delivery_id = ?
+					`).run(expiresAt, deliveryId);
+				}
+			} else {
+				this.database.prepare(`
+					UPDATE zulip_topic_capabilities
+					SET status = 'closed', completed_at = ?
+					WHERE context_id = ? AND status = 'issued' AND delivery_id <> ?
+				`).run(timestamp, contextId, deliveryId);
+				this.database.prepare(`
+					INSERT INTO zulip_topic_capabilities(
+						delivery_id, context_id, channel_id, topic, capability_sha256,
+						status, expires_at, created_at
+					) VALUES (?, ?, ?, ?, ?, 'issued', ?, ?)
+				`).run(
+					deliveryId,
+					contextId,
+					Number(channelId),
+					topic,
+					capabilitySha256,
+					expiresAt,
+					timestamp,
+				);
+			}
+			this.database.exec("COMMIT");
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+		return this.getZulipTopicCapability(deliveryId);
+	}
+
+	authorizeZulipTopicCapability({ deliveryId, contextId, channelId, topic, capability }) {
+		if (typeof capability !== "string") return undefined;
+		const capabilitySha256 = createHash("sha256").update(capability, "utf8").digest("hex");
+		const timestamp = now();
+		const result = this.database.prepare(`
+			UPDATE zulip_topic_capabilities
+			SET use_count = use_count + 1, last_used_at = ?
+			WHERE delivery_id = ? AND context_id = ? AND channel_id = ? AND topic = ?
+				AND capability_sha256 = ? AND status = 'issued' AND expires_at > ?
+		`).run(
+			timestamp,
+			deliveryId,
+			contextId,
+			Number(channelId),
+			topic,
+			capabilitySha256,
+			timestamp,
+		);
+		return result.changes === 1 ? this.getZulipTopicCapability(deliveryId) : undefined;
+	}
+
+	closeZulipTopicCapability({ deliveryId, contextId, capability }) {
+		if (typeof capability !== "string") return undefined;
+		const capabilitySha256 = createHash("sha256").update(capability, "utf8").digest("hex");
+		const result = this.database.prepare(`
+			UPDATE zulip_topic_capabilities
+			SET status = 'closed', completed_at = ?
+			WHERE delivery_id = ? AND context_id = ? AND capability_sha256 = ? AND status = 'issued'
+		`).run(now(), deliveryId, contextId, capabilitySha256);
+		return result.changes === 1 ? this.getZulipTopicCapability(deliveryId) : undefined;
 	}
 
 	upsertZulipBinding({

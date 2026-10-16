@@ -8,6 +8,11 @@ import type { ChannelPulse, PulseRecordMetadata } from "../engagement/channel-pu
 import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
+import {
+	currentZulipTopicDeliveryScope,
+	withZulipTopicDeliveryScope,
+	type ZulipTopicDeliveryScope,
+} from "./zulip-topic-delivery-scope.js";
 import type {
 	ChannelInfo,
 	MomContext,
@@ -89,6 +94,10 @@ interface ZulipResponse {
 	uri?: string;
 }
 
+interface ZulipTopicCapability extends ZulipTopicDeliveryScope {
+	closeUrl: string;
+}
+
 interface ZulipKnownUser extends UserInfo {
 	isBot?: boolean;
 }
@@ -126,6 +135,7 @@ export class ZulipWebhookAdapter implements PlatformAdapter {
 Use standard Markdown. Reply to direct messages directly and preserve the inbound topic when a channel uses topics.`;
 
 	private readonly apiBase: string;
+	private readonly hostProxyOrigin: string;
 	private readonly botToken: string;
 	private readonly inboundToken: string;
 	private readonly agentName: string;
@@ -154,6 +164,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			throw new Error("Zulip URL must use http:// or https://");
 		}
 		this.apiBase = `${parsed.toString().replace(/\/$/, "")}/api/v1`;
+		this.hostProxyOrigin = parsed.origin;
 		this.botToken = config.botToken;
 		this.inboundToken = config.inboundToken;
 		this.agentName = config.agentName;
@@ -388,6 +399,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			let payload: {
 				deliveryId?: string;
 				message?: ZulipMessage;
+				topicCapability?: ZulipTopicCapability;
 				hostReceipt?: HostDeliveryReceipt;
 			};
 			try {
@@ -415,6 +427,27 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 				response.end("Zulip message outside the configured stream scope");
 				return;
 			}
+			const topicCapability = payload.topicCapability;
+			if (message.type === "stream" && message.subject) {
+				if (
+					!topicCapability
+					|| topicCapability.deliveryId !== payload.deliveryId
+					|| topicCapability.channelId !== String(message.stream_id)
+					|| topicCapability.topic !== message.subject
+					|| typeof topicCapability.capability !== "string"
+					|| topicCapability.capability.length < 32
+					|| typeof topicCapability.closeUrl !== "string"
+					|| !this.isTopicCapabilityCloseUrl(topicCapability.closeUrl)
+				) {
+					response.writeHead(400);
+					response.end("Missing exact Zulip topic capability");
+					return;
+				}
+			} else if (topicCapability) {
+				response.writeHead(400);
+				response.end("Unexpected Zulip topic capability");
+				return;
+			}
 			let shouldProcess = true;
 			try {
 				if (payload.deliveryId) shouldProcess = this.deliveryLedger.claim(payload.deliveryId);
@@ -435,7 +468,13 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 					return;
 				}
 				if (message.type !== "private" || this.directConversationIsInScope(message)) {
-					await this.handleMessage(message, true, receipt.markRunning);
+					try {
+						await withZulipTopicDeliveryScope(topicCapability, async () => {
+							await this.handleMessage(message, true, receipt.markRunning);
+						});
+					} finally {
+						if (topicCapability) await this.closeTopicCapability(topicCapability);
+					}
 				} else {
 					await receipt.markRunning();
 				}
@@ -725,7 +764,22 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	}
 
 	private async sendMessageBody(body: URLSearchParams): Promise<string> {
-		const result = await this.api<ZulipResponse>("/messages", { method: "POST", body });
+		const headers = new Headers();
+		const scope = currentZulipTopicDeliveryScope();
+		if (scope) {
+			if (
+				body.get("type") !== "channel"
+				|| body.get("to") !== scope.channelId
+				|| body.get("topic") !== scope.topic
+			) throw new Error("Zulip delivery scope permits only the exact inbound topic");
+			headers.set("x-troublemaker-zulip-delivery-id", scope.deliveryId);
+			headers.set("x-troublemaker-zulip-topic-capability", scope.capability);
+		}
+		const result = await this.api<ZulipResponse>("/messages", {
+			method: "POST",
+			body,
+			headers,
+		});
 		if (!Number.isInteger(result.id)) throw new Error("Zulip message response omitted the ID");
 		return String(result.id);
 	}
@@ -744,6 +798,29 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			this.queues.set(channelId, queue);
 		}
 		return queue;
+	}
+
+	private isTopicCapabilityCloseUrl(value: string): boolean {
+		try {
+			const parsed = new URL(value);
+			return parsed.origin === this.hostProxyOrigin
+				&& /^\/v1\/zulip-topic-capabilities\/[^/]+\/[^/]+\/close$/.test(parsed.pathname)
+				&& !parsed.search
+				&& !parsed.hash;
+		} catch {
+			return false;
+		}
+	}
+
+	private async closeTopicCapability(scope: ZulipTopicCapability): Promise<void> {
+		const response = await fetch(scope.closeUrl, {
+			method: "POST",
+			headers: { authorization: `Bearer ${scope.capability}` },
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!response.ok) {
+			throw new Error(`Zulip topic capability close returned HTTP ${response.status}`);
+		}
 	}
 
 	private async api<T>(path: string, init: RequestInit = {}): Promise<T> {

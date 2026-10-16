@@ -17,6 +17,8 @@ const RECEIPT_TOKEN = "context-receipt-token";
 const receipts: string[] = [];
 const receiptBodies: Array<{ status: string; lease_token: string }> = [];
 const outboundBodies: URLSearchParams[] = [];
+const outboundHeaders: Array<Record<string, string | string[] | undefined>> = [];
+let topicCapabilityCloseCount = 0;
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
@@ -45,6 +47,12 @@ const upstream = createServer(async (request, response) => {
 		send(200, { ok: true });
 		return;
 	}
+	if (url.pathname === "/v1/zulip-topic-capabilities/context-example/delivery-topic/close") {
+		assert.equal(request.headers.authorization, "Bearer topic-capability-example-0123456789abcdef");
+		topicCapabilityCloseCount += 1;
+		send(200, { ok: true });
+		return;
+	}
 	assert.equal(request.headers.authorization, `Bearer ${PROXY_TOKEN}`);
 	if (request.method === "GET" && url.pathname === "/api/v1/users/me") {
 		send(200, {
@@ -64,6 +72,7 @@ const upstream = createServer(async (request, response) => {
 	if (request.method === "POST" && url.pathname === "/api/v1/messages") {
 		const body = new URLSearchParams((await readBody(request)).toString("utf8"));
 		outboundBodies.push(body);
+		outboundHeaders.push({ ...request.headers });
 		send(200, { result: "success", msg: "", id: nextMessageId++ });
 		return;
 	}
@@ -126,6 +135,13 @@ adapter.setHandler({
 	isRunning: () => running,
 	handleEvent: async (event: any) => {
 		handled.push(event);
+		if (event.ts === "93") {
+			await assert.rejects(
+				adapter.postInThread(OTHER_CHANNEL_ID, "Other topic", "Cross-topic attempt."),
+				/exact inbound topic/,
+			);
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped topic reply.");
+		}
 		if (event.ts === "96") await restartClaimGate;
 		if (event.ts === "99") {
 			running = true;
@@ -478,6 +494,13 @@ try {
 		},
 		body: JSON.stringify({
 			deliveryId: "delivery-topic",
+			topicCapability: {
+				deliveryId: "delivery-topic",
+				channelId: OTHER_CHANNEL_ID,
+				topic: "Road map / alpha",
+				capability: "topic-capability-example-0123456789abcdef",
+				closeUrl: `http://127.0.0.1:${upstreamAddress.port}/v1/zulip-topic-capabilities/context-example/delivery-topic/close`,
+			},
 			message: {
 				id: 93,
 				type: "stream",
@@ -506,7 +529,17 @@ try {
 	assert.equal(handled[3].threadTs, "Road map / alpha");
 	assert.equal(handled[3].replyTarget, "zulip:5:topic:Road%20map%20%2F%20alpha");
 	assert.equal(handled[3].replyTargetDescription, "Zulip channel topic Road map / alpha");
+	assert.equal(outboundBodies.at(-1)?.get("topic"), "Road map / alpha");
+	assert.equal(outboundHeaders.at(-1)?.["x-troublemaker-zulip-delivery-id"], "delivery-topic");
+	assert.equal(
+		outboundHeaders.at(-1)?.["x-troublemaker-zulip-topic-capability"],
+		"topic-capability-example-0123456789abcdef",
+	);
+	assert.equal(topicCapabilityCloseCount, 1, "the exact runtime turn closes its topic capability");
 	assert.equal(pulseRecords.length, 8, "topic mentions retain direct pulse accounting after stop controls");
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
 
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
