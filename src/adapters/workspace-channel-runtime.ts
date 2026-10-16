@@ -149,6 +149,27 @@ export async function routeWorkspaceChannelEvent(options: WorkspaceChannelRouteO
 	await routeWorkspaceChannelEventInner(options, false);
 }
 
+async function settleOwnedRouteWork({
+	work,
+	markAccepted,
+	awaitCompletion,
+}: {
+	work?: Promise<void>;
+	markAccepted: () => Promise<void>;
+	awaitCompletion: boolean;
+}): Promise<void> {
+	let acceptanceError: unknown;
+	try {
+		await markAccepted();
+	} catch (error) {
+		acceptanceError = error;
+	}
+	// Once this route starts asynchronous work, a stale or failed host receipt
+	// cannot detach it and let the delivery's outer capability finally close.
+	if (work && (awaitCompletion || acceptanceError)) await work;
+	if (acceptanceError && !awaitCompletion) throw acceptanceError;
+}
+
 async function routeWorkspaceChannelEventInner({
 	handler,
 	adapter,
@@ -169,14 +190,16 @@ async function routeWorkspaceChannelEventInner({
 	}
 	const command = await handler.handleSlashCommand(event, adapter);
 	if (slashCommandHandled(command)) {
-		await markAccepted();
-		if (awaitCompletion) await slashCommandPending(command);
+		await settleOwnedRouteWork({
+			work: slashCommandPending(command),
+			markAccepted,
+			awaitCompletion,
+		});
 		return;
 	}
 	if (event.text.toLowerCase().trim() === "stop") {
 		const settled = handler.handleStop(event.channel, adapter, event);
-		await markAccepted();
-		await settled;
+		await settleOwnedRouteWork({ work: settled, markAccepted, awaitCompletion: true });
 		return;
 	}
 	if (!forceFreshRun && handler.isRunning(event.channel)) {
@@ -188,15 +211,5 @@ async function routeWorkspaceChannelEventInner({
 	const work = queue.enqueue(async () => {
 		await handler.handleEvent(event, adapter);
 	});
-	let acceptanceError: unknown;
-	try {
-		await markAccepted();
-	} catch (error) {
-		acceptanceError = error;
-	}
-	// Work is already owned by this delivery. A stale or failed host receipt
-	// must not detach the queued turn and let an outer capability finally close
-	// while the model still runs. Await the exact work before returning control.
-	if (awaitCompletion || acceptanceError) await work;
-	if (acceptanceError && !awaitCompletion) throw acceptanceError;
+	await settleOwnedRouteWork({ work, markAccepted, awaitCompletion });
 }

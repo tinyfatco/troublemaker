@@ -22,6 +22,8 @@ const outboundHeaders: Array<Record<string, string | string[] | undefined>> = []
 const topicCapabilityCloseTokens: string[] = [];
 const source26130Lifecycle: string[] = [];
 let source26130CapabilityUseCount = 0;
+const staleControlLifecycle: string[] = [];
+const staleStopLifecycle: string[] = [];
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
@@ -52,6 +54,16 @@ const upstream = createServer(async (request, response) => {
 			send(409, { error: "lease_expired" });
 			return;
 		}
+		if (body.lease_token === "stale-control") {
+			staleControlLifecycle.push(`stale-receipt:${body.status}`);
+			send(409, { error: "lease_expired" });
+			return;
+		}
+		if (body.lease_token === "stale-stop") {
+			staleStopLifecycle.push(`stale-receipt:${body.status}`);
+			send(409, { error: "lease_expired" });
+			return;
+		}
 		if (body.lease_token === "lease-26130-replacement") {
 			source26130Lifecycle.push(`replacement-receipt:${body.status}`);
 		}
@@ -60,9 +72,10 @@ const upstream = createServer(async (request, response) => {
 	}
 	if (/^\/v1\/zulip-topic-capabilities\/[^/]+\/[^/]+\/close$/.test(url.pathname)) {
 		topicCapabilityCloseTokens.push(String(request.headers.authorization || ""));
-		if (decodeURIComponent(url.pathname).includes("/zulip:26130/")) {
-			source26130Lifecycle.push("capability-close");
-		}
+		const decodedPath = decodeURIComponent(url.pathname);
+		if (decodedPath.includes("/zulip:26130/")) source26130Lifecycle.push("capability-close");
+		if (decodedPath.includes("/delivery-stale-control/")) staleControlLifecycle.push("capability-close");
+		if (decodedPath.includes("/delivery-stale-stop/")) staleStopLifecycle.push("capability-close");
 		send(200, { ok: true });
 		return;
 	}
@@ -86,10 +99,13 @@ const upstream = createServer(async (request, response) => {
 		const body = new URLSearchParams((await readBody(request)).toString("utf8"));
 		outboundBodies.push(body);
 		outboundHeaders.push({ ...request.headers });
-		if (request.headers["x-troublemaker-zulip-delivery-id"] === "zulip:26130") {
+		const deliveryId = request.headers["x-troublemaker-zulip-delivery-id"];
+		if (deliveryId === "zulip:26130") {
 			source26130CapabilityUseCount += 1;
 			source26130Lifecycle.push("exact-topic-post");
 		}
+		if (deliveryId === "delivery-stale-control") staleControlLifecycle.push("exact-topic-post");
+		if (deliveryId === "delivery-stale-stop") staleStopLifecycle.push("exact-topic-post");
 		send(200, { result: "success", msg: "", id: nextMessageId++ });
 		return;
 	}
@@ -156,6 +172,14 @@ let markSource26130WorkStarted: (() => void) | undefined;
 const source26130WorkStarted = new Promise<void>((resolve) => {
 	markSource26130WorkStarted = resolve;
 });
+let releaseStaleControl: (() => void) | undefined;
+const staleControlGate = new Promise<void>((resolve) => { releaseStaleControl = resolve; });
+let markStaleControlStarted: (() => void) | undefined;
+const staleControlStarted = new Promise<void>((resolve) => { markStaleControlStarted = resolve; });
+let releaseStaleStop: (() => void) | undefined;
+const staleStopGate = new Promise<void>((resolve) => { releaseStaleStop = resolve; });
+let markStaleStopStarted: (() => void) | undefined;
+const staleStopStarted = new Promise<void>((resolve) => { markStaleStopStarted = resolve; });
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -219,6 +243,16 @@ adapter.setHandler({
 		return { yielded: false };
 	},
 	handleSlashCommand: async (event: any) => {
+		if (event.ts === "115") {
+			const pending = (async () => {
+				staleControlLifecycle.push("work-start");
+				markStaleControlStarted?.();
+				await staleControlGate;
+				await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "SCOPED_CONTROL_OK");
+				staleControlLifecycle.push("work-settled");
+			})();
+			return { handled: true, pending };
+		}
 		if (event.ts === "113") {
 			assert.equal(currentZulipTopicDeliveryScope()?.deliveryId, "delivery-scoped-control");
 			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped control reply.");
@@ -229,6 +263,13 @@ adapter.setHandler({
 	handleSteer: (event: any) => steered.push(event),
 	handleStop: async (_channelId: string, _adapter: unknown, event: any) => {
 		stopped.push(event);
+		if (event.ts === "116") {
+			staleStopLifecycle.push("work-start");
+			markStaleStopStarted?.();
+			await staleStopGate;
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "SCOPED_STOP_OK");
+			staleStopLifecycle.push("work-settled");
+		}
 	},
 	resolvePendingInput: () => false,
 } as any);
@@ -856,6 +897,70 @@ try {
 	outboundHeaders.length = 0;
 	nextMessageId = 100;
 
+	const unhandledScopedControls: unknown[] = [];
+	const onUnhandledScopedControl = (reason: unknown) => { unhandledScopedControls.push(reason); };
+	process.on("unhandledRejection", onUnhandledScopedControl);
+	try {
+		const closesBeforeControl = topicCapabilityCloseTokens.length;
+		const controlResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+			body: JSON.stringify(overlapPayload(115, "delivery-stale-control", "scoped control", "x".repeat(48), "stale-control")),
+		});
+		assert.equal(controlResponse.status, 202);
+		await staleControlStarted;
+		for (let index = 0; index < 100 && !staleControlLifecycle.includes("stale-receipt:running"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(staleControlLifecycle.includes("stale-receipt:running"), "pending control starts before stale receipt rejection");
+		assert.equal(topicCapabilityCloseTokens.length, closesBeforeControl, "pending control retains scope after stale receipt rejection");
+		assert.equal(outboundBodies.length, 0);
+		releaseStaleControl?.();
+		for (let index = 0; index < 100 && !staleControlLifecycle.includes("capability-close"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.deepEqual(staleControlLifecycle.filter((entry) => entry === "exact-topic-post"), ["exact-topic-post"], "pending control posts exactly once");
+		assert.equal(outboundBodies.length, 1);
+		assert.equal(outboundBodies[0].get("topic"), "scoped control");
+		assert.equal(outboundBodies[0].get("content"), "SCOPED_CONTROL_OK");
+		assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-stale-control");
+		assert(staleControlLifecycle.indexOf("work-settled") < staleControlLifecycle.indexOf("capability-close"), "pending control settles before scope close");
+
+		outboundBodies.length = 0;
+		outboundHeaders.length = 0;
+		const closesBeforeStop = topicCapabilityCloseTokens.length;
+		const stopResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+			body: JSON.stringify(overlapPayload(116, "delivery-stale-stop", "stop", "y".repeat(48), "stale-stop")),
+		});
+		assert.equal(stopResponse.status, 202);
+		await staleStopStarted;
+		for (let index = 0; index < 100 && !staleStopLifecycle.includes("stale-receipt:running"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(staleStopLifecycle.includes("stale-receipt:running"), "stop starts before stale receipt rejection");
+		assert.equal(topicCapabilityCloseTokens.length, closesBeforeStop, "stop retains scope after stale receipt rejection");
+		assert.equal(outboundBodies.length, 0);
+		releaseStaleStop?.();
+		for (let index = 0; index < 100 && !staleStopLifecycle.includes("capability-close"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.deepEqual(staleStopLifecycle.filter((entry) => entry === "exact-topic-post"), ["exact-topic-post"], "stop posts exactly once");
+		assert.equal(outboundBodies.length, 1);
+		assert.equal(outboundBodies[0].get("topic"), "stop");
+		assert.equal(outboundBodies[0].get("content"), "SCOPED_STOP_OK");
+		assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-stale-stop");
+		assert(staleStopLifecycle.indexOf("work-settled") < staleStopLifecycle.indexOf("capability-close"), "stop settles before scope close");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.deepEqual(unhandledScopedControls, [], "stale scoped receipts create no detached rejection");
+	} finally {
+		process.off("unhandledRejection", onUnhandledScopedControl);
+	}
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
+
 	const completedBeforeBotMessages = receipts.filter((status) => status === "completed").length;
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
@@ -905,7 +1010,7 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 15, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(pulseRecords.length, 17, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
 	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
 	assert.equal(ambient[1].user, "10");
 	assert.equal(ambient[1].text, "Bot ambient update.");
