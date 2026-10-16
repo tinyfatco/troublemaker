@@ -123,6 +123,14 @@ let markOverlapAStarted: (() => void) | undefined;
 const overlapAStarted = new Promise<void>((resolve) => {
 	markOverlapAStarted = resolve;
 });
+let releaseGlobalBusy: (() => void) | undefined;
+const globalBusyGate = new Promise<void>((resolve) => {
+	releaseGlobalBusy = resolve;
+});
+let markGlobalTurnQueued: (() => void) | undefined;
+const globalTurnQueued = new Promise<void>((resolve) => {
+	markGlobalTurnQueued = resolve;
+});
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -142,6 +150,14 @@ const adapter = new ZulipWebhookAdapter({
 adapter.setHandler({
 	isRunning: () => running,
 	handleEvent: async (event: any) => {
+		if (event.ts === "112") {
+			markGlobalTurnQueued?.();
+			await globalBusyGate;
+			assert.equal(currentZulipTopicDeliveryScope()?.deliveryId, "delivery-global-busy");
+			handled.push(event);
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped global-busy reply.");
+			return { yielded: false };
+		}
 		handled.push(event);
 		if (event.ts === "93") {
 			await assert.rejects(
@@ -168,7 +184,14 @@ adapter.setHandler({
 		}
 		return { yielded: false };
 	},
-	handleSlashCommand: async () => false,
+	handleSlashCommand: async (event: any) => {
+		if (event.ts === "113") {
+			assert.equal(currentZulipTopicDeliveryScope()?.deliveryId, "delivery-scoped-control");
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "Scoped control reply.");
+			return true;
+		}
+		return false;
+	},
 	handleSteer: (event: any) => steered.push(event),
 	handleStop: async (_channelId: string, _adapter: unknown, event: any) => {
 		stopped.push(event);
@@ -657,6 +680,70 @@ try {
 	outboundHeaders.length = 0;
 	nextMessageId = 100;
 
+	const handledBeforeGlobalBusy = handled.length;
+	const steeredBeforeGlobalBusy = steered.length;
+	const closesBeforeGlobalBusy = topicCapabilityCloseTokens.length;
+	running = true;
+	const globalBusyResponsePromise = fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+		body: JSON.stringify(overlapPayload(
+			112,
+			"delivery-global-busy",
+			"Global busy",
+			"topic-capability-global-busy-0123456789abcdef",
+			"lease-global-busy",
+		)),
+	});
+	await Promise.race([
+		globalTurnQueued,
+		new Promise((_, reject) => setTimeout(() => reject(new Error("global-busy turn was not queued")), 2_000)),
+	]);
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(steered.length, steeredBeforeGlobalBusy, "scoped B never steers into unrelated global work");
+	assert.equal(handled.length, handledBeforeGlobalBusy, "B's model turn waits for the prior global run");
+	assert.equal(outboundBodies.length, 0, "B cannot post while unrelated global work is active");
+	assert.equal(topicCapabilityCloseTokens.length, closesBeforeGlobalBusy, "B's capability remains open while globally queued");
+	running = false;
+	releaseGlobalBusy?.();
+	const globalBusyResponse = await globalBusyResponsePromise;
+	assert.equal(globalBusyResponse.status, 202);
+	for (let index = 0; index < 200 && (outboundBodies.length < 1 || topicCapabilityCloseTokens.length < closesBeforeGlobalBusy + 1); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(handled.at(-1)?.ts, "112", "B starts a fresh turn after the prior global run finishes");
+	assert.equal(outboundBodies.length, 1);
+	assert.equal(outboundBodies[0].get("topic"), "Global busy");
+	assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "delivery-global-busy");
+	assert.equal(topicCapabilityCloseTokens.length, closesBeforeGlobalBusy + 1);
+
+	const controlPayload = overlapPayload(
+		113,
+		"delivery-scoped-control",
+		"Scoped control",
+		"topic-capability-scoped-control-0123456789abcdef",
+		"lease-scoped-control",
+	);
+	controlPayload.message.content = "<p>/scope</p>";
+	const handledBeforeControl = handled.length;
+	const controlResponse = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+		method: "POST",
+		headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+		body: JSON.stringify(controlPayload),
+	});
+	assert.equal(controlResponse.status, 202);
+	for (let index = 0; index < 200 && (outboundBodies.length < 2 || topicCapabilityCloseTokens.length < closesBeforeGlobalBusy + 2); index++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(handled.length, handledBeforeControl, "an immediate scoped control does not start a model turn");
+	assert.equal(outboundBodies.length, 2);
+	assert.equal(outboundBodies[1].get("topic"), "Scoped control");
+	assert.equal(outboundHeaders[1]["x-troublemaker-zulip-delivery-id"], "delivery-scoped-control");
+	assert.equal(topicCapabilityCloseTokens.length, closesBeforeGlobalBusy + 2);
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
+
 	const completedBeforeBotMessages = receipts.filter((status) => status === "completed").length;
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
@@ -706,15 +793,15 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 12, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(pulseRecords.length, 14, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
 	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
 	assert.equal(ambient[1].user, "10");
 	assert.equal(ambient[1].text, "Bot ambient update.");
 	assert.equal(ambient[1].directlyAddressed, false);
 	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
-	assert.equal(handled.length, 7, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[6].directlyAddressed, true);
-	assert.equal(handled[6].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 8, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[7].directlyAddressed, true);
+	assert.equal(handled[7].sourceEventType, "zulip_mention");
 
 	const restartClaimPayload = {
 		deliveryId: "delivery-restart-claim",

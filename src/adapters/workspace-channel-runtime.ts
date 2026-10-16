@@ -125,15 +125,7 @@ export class WorkspaceDeliveryLedger {
 	}
 }
 
-export async function routeWorkspaceChannelEvent({
-	handler,
-	adapter,
-	event,
-	queue,
-	awaitCompletion = false,
-	onAccepted,
-	runWork,
-}: {
+export type WorkspaceChannelRouteOptions = {
 	handler: MomHandler;
 	adapter: PlatformAdapter;
 	event: MomEvent;
@@ -141,9 +133,30 @@ export async function routeWorkspaceChannelEvent({
 	awaitCompletion?: boolean;
 	/** Called once the event has entered its control, steer, or run route. */
 	onAccepted?: () => void | Promise<void>;
-	/** Optional exact-turn wrapper applied only when this event starts a fresh model run. */
+	/**
+	 * Exact-delivery wrapper applied to the full route. Scoped deliveries also
+	 * bypass steering so their identity remains attached to one fresh globally
+	 * serialized model turn.
+	 */
 	runWork?: (work: () => Promise<void>) => Promise<void>;
-}): Promise<void> {
+};
+
+export async function routeWorkspaceChannelEvent(options: WorkspaceChannelRouteOptions): Promise<void> {
+	if (options.runWork) {
+		await options.runWork(() => routeWorkspaceChannelEventInner(options, true));
+		return;
+	}
+	await routeWorkspaceChannelEventInner(options, false);
+}
+
+async function routeWorkspaceChannelEventInner({
+	handler,
+	adapter,
+	event,
+	queue,
+	awaitCompletion = false,
+	onAccepted,
+}: WorkspaceChannelRouteOptions, forceFreshRun: boolean): Promise<void> {
 	let accepted = false;
 	const markAccepted = async () => {
 		if (accepted) return;
@@ -166,16 +179,14 @@ export async function routeWorkspaceChannelEvent({
 		await settled;
 		return;
 	}
-	if (handler.isRunning(event.channel)) {
+	if (!forceFreshRun && handler.isRunning(event.channel)) {
 		const settled = handler.handleSteer(event, adapter);
 		await markAccepted();
 		if (awaitCompletion) await settled;
 		return;
 	}
 	const work = queue.enqueue(async () => {
-		const handle = async () => { await handler.handleEvent(event, adapter); };
-		if (runWork) await runWork(handle);
-		else await handle();
+		await handler.handleEvent(event, adapter);
 	});
 	await markAccepted();
 	if (awaitCompletion) await work;
