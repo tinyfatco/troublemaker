@@ -188,6 +188,15 @@ async function routeWorkspaceChannelEventInner({
 	const work = queue.enqueue(async () => {
 		await handler.handleEvent(event, adapter);
 	});
-	await markAccepted();
-	if (awaitCompletion) await work;
+	let acceptanceError: unknown;
+	try {
+		await markAccepted();
+	} catch (error) {
+		acceptanceError = error;
+	}
+	// Work is already owned by this delivery. A stale or failed host receipt
+	// must not detach the queued turn and let an outer capability finally close
+	// while the model still runs. Await the exact work before returning control.
+	if (awaitCompletion || acceptanceError) await work;
+	if (acceptanceError && !awaitCompletion) throw acceptanceError;
 }

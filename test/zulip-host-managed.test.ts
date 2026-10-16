@@ -20,6 +20,8 @@ const receiptBodies: Array<{ status: string; lease_token: string }> = [];
 const outboundBodies: URLSearchParams[] = [];
 const outboundHeaders: Array<Record<string, string | string[] | undefined>> = [];
 const topicCapabilityCloseTokens: string[] = [];
+const source26130Lifecycle: string[] = [];
+let source26130CapabilityUseCount = 0;
 const updateBodies: URLSearchParams[] = [];
 let deleteCount = 0;
 let nextMessageId = 100;
@@ -45,11 +47,22 @@ const upstream = createServer(async (request, response) => {
 		const body = JSON.parse((await readBody(request)).toString("utf8"));
 		receipts.push(body.status);
 		receiptBodies.push(body);
+		if (body.lease_token === "lease-26130-expired") {
+			source26130Lifecycle.push(`stale-receipt:${body.status}`);
+			send(409, { error: "lease_expired" });
+			return;
+		}
+		if (body.lease_token === "lease-26130-replacement") {
+			source26130Lifecycle.push(`replacement-receipt:${body.status}`);
+		}
 		send(200, { ok: true });
 		return;
 	}
 	if (/^\/v1\/zulip-topic-capabilities\/[^/]+\/[^/]+\/close$/.test(url.pathname)) {
 		topicCapabilityCloseTokens.push(String(request.headers.authorization || ""));
+		if (decodeURIComponent(url.pathname).includes("/zulip:26130/")) {
+			source26130Lifecycle.push("capability-close");
+		}
 		send(200, { ok: true });
 		return;
 	}
@@ -73,6 +86,10 @@ const upstream = createServer(async (request, response) => {
 		const body = new URLSearchParams((await readBody(request)).toString("utf8"));
 		outboundBodies.push(body);
 		outboundHeaders.push({ ...request.headers });
+		if (request.headers["x-troublemaker-zulip-delivery-id"] === "zulip:26130") {
+			source26130CapabilityUseCount += 1;
+			source26130Lifecycle.push("exact-topic-post");
+		}
 		send(200, { result: "success", msg: "", id: nextMessageId++ });
 		return;
 	}
@@ -131,6 +148,14 @@ let markGlobalTurnQueued: (() => void) | undefined;
 const globalTurnQueued = new Promise<void>((resolve) => {
 	markGlobalTurnQueued = resolve;
 });
+let releaseSource26130Work: (() => void) | undefined;
+const source26130WorkGate = new Promise<void>((resolve) => {
+	releaseSource26130Work = resolve;
+});
+let markSource26130WorkStarted: (() => void) | undefined;
+const source26130WorkStarted = new Promise<void>((resolve) => {
+	markSource26130WorkStarted = resolve;
+});
 const adapter = new ZulipWebhookAdapter({
 	url: `http://127.0.0.1:${upstreamAddress.port}`,
 	botToken: PROXY_TOKEN,
@@ -150,6 +175,15 @@ const adapter = new ZulipWebhookAdapter({
 adapter.setHandler({
 	isRunning: () => running,
 	handleEvent: async (event: any) => {
+		if (event.ts === "114") {
+			handled.push(event);
+			source26130Lifecycle.push("claim-work-start");
+			markSource26130WorkStarted?.();
+			await source26130WorkGate;
+			await adapter.postInThread(OTHER_CHANNEL_ID, event.threadTs, "OPERATOR_TOPIC_OK");
+			source26130Lifecycle.push("claim-work-settled");
+			return { yielded: false };
+		}
 		if (event.ts === "112") {
 			markGlobalTurnQueued?.();
 			await globalBusyGate;
@@ -744,6 +778,84 @@ try {
 	outboundHeaders.length = 0;
 	nextMessageId = 100;
 
+	const unhandledSource26130: unknown[] = [];
+	const onUnhandledSource26130 = (reason: unknown) => { unhandledSource26130.push(reason); };
+	process.on("unhandledRejection", onUnhandledSource26130);
+	const source26130Payload = overlapPayload(
+		114,
+		"zulip:26130",
+		"general chat",
+		"topic-capability-source-26130-0123456789abcdef",
+		"lease-26130-expired",
+	);
+	const handledBeforeSource26130 = handled.length;
+	const closesBeforeSource26130 = topicCapabilityCloseTokens.length;
+	try {
+		const firstSource26130 = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+			body: JSON.stringify(source26130Payload),
+		});
+		assert.equal(firstSource26130.status, 202);
+		await Promise.race([
+			source26130WorkStarted,
+			new Promise((_, reject) => setTimeout(() => reject(new Error("source 26130 claim-owning work did not start")), 2_000)),
+		]);
+		for (let index = 0; index < 100 && !source26130Lifecycle.includes("stale-receipt:running"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(source26130Lifecycle.includes("stale-receipt:running"), "attempt 1 markRunning fails after its work starts");
+		assert.equal(topicCapabilityCloseTokens.length, closesBeforeSource26130, "stale receipt failure cannot close live work's capability");
+		assert.equal(outboundBodies.length, 0, "attempt 1 remains gated before its exact-topic send");
+
+		const replacementPayload = JSON.parse(JSON.stringify(source26130Payload));
+		replacementPayload.hostReceipt.leaseToken = "lease-26130-replacement";
+		const replacementSource26130 = await fetch(`http://127.0.0.1:${inboundAddress.port}/zulip/inbound`, {
+			method: "POST",
+			headers: { authorization: `Bearer ${INBOUND_TOKEN}`, "content-type": "application/json" },
+			body: JSON.stringify(replacementPayload),
+		});
+		assert.equal(replacementSource26130.status, 202);
+		for (let index = 0; index < 100 && !source26130Lifecycle.includes("replacement-receipt:completed"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert(source26130Lifecycle.includes("replacement-receipt:running"));
+		assert(source26130Lifecycle.includes("replacement-receipt:completed"), "attempt 2 may terminally complete Hostd as a duplicate");
+		assert.equal(handled.filter((event) => event.ts === "114").length, 1, "duplicate attempt never processes model work");
+		assert.equal(topicCapabilityCloseTokens.length, closesBeforeSource26130, "duplicate completion cannot close attempt 1's capability");
+		assert.equal(outboundBodies.length, 0);
+
+		releaseSource26130Work?.();
+		for (let index = 0; index < 200 && !source26130Lifecycle.includes("capability-close"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(handled.length, handledBeforeSource26130 + 1);
+		assert.equal(source26130CapabilityUseCount, 1, "attempt 1 consumes its exact capability once");
+		assert.equal(outboundBodies.length, 1, "attempt 1 posts exactly once");
+		assert.equal(outboundBodies[0].get("topic"), "general chat");
+		assert.equal(outboundBodies[0].get("content"), "OPERATOR_TOPIC_OK");
+		assert.equal(outboundHeaders[0]["x-troublemaker-zulip-delivery-id"], "zulip:26130");
+		assert.equal(topicCapabilityCloseTokens.length, closesBeforeSource26130 + 1);
+		assert.equal(topicCapabilityCloseTokens.at(-1), "Bearer topic-capability-source-26130-0123456789abcdef");
+		assert(source26130Lifecycle.indexOf("exact-topic-post") < source26130Lifecycle.indexOf("capability-close"), "capability closes only after exact-topic post");
+		assert(source26130Lifecycle.indexOf("replacement-receipt:completed") < source26130Lifecycle.indexOf("exact-topic-post"), "attempt 2 completion may precede attempt 1 output without revoking it");
+		for (let index = 0; index < 100 && !source26130Lifecycle.includes("stale-receipt:failed"); index++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.deepEqual(unhandledSource26130, [], "stale receipt failure creates no detached task or unhandled rejection");
+		const source26130Ledger = readFileSync(join(workingDir, "zulip-inbound-deliveries.jsonl"), "utf8")
+			.split("\n").filter(Boolean).map((line) => JSON.parse(line))
+			.filter((entry) => entry.deliveryId === "zulip:26130");
+		assert.equal(source26130Ledger.filter((entry) => entry.claimedAt).length, 1);
+		assert.equal(source26130Ledger.filter((entry) => entry.completedAt).length, 1, "runtime durable completion remains single");
+	} finally {
+		process.off("unhandledRejection", onUnhandledSource26130);
+	}
+	outboundBodies.length = 0;
+	outboundHeaders.length = 0;
+	nextMessageId = 100;
+
 	const completedBeforeBotMessages = receipts.filter((status) => status === "completed").length;
 	for (const [id, flags, deliveryId, leaseToken] of [
 		[90, undefined, "delivery-bot-ambient", "lease-bot-ambient"],
@@ -793,15 +905,15 @@ try {
 	const otherBotEntries = logEntries.filter((entry) => entry.ts === "90" || entry.ts === "91");
 	assert.equal(otherBotEntries.length, 2);
 	assert(otherBotEntries.every((entry) => entry.isBot === true), "other-bot messages are recorded as bot traffic");
-	assert.equal(pulseRecords.length, 14, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
+	assert.equal(pulseRecords.length, 15, "ambient and explicitly mentioned other-bot messages both reach pulse accounting");
 	assert.equal(ambient.length, 2, "passive other-bot traffic reaches ambient evaluation exactly once");
 	assert.equal(ambient[1].user, "10");
 	assert.equal(ambient[1].text, "Bot ambient update.");
 	assert.equal(ambient[1].directlyAddressed, false);
 	assert.equal(ambient[1].sourceEventType, "zulip_channel_message");
-	assert.equal(handled.length, 8, "explicit other-bot mentions reach direct handling exactly once");
-	assert.equal(handled[7].directlyAddressed, true);
-	assert.equal(handled[7].sourceEventType, "zulip_mention");
+	assert.equal(handled.length, 9, "explicit other-bot mentions reach direct handling exactly once");
+	assert.equal(handled[8].directlyAddressed, true);
+	assert.equal(handled[8].sourceEventType, "zulip_mention");
 
 	const restartClaimPayload = {
 		deliveryId: "delivery-restart-claim",
