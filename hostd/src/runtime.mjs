@@ -23,6 +23,55 @@ export function siteDeploymentBindings(config, store, target, contextId, routing
 	return resolveSiteDeploymentBindings(config, store, target, contextId, routingKey);
 }
 
+export function validateOwnedWorkCanaryInput(value, { event, message, targetRuntimeVersion }) {
+	if (value === undefined) return undefined;
+	const keys = [
+		"version", "nonce", "contextId", "deliveryId", "source", "senderId", "senderIsBot", "channelId",
+		"topic", "bodySha256", "phoneConfigSha256", "phoneHoldStateSha256",
+		"expiresAt", "candidateSha", "leaseSeconds", "deadlineMs",
+	].sort();
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("owned-work canary authorization is invalid");
+	}
+	const actualKeys = Object.keys(value).sort();
+	if (actualKeys.length !== keys.length || actualKeys.some((key, index) => key !== keys[index])) {
+		throw new Error("owned-work canary authorization shape is invalid");
+	}
+	const expiresAt = Date.parse(value.expiresAt);
+	const bodySha256 = createHash("sha256").update(String(message?.content ?? ""), "utf8").digest("hex");
+	if (
+		value.version !== 1
+		|| value.source !== "zulip"
+		|| !/^[a-f0-9]{48}$/.test(value.nonce)
+		|| value.deliveryId !== `zulip-canary:${value.nonce}`
+		|| value.deliveryId !== event.id
+		|| value.contextId !== event.contextId
+		|| value.senderId !== message?.sender_id
+		|| value.senderIsBot !== true
+		|| message?.sender_is_bot !== true
+		|| value.channelId !== String(message?.stream_id)
+		|| value.topic !== message?.subject
+		|| value.bodySha256 !== bodySha256
+		|| !/^[a-f0-9]{64}$/.test(value.phoneConfigSha256)
+		|| !/^[a-f0-9]{64}$/.test(value.phoneHoldStateSha256)
+		|| !Number.isFinite(expiresAt)
+		|| expiresAt <= Date.now()
+		|| expiresAt > Date.now() + 180_000
+		|| !/^[a-f0-9]{40}$/.test(value.candidateSha)
+		|| !(
+			targetRuntimeVersion === value.candidateSha
+			|| targetRuntimeVersion.startsWith(`${value.candidateSha}-`)
+		)
+		|| !Number.isInteger(value.leaseSeconds)
+		|| value.leaseSeconds < 3
+		|| value.leaseSeconds > 20
+		|| !Number.isInteger(value.deadlineMs)
+		|| value.deadlineMs < 1_000
+		|| value.deadlineMs > 180_000
+	) throw new Error("owned-work canary authorization binding is invalid");
+	return value;
+}
+
 function safeRuntimeName(contextId) {
 	const normalized = contextId.toLowerCase().replace(/[^a-z0-9_.-]/g, "-").replace(/-+/g, "-");
 	return `troublemaker-${normalized}`.slice(0, 63);
@@ -898,6 +947,11 @@ export class RuntimeManager {
 	async deliverZulipWebhook(target, context, event, input) {
 		const inboundToken = contextCapability(target.inboundToken, "zulip-inbound", context.contextId);
 		const message = input.message;
+		const ownedWorkCanary = validateOwnedWorkCanaryInput(input.ownedWorkCanary, {
+			event,
+			message,
+			targetRuntimeVersion: target.runtimeVersion,
+		});
 		let topicCapability;
 		if (message?.type === "stream" && typeof message.subject === "string" && message.subject) {
 			const channelId = Number(message.stream_id);
@@ -935,6 +989,7 @@ export class RuntimeManager {
 				hostContextId: event.contextId,
 				message,
 				...(topicCapability ? { topicCapability } : {}),
+				...(ownedWorkCanary ? { ownedWorkCanary } : {}),
 				hostReceipt: this.hostReceipt(target, event),
 			}),
 			signal: AbortSignal.timeout(30_000),
@@ -1352,6 +1407,7 @@ export class RuntimeManager {
 				} : {}),
 				...target.runtimeEnv,
 				...runtimeModelEnvironment(this.config, target, contextId, runtimeModel),
+				TROUBLEMAKER_RUNTIME_VERSION: expectedRuntimeVersion,
 				TROUBLEMAKER_HOSTD_CONTAINER: "1",
 			};
 			await writePrivateFile(
