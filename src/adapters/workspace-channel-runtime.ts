@@ -1,4 +1,5 @@
 import { closeSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
+import type { OwnedWorkCanaryBarrier } from "./owned-work-canary.js";
 import type { MomEvent, MomHandler, PlatformAdapter } from "./types.js";
 import { slashCommandHandled, slashCommandPending } from "./types.js";
 
@@ -139,6 +140,8 @@ export type WorkspaceChannelRouteOptions = {
 	 * serialized model turn.
 	 */
 	runWork?: (work: () => Promise<void>) => Promise<void>;
+	/** Host-owned, one-shot diagnostic barrier. Ordinary deliveries never set this. */
+	ownedWorkCanary?: OwnedWorkCanaryBarrier;
 };
 
 export async function routeWorkspaceChannelEvent(options: WorkspaceChannelRouteOptions): Promise<void> {
@@ -188,6 +191,7 @@ async function routeWorkspaceChannelEventInner({
 	queue,
 	awaitCompletion = false,
 	onAccepted,
+	ownedWorkCanary,
 }: WorkspaceChannelRouteOptions, forceFreshRun: boolean): Promise<void> {
 	let accepted = false;
 	const markAccepted = async () => {
@@ -201,6 +205,7 @@ async function routeWorkspaceChannelEventInner({
 	}
 	const command = await handler.handleSlashCommand(event, adapter);
 	if (slashCommandHandled(command)) {
+		if (ownedWorkCanary) throw new Error("owned_work_canary_control_route_denied");
 		await settleOwnedRouteWork({
 			work: slashCommandPending(command),
 			markAccepted,
@@ -209,6 +214,7 @@ async function routeWorkspaceChannelEventInner({
 		return;
 	}
 	if (event.text.toLowerCase().trim() === "stop") {
+		if (ownedWorkCanary) throw new Error("owned_work_canary_stop_route_denied");
 		const settled = handler.handleStop(event.channel, adapter, event);
 		await settleOwnedRouteWork({ work: settled, markAccepted, awaitCompletion: true });
 		return;
@@ -220,7 +226,20 @@ async function routeWorkspaceChannelEventInner({
 		return;
 	}
 	const work = queue.enqueue(async () => {
+		if (ownedWorkCanary) await ownedWorkCanary.holdWork();
 		await handler.handleEvent(event, adapter);
 	});
-	await settleOwnedRouteWork({ work, markAccepted, awaitCompletion });
+	const canaryMarkAccepted = ownedWorkCanary
+		? async () => {
+			await ownedWorkCanary.holdReceipt();
+			try {
+				await markAccepted();
+			} catch (error) {
+				await ownedWorkCanary.receiptRejected(error);
+				throw error;
+			}
+		}
+		: markAccepted;
+	await settleOwnedRouteWork({ work, markAccepted: canaryMarkAccepted, awaitCompletion });
+	if (ownedWorkCanary) await ownedWorkCanary.workSettled();
 }

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,7 @@ import {
 	serviceMailboxRuntimeEnvironment,
 	serviceMailboxRuntimeVersionSuffix,
 	serializeRuntimeEnvironment,
+	validateOwnedWorkCanaryInput,
 	writeComputerControlState,
 } from "../src/runtime.mjs";
 import { contextCapability } from "../src/security.mjs";
@@ -745,6 +747,87 @@ test("phone relationship batches cross one direct runtime envelope with every or
 			/only direct phone turns/,
 		);
 		assert.equal(requests.length, 1, "mixed or steering batches fail before runtime delivery");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+
+test("Zulip owned-work canary forwarding requires the exact durable delivery binding", async () => {
+	const candidateSha = "c".repeat(40);
+	const contextId = "operator:neutral:intake";
+	const deliveryId = "zulip-canary:neutral";
+	const message = {
+		id: -1,
+		type: "stream",
+		stream_id: 7,
+		subject: "neutral topic",
+		sender_id: 42,
+		content: "@**Resident** neutral diagnostic request",
+	};
+	const authorization = {
+		version: 1,
+		nonce: "neutral-nonce",
+		contextId,
+		deliveryId,
+		source: "zulip",
+		senderId: message.sender_id,
+		channelId: String(message.stream_id),
+		topic: message.subject,
+		bodySha256: createHash("sha256").update(message.content).digest("hex"),
+		expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		candidateSha,
+		leaseSeconds: 5,
+		deadlineMs: 30_000,
+	};
+	const target = {
+		id: "operator",
+		inboundToken: "synthetic-inbound-secret",
+		outboundToken: "synthetic-outbound-secret",
+		hostGateway: "host.example",
+		runtimeVersion: `${candidateSha}-diagnostic`,
+	};
+	const issued = [];
+	const manager = new RuntimeManager({
+		server: { port: 3099 },
+		targetsById: new Map([[target.id, target]]),
+	}, {
+		issueZulipTopicCapability(value) { issued.push(value); },
+	}, {});
+	const event = {
+		id: deliveryId,
+		source: "zulip",
+		targetId: target.id,
+		contextId,
+		leaseToken: "lease-neutral",
+	};
+	const context = { contextId, zulipEndpoint: "http://127.0.0.1:32000/zulip/inbound" };
+	const originalFetch = globalThis.fetch;
+	let body;
+	globalThis.fetch = async (_input, init) => {
+		body = JSON.parse(String(init.body));
+		return new Response(JSON.stringify({ accepted: true }), { status: 202 });
+	};
+	try {
+		await manager.deliverZulipWebhook(target, context, event, { message, ownedWorkCanary: authorization });
+		assert.deepEqual(body.ownedWorkCanary, authorization);
+		assert.equal(body.deliveryId, deliveryId);
+		assert.equal(body.hostContextId, contextId);
+		assert.equal(issued.length, 1);
+		assert.throws(
+			() => validateOwnedWorkCanaryInput(
+				{ ...authorization, deliveryId: "wrong-delivery" },
+				{ event, message, targetRuntimeVersion: target.runtimeVersion },
+			),
+			/binding is invalid/,
+		);
+		await assert.rejects(
+			manager.deliverZulipWebhook(target, context, event, {
+				message: { ...message, content: `${message.content} changed` },
+				ownedWorkCanary: authorization,
+			}),
+			/binding is invalid/,
+		);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
