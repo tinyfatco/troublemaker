@@ -39,6 +39,10 @@ RUN set -eux; \
 	rm /tmp/cua-driver.tar.gz; \
 	cua-driver --version
 
+RUN install -d -o root -g root -m 0555 /run/troublemaker-hostd/computer-control \
+	&& install -o root -g root -m 0000 /dev/null \
+		/run/troublemaker-hostd/computer-control/owned-work-canary.sock
+
 WORKDIR /opt/troublemaker
 
 COPY package.json package-lock.json ./

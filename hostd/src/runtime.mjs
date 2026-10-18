@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readFile, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { buildEmailWebhookBody } from "./prompt.mjs";
 import { contextCapability } from "./security.mjs";
@@ -15,12 +15,164 @@ import {
 	resolveSiteFactory,
 } from "./site-deployment-binding.mjs";
 
+export const OWNED_WORK_CANARY_SOCKET_PATH = "/run/troublemaker-hostd/computer-control/owned-work-canary.sock";
+
+export function ownedWorkCanarySocketVolumeArguments(socketPath) {
+	if (socketPath === undefined) return [];
+	if (socketPath !== OWNED_WORK_CANARY_SOCKET_PATH) {
+		throw new Error("owned-work canary socket mount path differs from the fixed contract");
+	}
+	return ["--volume", `${socketPath}:${OWNED_WORK_CANARY_SOCKET_PATH}:rw`];
+}
+
+export function ownedWorkCanaryContainerEnvironment(
+	engine, socketPath, overflowUid, overflowGid,
+) {
+	if (socketPath === undefined) return {};
+	if (socketPath !== OWNED_WORK_CANARY_SOCKET_PATH) {
+		throw new Error("owned-work canary socket environment path differs from the fixed contract");
+	}
+	const executable = basename(engine).toLowerCase();
+	if (executable === "docker" || executable.startsWith("docker-")) {
+		throw new Error("owned-work canary requires rootless Podman group preservation");
+	}
+	for (const value of [overflowUid, overflowGid]) {
+		if (!Number.isSafeInteger(value) || value < 1 || value > 0xffff_ffff) {
+			throw new Error("owned-work canary mapped socket identity is invalid");
+		}
+	}
+	return {
+		TROUBLEMAKER_OWNED_WORK_CANARY_SOCKET_UID: String(overflowUid),
+		TROUBLEMAKER_OWNED_WORK_CANARY_SOCKET_GID: String(overflowGid),
+	};
+}
+
+export function ownedWorkCanaryRuntimeEngineArguments(engine, socketPath) {
+	const standard = runtimeEngineRunFlags(engine);
+	if (socketPath === undefined) return standard;
+	const executable = basename(engine).toLowerCase();
+	if (executable === "docker" || executable.startsWith("docker-")) {
+		throw new Error("owned-work canary requires rootless Podman group preservation");
+	}
+	return [
+		...standard.filter((value) => value !== "--userns=keep-id"),
+		"--group-add",
+		"keep-groups",
+	];
+}
+
+export function ownedWorkCanaryHostSocketGid(
+	environment = process.env, groups = process.getgroups?.() ?? [],
+) {
+	const raw = environment.TROUBLEMAKER_OWNED_WORK_CANARY_HOST_GID;
+	if (!raw || !/^[1-9][0-9]{0,9}$/.test(raw)) {
+		throw new Error("owned-work canary dedicated host group is missing");
+	}
+	const gid = Number(raw);
+	if (
+		!Number.isSafeInteger(gid)
+		|| gid > 0xffff_ffff
+		|| gid === (process.getegid?.() ?? 0)
+		|| !groups.includes(gid)
+	) throw new Error("owned-work canary dedicated host group is unavailable");
+	return gid;
+}
+
+export async function trustedOwnedWorkCanarySocket(options = {}) {
+	const socketPath = options.socketPath ?? OWNED_WORK_CANARY_SOCKET_PATH;
+	const trustedRoot = options.trustedRoot ?? "/run";
+	const expectedRootUid = options.expectedRootUid ?? 0;
+	const expectedSocketUid = options.expectedSocketUid ?? 0;
+	const expectedSocketGid = options.expectedSocketGid ?? ownedWorkCanaryHostSocketGid();
+	let socketInfo;
+	try {
+		socketInfo = await lstat(socketPath);
+	} catch (error) {
+		if (error?.code === "ENOENT") return undefined;
+		throw error;
+	}
+	if (await realpath(socketPath) !== socketPath || await realpath(trustedRoot) !== trustedRoot) {
+		throw new Error("owned-work canary socket path is not canonical");
+	}
+	let current = dirname(socketPath);
+	while (true) {
+		const parent = await lstat(current);
+		if (
+			!parent.isDirectory()
+			|| parent.isSymbolicLink()
+			|| parent.uid !== expectedRootUid
+			|| (parent.mode & 0o022) !== 0
+		) throw new Error("owned-work canary socket ancestry is unsafe");
+		if (current === trustedRoot) break;
+		const next = dirname(current);
+		if (next === current) throw new Error("owned-work canary socket escaped its trust root");
+		current = next;
+	}
+	if (
+		!socketInfo.isSocket()
+		|| socketInfo.isSymbolicLink()
+		|| socketInfo.uid !== expectedSocketUid
+		|| socketInfo.gid !== expectedSocketGid
+		|| (socketInfo.mode & 0o777) !== 0o660
+	) throw new Error("owned-work canary socket custody is unsafe");
+	return socketPath;
+}
+
 export function siteDeploymentBinding(config, store, target, contextId, routingKey, siteSlug) {
 	return resolveSiteDeploymentBinding(config, store, target, contextId, routingKey, siteSlug);
 }
 
 export function siteDeploymentBindings(config, store, target, contextId, routingKey) {
 	return resolveSiteDeploymentBindings(config, store, target, contextId, routingKey);
+}
+
+export function validateOwnedWorkCanaryInput(value, { event, message, targetRuntimeVersion }) {
+	if (value === undefined) return undefined;
+	const keys = [
+		"version", "nonce", "contextId", "deliveryId", "source", "senderId", "senderIsBot", "channelId",
+		"topic", "bodySha256", "phoneConfigSha256", "phoneHoldStateSha256",
+		"expiresAt", "candidateSha", "leaseSeconds", "deadlineMs",
+	].sort();
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("owned-work canary authorization is invalid");
+	}
+	const actualKeys = Object.keys(value).sort();
+	if (actualKeys.length !== keys.length || actualKeys.some((key, index) => key !== keys[index])) {
+		throw new Error("owned-work canary authorization shape is invalid");
+	}
+	const expiresAt = Date.parse(value.expiresAt);
+	const bodySha256 = createHash("sha256").update(String(message?.content ?? ""), "utf8").digest("hex");
+	if (
+		value.version !== 1
+		|| value.source !== "zulip"
+		|| !/^[a-f0-9]{48}$/.test(value.nonce)
+		|| value.deliveryId !== `zulip-canary:${value.nonce}`
+		|| value.deliveryId !== event.id
+		|| value.contextId !== event.contextId
+		|| value.senderId !== message?.sender_id
+		|| value.senderIsBot !== true
+		|| message?.sender_is_bot !== true
+		|| value.channelId !== String(message?.stream_id)
+		|| value.topic !== message?.subject
+		|| value.bodySha256 !== bodySha256
+		|| !/^[a-f0-9]{64}$/.test(value.phoneConfigSha256)
+		|| !/^[a-f0-9]{64}$/.test(value.phoneHoldStateSha256)
+		|| !Number.isFinite(expiresAt)
+		|| expiresAt <= Date.now()
+		|| expiresAt > Date.now() + 180_000
+		|| !/^[a-f0-9]{40}$/.test(value.candidateSha)
+		|| !(
+			targetRuntimeVersion === value.candidateSha
+			|| targetRuntimeVersion.startsWith(`${value.candidateSha}-`)
+		)
+		|| !Number.isInteger(value.leaseSeconds)
+		|| value.leaseSeconds < 3
+		|| value.leaseSeconds > 20
+		|| !Number.isInteger(value.deadlineMs)
+		|| value.deadlineMs < 1_000
+		|| value.deadlineMs > 180_000
+	) throw new Error("owned-work canary authorization binding is invalid");
+	return value;
 }
 
 function safeRuntimeName(contextId) {
@@ -141,6 +293,16 @@ export function computerControlDirectory(target, contextId) {
 
 export function computerControlPath(target, contextId) {
 	return join(computerControlDirectory(target, contextId), "state.json");
+}
+
+export function computerControlVolumeArguments(target, contextId, ownedWorkCanarySocket) {
+	if (!target.computer?.enabled || ownedWorkCanarySocket) return [];
+	return [
+		"--shm-size",
+		"512m",
+		"--volume",
+		`${computerControlDirectory(target, contextId)}:/run/troublemaker-hostd/computer-control:ro`,
+	];
 }
 
 function normalizedComputerControlState(value, now = Date.now()) {
@@ -898,6 +1060,11 @@ export class RuntimeManager {
 	async deliverZulipWebhook(target, context, event, input) {
 		const inboundToken = contextCapability(target.inboundToken, "zulip-inbound", context.contextId);
 		const message = input.message;
+		const ownedWorkCanary = validateOwnedWorkCanaryInput(input.ownedWorkCanary, {
+			event,
+			message,
+			targetRuntimeVersion: target.runtimeVersion,
+		});
 		let topicCapability;
 		if (message?.type === "stream" && typeof message.subject === "string" && message.subject) {
 			const channelId = Number(message.stream_id);
@@ -935,6 +1102,7 @@ export class RuntimeManager {
 				hostContextId: event.contextId,
 				message,
 				...(topicCapability ? { topicCapability } : {}),
+				...(ownedWorkCanary ? { ownedWorkCanary } : {}),
 				hostReceipt: this.hostReceipt(target, event),
 			}),
 			signal: AbortSignal.timeout(30_000),
@@ -1263,6 +1431,17 @@ export class RuntimeManager {
 				this.routingKey,
 			);
 			const scheduledWakesOwned = hostOwnsScheduledWakes(this.config, contextId);
+			const ownedWorkCanarySocket = await trustedOwnedWorkCanarySocket();
+			const [ownedWorkCanaryOverflowUid, ownedWorkCanaryOverflowGid] = ownedWorkCanarySocket
+				? await Promise.all([
+					readFile("/proc/sys/kernel/overflowuid", "utf8"),
+					readFile("/proc/sys/kernel/overflowgid", "utf8"),
+				]).then((values) => values.map((value) => Number.parseInt(value.trim(), 10)))
+				: [0, 0];
+			const ownedWorkCanaryEnvironment = ownedWorkCanaryContainerEnvironment(
+				target.engine, ownedWorkCanarySocket,
+				ownedWorkCanaryOverflowUid, ownedWorkCanaryOverflowGid,
+			);
 			const env = {
 				HOME: "/data",
 				...(target.agent ? {
@@ -1273,7 +1452,7 @@ export class RuntimeManager {
 				...(this.config.webApp ? {
 					MOM_WEB_INPUT_TOKEN: contextCapability(target.inboundToken, "web-app", contextId),
 				} : {}),
-				...(target.computer?.enabled ? {
+				...(target.computer?.enabled && !ownedWorkCanarySocket ? {
 					TROUBLEMAKER_COMPUTER_ENABLED: "1",
 					TROUBLEMAKER_COMPUTER_DISPLAY: target.computer.display,
 					TROUBLEMAKER_COMPUTER_WEBSOCKET_PORT: String(target.computer.websocketPort),
@@ -1351,7 +1530,9 @@ export class RuntimeManager {
 					),
 				} : {}),
 				...target.runtimeEnv,
+				...ownedWorkCanaryEnvironment,
 				...runtimeModelEnvironment(this.config, target, contextId, runtimeModel),
+				TROUBLEMAKER_RUNTIME_VERSION: expectedRuntimeVersion,
 				TROUBLEMAKER_HOSTD_CONTAINER: "1",
 			};
 			await writePrivateFile(
@@ -1363,7 +1544,7 @@ export class RuntimeManager {
 				"--detach",
 				"--name",
 				context.runtimeName,
-				...runtimeEngineRunFlags(target.engine),
+				...ownedWorkCanaryRuntimeEngineArguments(target.engine, ownedWorkCanarySocket),
 				"--publish",
 				`127.0.0.1:${context.port}:3002`,
 				"--memory",
@@ -1377,14 +1558,8 @@ export class RuntimeManager {
 				"--volume",
 				`${workspace}:/data:rw`,
 			];
-			if (target.computer?.enabled) {
-				args.push(
-					"--shm-size",
-					"512m",
-					"--volume",
-					`${computerControlDirectory(target, contextId)}:/run/troublemaker-hostd/computer-control:ro`,
-				);
-			}
+			args.push(...computerControlVolumeArguments(target, contextId, ownedWorkCanarySocket));
+			args.push(...ownedWorkCanarySocketVolumeArguments(ownedWorkCanarySocket));
 			if (!target.immutableImage) {
 				args.push("--volume", `${target.checkout}:/opt/troublemaker:ro`);
 			}

@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
 	agentIdentityRuntimeVersionSuffix,
 	computerControlPath,
+	computerControlVolumeArguments,
 	computerRuntimeVersionSuffix,
 	initializeChannelWorkingOutput,
 	contextWorkspacePath,
@@ -14,6 +17,11 @@ import {
 	initializeMattermostWorkingOutput,
 	initializeNamedAgentIdentity,
 	initializeNamedAgentInstructions,
+	OWNED_WORK_CANARY_SOCKET_PATH,
+	ownedWorkCanaryContainerEnvironment,
+	ownedWorkCanaryHostSocketGid,
+	ownedWorkCanaryRuntimeEngineArguments,
+	ownedWorkCanarySocketVolumeArguments,
 	readComputerControlState,
 	RuntimeManager,
 	runtimeEngineRunFlags,
@@ -21,6 +29,8 @@ import {
 	serviceMailboxRuntimeEnvironment,
 	serviceMailboxRuntimeVersionSuffix,
 	serializeRuntimeEnvironment,
+	trustedOwnedWorkCanarySocket,
+	validateOwnedWorkCanaryInput,
 	writeComputerControlState,
 } from "../src/runtime.mjs";
 import { contextCapability } from "../src/security.mjs";
@@ -745,6 +755,200 @@ test("phone relationship batches cross one direct runtime envelope with every or
 			/only direct phone turns/,
 		);
 		assert.equal(requests.length, 1, "mixed or steering batches fail before runtime delivery");
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+});
+
+
+test("owned-work canary mount exposes only one root-custodied fixed socket file", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-owned-work-socket-"));
+	const socketPath = join(directory, "owned-work-canary.sock");
+	const linkPath = join(directory, "owned-work-canary-link.sock");
+	const server = createServer();
+	try {
+		await new Promise((resolve, reject) => {
+			server.once("error", reject);
+			server.listen(socketPath, resolve);
+		});
+		await chmod(socketPath, 0o660);
+		const identity = process.getuid();
+		const group = process.getgid();
+		assert.equal(await trustedOwnedWorkCanarySocket({
+			socketPath,
+			trustedRoot: directory,
+			expectedRootUid: identity,
+			expectedSocketUid: identity,
+			expectedSocketGid: group,
+		}), socketPath);
+
+		const mount = ownedWorkCanarySocketVolumeArguments(OWNED_WORK_CANARY_SOCKET_PATH);
+		assert.deepEqual(mount, [
+			"--volume",
+			`${OWNED_WORK_CANARY_SOCKET_PATH}:${OWNED_WORK_CANARY_SOCKET_PATH}:rw`,
+		]);
+		assert.equal(mount.join(" ").includes(`${join("/run/troublemaker-hostd", "computer-control")}:`), false);
+		const target = {
+			contextsDirectory: join(directory, "contexts"),
+			computer: { enabled: true },
+		};
+		const normalControlArgs = computerControlVolumeArguments(target, "operator:neutral", undefined);
+		assert.equal(normalControlArgs.includes("--volume"), true);
+		assert.equal(normalControlArgs.some((value) => value.endsWith(":/run/troublemaker-hostd/computer-control:ro")), true);
+		assert.deepEqual(
+			computerControlVolumeArguments(target, "operator:neutral", OWNED_WORK_CANARY_SOCKET_PATH),
+			[],
+			"the canary runtime receives no computer-control bind or computer-only shared memory",
+		);
+		assert.deepEqual(ownedWorkCanaryContainerEnvironment(
+			"/usr/bin/podman", OWNED_WORK_CANARY_SOCKET_PATH, 65_534, 65_534,
+		), {
+			TROUBLEMAKER_OWNED_WORK_CANARY_SOCKET_UID: "65534",
+			TROUBLEMAKER_OWNED_WORK_CANARY_SOCKET_GID: "65534",
+		});
+		const canaryEngineArgs = ownedWorkCanaryRuntimeEngineArguments(
+			"/usr/bin/podman", OWNED_WORK_CANARY_SOCKET_PATH,
+		);
+		assert.equal(canaryEngineArgs.includes("--userns=keep-id"), false);
+		assert.deepEqual(canaryEngineArgs.slice(-2), ["--group-add", "keep-groups"]);
+		assert.equal(canaryEngineArgs.includes("--network=slirp4netns:allow_host_loopback=true"), true);
+		assert.throws(
+			() => ownedWorkCanaryContainerEnvironment(
+				"/usr/bin/docker", OWNED_WORK_CANARY_SOCKET_PATH, 65_534, 65_534,
+			),
+			/requires rootless Podman/,
+		);
+		assert.equal(ownedWorkCanaryHostSocketGid(
+			{ TROUBLEMAKER_OWNED_WORK_CANARY_HOST_GID: "64001" }, [64001],
+		), 64001);
+		assert.throws(
+			() => ownedWorkCanaryHostSocketGid(
+				{ TROUBLEMAKER_OWNED_WORK_CANARY_HOST_GID: "64001" }, [],
+			),
+			/dedicated host group is unavailable/,
+			"an absent supplementary group fails before runtime launch",
+		);
+		assert.throws(
+			() => ownedWorkCanaryHostSocketGid(
+				{ TROUBLEMAKER_OWNED_WORK_CANARY_HOST_GID: String(process.getegid()) },
+				[process.getegid()],
+			),
+			/dedicated host group is unavailable/,
+			"the normal service group cannot substitute for a dedicated group",
+		);
+		assert.throws(
+			() => ownedWorkCanarySocketVolumeArguments("/run/troublemaker-hostd/computer-control"),
+			/differs from the fixed contract/,
+		);
+		await assert.rejects(trustedOwnedWorkCanarySocket({
+			socketPath,
+			trustedRoot: directory,
+			expectedRootUid: identity,
+			expectedSocketUid: identity,
+			expectedSocketGid: group + 1,
+		}), /custody is unsafe/);
+		await symlink(socketPath, linkPath);
+		await assert.rejects(trustedOwnedWorkCanarySocket({
+			socketPath: linkPath,
+			trustedRoot: directory,
+			expectedRootUid: identity,
+			expectedSocketUid: identity,
+			expectedSocketGid: group,
+		}), /not canonical/);
+		await chmod(directory, 0o770);
+		await assert.rejects(trustedOwnedWorkCanarySocket({
+			socketPath,
+			trustedRoot: directory,
+			expectedRootUid: identity,
+			expectedSocketUid: identity,
+			expectedSocketGid: group,
+		}), /ancestry is unsafe/);
+	} finally {
+		await new Promise((resolve) => server.close(resolve));
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("Zulip owned-work canary forwarding requires the exact durable delivery binding", async () => {
+	const candidateSha = "c".repeat(40);
+	const contextId = "operator:neutral:intake";
+	const nonce = "1".repeat(48);
+	const deliveryId = `zulip-canary:${nonce}`;
+	const message = {
+		id: -1,
+		type: "stream",
+		stream_id: 7,
+		subject: "neutral topic",
+		sender_id: 42,
+		sender_is_bot: true,
+		content: "@**Resident** neutral diagnostic request",
+	};
+	const authorization = {
+		version: 1,
+		nonce,
+		contextId,
+		deliveryId,
+		source: "zulip",
+		senderId: message.sender_id,
+		senderIsBot: message.sender_is_bot,
+		channelId: String(message.stream_id),
+		topic: message.subject,
+		bodySha256: createHash("sha256").update(message.content).digest("hex"),
+		phoneConfigSha256: "d".repeat(64),
+		phoneHoldStateSha256: "e".repeat(64),
+		expiresAt: new Date(Date.now() + 60_000).toISOString(),
+		candidateSha,
+		leaseSeconds: 5,
+		deadlineMs: 30_000,
+	};
+	const target = {
+		id: "operator",
+		inboundToken: "synthetic-inbound-secret",
+		outboundToken: "synthetic-outbound-secret",
+		hostGateway: "host.example",
+		runtimeVersion: `${candidateSha}-diagnostic`,
+	};
+	const issued = [];
+	const manager = new RuntimeManager({
+		server: { port: 3099 },
+		targetsById: new Map([[target.id, target]]),
+	}, {
+		issueZulipTopicCapability(value) { issued.push(value); },
+	}, {});
+	const event = {
+		id: deliveryId,
+		source: "zulip",
+		targetId: target.id,
+		contextId,
+		leaseToken: "lease-neutral",
+	};
+	const context = { contextId, zulipEndpoint: "http://127.0.0.1:32000/zulip/inbound" };
+	const originalFetch = globalThis.fetch;
+	let body;
+	globalThis.fetch = async (_input, init) => {
+		body = JSON.parse(String(init.body));
+		return new Response(JSON.stringify({ accepted: true }), { status: 202 });
+	};
+	try {
+		await manager.deliverZulipWebhook(target, context, event, { message, ownedWorkCanary: authorization });
+		assert.deepEqual(body.ownedWorkCanary, authorization);
+		assert.equal(body.deliveryId, deliveryId);
+		assert.equal(body.hostContextId, contextId);
+		assert.equal(issued.length, 1);
+		assert.throws(
+			() => validateOwnedWorkCanaryInput(
+				{ ...authorization, deliveryId: "wrong-delivery" },
+				{ event, message, targetRuntimeVersion: target.runtimeVersion },
+			),
+			/binding is invalid/,
+		);
+		await assert.rejects(
+			manager.deliverZulipWebhook(target, context, event, {
+				message: { ...message, content: `${message.content} changed` },
+				ownedWorkCanary: authorization,
+			}),
+			/binding is invalid/,
+		);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}

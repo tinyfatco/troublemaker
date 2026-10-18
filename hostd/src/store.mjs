@@ -419,6 +419,17 @@ export class HostStore {
 				UNIQUE (source, provider_message_id)
 			);
 
+			CREATE TABLE IF NOT EXISTS owned_work_canary_authorizations (
+				delivery_id TEXT PRIMARY KEY,
+				authorization_json TEXT NOT NULL UNIQUE,
+				lease_seconds INTEGER NOT NULL,
+				expires_at TEXT NOT NULL,
+				consumed_at TEXT,
+				consumed_by TEXT,
+				created_at TEXT NOT NULL,
+				FOREIGN KEY (delivery_id) REFERENCES events(id) ON DELETE CASCADE
+			);
+
 			CREATE TABLE IF NOT EXISTS scheduled_prompts (
 				context_id TEXT NOT NULL,
 				target_id TEXT NOT NULL,
@@ -4858,6 +4869,36 @@ export class HostStore {
 				return null;
 			}
 			const candidate = this.getEvent(row.id);
+			let selectedLeaseSeconds = leaseSeconds;
+			if (candidate?.source === "zulip" && candidate.payloadJson) {
+				let parsedPayload;
+				try {
+					parsedPayload = JSON.parse(candidate.payloadJson);
+				} catch {
+					throw new Error("event payload JSON is invalid");
+				}
+				const canary = parsedPayload?.ownedWorkCanary;
+				if (canary !== undefined) {
+					const authorization = this.database.prepare(`
+						SELECT authorization_json AS authorizationJson,
+							lease_seconds AS leaseSeconds, expires_at AS expiresAt,
+							consumed_at AS consumedAt, consumed_by AS consumedBy
+						FROM owned_work_canary_authorizations
+						WHERE delivery_id = ?
+					`).get(candidate.id);
+					if (
+						canary?.deliveryId !== candidate.id
+						|| !authorization?.consumedAt
+						|| authorization.consumedBy !== "root-coordinator-v1"
+						|| authorization.authorizationJson !== JSON.stringify(canary)
+						|| authorization.expiresAt <= timestamp
+						|| !Number.isInteger(authorization.leaseSeconds)
+						|| authorization.leaseSeconds < 3
+						|| authorization.leaseSeconds > 20
+					) throw new Error("owned-work canary lease authorization is not atomically consumed");
+					selectedLeaseSeconds = authorization.leaseSeconds;
+				}
+			}
 			let eventIds = [row.id];
 			if (
 				!row.append_to_running
@@ -4901,7 +4942,7 @@ export class HostStore {
 				).map((event) => event.id);
 				if (!eventIds.includes(row.id)) eventIds = [row.id];
 			}
-			const leaseExpiresAt = future(leaseSeconds);
+			const leaseExpiresAt = future(selectedLeaseSeconds);
 			const lease = this.database.prepare(`
 				UPDATE events SET status = 'leased', attempts = attempts + 1,
 					lease_token = ?, lease_expires_at = ?, last_error = NULL,

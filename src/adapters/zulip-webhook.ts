@@ -9,6 +9,14 @@ import * as log from "../log.js";
 import type { ChannelStore } from "../store.js";
 import { withHostReceipt, type HostDeliveryReceipt } from "./host-receipt.js";
 import {
+	createOwnedWorkCanaryBarrier,
+	ownedWorkCanarySocketOptionsFromEnvironment,
+	runOwnedWorkCanaryDelivery,
+	validateOwnedWorkCanaryAuthorization,
+	type OwnedWorkCanaryAuthorization,
+	type OwnedWorkCanaryBarrier,
+} from "./owned-work-canary.js";
+import {
 	currentZulipTopicDeliveryScope,
 	withZulipTopicDeliveryScope,
 	type ZulipTopicDeliveryScope,
@@ -400,8 +408,10 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			}
 			let payload: {
 				deliveryId?: string;
+				hostContextId?: string;
 				message?: ZulipMessage;
 				topicCapability?: ZulipTopicCapability;
+				ownedWorkCanary?: OwnedWorkCanaryAuthorization;
 				hostReceipt?: HostDeliveryReceipt;
 			};
 			try {
@@ -451,6 +461,34 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 				response.end("Unexpected Zulip topic capability");
 				return;
 			}
+			let ownedWorkCanary: OwnedWorkCanaryAuthorization | undefined;
+			if (payload.ownedWorkCanary) {
+				if (
+					message.type !== "stream"
+					|| typeof payload.deliveryId !== "string"
+					|| typeof payload.hostContextId !== "string"
+				) {
+					response.writeHead(400);
+					response.end("Invalid owned-work canary binding");
+					return;
+				}
+				try {
+					ownedWorkCanary = validateOwnedWorkCanaryAuthorization(payload.ownedWorkCanary, {
+						contextId: payload.hostContextId,
+						deliveryId: payload.deliveryId,
+						senderId: message.sender_id,
+						senderIsBot: message.sender_is_bot === true,
+						channelId: String(message.stream_id),
+						topic: message.subject,
+						body: message.content,
+						runtimeVersion: process.env.TROUBLEMAKER_RUNTIME_VERSION ?? "",
+					});
+				} catch {
+					response.writeHead(400);
+					response.end("Invalid owned-work canary authorization");
+					return;
+				}
+			}
 			let shouldProcess = true;
 			try {
 				if (payload.deliveryId) shouldProcess = this.deliveryLedger.claim(payload.deliveryId);
@@ -463,29 +501,62 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 				response.end("Unable to persist Zulip delivery claim");
 				return;
 			}
-			response.writeHead(202, { "content-type": "application/json" });
-			response.end(JSON.stringify({ ok: true, accepted: true }));
-			void withHostReceipt(payload.hostReceipt, async (receipt) => {
-				if (!shouldProcess) {
-					await receipt.markRunning();
-					return;
-				}
-				const deliveryChannel = message.type === "stream"
-					? String(message.stream_id)
-					: this.directChannelForMessage(message);
-				await this.withSerializedDelivery(deliveryChannel, async () => {
-					if (message.type !== "private" || this.directConversationIsInScope(message)) {
-						try {
-							await this.handleMessage(message, true, receipt.markRunning, topicCapability);
-						} finally {
-							if (topicCapability) await this.closeTopicCapability(topicCapability);
-						}
-					} else {
+			const acceptResponse = () => {
+				if (response.headersSent) return;
+				response.writeHead(202, { "content-type": "application/json" });
+				response.end(JSON.stringify({ ok: true, accepted: true }));
+			};
+			const processDelivery = (canaryBarrier?: OwnedWorkCanaryBarrier) => withHostReceipt(
+				payload.hostReceipt,
+				async (receipt) => {
+					if (!shouldProcess) {
 						await receipt.markRunning();
+						return;
 					}
-					if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
-				});
-			}, { deferRunning: true }).catch((error) => {
+					const deliveryChannel = message.type === "stream"
+						? String(message.stream_id)
+						: this.directChannelForMessage(message);
+					await this.withSerializedDelivery(deliveryChannel, async () => {
+						if (message.type !== "private" || this.directConversationIsInScope(message)) {
+							try {
+								await this.handleMessage(message, true, receipt.markRunning, topicCapability, canaryBarrier);
+							} finally {
+								await canaryBarrier?.dispose();
+								if (topicCapability) await this.closeTopicCapability(topicCapability);
+							}
+						} else {
+							await receipt.markRunning();
+						}
+						if (payload.deliveryId) this.deliveryLedger.complete(payload.deliveryId);
+					});
+				},
+				{ deferRunning: true },
+			);
+			if (ownedWorkCanary && shouldProcess) {
+				void (async () => {
+					let canaryBarrier: OwnedWorkCanaryBarrier | undefined;
+					try {
+						canaryBarrier = await createOwnedWorkCanaryBarrier(
+							ownedWorkCanary, ownedWorkCanarySocketOptionsFromEnvironment(),
+						);
+						await runOwnedWorkCanaryDelivery(
+							canaryBarrier,
+							() => processDelivery(canaryBarrier),
+							acceptResponse,
+						);
+					} catch (error) {
+						await canaryBarrier?.dispose();
+						if (!response.headersSent) {
+							response.writeHead(503);
+							response.end("Owned-work canary aborted");
+						}
+						log.logWarning("Zulip owned-work canary failed", error instanceof Error ? error.message : String(error));
+					}
+				})();
+				return;
+			}
+			acceptResponse();
+			void processDelivery().catch((error) => {
 				log.logWarning("Zulip webhook processing error", error instanceof Error ? error.message : String(error));
 			});
 		});
@@ -536,6 +607,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		awaitCompletion = false,
 		onAccepted?: () => void | Promise<void>,
 		topicCapability?: ZulipTopicCapability,
+		ownedWorkCanary?: OwnedWorkCanaryBarrier,
 	): Promise<void> {
 		const isDirect = message.type === "private";
 		const channel = isDirect
@@ -614,6 +686,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			replyTargetDescription,
 		};
 		if (!directlyAddressed) {
+			if (ownedWorkCanary) throw new Error("owned_work_canary_direct_address_required");
 			this.onAmbientMessage?.(channel, event, this);
 			await onAccepted?.();
 			return;
@@ -625,6 +698,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			queue: this.getQueue(channel),
 			awaitCompletion,
 			onAccepted,
+			ownedWorkCanary,
 			...(topicCapability ? {
 				runWork: (work: () => Promise<void>) => withZulipTopicDeliveryScope(topicCapability, work),
 			} : {}),

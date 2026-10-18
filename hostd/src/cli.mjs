@@ -13,6 +13,7 @@ import { createMcpEdgeServer } from "./mcp-edge-server.mjs";
 import { HostMcpOutboundProxy } from "./mcp-outbound.mjs";
 import { MetaContactExporter } from "./meta-contact.mjs";
 import { HostOpenAi } from "./openai.mjs";
+import { attestOwnedWorkCanaryPhoneHold } from "./owned-work-canary-hold.mjs";
 import { PhoneGateway } from "./phone.mjs";
 import { RocketChatGateway } from "./rocket-chat-gateway.mjs";
 import { RocketChatProvisioner } from "./rocket-chat.mjs";
@@ -215,6 +216,7 @@ async function components(configPath) {
 
 async function serve(configPath) {
 	const state = await components(configPath);
+	await attestOwnedWorkCanaryPhoneHold(configPath, state);
 	const server = createHostServer(state);
 	const webAppServer = state.config.webApp ? createWebAppServer(state) : undefined;
 	const mcpEdgeServer = state.config.mcp ? createMcpEdgeServer(state) : undefined;
