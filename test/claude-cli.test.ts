@@ -107,6 +107,7 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
   process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "fake-claude-model" }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", parent_tool_use_id: "toolu_nested", event: { type: "content_block_delta", delta: { type: "text_delta", text: "nested leak" } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } } }) + "\\n");
+  if (process.env.FAKE_CLAUDE_SPLIT_BLOCKS === "true") process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "from claude" } } }) + "\\n");
   process.stdout.write(JSON.stringify({
     type: "result",
@@ -304,6 +305,15 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	resetClaudeCliSession(workspaceDir);
 	await collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext);
 	assert.ok(readInvocations().at(-1)?.args.includes("--session-id"), "/clear session reset forces a fresh Claude session");
+
+	process.env.FAKE_CLAUDE_SPLIT_BLOCKS = "true";
+	const split = await collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext);
+	delete process.env.FAKE_CLAUDE_SPLIT_BLOCKS;
+	assert.deepEqual(
+		split.message.content.map((block) => block.type === "text" ? block.text : block.type),
+		["hello ", "from claude"],
+		"each Claude content block becomes its own text block so tool calls can sit between them",
+	);
 
 	console.log("claude-cli ok");
 } finally {
