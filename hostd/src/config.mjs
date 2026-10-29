@@ -757,6 +757,20 @@ function phoneApiAgentConfig(raw, environment) {
 			16,
 			8192,
 		),
+		catalogTtlSeconds: integer(
+			apiAgent.catalogTtlSeconds,
+			60,
+			"phone.apiAgent.catalogTtlSeconds",
+			5,
+			3600,
+		),
+		configNudgeTimeoutMs: integer(
+			apiAgent.configNudgeTimeoutMs,
+			10_000,
+			"phone.apiAgent.configNudgeTimeoutMs",
+			1000,
+			15_000,
+		),
 		pollIntervalSeconds: integer(
 			apiAgent.pollIntervalSeconds,
 			1,

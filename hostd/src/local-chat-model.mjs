@@ -46,7 +46,7 @@ function requestSignal(timeoutMs, signal) {
 	return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 }
 
-function validateCatalog(raw, maximumModels) {
+export function validateLocalModelCatalog(raw, maximumModels) {
 	if (!Array.isArray(raw?.data) || raw.data.length === 0 || raw.data.length > maximumModels) {
 		throw new LocalChatModelError("local_model_catalog_invalid", "local model catalog has an invalid size");
 	}
@@ -62,6 +62,9 @@ function validateCatalog(raw, maximumModels) {
 	});
 	if (new Set(models.map((model) => model.id)).size !== models.length) {
 		throw new LocalChatModelError("local_model_catalog_invalid", "local model catalog repeats an ID");
+	}
+	if (new Set(models.map((model) => model.name.toLocaleLowerCase("en-US"))).size !== models.length) {
+		throw new LocalChatModelError("local_model_catalog_invalid", "local model catalog repeats a name");
 	}
 	return Object.freeze(models);
 }
@@ -97,7 +100,7 @@ export class LocalChatModelGateway {
 				`local model catalog returned HTTP ${response.status}`,
 			);
 		}
-		return validateCatalog(
+		return validateLocalModelCatalog(
 			parseJson(responseBody, "local_model_catalog_invalid", "local model catalog was not JSON"),
 			catalog.maximumModels,
 		);

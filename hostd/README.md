@@ -672,12 +672,20 @@ those holds remain authoritative for the existing website-bot path.
 
 The two mode commands are case-insensitive:
 
-- `/config` switches that sender's durable session into model-advisor mode.
-  Luna reads the authenticated loopback gateway's current `/v1/models` catalog
-  and may select only one returned ID. Catalog `id`, `name`, and `about` fields
-  are supplied to Luna; static Hostd model lists are not used.
-- `/chat` switches the same durable session into chat mode. Hostd sends the
-  selected catalog ID as the Chat Completions `model` value.
+- `/config` switches that sender's durable session into model-advisor mode and
+  immediately sends Hostd-owned help from a short-TTL durable catalog cache.
+  The help shows the committed current selection plus every cached `name` and
+  one-line `about`; it never waits on Luna or the local gateway. Hostd refreshes
+  `/v1/models` in the background and retains the last validated copy when the
+  gateway is unavailable. Only after help is provider-accepted does Hostd try
+  one separately bounded Luna greeting; timeout or failure is silently skipped.
+- In config mode, an exact case-insensitive catalog `name` or `id` switches
+  deterministically without Luna. Fuzzy requests alone reach Luna, which may
+  select only one cached authenticated ID. Hostd owns all menu and switch
+  confirmations, so `(current)` always reflects committed state.
+- `/chat` switches the same durable session into chat mode. It receives a
+  deterministic Hostd confirmation, never enters model history, and Hostd sends
+  the selected catalog ID as the next Chat Completions `model` value.
 
 Each model change increments a durable model generation. Chat history includes
 only completed chat turns from that exact generation, so switching away and
@@ -690,9 +698,9 @@ replacement send. A second rejection fails closed, and ambiguous outcomes are
 never retried.
 
 The direct agent receives no tools. Its response does not enter a runtime and
-cannot call `send_message`. Hostd durably records the inbound turn, performs one
-bounded model request, records the model result, and then makes one direct
-provider attempt to the encrypted conversation recipient. Provider status
+cannot call `send_message`. Hostd durably records each inbound turn, records any bounded model result, and
+makes direct provider attempts only to the encrypted conversation recipient.
+Deterministic help, exact switches, and mode confirmations make no model call. Provider status
 webhooks update the same durable turn. STOP/opt-out and the existing direct-only,
 signature, relay, duplicate, and recipient-custody checks remain authoritative.
 
@@ -724,6 +732,8 @@ Synthetic configuration shape:
       "maximumHistoryMessages": 24,
       "maximumReplyCharacters": 1200,
       "maximumOutputTokens": 1024,
+      "catalogTtlSeconds": 60,
+      "configNudgeTimeoutMs": 10000,
       "pollIntervalSeconds": 1
     }
   }

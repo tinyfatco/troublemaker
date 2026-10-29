@@ -256,6 +256,8 @@ export class PhoneGateway {
 		this.currentFirstContactFlush = null;
 		this.apiAgentTimer = null;
 		this.currentApiAgentFlush = null;
+		this.currentApiAgentTurn = null;
+		this.currentApiAgentController = null;
 		this.stopped = true;
 	}
 
@@ -298,6 +300,7 @@ export class PhoneGateway {
 			this.firstContactTimer.unref();
 		}
 		if (this.apiAgent) {
+			this.apiAgent.refreshCatalogInBackground();
 			this.requestApiAgentFlush();
 			this.apiAgentTimer = setInterval(
 				() => this.requestApiAgentFlush(),
@@ -316,6 +319,7 @@ export class PhoneGateway {
 		this.firstContactTimer = null;
 		if (this.apiAgentTimer) clearInterval(this.apiAgentTimer);
 		this.apiAgentTimer = null;
+		if (this.currentApiAgentTurn?.isConfigNudge) this.currentApiAgentController?.abort();
 		await this.currentPoll;
 		await this.currentFirstContactFlush;
 		await this.currentApiAgentFlush;
@@ -502,6 +506,14 @@ export class PhoneGateway {
 		}
 	}
 
+	cancelConfigNudge(threadTarget) {
+		this.store.skipQueuedPhoneApiConfigNudges(threadTarget);
+		if (this.currentApiAgentTurn?.isConfigNudge
+			&& this.currentApiAgentTurn.threadTarget === threadTarget) {
+			this.currentApiAgentController?.abort();
+		}
+	}
+
 	requestApiAgentFlush() {
 		void this.flushApiAgent().catch((error) => {
 			console.error(
@@ -533,21 +545,33 @@ export class PhoneGateway {
 			});
 			if (turn) {
 				didWork = true;
+				const controller = new AbortController();
+				this.currentApiAgentTurn = turn;
+				this.currentApiAgentController = controller;
 				try {
-					const result = await this.apiAgent.complete(turn);
+					const result = await this.apiAgent.complete(turn, controller.signal);
 					this.store.completePhoneApiModel(turn.id, {
 						replyBody: result.reply,
 						selectedModel: result.selectedModel,
 						allowedModels: result.allowedModels,
 					});
 				} catch (error) {
-					this.store.failPhoneApiTurn(
-						turn.id,
-						["openai_result_uncertain", "local_model_result_uncertain"].includes(error?.code)
-							? "uncertain"
-							: "failed",
-						error instanceof Error ? error.message : String(error),
-					);
+					if (turn.isConfigNudge) {
+						this.store.skipPhoneApiTurn(turn.id);
+					} else {
+						this.store.failPhoneApiTurn(
+							turn.id,
+							["openai_result_uncertain", "local_model_result_uncertain"].includes(error?.code)
+								? "uncertain"
+								: "failed",
+							error instanceof Error ? error.message : String(error),
+						);
+					}
+				} finally {
+					if (this.currentApiAgentTurn?.id === turn.id) {
+						this.currentApiAgentTurn = null;
+						this.currentApiAgentController = null;
+					}
 				}
 			}
 			if (this.stopped) return;
@@ -557,10 +581,13 @@ export class PhoneGateway {
 				didWork = true;
 				try {
 					const receipt = await this.sendDirect(delivery, delivery.replyBody);
-					this.store.completePhoneApiSend(delivery.id, {
+					const completed = this.store.completePhoneApiSend(delivery.id, {
 						providerMessageId: receipt.providerMessageId,
 						providerStatus: receipt.status,
 					});
+					if (completed.isModeCommand && completed.mode === "config") {
+						this.apiAgent.refreshCatalogInBackground();
+					}
 				} catch (error) {
 					if (
 						error instanceof PhoneProviderComplianceError
@@ -670,6 +697,7 @@ export class PhoneGateway {
 				this.store.markSeen("phone-webhook", providerEventId, "ignored:opted_out");
 				return "ignored:opted_out";
 			}
+			this.cancelConfigNudge(conversation.threadTarget);
 			const command = text.trim().toLowerCase();
 			const modeCommand = command === "/config"
 				? "config"

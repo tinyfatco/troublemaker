@@ -502,6 +502,7 @@ export class HostStore {
 				context_id TEXT NOT NULL,
 				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
 				is_mode_command INTEGER NOT NULL DEFAULT 0 CHECK(is_mode_command IN (0, 1)),
+				is_config_nudge INTEGER NOT NULL DEFAULT 0 CHECK(is_config_nudge IN (0, 1)),
 				model TEXT,
 				model_generation INTEGER NOT NULL DEFAULT 1 CHECK(model_generation > 0),
 				inbound_body TEXT NOT NULL,
@@ -527,6 +528,12 @@ export class HostStore {
 
 			CREATE INDEX IF NOT EXISTS phone_api_turns_thread
 				ON phone_api_turns(thread_target, created_at, id);
+
+			CREATE TABLE IF NOT EXISTS phone_model_catalog_cache (
+				cache_key TEXT PRIMARY KEY CHECK(cache_key = 'local'),
+				catalog_json TEXT NOT NULL,
+				refreshed_at TEXT NOT NULL
+			);
 
 			CREATE TABLE IF NOT EXISTS relationship_funnels (
 				context_id TEXT PRIMARY KEY,
@@ -843,6 +850,7 @@ export class HostStore {
 		add("phone_api_sessions", "model_generation INTEGER NOT NULL DEFAULT 1");
 		add("phone_api_turns", "model_generation INTEGER NOT NULL DEFAULT 1");
 		add("phone_api_turns", "is_mode_command INTEGER NOT NULL DEFAULT 0 CHECK(is_mode_command IN (0, 1))");
+		add("phone_api_turns", "is_config_nudge INTEGER NOT NULL DEFAULT 0 CHECK(is_config_nudge IN (0, 1))");
 		this.database.prepare(`
 			UPDATE phone_api_turns SET is_mode_command = 1
 			WHERE is_mode_command = 0 AND LOWER(TRIM(inbound_body)) = '/chat'
@@ -2281,11 +2289,36 @@ export class HostStore {
 		`).get(threadTarget);
 	}
 
+	getPhoneModelCatalogCache() {
+		return this.database.prepare(`
+			SELECT catalog_json AS catalogJson, refreshed_at AS refreshedAt
+			FROM phone_model_catalog_cache WHERE cache_key = 'local'
+		`).get();
+	}
+
+	setPhoneModelCatalogCache(catalogJson, refreshedAt = now()) {
+		if (typeof catalogJson !== "string" || !catalogJson || catalogJson.length > 64 * 1024) {
+			throw new Error("phone model catalog cache is invalid");
+		}
+		if (typeof refreshedAt !== "string" || !Number.isFinite(Date.parse(refreshedAt))) {
+			throw new Error("phone model catalog cache timestamp is invalid");
+		}
+		this.database.prepare(`
+			INSERT INTO phone_model_catalog_cache(cache_key, catalog_json, refreshed_at)
+			VALUES ('local', ?, ?)
+			ON CONFLICT(cache_key) DO UPDATE SET
+				catalog_json = excluded.catalog_json,
+				refreshed_at = excluded.refreshed_at
+		`).run(catalogJson, refreshedAt);
+		return this.getPhoneModelCatalogCache();
+	}
+
 	getPhoneApiTurn(id) {
 		return this.database.prepare(`
 			SELECT id, provider_message_id AS providerMessageId,
 				thread_target AS threadTarget, target_id AS targetId, context_id AS contextId,
 				mode, is_mode_command AS isModeCommand,
+				is_config_nudge AS isConfigNudge,
 				model, model_generation AS modelGeneration, inbound_body AS inboundBody,
 				status, reply_body AS replyBody, selected_model AS selectedModel,
 				provider_reply_message_id AS providerReplyMessageId,
@@ -2346,7 +2379,7 @@ export class HostStore {
 			const session = this.getPhoneApiSession(threadTarget);
 			if (!session) throw new Error("phone API session was not created");
 			phoneModelId(session.selectedModel, "phone API selected model");
-			const isModeCommand = modeCommand === "chat" ? 1 : 0;
+			const isModeCommand = modeCommand ? 1 : 0;
 			const queuedModel = session.mode === "chat" ? session.selectedModel : null;
 			const inserted = this.database.prepare(`
 				INSERT INTO phone_api_turns(
@@ -2392,7 +2425,8 @@ export class HostStore {
 				WHERE status IN ('running', 'sending') AND lease_expires_at <= ?
 			`).run(timestamp, timestamp, timestamp);
 			const row = this.database.prepare(`
-				SELECT id, mode, is_mode_command AS isModeCommand, model AS queuedModel
+				SELECT id, mode, is_mode_command AS isModeCommand,
+					is_config_nudge AS isConfigNudge, model AS queuedModel
 				FROM phone_api_turns
 				WHERE status = 'queued'
 				ORDER BY created_at, id LIMIT 1
@@ -2413,7 +2447,8 @@ export class HostStore {
 			const turn = this.database.prepare(`
 				SELECT turn.id, turn.provider_message_id AS providerMessageId,
 					turn.thread_target AS threadTarget, turn.mode,
-					turn.is_mode_command AS isModeCommand, turn.model,
+					turn.is_mode_command AS isModeCommand,
+					turn.is_config_nudge AS isConfigNudge, turn.model,
 					turn.model_generation AS modelGeneration,
 					turn.inbound_body AS inboundBody, turn.status,
 					turn.target_id AS targetId, turn.context_id AS contextId,
@@ -2461,8 +2496,8 @@ export class HostStore {
 		try {
 			const turn = this.getPhoneApiTurn(id);
 			if (!turn || turn.status !== "running") throw new Error("phone API turn is no longer running");
-			if (selectedModel !== undefined && turn.mode !== "config") {
-				throw new Error("phone API chat turn cannot change the selected model");
+			if (selectedModel !== undefined && (turn.mode !== "config" || turn.isConfigNudge)) {
+				throw new Error("phone API turn cannot change the selected model");
 			}
 			const updated = this.database.prepare(`
 				UPDATE phone_api_turns SET status = 'model_ready', reply_body = ?,
@@ -2509,7 +2544,8 @@ export class HostStore {
 			const result = this.database.prepare(`
 				SELECT turn.id, turn.thread_target AS threadTarget,
 					turn.reply_body AS replyBody, turn.status, turn.mode,
-					turn.is_mode_command AS isModeCommand, turn.model,
+					turn.is_mode_command AS isModeCommand,
+					turn.is_config_nudge AS isConfigNudge, turn.model,
 					turn.inbound_body AS inboundBody, turn.last_error AS lastError,
 					conversation.provider, conversation.provider_thread_id AS providerThreadId,
 					conversation.principal_hash AS principalHash,
@@ -2557,14 +2593,64 @@ export class HostStore {
 
 	completePhoneApiSend(id, { providerMessageId, providerStatus }) {
 		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const updated = this.database.prepare(`
+				UPDATE phone_api_turns SET status = 'completed', provider_reply_message_id = ?,
+					provider_status = ?, lease_expires_at = NULL, last_error = NULL,
+					updated_at = ?, completed_at = ?
+				WHERE id = ? AND status = 'sending'
+			`).run(providerMessageId, providerStatus, timestamp, timestamp, id);
+			if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
+			const turn = this.getPhoneApiTurn(id);
+			if (turn.isModeCommand && turn.mode === "config") {
+				this.database.prepare(`
+					INSERT INTO phone_api_turns(
+						id, provider_message_id, thread_target, target_id, context_id,
+						mode, is_config_nudge, model, model_generation,
+						inbound_body, status, created_at, updated_at
+					) VALUES (?, ?, ?, ?, ?, 'config', 1, NULL, ?, 'config_nudge', 'queued', ?, ?)
+					ON CONFLICT(provider_message_id) DO NOTHING
+				`).run(
+					`${turn.id}:config-nudge`,
+					`${turn.providerMessageId}:config-nudge`,
+					turn.threadTarget,
+					turn.targetId,
+					turn.contextId,
+					turn.modelGeneration,
+					timestamp,
+					timestamp,
+				);
+			}
+			this.database.exec("COMMIT");
+			return turn;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	skipPhoneApiTurn(id) {
+		const timestamp = now();
 		const updated = this.database.prepare(`
-			UPDATE phone_api_turns SET status = 'completed', provider_reply_message_id = ?,
-				provider_status = ?, lease_expires_at = NULL, last_error = NULL,
+			UPDATE phone_api_turns SET status = 'completed', reply_body = NULL,
+				provider_status = 'skipped', lease_expires_at = NULL, last_error = NULL,
 				updated_at = ?, completed_at = ?
-			WHERE id = ? AND status = 'sending'
-		`).run(providerMessageId, providerStatus, timestamp, timestamp, id);
-		if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
+			WHERE id = ? AND status = 'running' AND is_config_nudge = 1
+		`).run(timestamp, timestamp, id);
+		if (updated.changes !== 1) throw new Error("phone API config nudge skip conflicted");
 		return this.getPhoneApiTurn(id);
+	}
+
+	skipQueuedPhoneApiConfigNudges(threadTarget) {
+		const timestamp = now();
+		return this.database.prepare(`
+			UPDATE phone_api_turns SET status = 'completed', reply_body = NULL,
+				provider_status = 'skipped', lease_expires_at = NULL, last_error = NULL,
+				updated_at = ?, completed_at = ?
+			WHERE thread_target = ? AND status IN ('queued', 'model_ready')
+				AND is_config_nudge = 1
+		`).run(timestamp, timestamp, threadTarget).changes;
 	}
 
 	failPhoneApiTurn(id, status, error) {

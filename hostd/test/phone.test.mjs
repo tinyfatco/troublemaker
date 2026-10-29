@@ -55,6 +55,9 @@ function subject(fetchImpl = async () => Response.json({
 		targetsById: new Map([[target.id, target]]),
 	};
 	const store = new HostStore(join(directory, "state.sqlite"));
+	if (phoneOverride?.apiAgent) {
+		store.setPhoneModelCatalogCache(JSON.stringify({ data: LOCAL_CATALOG }));
+	}
 	const router = new ContextRouter(config, store, routingKey);
 	let schedulerPumps = 0;
 	let notifierWakes = 0;
@@ -200,6 +203,8 @@ function apiPhone() {
 			maximumHistoryMessages: 24,
 			maximumReplyCharacters: 1200,
 			maximumOutputTokens: 512,
+			catalogTtlSeconds: 60,
+			configNudgeTimeoutMs: 1000,
 			pollIntervalSeconds: 1,
 		},
 	};
@@ -343,7 +348,7 @@ test("the exact feature flag grants a host-direct reply without clearing a runti
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-message-inbound").status, "completed");
 		assert.deepEqual(state.config.phone.deliveryHolds, [conversation.contextId]);
 		assert.equal(modelCalls, 1);
-		assert.equal(providerCalls, 1);
+		assert.equal(providerCalls, 2);
 	} finally {
 		state.close();
 	}
@@ -365,8 +370,7 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 			async completeDirectPhone(target, contextId, model, maximumOutputTokens, body) {
 				advisorCalls.push({ target, contextId, model, maximumOutputTokens, body });
 				return modelResponse(JSON.stringify({
-					reply: "Example Beta is selected for chat.",
-					selected_model: "example-beta",
+					reply: "Need a hand choosing?",
 				}), model);
 			},
 		},
@@ -385,23 +389,29 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 		const conversation = state.store.database.prepare(`
 			SELECT thread_target AS threadTarget FROM phone_conversations LIMIT 1
 		`).get();
+		const initialSession = state.store.getPhoneApiSession(conversation.threadTarget);
+		assert.equal(initialSession.selectedModel, "example-alpha");
+		assert.equal(initialSession.modelGeneration, 1);
+		assert.equal(advisorCalls.length, 1);
+		assert.equal(advisorCalls[0].model, "gpt-5.6-luna");
+		assert.equal(advisorCalls[0].maximumOutputTokens, 128);
+		assert.deepEqual(advisorCalls[0].body.tools, []);
+		assert.equal(advisorCalls[0].body.tool_choice, "none");
+		assert.match(advisorCalls[0].body.input[0].content[0].text, /optional follow-up/);
+		assert.match(providerSends[0].text, /^Config mode\. Current: Example Alpha\./);
+		assert.match(providerSends[0].text, /Example Alpha \(current\): Synthetic first catalog entry/);
+		assert.match(providerSends[0].text, /Example Beta: Synthetic second catalog entry/);
+		assert.equal(providerSends[1].text, "Need a hand choosing?");
+
+		const select = inbound({ id: "provider-message-select", text: "eXaMpLe BeTa" });
+		select.id = "provider-event-select";
+		assert.equal(await state.gateway.acceptWebhook(select), "phone_api_queued");
+		await state.gateway.flushApiAgent();
 		const configuredSession = state.store.getPhoneApiSession(conversation.threadTarget);
 		assert.equal(configuredSession.selectedModel, "example-beta");
 		assert.equal(configuredSession.modelGeneration, 2);
 		assert.equal(advisorCalls.length, 1);
-		assert.equal(advisorCalls[0].model, "gpt-5.6-luna");
-		assert.equal(advisorCalls[0].maximumOutputTokens, 512);
-		assert.deepEqual(advisorCalls[0].body.tools, []);
-		assert.equal(advisorCalls[0].body.tool_choice, "none");
-		assert.deepEqual(
-			advisorCalls[0].body.text.format.schema.properties.selected_model.anyOf[0].enum,
-			["example-alpha", "example-beta"],
-		);
-		const advisorPrompt = advisorCalls[0].body.input[0].content[0].text;
-		assert.match(advisorPrompt, /example-alpha \(Example Alpha\): Synthetic first catalog entry/);
-		assert.match(advisorPrompt, /example-beta \(Example Beta\): Synthetic second catalog entry/);
-		assert.doesNotMatch(advisorPrompt, /gpt-5\.6-sol/);
-		assert.equal(providerSends[0].text, "Example Beta is selected for chat.");
+		assert.equal(providerSends[2].text, "Switched to Example Beta. /chat to talk.");
 
 		const chat = inbound({ id: "provider-message-chat", text: "/chat" });
 		chat.id = "provider-event-chat";
@@ -409,7 +419,7 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 		await state.gateway.flushApiAgent();
 		assert.equal(advisorCalls.length, 1);
 		assert.equal(localCalls.length, 0);
-		assert.equal(providerSends[1].text, "Chat mode is on with Example Beta.");
+		assert.equal(providerSends[3].text, "Chat mode is on with Example Beta.");
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-message-chat").mode, "chat");
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-message-chat").isModeCommand, 1);
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-message-chat").model, "example-beta");
@@ -425,7 +435,194 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 			role: "user",
 			content: "Say hello from the selected model.",
 		}]);
-		assert.equal(providerSends[2].text, "Synthetic catalog chat reply.");
+		assert.equal(providerSends[4].text, "Synthetic catalog chat reply.");
+	} finally {
+		state.close();
+	}
+});
+
+test("config help uses a stale last-good catalog and precedes a failed Luna nudge", async () => {
+	const order = [];
+	const providerSends = [];
+	let advisorCalls = 0;
+	const state = subject(
+		async (_url, options) => {
+			order.push("provider");
+			providerSends.push(JSON.parse(options.body));
+			return Response.json({ id: `provider-stale-${providerSends.length}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone() {
+				advisorCalls += 1;
+				order.push("advisor");
+				throw new Error("synthetic Luna outage");
+			},
+		},
+		{
+			async listModels() {
+				order.push("refresh");
+				throw new Error("synthetic tunnel outage");
+			},
+			async complete() { throw new Error("chat completion must not run"); },
+		},
+	);
+	try {
+		state.store.setPhoneModelCatalogCache(
+			JSON.stringify({ data: LOCAL_CATALOG }),
+			"2000-01-01T00:00:00.000Z",
+		);
+		state.gateway.stopped = false;
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(providerSends.length, 1);
+		assert.match(providerSends[0].text, /^Config mode\. Current: Example Alpha\./);
+		assert.ok(order.indexOf("provider") < order.indexOf("advisor"));
+		assert.equal(advisorCalls, 1);
+		const help = state.store.getPhoneApiTurn("phone-api:provider-message-inbound");
+		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
+		assert.equal(help.status, "completed");
+		assert.equal(nudge.status, "completed");
+		assert.equal(nudge.providerStatus, "skipped");
+		assert.equal(nudge.providerReplyMessageId, null);
+	} finally {
+		state.close();
+	}
+});
+
+test("config help reaches the provider before a bounded Luna timeout and the timeout stays silent", async () => {
+	let firstProviderDelay;
+	let providerCalls = 0;
+	let startedAt;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			if (firstProviderDelay === undefined) firstProviderDelay = performance.now() - startedAt;
+			return Response.json({ id: `provider-timeout-${providerCalls}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _context, _model, _tokens, _body, signal) {
+				await new Promise((resolve, reject) => {
+					const hold = setTimeout(resolve, 1000);
+					signal.addEventListener("abort", () => {
+						clearTimeout(hold);
+						reject(signal.reason);
+					}, { once: true });
+				});
+			},
+		},
+		localGateway(),
+	);
+	try {
+		state.config.phone.apiAgent.configNudgeTimeoutMs = 25;
+		state.gateway.stopped = false;
+		startedAt = performance.now();
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.ok(firstProviderDelay < 200);
+		assert.equal(providerCalls, 1);
+		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
+		assert.equal(nudge.status, "completed");
+		assert.equal(nudge.providerStatus, "skipped");
+		assert.equal(nudge.lastError, null);
+	} finally {
+		state.close();
+	}
+});
+
+test("new config input preempts an optional Luna nudge before an exact switch", async () => {
+	let releaseHelp;
+	const helpSent = new Promise((resolve) => { releaseHelp = resolve; });
+	let releaseNudgeStart;
+	const nudgeStarted = new Promise((resolve) => { releaseNudgeStart = resolve; });
+	let providerCalls = 0;
+	let advisorCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			if (providerCalls === 1) releaseHelp();
+			return Response.json({ id: `provider-preempt-${providerCalls}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _context, _model, _tokens, _body, signal) {
+				advisorCalls += 1;
+				releaseNudgeStart();
+				await new Promise((resolve, reject) => {
+					const hold = setTimeout(resolve, 1000);
+					signal.addEventListener("abort", () => {
+						clearTimeout(hold);
+						reject(signal.reason);
+					}, { once: true });
+				});
+			},
+		},
+		localGateway(),
+	);
+	try {
+		state.config.phone.apiAgent.configNudgeTimeoutMs = 1000;
+		state.gateway.stopped = false;
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await helpSent;
+		await nudgeStarted;
+		const select = inbound({ id: "provider-preempt-select", text: "Example Beta" });
+		select.id = "provider-preempt-select-event";
+		assert.equal(await state.gateway.acceptWebhook(select), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(advisorCalls, 1);
+		assert.equal(providerCalls, 2);
+		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
+		assert.equal(nudge.status, "completed");
+		assert.equal(nudge.providerStatus, "skipped");
+		assert.equal(state.store.getPhoneApiSession(nudge.threadTarget).selectedModel, "example-beta");
+	} finally {
+		state.close();
+	}
+});
+
+test("only a fuzzy config request invokes Luna and a selected result gets a deterministic confirmation", async () => {
+	const advisorCalls = [];
+	const providerSends = [];
+	const state = subject(
+		async (_url, options) => {
+			providerSends.push(JSON.parse(options.body));
+			return Response.json({ id: `provider-fuzzy-${providerSends.length}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _context, model, _tokens, body) {
+				advisorCalls.push(body);
+				return advisorCalls.length === 1
+					? modelResponse(JSON.stringify({ reply: "Tell me what style you want." }), model)
+					: modelResponse(JSON.stringify({
+						reply: "Example Beta sounds right (current).",
+						selected_model: "example-beta",
+					}), model);
+			},
+		},
+		localGateway(),
+	);
+	try {
+		state.gateway.stopped = false;
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		const fuzzy = inbound({ id: "provider-fuzzy-choice", text: "I want the second synthetic personality" });
+		fuzzy.id = "provider-fuzzy-event";
+		assert.equal(await state.gateway.acceptWebhook(fuzzy), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(advisorCalls.length, 2);
+		assert.equal(advisorCalls[1].text.format.name, "phone_model_advice");
+		assert.equal(providerSends.at(-1).text, "Switched to Example Beta. /chat to talk.");
+		const session = state.store.database.prepare(`
+			SELECT selected_model AS selectedModel, model_generation AS modelGeneration
+			FROM phone_api_sessions LIMIT 1
+		`).get();
+		assert.deepEqual({ ...session }, { selectedModel: "example-beta", modelGeneration: 2 });
 	} finally {
 		state.close();
 	}
@@ -445,11 +642,7 @@ test("a model switch starts a new chat-history thread with no system prompt", as
 		{
 			async completeDirectPhone(_target, _contextId, model) {
 				advisorCalls += 1;
-				const selected = advisorCalls === 1 ? "example-beta" : "example-alpha";
-				return modelResponse(JSON.stringify({
-					reply: `${selected} selected.`,
-					selected_model: selected,
-				}), model);
+				return modelResponse(JSON.stringify({ reply: "Choose a model when ready." }), model);
 			},
 		},
 		localGateway(async (modelId, messages) => {
@@ -460,6 +653,10 @@ test("a model switch starts a new chat-history thread with no system prompt", as
 	try {
 		state.gateway.stopped = false;
 		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		const selectBeta = inbound({ id: "provider-select-beta", text: "example-beta" });
+		selectBeta.id = "event-select-beta";
+		assert.equal(await state.gateway.acceptWebhook(selectBeta), "phone_api_queued");
 		await state.gateway.flushApiAgent();
 		const first = inbound({ id: "provider-good-one", text: "/chat" });
 		first.id = "event-good-one";
@@ -485,6 +682,10 @@ test("a model switch starts a new chat-history thread with no system prompt", as
 		configureAlpha.id = "event-config-alpha";
 		assert.equal(await state.gateway.acceptWebhook(configureAlpha), "phone_api_queued");
 		await state.gateway.flushApiAgent();
+		const selectAlpha = inbound({ id: "provider-select-alpha", text: "Example Alpha" });
+		selectAlpha.id = "event-select-alpha";
+		assert.equal(await state.gateway.acceptWebhook(selectAlpha), "phone_api_queued");
+		await state.gateway.flushApiAgent();
 		const alpha = inbound({ id: "provider-alpha-chat", text: "/chat" });
 		alpha.id = "event-alpha-chat";
 		assert.equal(await state.gateway.acceptWebhook(alpha), "phone_api_queued");
@@ -504,6 +705,7 @@ test("a model switch starts a new chat-history thread with no system prompt", as
 			FROM phone_api_sessions LIMIT 1
 		`).get();
 		assert.deepEqual({ ...session }, { selectedModel: "example-alpha", modelGeneration: 3 });
+		assert.equal(advisorCalls, 2);
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-good-two").modelGeneration, 2);
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-alpha-chat").mode, "chat");
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-alpha-chat").isModeCommand, 1);
@@ -519,7 +721,7 @@ test("a definitive provider content rejection gets one carrier-safe local rewrit
 	const state = subject(
 		async (_url, options) => {
 			providerSends.push(JSON.parse(options.body));
-			if (providerSends.length === 3) {
+			if (providerSends.length === 5) {
 				return Response.json({
 					error: "compliance_blocked",
 					message: "Synthetic restricted content.",
@@ -555,6 +757,10 @@ test("a definitive provider content rejection gets one carrier-safe local rewrit
 		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
 		state.gateway.stopped = false;
 		await state.gateway.flushApiAgent();
+		const select = inbound({ id: "provider-message-compliance-select", text: "example-beta" });
+		select.id = "provider-event-compliance-select";
+		assert.equal(await state.gateway.acceptWebhook(select), "phone_api_queued");
+		await state.gateway.flushApiAgent();
 		const chat = inbound({ id: "provider-message-compliance", text: "/chat" });
 		chat.id = "provider-event-compliance";
 		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
@@ -564,18 +770,18 @@ test("a definitive provider content rejection gets one carrier-safe local rewrit
 		message.id = "provider-event-compliance-text";
 		assert.equal(await state.gateway.acceptWebhook(message), "phone_api_queued");
 		await state.gateway.flushApiAgent();
-		assert.equal(providerSends.length, 4);
+		assert.equal(providerSends.length, 6);
 		assert.equal(localCalls.length, 2);
 		assert.doesNotMatch(localCalls[0].messages[0].content, /carrier-safe|provider rejected the prior draft/i);
 		assert.match(localCalls[1].messages.at(-1).content, /Rewrite your answer.*carrier-safe SMS/i);
 		assert.equal(localCalls[1].messages.at(-1).role, "user");
 		assert.match(localCalls[1].messages.at(-1).content, /Rewrite your answer.*carrier-safe SMS/i);
-		assert.equal(providerSends[2].text, "A synthetic first draft rejected by the provider.");
-		assert.equal(providerSends[3].text, "A playful carrier-safe replacement.");
+		assert.equal(providerSends[4].text, "A synthetic first draft rejected by the provider.");
+		assert.equal(providerSends[5].text, "A playful carrier-safe replacement.");
 		const turn = state.store.getPhoneApiTurn("phone-api:provider-message-compliance-text");
 		assert.equal(turn.status, "completed");
 		assert.equal(turn.replyBody, "A playful carrier-safe replacement.");
-		assert.equal(turn.providerReplyMessageId, "provider-compliance-4");
+		assert.equal(turn.providerReplyMessageId, "provider-compliance-6");
 		assert.equal(turn.lastError, null);
 	} finally {
 		state.close();
@@ -588,7 +794,7 @@ test("a second provider content rejection fails closed without a third send", as
 	const state = subject(
 		async () => {
 			providerCalls += 1;
-			if (providerCalls <= 2) {
+			if (providerCalls <= 4) {
 				return Response.json({ id: `provider-setup-${providerCalls}`, status: "queued" });
 			}
 			return Response.json({
@@ -622,6 +828,10 @@ test("a second provider content rejection fails closed without a third send", as
 		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
 		state.gateway.stopped = false;
 		await state.gateway.flushApiAgent();
+		const select = inbound({ id: "provider-message-compliance-twice-select", text: "Example Beta" });
+		select.id = "provider-event-compliance-twice-select";
+		assert.equal(await state.gateway.acceptWebhook(select), "phone_api_queued");
+		await state.gateway.flushApiAgent();
 		const chat = inbound({ id: "provider-message-compliance-twice", text: "/chat" });
 		chat.id = "provider-event-compliance-twice";
 		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
@@ -631,13 +841,13 @@ test("a second provider content rejection fails closed without a third send", as
 		message.id = "provider-event-compliance-twice-text";
 		assert.equal(await state.gateway.acceptWebhook(message), "phone_api_queued");
 		await state.gateway.flushApiAgent();
-		assert.equal(providerCalls, 4);
+		assert.equal(providerCalls, 6);
 		assert.equal(localCalls, 2);
 		const turn = state.store.getPhoneApiTurn("phone-api:provider-message-compliance-twice-text");
 		assert.equal(turn.status, "failed");
 		assert.match(turn.lastError, /compliance_blocked\/SHAFT_CONTENT_DETECTED\/alcohol/);
 		await state.gateway.flushApiAgent();
-		assert.equal(providerCalls, 4);
+		assert.equal(providerCalls, 6);
 	} finally {
 		state.close();
 	}

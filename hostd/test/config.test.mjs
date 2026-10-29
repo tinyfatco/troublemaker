@@ -532,6 +532,8 @@ test("loads a direct phone API feature with one authenticated dynamic catalog", 
 			maximumHistoryMessages: 18,
 			maximumReplyCharacters: 900,
 			maximumOutputTokens: 512,
+			catalogTtlSeconds: 60,
+			configNudgeTimeoutMs: 10_000,
 			pollIntervalSeconds: 2,
 		};
 		await writeFile(path, JSON.stringify(raw));
@@ -604,6 +606,16 @@ test("rejects unsafe or legacy phone model catalog configuration", async () => {
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be a local catalog model ID/);
 
 		raw.phone.apiAgent.defaultModel = "example-alpha";
+		raw.phone.apiAgent.catalogTtlSeconds = 4;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /catalogTtlSeconds must be an integer from 5 to 3600/);
+
+		raw.phone.apiAgent.catalogTtlSeconds = 60;
+		raw.phone.apiAgent.configNudgeTimeoutMs = 15_001;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /configNudgeTimeoutMs must be an integer from 1000 to 15000/);
+
+		raw.phone.apiAgent.configNudgeTimeoutMs = 10_000;
 		raw.phone.apiAgent.localModels = [];
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /must use localCatalog/);

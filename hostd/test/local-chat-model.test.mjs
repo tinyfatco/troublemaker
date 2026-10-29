@@ -84,6 +84,18 @@ test("local catalog and chat fail closed on malformed identity, prompts, bounds,
 		(error) => error?.code === "local_model_catalog_invalid",
 	);
 
+	const duplicateName = new LocalChatModelGateway({
+		config: config(),
+		fetchImpl: async () => catalogResponse([
+			{ id: "example-alpha", name: "Same Name", about: "First" },
+			{ id: "example-beta", name: "same name", about: "Second" },
+		]),
+	});
+	await assert.rejects(
+		duplicateName.listModels(),
+		(error) => error?.code === "local_model_catalog_invalid",
+	);
+
 	const mismatch = new LocalChatModelGateway({
 		config: config(),
 		fetchImpl: async (url) => url.endsWith("/models")
