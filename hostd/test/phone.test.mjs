@@ -18,7 +18,7 @@ function subject(fetchImpl = async () => Response.json({
 	id: "provider-message-outbound",
 	status: "queued",
 	message_format: "sms",
-}), phoneOverride, firstContact, openAiGateway) {
+}), phoneOverride, firstContact, openAiGateway, localChatGateway) {
 	const directory = mkdtempSync(join(tmpdir(), "hostd-phone-"));
 	const routingKey = Buffer.alloc(32, 7);
 	const target = {
@@ -63,6 +63,7 @@ function subject(fetchImpl = async () => Response.json({
 		controlNotifier: { wake: () => { notifierWakes += 1; } },
 		firstContact,
 		openAiGateway,
+		localChatGateway,
 		fetchImpl,
 	});
 	return {
@@ -180,6 +181,7 @@ function apiPhone() {
 		},
 		apiAgent: {
 			featureSenders: [CONTACT_NUMBER],
+			localModels: [],
 			advisorModel: "gpt-5.6-luna",
 			defaultModel: "gpt-5.6-luna",
 			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol"],
@@ -189,6 +191,23 @@ function apiPhone() {
 			pollIntervalSeconds: 1,
 		},
 	};
+}
+
+function localApiPhone() {
+	const phone = apiPhone();
+	phone.apiAgent.allowedModels.push("example-local");
+	phone.apiAgent.localModels.push({
+		id: "example-local",
+		displayName: "Example Local",
+		providerModel: "example/local-model",
+		baseUrl: "http://127.0.0.1:19043/v1",
+		apiKey: "synthetic-local-gateway-token-at-least-32-bytes",
+		maximumOutputTokens: 150,
+		repetitionPenalty: 1.1,
+		requestTimeoutMs: 60_000,
+		maximumRequestBytes: 64 * 1024,
+	});
+	return phone;
 }
 
 function modelResponse(output, model = "gpt-5.6-luna") {
@@ -411,6 +430,70 @@ test("config and chat modes use approved models and send directly from Hostd", a
 		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
 		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns WHERE status = 'completed'").get().count, 2);
 		assert.deepEqual(state.counts(), { schedulerPumps: 0, notifierWakes: 0 });
+	} finally {
+		state.close();
+	}
+});
+
+test("config selects Example Local and chat uses only the bounded local gateway", async () => {
+	const hostedCalls = [];
+	const localCalls = [];
+	const providerSends = [];
+	const state = subject(
+		async (_url, options) => {
+			providerSends.push(JSON.parse(options.body));
+			return Response.json({ id: `provider-local-${providerSends.length}`, status: "queued" });
+		},
+		localApiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model, _maximumOutputTokens, body) {
+				hostedCalls.push({ model, body });
+				return modelResponse(JSON.stringify({
+					reply: "Example Local is selected for chat.",
+					selected_model: "example-local",
+				}), model);
+			},
+		},
+		{
+			has(modelId) { return modelId === "example-local"; },
+			async complete(modelId, messages) {
+				localCalls.push({ modelId, messages });
+				return "Example local model is on the line.";
+			},
+		},
+	);
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+		const conversation = state.store.database.prepare(`
+			SELECT thread_target AS threadTarget FROM phone_conversations LIMIT 1
+		`).get();
+		assert.equal(state.store.getPhoneApiSession(conversation.threadTarget).selectedModel, "example-local");
+		assert.equal(hostedCalls.length, 1);
+		assert.equal(
+			hostedCalls[0].body.input.some((entry) => JSON.stringify(entry).includes("Example Local")),
+			true,
+		);
+		assert.equal(providerSends[0].text, "Example Local is selected for chat.");
+
+		const chat = inbound({ id: "provider-message-local-chat", text: "/chat" });
+		chat.id = "provider-event-local-chat";
+		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(hostedCalls.length, 1);
+		assert.equal(localCalls.length, 1);
+		assert.equal(localCalls[0].modelId, "example-local");
+		assert.equal(localCalls[0].messages[0].role, "system");
+		assert.match(localCalls[0].messages[0].content, /Example Local/);
+		assert.equal(providerSends[1].text, "Example local model is on the line.");
+		assert.equal(
+			state.store.getPhoneApiTurn("phone-api:provider-message-local-chat").model,
+			"example-local",
+		);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM events").get().count, 0);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
 	} finally {
 		state.close();
 	}

@@ -20,6 +20,17 @@ function future(seconds) {
 	return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+function approvedPhoneModel(modelId, allowedModels, label) {
+	if (typeof modelId !== "string" || !modelId || modelId.length > 200
+		|| /[\u0000-\u001f\u007f]/u.test(modelId)) {
+		throw new Error(`${label} is invalid`);
+	}
+	if (!Array.isArray(allowedModels) || !allowedModels.includes(modelId)) {
+		throw new Error(`${label} is not approved`);
+	}
+	return modelId;
+}
+
 export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"routes",
 	"mcp_handoffs",
@@ -2276,11 +2287,12 @@ export class HostStore {
 		modeCommand,
 		inboundBody,
 		defaultModel,
+		allowedModels,
 	}) {
 		if (modeCommand !== undefined && !["config", "chat"].includes(modeCommand)) {
 			throw new Error("phone API mode command is invalid");
 		}
-		requireHostdOpenAiModel(defaultModel, "phone API default model");
+		approvedPhoneModel(defaultModel, allowedModels, "phone API default model");
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -2346,8 +2358,8 @@ export class HostStore {
 		}
 	}
 
-	claimPhoneApiTurn({ advisorModel, leaseSeconds }) {
-		requireHostdOpenAiModel(advisorModel, "phone API advisor model");
+	claimPhoneApiTurn({ advisorModel, allowedModels, leaseSeconds }) {
+		approvedPhoneModel(advisorModel, allowedModels, "phone API advisor model");
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -2369,7 +2381,7 @@ export class HostStore {
 				return undefined;
 			}
 			const model = row.mode === "config" ? advisorModel : row.selectedModel;
-			requireHostdOpenAiModel(model, "phone API selected model");
+			approvedPhoneModel(model, allowedModels, "phone API selected model");
 			const claimed = this.database.prepare(`
 				UPDATE phone_api_turns SET status = 'running', model = ?,
 					lease_expires_at = ?, updated_at = ?
@@ -2411,9 +2423,9 @@ export class HostStore {
 		])).slice(-maximumMessages);
 	}
 
-	completePhoneApiModel(id, { replyBody, selectedModel }) {
+	completePhoneApiModel(id, { replyBody, selectedModel, allowedModels }) {
 		if (selectedModel !== undefined) {
-			requireHostdOpenAiModel(selectedModel, "phone API selected model");
+			approvedPhoneModel(selectedModel, allowedModels, "phone API selected model");
 		}
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");

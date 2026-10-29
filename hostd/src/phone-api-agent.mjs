@@ -1,3 +1,4 @@
+import { LocalChatModelGateway } from "./local-chat-model.mjs";
 import { requireHostdOpenAiModel } from "./openai-models.mjs";
 
 const MAXIMUM_STREAM_BYTES = 2 * 1024 * 1024;
@@ -96,13 +97,19 @@ function configFormat(allowedModels) {
 	};
 }
 
+function displayName(config, modelId) {
+	return config.localModels.find((model) => model.id === modelId)?.displayName ?? modelId;
+}
+
 function systemPrompt(config, turn, selectedModel) {
-	const allowed = config.allowedModels.join(", ");
+	const allowed = config.allowedModels
+		.map((modelId) => `${modelId} (${displayName(config, modelId)})`)
+		.join(", ");
 	if (turn.mode === "config") {
 		return [
 			"You are Luna, TinyFat's model-selection advisor over SMS.",
-			`The only approved models are: ${allowed}.`,
-			`The currently selected chat model is ${selectedModel}.`,
+			`The only approved model IDs and names are: ${allowed}.`,
+			`The currently selected chat model is ${selectedModel} (${displayName(config, selectedModel)}).`,
 			"Luna is the economical default for normal conversation. Sol is the deeper, more expensive option for work that genuinely benefits from it.",
 			"Give concise, accurate advice in plain text suitable for SMS.",
 			`Keep the reply within ${config.maximumReplyCharacters} characters.`,
@@ -111,7 +118,7 @@ function systemPrompt(config, turn, selectedModel) {
 		].join("\n");
 	}
 	return [
-		"You are Luna, a concise conversational agent replying over SMS.",
+		`You are ${displayName(config, turn.model)}, a concise conversational agent replying over SMS.`,
 		`This turn uses the sender's approved model selection: ${turn.model}.`,
 		"Stay within the current conversation. You have no tools and cannot contact another number or agent.",
 		`Keep the reply within ${config.maximumReplyCharacters} characters.`,
@@ -120,10 +127,11 @@ function systemPrompt(config, turn, selectedModel) {
 }
 
 export class PhoneApiAgent {
-	constructor({ config, store, openAiGateway }) {
+	constructor({ config, store, openAiGateway, localChatGateway }) {
 		this.config = config;
 		this.store = store;
 		this.openAiGateway = openAiGateway;
+		this.localChatGateway = localChatGateway ?? new LocalChatModelGateway({ config });
 	}
 
 	async complete(turn, signal) {
@@ -139,36 +147,46 @@ export class PhoneApiAgent {
 			turn.threadTarget,
 			policy.maximumHistoryMessages,
 		);
-		const model = requireHostdOpenAiModel(turn.model, "phone API turn model");
-		const body = {
-			model: model.id,
-			input: [
-				inputText("developer", systemPrompt(policy, turn, session.selectedModel)),
-				...history.map((message) => inputText(message.role, message.body)),
-				inputText("user", commandInput(turn.mode, turn.inboundBody)),
-			],
-			stream: true,
-			store: false,
-			prompt_cache_key: `phone-api-agent-v1:${turn.mode}`,
-			max_output_tokens: policy.maximumOutputTokens,
-			reasoning: { effort: model.thinking },
-			service_tier: "default",
-			tools: [],
-			tool_choice: "none",
-			parallel_tool_calls: false,
-			text: turn.mode === "config"
-				? configFormat(policy.allowedModels)
-				: { format: { type: "text" } },
-		};
-		const response = await this.openAiGateway.completeDirectPhone(
-			target,
-			turn.contextId,
-			turn.model,
-			policy.maximumOutputTokens,
-			body,
-			signal,
-		);
-		const output = await collectOutputText(response);
+		const prompt = systemPrompt(policy, turn, session.selectedModel);
+		let output;
+		if (turn.mode === "chat" && this.localChatGateway.has(turn.model)) {
+			output = await this.localChatGateway.complete(turn.model, [
+				{ role: "system", content: prompt },
+				...history.map((message) => ({ role: message.role, content: message.body })),
+				{ role: "user", content: commandInput(turn.mode, turn.inboundBody) },
+			], signal);
+		} else {
+			const model = requireHostdOpenAiModel(turn.model, "phone API turn model");
+			const body = {
+				model: model.id,
+				input: [
+					inputText("developer", prompt),
+					...history.map((message) => inputText(message.role, message.body)),
+					inputText("user", commandInput(turn.mode, turn.inboundBody)),
+				],
+				stream: true,
+				store: false,
+				prompt_cache_key: `phone-api-agent-v1:${turn.mode}`,
+				max_output_tokens: policy.maximumOutputTokens,
+				reasoning: { effort: model.thinking },
+				service_tier: "default",
+				tools: [],
+				tool_choice: "none",
+				parallel_tool_calls: false,
+				text: turn.mode === "config"
+					? configFormat(policy.allowedModels)
+					: { format: { type: "text" } },
+			};
+			const response = await this.openAiGateway.completeDirectPhone(
+				target,
+				turn.contextId,
+				turn.model,
+				policy.maximumOutputTokens,
+				body,
+				signal,
+			);
+			output = await collectOutputText(response);
+		}
 		if (turn.mode === "config") {
 			let result;
 			try {

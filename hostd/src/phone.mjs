@@ -203,6 +203,7 @@ export class PhoneGateway {
 		controlNotifier,
 		firstContact,
 		openAiGateway,
+		localChatGateway,
 		fetchImpl = fetch,
 	}) {
 		this.config = config;
@@ -215,7 +216,7 @@ export class PhoneGateway {
 		this.fetch = fetchImpl;
 		this.provider = new SendlyDirectProvider(config.phone, { fetchImpl });
 		this.apiAgent = config.phone.apiAgent
-			? new PhoneApiAgent({ config, store, openAiGateway })
+			? new PhoneApiAgent({ config, store, openAiGateway, localChatGateway })
 			: undefined;
 		this.server = null;
 		this.pollTimer = null;
@@ -497,6 +498,7 @@ export class PhoneGateway {
 			let didWork = false;
 			const turn = this.store.claimPhoneApiTurn({
 				advisorModel: this.config.phone.apiAgent.advisorModel,
+				allowedModels: this.config.phone.apiAgent.allowedModels,
 				leaseSeconds: modelLeaseSeconds,
 			});
 			if (turn) {
@@ -506,11 +508,14 @@ export class PhoneGateway {
 					this.store.completePhoneApiModel(turn.id, {
 						replyBody: result.reply,
 						selectedModel: result.selectedModel,
+						allowedModels: this.config.phone.apiAgent.allowedModels,
 					});
 				} catch (error) {
 					this.store.failPhoneApiTurn(
 						turn.id,
-						error?.code === "openai_result_uncertain" ? "uncertain" : "failed",
+						["openai_result_uncertain", "local_model_result_uncertain"].includes(error?.code)
+							? "uncertain"
+							: "failed",
 						error instanceof Error ? error.message : String(error),
 					);
 				}
@@ -619,6 +624,7 @@ export class PhoneGateway {
 				modeCommand,
 				inboundBody: text,
 				defaultModel: this.config.phone.apiAgent.defaultModel,
+				allowedModels: this.config.phone.apiAgent.allowedModels,
 			});
 			this.store.markSeen("phone-webhook", providerEventId, "phone_api_queued");
 			if (!this.stopped) this.requestApiAgentFlush();

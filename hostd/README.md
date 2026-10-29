@@ -675,17 +675,27 @@ The two mode commands are case-insensitive:
 - `/config` switches that sender's durable session into model-advisor mode.
   The advisor always runs on the configured Luna model and may select only one
   of `allowedModels` when the sender clearly chooses it.
-- `/chat` switches the same durable session into chat mode. The same Luna agent
-  identity answers with the selected approved model.
+- `/chat` switches the same durable session into chat mode. The selected
+  approved hosted or local model answers inside that same exact phone session.
 
-The direct agent receives an empty tool list. Its response does not enter a
-runtime and cannot call `send_message`. Hostd durably records the inbound turn,
-performs one spend- and concurrency-bounded model request, records the model
-result, and then makes one direct provider attempt to the encrypted conversation
+The direct agent receives no tools. Its response does not enter a runtime and
+cannot call `send_message`. Hostd durably records the inbound turn, performs one
+bounded model request, records the model result, and then makes one direct
+provider attempt to the encrypted conversation
 recipient. A stale model/send lease or ambiguous provider result becomes
 `uncertain` and is never retried automatically. Provider status webhooks update
 the same durable turn. STOP/opt-out and the existing direct-only, signature,
 relay, duplicate, and recipient-custody checks remain authoritative.
+
+Optional `localModels` remain narrower than hosted models. Each local gateway
+must be exact loopback HTTP at `/v1`, authenticate with a host-owned environment
+secret, use one pinned provider model, cap requests at 64 KB and output at 400
+tokens or less, and return the exact pinned model identity. Hostd sends only a
+non-streaming Chat Completions request with system/user/assistant text, no tool
+definitions, and no caller-selected URL, credential, provider model, or output
+bound. Transport ambiguity is terminal and never retried automatically. Reach a
+remote loopback gateway only through a separately protected encrypted tunnel;
+never widen the gateway listener.
 
 Synthetic configuration shape:
 
@@ -696,7 +706,20 @@ Synthetic configuration shape:
       "featureSenders": ["+15555550123", "+15555550124"],
       "advisorModel": "gpt-5.6-luna",
       "defaultModel": "gpt-5.6-luna",
-      "allowedModels": ["gpt-5.6-luna", "gpt-5.6-sol"],
+      "allowedModels": ["gpt-5.6-luna", "gpt-5.6-sol", "example-local"],
+      "localModels": [
+        {
+          "id": "example-local",
+          "displayName": "Example Local",
+          "providerModel": "example/local-model",
+          "baseUrl": "http://127.0.0.1:19043/v1",
+          "apiKeyEnv": "EXAMPLE_LOCAL_MODEL_TOKEN",
+          "maximumOutputTokens": 150,
+          "repetitionPenalty": 1.1,
+          "requestTimeoutMs": 60000,
+          "maximumRequestBytes": 65536
+        }
+      ],
       "maximumHistoryMessages": 24,
       "maximumReplyCharacters": 1200,
       "maximumOutputTokens": 1024,
@@ -706,9 +729,10 @@ Synthetic configuration shape:
 }
 ```
 
-Keep the real `featureSenders` values only in protected host configuration. A
-feature sender may use only this one API-agent conversation; the mode commands
-do not select another phone number, agent, runtime, or Hostd target.
+Keep real `featureSenders`, gateway coordinates, and gateway tokens only in
+protected host configuration. A feature sender may use only this one API-agent
+conversation; the mode commands do not select another phone number, agent,
+runtime, URL, credential, or Hostd target.
 
 ## Website chat relay
 

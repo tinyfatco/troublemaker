@@ -20,6 +20,7 @@ const ENVIRONMENT = {
 	CLOUDFLARE_WORKERS_AI_API_TOKEN: "test-cloudflare-workers-ai-token",
 	CLOUDFLARE_ACCOUNT_ANALYTICS_TOKEN: "test-cloudflare-account-analytics-token",
 	OPENAI_ORGANIZATION_API_KEY: "test-openai-organization-api-key",
+	EXAMPLE_LOCAL_MODEL_TOKEN: "synthetic-local-gateway-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_TOKEN: "test-landing-chat-relay-token-at-least-32-bytes",
 	LANDING_CHAT_RELAY_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64"),
 	TROUBLEMAKER_HOSTD_WEB_APP_SECRET: "test-web-app-secret-at-least-32-bytes",
@@ -516,6 +517,7 @@ test("loads a direct phone API feature flag only with exact senders and approved
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.phone.apiAgent = {
 			featureSenders: ["+15555550123", "+15555550124"],
+			localModels: [],
 			advisorModel: "gpt-5.6-luna",
 			defaultModel: "gpt-5.6-luna",
 			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol"],
@@ -548,6 +550,68 @@ test("loads a direct phone API feature flag only with exact senders and approved
 		delete raw.openAi;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /requires top-level openAi/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("loads one authenticated loopback-only local phone model", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-local-phone-model-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.phone.apiAgent = {
+			featureSenders: ["+15555550123", "+15555550124"],
+			advisorModel: "gpt-5.6-luna",
+			defaultModel: "gpt-5.6-luna",
+			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol", "example-local"],
+			localModels: [{
+				id: "example-local",
+				displayName: "Example Local",
+				providerModel: "example/local-model",
+				baseUrl: "http://127.0.0.1:19043/v1",
+				apiKeyEnv: "EXAMPLE_LOCAL_MODEL_TOKEN",
+				maximumOutputTokens: 150,
+				repetitionPenalty: 1.1,
+				requestTimeoutMs: 60_000,
+				maximumRequestBytes: 64 * 1024,
+			}],
+		};
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.deepEqual(config.phone.apiAgent.allowedModels, raw.phone.apiAgent.allowedModels);
+		assert.deepEqual(config.phone.apiAgent.localModels, [{
+			id: "example-local",
+			displayName: "Example Local",
+			providerModel: "example/local-model",
+			baseUrl: "http://127.0.0.1:19043/v1",
+			apiKey: ENVIRONMENT.EXAMPLE_LOCAL_MODEL_TOKEN,
+			maximumOutputTokens: 150,
+			repetitionPenalty: 1.1,
+			requestTimeoutMs: 60_000,
+			maximumRequestBytes: 64 * 1024,
+		}]);
+
+		raw.phone.apiAgent.localModels[0].baseUrl = "http://192.0.2.10:19043/v1";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be exact loopback HTTP/);
+
+		raw.phone.apiAgent.localModels[0].baseUrl = "http://127.0.0.1:19043/v1";
+		raw.phone.apiAgent.localModels[0].maximumOutputTokens = 401;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /maximumOutputTokens must be an integer from 16 to 400/);
+
+		raw.phone.apiAgent.localModels[0].maximumOutputTokens = 150;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, { ...ENVIRONMENT, EXAMPLE_LOCAL_MODEL_TOKEN: undefined }),
+			/references unavailable environment variable EXAMPLE_LOCAL_MODEL_TOKEN/,
+		);
+
+		raw.phone.apiAgent.localModels[0].id = "gpt-5.6-luna";
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /distinct local model ID/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
