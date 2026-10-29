@@ -268,9 +268,41 @@ export class HostOpenAi {
 		if (!model || selected.thinking !== model.thinking) {
 			throw new OpenAiError(403, "openai_context_denied");
 		}
+		return this.#completePinned(
+			target,
+			contextId,
+			model,
+			selected.maximumOutputTokens,
+			body,
+			signal,
+		);
+	}
+
+	async completeDirectPhone(target, contextId, modelId, maximumOutputTokens, body, signal) {
+		const route = this.store.getRouteForContext(contextId);
+		if (
+			!route
+			|| route.source !== "phone"
+			|| route.targetId !== target.id
+			|| route.contextId !== contextId
+		) {
+			throw new OpenAiError(403, "openai_context_denied");
+		}
+		const model = requireHostdOpenAiModel(modelId, "direct phone OpenAI model");
+		return this.#completePinned(
+			target,
+			contextId,
+			model,
+			maximumOutputTokens,
+			body,
+			signal,
+		);
+	}
+
+	async #completePinned(target, contextId, model, maximumOutputTokens, body, signal) {
 		const requestModel = {
 			...model,
-			maximumOutputTokens: selected.maximumOutputTokens,
+			maximumOutputTokens,
 		};
 		const input = validateAndPinBody(body, requestModel);
 		if (typeof input.prompt_cache_key === "string" && input.prompt_cache_key) {

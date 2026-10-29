@@ -122,6 +122,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		provider: "sendly",
 		directOnly: true,
 		deliveryHolds: [],
+		apiAgent: undefined,
 		senderAddress: "+15555550100",
 		webhookSecret: "test-phone-webhook-secret-at-least-24-bytes",
 		apiKey: "test-phone-api-key",
@@ -502,6 +503,51 @@ test("loads an optional host-owned Meta Contact exporter without exposing author
 		delete raw.phone;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /requires phone configuration/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("loads a direct phone API feature flag only with exact senders and approved models", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-api-agent-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.phone.apiAgent = {
+			featureSenders: ["+15555550123", "+15555550124"],
+			advisorModel: "gpt-5.6-luna",
+			defaultModel: "gpt-5.6-luna",
+			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol"],
+			maximumHistoryMessages: 18,
+			maximumReplyCharacters: 900,
+			maximumOutputTokens: 512,
+			pollIntervalSeconds: 2,
+		};
+		await writeFile(path, JSON.stringify(raw));
+		assert.deepEqual((await loadConfig(path, ENVIRONMENT)).phone.apiAgent, raw.phone.apiAgent);
+
+		raw.phone.apiAgent.allowedModels.push("gpt-example-unapproved");
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /not an approved Hostd OpenAI model/);
+
+		raw.phone.apiAgent.allowedModels = ["gpt-5.6-luna", "gpt-5.6-sol"];
+		raw.phone.apiAgent.featureSenders.push(raw.phone.apiAgent.featureSenders[0]);
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /featureSenders cannot repeat a sender/);
+
+		raw.phone.apiAgent.featureSenders = ["+15555550123", "+15555550124"];
+		raw.routing.knownPhonePrincipals = [];
+		delete raw.webApp;
+		await writeFile(path, JSON.stringify(raw));
+		assert.deepEqual(
+			(await loadConfig(path, ENVIRONMENT)).phone.apiAgent.featureSenders,
+			raw.phone.apiAgent.featureSenders,
+		);
+
+		delete raw.openAi;
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /requires top-level openAi/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

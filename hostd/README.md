@@ -657,6 +657,59 @@ The example Zulip configuration uses reserved `+1 555` fixtures. Keep real
 numbers, API keys, webhook secrets, tunnel hostnames, and deployment receipts
 in host configuration or a private operations repository.
 
+### Tool-free direct phone API agent
+
+`phone.apiAgent` is an optional exact-sender feature flag layered on the
+runtime-backed phone path. Only senders listed in protected
+`phone.apiAgent.featureSenders` enter the tool-free API-agent path. Every other
+signed direct sender continues through the existing website-bot routing path,
+including its current known-principal mapping or default intake fallback.
+Feature senders cannot choose or contact another destination; Hostd retains the
+same exact conversation target and encrypted reply recipient for the turn. The
+feature flag itself is positive authority for this one host-direct model/reply
+path. It does not remove `phone.deliveryHolds` or reopen runtime/tool delivery;
+those holds remain authoritative for the existing website-bot path.
+
+The two mode commands are case-insensitive:
+
+- `/config` switches that sender's durable session into model-advisor mode.
+  The advisor always runs on the configured Luna model and may select only one
+  of `allowedModels` when the sender clearly chooses it.
+- `/chat` switches the same durable session into chat mode. The same Luna agent
+  identity answers with the selected approved model.
+
+The direct agent receives an empty tool list. Its response does not enter a
+runtime and cannot call `send_message`. Hostd durably records the inbound turn,
+performs one spend- and concurrency-bounded model request, records the model
+result, and then makes one direct provider attempt to the encrypted conversation
+recipient. A stale model/send lease or ambiguous provider result becomes
+`uncertain` and is never retried automatically. Provider status webhooks update
+the same durable turn. STOP/opt-out and the existing direct-only, signature,
+relay, duplicate, and recipient-custody checks remain authoritative.
+
+Synthetic configuration shape:
+
+```json
+{
+  "phone": {
+    "apiAgent": {
+      "featureSenders": ["+15555550123", "+15555550124"],
+      "advisorModel": "gpt-5.6-luna",
+      "defaultModel": "gpt-5.6-luna",
+      "allowedModels": ["gpt-5.6-luna", "gpt-5.6-sol"],
+      "maximumHistoryMessages": 24,
+      "maximumReplyCharacters": 1200,
+      "maximumOutputTokens": 1024,
+      "pollIntervalSeconds": 1
+    }
+  }
+}
+```
+
+Keep the real `featureSenders` values only in protected host configuration. A
+feature sender may use only this one API-agent conversation; the mode commands
+do not select another phone number, agent, runtime, or Hostd target.
+
 ## Website chat relay
 
 An optional `webChat` relay connects a public website chat to the same private

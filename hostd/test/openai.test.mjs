@@ -376,6 +376,63 @@ test("synthetic no-customer-send canary enforces isolation, exact Luna model, ma
 	}
 });
 
+test("direct phone completion is internal-only, route-bound, model-pinned, and fully accounted", async () => {
+	const state = fixture();
+	const upstreamRequests = [];
+	const gateway = new HostOpenAi({
+		config: state.config,
+		store: state.store,
+		fetchImpl: async (_input, init) => {
+			const body = JSON.parse(String(init.body));
+			upstreamRequests.push(body);
+			return successfulResponse(body.model);
+		},
+	});
+	try {
+		state.store.ensurePrincipal("a".repeat(64), undefined, "Phone ending 0123");
+		state.store.ensureProject("a".repeat(64), "intake", "Private intake");
+		state.store.bindRoute({
+			source: "phone",
+			providerThreadId: "synthetic-phone-thread",
+			principalHash: "a".repeat(64),
+			projectSlug: "intake",
+			targetId: state.target.id,
+			contextId: CONTEXT_A,
+		});
+		const body = requestBody({
+			model: SOL_MODEL,
+			reasoning: { effort: "xhigh" },
+			max_output_tokens: 512,
+			tools: [],
+			tool_choice: "none",
+			parallel_tool_calls: false,
+			include: undefined,
+		});
+		const response = await gateway.completeDirectPhone(
+			state.target,
+			CONTEXT_A,
+			SOL_MODEL,
+			512,
+			body,
+		);
+		assert.match(await response.text(), /response\.completed/);
+		assert.equal(upstreamRequests.length, 1);
+		assert.equal(upstreamRequests[0].model, SOL_MODEL);
+		assert.equal(upstreamRequests[0].max_output_tokens, 512);
+		assert.deepEqual(upstreamRequests[0].tools, []);
+		assert.equal(upstreamRequests[0].tool_choice, "none");
+		assert.equal(state.store.openAiStatus(state.config.openAi).settled, 1);
+
+		await assert.rejects(
+			gateway.completeDirectPhone(state.target, CONTEXT_B, LUNA_MODEL, 512, requestBody()),
+			/openai_context_denied/,
+		);
+		assert.equal(upstreamRequests.length, 1);
+	} finally {
+		closeFixture(state);
+	}
+});
+
 test("one exact context can use Sol xhigh without changing its default Luna neighbor", async () => {
 	const state = fixture({ contextModels: { [CONTEXT_B]: SOL_MODEL } });
 	const upstreamRequests = [];

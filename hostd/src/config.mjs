@@ -627,6 +627,84 @@ function zulipConfig(raw, environment) {
 	};
 }
 
+function phoneApiAgentConfig(raw) {
+	if (raw === undefined) return undefined;
+	const apiAgent = object(raw, "phone.apiAgent");
+	if (!Array.isArray(apiAgent.featureSenders)
+		|| apiAgent.featureSenders.length === 0
+		|| apiAgent.featureSenders.length > 64) {
+		throw new Error("phone.apiAgent.featureSenders must contain from 1 to 64 exact senders");
+	}
+	const featureSenders = apiAgent.featureSenders.map((value, index) => (
+		normalizePhoneAddress(value, `phone.apiAgent.featureSenders[${index}]`)
+	));
+	if (new Set(featureSenders).size !== featureSenders.length) {
+		throw new Error("phone.apiAgent.featureSenders cannot repeat a sender");
+	}
+	const rawAllowedModels = apiAgent.allowedModels;
+	if (!Array.isArray(rawAllowedModels) || rawAllowedModels.length === 0 || rawAllowedModels.length > 16) {
+		throw new Error("phone.apiAgent.allowedModels must contain from 1 to 16 approved models");
+	}
+	const allowedModels = rawAllowedModels.map((value, index) => {
+		const modelId = text(value, `phone.apiAgent.allowedModels[${index}]`);
+		requireHostdOpenAiModel(modelId, `phone.apiAgent.allowedModels[${index}]`);
+		return modelId;
+	});
+	if (new Set(allowedModels).size !== allowedModels.length) {
+		throw new Error("phone.apiAgent.allowedModels cannot repeat a model");
+	}
+	const advisorModel = text(
+		apiAgent.advisorModel ?? HOSTD_OPENAI_DEFAULT_MODEL,
+		"phone.apiAgent.advisorModel",
+	);
+	const defaultModel = text(
+		apiAgent.defaultModel ?? advisorModel,
+		"phone.apiAgent.defaultModel",
+	);
+	requireHostdOpenAiModel(advisorModel, "phone.apiAgent.advisorModel");
+	requireHostdOpenAiModel(defaultModel, "phone.apiAgent.defaultModel");
+	if (!allowedModels.includes(advisorModel)) {
+		throw new Error("phone.apiAgent.advisorModel must be in phone.apiAgent.allowedModels");
+	}
+	if (!allowedModels.includes(defaultModel)) {
+		throw new Error("phone.apiAgent.defaultModel must be in phone.apiAgent.allowedModels");
+	}
+	return {
+		featureSenders,
+		advisorModel,
+		defaultModel,
+		allowedModels,
+		maximumHistoryMessages: integer(
+			apiAgent.maximumHistoryMessages,
+			24,
+			"phone.apiAgent.maximumHistoryMessages",
+			0,
+			100,
+		),
+		maximumReplyCharacters: integer(
+			apiAgent.maximumReplyCharacters,
+			1200,
+			"phone.apiAgent.maximumReplyCharacters",
+			80,
+			4000,
+		),
+		maximumOutputTokens: integer(
+			apiAgent.maximumOutputTokens,
+			1024,
+			"phone.apiAgent.maximumOutputTokens",
+			16,
+			8192,
+		),
+		pollIntervalSeconds: integer(
+			apiAgent.pollIntervalSeconds,
+			1,
+			"phone.apiAgent.pollIntervalSeconds",
+			1,
+			60,
+		),
+	};
+}
+
 function phoneConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const phone = object(raw, "phone");
@@ -665,6 +743,7 @@ function phoneConfig(raw, environment) {
 		provider,
 		directOnly,
 		deliveryHolds,
+		apiAgent: phoneApiAgentConfig(phone.apiAgent),
 		senderAddress: normalizePhoneAddress(phone.senderAddress, "phone.senderAddress"),
 		webhookSecret,
 		apiKey: envSecret(phone.apiKeyEnv, "phone.apiKeyEnv", environment),
@@ -1700,6 +1779,12 @@ export async function loadConfig(path, environment = process.env) {
 	});
 	if (new Set(configuredPhonePrincipals.map((principal) => principal.phone)).size !== configuredPhonePrincipals.length) {
 		throw new Error("routing.knownPhonePrincipals cannot repeat a phone number");
+	}
+	if (phone?.apiAgent) {
+		if (!openAi) throw new Error("phone.apiAgent requires top-level openAi configuration");
+		if (phone.apiAgent.maximumOutputTokens > openAi.maximumOutputTokens) {
+			throw new Error("phone.apiAgent.maximumOutputTokens cannot exceed openAi.maximumOutputTokens");
+		}
 	}
 	for (const [index, principal] of configuredPhonePrincipals.entries()) {
 		if (!targetIds.has(principal.targetId)) {

@@ -18,10 +18,14 @@ function subject(fetchImpl = async () => Response.json({
 	id: "provider-message-outbound",
 	status: "queued",
 	message_format: "sms",
-}), phoneOverride, firstContact) {
+}), phoneOverride, firstContact, openAiGateway) {
 	const directory = mkdtempSync(join(tmpdir(), "hostd-phone-"));
 	const routingKey = Buffer.alloc(32, 7);
-	const target = { id: "front-desk", driver: "oci" };
+	const target = {
+		id: "front-desk",
+		driver: "oci",
+		outboundToken: "example-outbound-token-at-least-32-bytes",
+	};
 	const config = {
 		phone: phoneOverride ?? {
 			provider: "sendly",
@@ -36,9 +40,13 @@ function subject(fetchImpl = async () => Response.json({
 				path: "/webhooks/sendly",
 			},
 		},
+		openAi: phoneOverride?.apiAgent ? { requestTimeoutMs: 5_000 } : undefined,
 		routing: {
 			actorTarget: target.id,
 			knownPrincipals: [],
+			knownPhonePrincipals: phoneOverride?.apiAgent
+				? [{ phone: CONTACT_NUMBER, targetId: target.id }]
+				: [],
 		},
 		targetsById: new Map([[target.id, target]]),
 	};
@@ -54,6 +62,7 @@ function subject(fetchImpl = async () => Response.json({
 		scheduler: { pump: () => { schedulerPumps += 1; } },
 		controlNotifier: { wake: () => { notifierWakes += 1; } },
 		firstContact,
+		openAiGateway,
 		fetchImpl,
 	});
 	return {
@@ -155,6 +164,54 @@ function inbound(overrides = {}) {
 	};
 }
 
+function apiPhone() {
+	return {
+		provider: "sendly",
+		directOnly: true,
+		deliveryHolds: [],
+		senderAddress: BUSINESS_NUMBER,
+		webhookSecret: "example-webhook-secret-at-least-24-bytes",
+		apiKey: "example-api-key",
+		apiBaseUrl: "https://provider.example/api/v1",
+		ingress: {
+			host: "127.0.0.1",
+			port: 3100,
+			path: "/webhooks/sendly",
+		},
+		apiAgent: {
+			featureSenders: [CONTACT_NUMBER],
+			advisorModel: "gpt-5.6-luna",
+			defaultModel: "gpt-5.6-luna",
+			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol"],
+			maximumHistoryMessages: 24,
+			maximumReplyCharacters: 1200,
+			maximumOutputTokens: 512,
+			pollIntervalSeconds: 1,
+		},
+	};
+}
+
+function modelResponse(output, model = "gpt-5.6-luna") {
+	const encoder = new TextEncoder();
+	const body = [
+		`data: ${JSON.stringify({ type: "response.output_text.delta", delta: output })}\n\n`,
+		`data: ${JSON.stringify({
+			type: "response.completed",
+			response: {
+				model,
+				usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+			},
+		})}\n\n`,
+		"data: [DONE]\n\n",
+	].join("");
+	return new Response(new ReadableStream({
+		start(controller) {
+			controller.enqueue(encoder.encode(body));
+			controller.close();
+		},
+	}), { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 test("verifies the timestamped raw-body webhook signature and rejects stale delivery", () => {
 	const rawBody = JSON.stringify(inbound());
 	const timestamp = String(Math.floor(Date.now() / 1000));
@@ -188,6 +245,203 @@ test("routes one direct text into an isolated context without exposing phone num
 		assert.deepEqual(state.counts(), { schedulerPumps: 1, notifierWakes: 1 });
 		assert.equal(await state.gateway.acceptWebhook(inbound()), "duplicate");
 		assert.equal(state.store.listRetryableEvents().length, 1);
+	} finally {
+		state.close();
+	}
+});
+
+test("a non-feature sender keeps the regular website-bot path unchanged", async () => {
+	let modelCalls = 0;
+	let providerCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			throw new Error("direct provider must not be called");
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone() {
+				modelCalls += 1;
+				throw new Error("direct model must not be called");
+			},
+		},
+	);
+	try {
+		const regular = inbound({ from: "+15555550999", text: "/chat" });
+		assert.equal(await state.gateway.acceptWebhook(regular), "queued");
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM principals").get().count, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM routes").get().count, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_conversations").get().count, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM events").get().count, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_sessions").get().count, 0);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns").get().count, 0);
+		assert.equal(modelCalls, 0);
+		assert.equal(providerCalls, 0);
+		assert.deepEqual(state.counts(), { schedulerPumps: 1, notifierWakes: 1 });
+	} finally {
+		state.close();
+	}
+});
+
+test("the exact feature flag grants a host-direct reply without clearing a runtime hold", async () => {
+	let modelCalls = 0;
+	let providerCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			return Response.json({ id: "provider-feature-reply", status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				modelCalls += 1;
+				return modelResponse(JSON.stringify({
+					reply: "Configuration mode is active.",
+					selected_model: null,
+				}), model);
+			},
+		},
+	);
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		const conversation = state.store.database.prepare(`
+			SELECT context_id AS contextId FROM phone_conversations LIMIT 1
+		`).get();
+		state.config.phone.deliveryHolds.push(conversation.contextId);
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-message-inbound").status, "completed");
+		assert.deepEqual(state.config.phone.deliveryHolds, [conversation.contextId]);
+		assert.equal(modelCalls, 1);
+		assert.equal(providerCalls, 1);
+	} finally {
+		state.close();
+	}
+});
+
+test("config and chat modes use approved models and send directly from Hostd", async () => {
+	const modelCalls = [];
+	const providerSends = [];
+	let providerSequence = 0;
+	const state = subject(
+		async (url, options) => {
+			assert.equal(url, "https://provider.example/api/v1/messages");
+			providerSends.push(JSON.parse(options.body));
+			providerSequence += 1;
+			return Response.json({ id: `provider-direct-${providerSequence}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(target, contextId, model, maximumOutputTokens, body) {
+				modelCalls.push({ target, contextId, model, maximumOutputTokens, body });
+				if (modelCalls.length === 1) {
+					return modelResponse(JSON.stringify({
+						reply: "Sol is the deeper option. I selected it for chat.",
+						selected_model: "gpt-5.6-sol",
+					}), model);
+				}
+				return modelResponse("Chat mode is active. What would you like to discuss?", model);
+			},
+		},
+	);
+	try {
+		const configure = inbound({ text: "/config" });
+		assert.equal(await state.gateway.acceptWebhook(configure), "phone_api_queued");
+		assert.equal(await state.gateway.acceptWebhook(configure), "duplicate");
+		assert.equal(state.store.listRetryableEvents().length, 0);
+		assert.deepEqual(state.counts(), { schedulerPumps: 0, notifierWakes: 0 });
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+
+		const conversation = state.store.database.prepare(`
+			SELECT thread_target AS threadTarget FROM phone_conversations LIMIT 1
+		`).get();
+		assert.ok(conversation);
+		const configuredSession = state.store.getPhoneApiSession(conversation.threadTarget);
+		assert.equal(configuredSession.threadTarget, conversation.threadTarget);
+		assert.equal(configuredSession.mode, "config");
+		assert.equal(configuredSession.selectedModel, "gpt-5.6-sol");
+		assert.equal(configuredSession.generation, 3);
+		assert.equal(modelCalls[0].model, "gpt-5.6-luna");
+		assert.equal(modelCalls[0].maximumOutputTokens, 512);
+		assert.deepEqual(modelCalls[0].body.tools, []);
+		assert.equal(modelCalls[0].body.tool_choice, "none");
+		assert.equal(providerSends[0].to, CONTACT_NUMBER);
+		assert.equal(providerSends[0].from, BUSINESS_NUMBER);
+		assert.equal(providerSends[0].text, "Sol is the deeper option. I selected it for chat.");
+
+		const providerReplay = inbound({ text: "/chat" });
+		providerReplay.id = "provider-event-replay-with-new-event-id";
+		assert.equal(await state.gateway.acceptWebhook(providerReplay), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(state.store.getPhoneApiSession(conversation.threadTarget).mode, "config");
+		assert.equal(modelCalls.length, 1);
+		assert.equal(providerSends.length, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns").get().count, 1);
+
+		const chat = inbound({ id: "provider-message-chat", text: "/chat" });
+		chat.id = "provider-event-chat";
+		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(modelCalls[1].model, "gpt-5.6-sol");
+		assert.equal(
+			modelCalls[1].body.input.some((entry) => JSON.stringify(entry).includes("Sol is the deeper option")),
+			true,
+		);
+		assert.equal(providerSends[1].text, "Chat mode is active. What would you like to discuss?");
+		assert.equal(await state.gateway.acceptWebhook({
+			id: "provider-event-direct-delivered",
+			type: "message.delivered",
+			data: { object: {
+				id: "provider-direct-2",
+				from: BUSINESS_NUMBER,
+				to: CONTACT_NUMBER,
+				status: "delivered",
+			} },
+		}), "status");
+		assert.equal(
+			state.store.getPhoneApiTurn("phone-api:provider-message-chat").providerStatus,
+			"delivered",
+		);
+		assert.equal(state.store.getPhoneApiSession(conversation.threadTarget).mode, "chat");
+		assert.equal(state.store.getPhoneApiSession(conversation.threadTarget).selectedModel, "gpt-5.6-sol");
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns WHERE status = 'completed'").get().count, 2);
+		assert.deepEqual(state.counts(), { schedulerPumps: 0, notifierWakes: 0 });
+	} finally {
+		state.close();
+	}
+});
+
+test("an ambiguous direct provider result is never retried", async () => {
+	let providerCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			throw new TypeError("synthetic connection loss");
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				return modelResponse("This reply has one uncertain provider attempt.", model);
+			},
+		},
+	);
+	try {
+		const chat = inbound({ text: "/chat" });
+		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+		const turn = state.store.getPhoneApiTurn("phone-api:provider-message-inbound");
+		assert.equal(turn.status, "uncertain");
+		assert.equal(providerCalls, 1);
+		await state.gateway.flushApiAgent();
+		assert.equal(providerCalls, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
 	} finally {
 		state.close();
 	}

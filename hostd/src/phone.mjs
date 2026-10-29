@@ -10,6 +10,7 @@ import {
 	sealPrivateValue,
 	stablePrivateKey,
 } from "./security.mjs";
+import { PhoneApiAgent } from "./phone-api-agent.mjs";
 
 const SIGNATURE_MAX_AGE_MILLISECONDS = 5 * 60 * 1000;
 const STATUS_EVENTS = new Set([
@@ -201,6 +202,7 @@ export class PhoneGateway {
 		scheduler,
 		controlNotifier,
 		firstContact,
+		openAiGateway,
 		fetchImpl = fetch,
 	}) {
 		this.config = config;
@@ -212,11 +214,16 @@ export class PhoneGateway {
 		this.firstContact = firstContact;
 		this.fetch = fetchImpl;
 		this.provider = new SendlyDirectProvider(config.phone, { fetchImpl });
+		this.apiAgent = config.phone.apiAgent
+			? new PhoneApiAgent({ config, store, openAiGateway })
+			: undefined;
 		this.server = null;
 		this.pollTimer = null;
 		this.currentPoll = null;
 		this.firstContactTimer = null;
 		this.currentFirstContactFlush = null;
+		this.apiAgentTimer = null;
+		this.currentApiAgentFlush = null;
 		this.stopped = true;
 	}
 
@@ -250,13 +257,21 @@ export class PhoneGateway {
 			this.pollTimer.unref();
 			console.log("troublemaker-hostd: phone relay polling active");
 		}
-			if (this.firstContact) {
-				await this.flushFirstContacts();
-				this.firstContactTimer = setInterval(
-					() => this.requestFirstContactFlush(),
+		if (this.firstContact) {
+			await this.flushFirstContacts();
+			this.firstContactTimer = setInterval(
+				() => this.requestFirstContactFlush(),
 				(this.firstContact.pollIntervalSeconds ?? 5) * 1000,
 			);
 			this.firstContactTimer.unref();
+		}
+		if (this.apiAgent) {
+			this.requestApiAgentFlush();
+			this.apiAgentTimer = setInterval(
+				() => this.requestApiAgentFlush(),
+				this.config.phone.apiAgent.pollIntervalSeconds * 1000,
+			);
+			this.apiAgentTimer.unref();
 		}
 	}
 
@@ -267,8 +282,11 @@ export class PhoneGateway {
 		this.pollTimer = null;
 		if (this.firstContactTimer) clearInterval(this.firstContactTimer);
 		this.firstContactTimer = null;
+		if (this.apiAgentTimer) clearInterval(this.apiAgentTimer);
+		this.apiAgentTimer = null;
 		await this.currentPoll;
 		await this.currentFirstContactFlush;
+		await this.currentApiAgentFlush;
 		if (this.server) {
 			const server = this.server;
 			this.server = null;
@@ -452,6 +470,74 @@ export class PhoneGateway {
 		}
 	}
 
+	requestApiAgentFlush() {
+		void this.flushApiAgent().catch((error) => {
+			console.error(
+				"troublemaker-hostd: direct phone API agent flush failed:",
+				error instanceof Error ? error.message : String(error),
+			);
+		});
+	}
+
+	async flushApiAgent() {
+		if (!this.apiAgent || this.stopped) return;
+		if (this.currentApiAgentFlush) return this.currentApiAgentFlush;
+		this.currentApiAgentFlush = this.deliverApiAgentTurns();
+		try {
+			await this.currentApiAgentFlush;
+		} finally {
+			this.currentApiAgentFlush = null;
+		}
+	}
+
+	async deliverApiAgentTurns() {
+		const modelLeaseSeconds = Math.ceil(this.config.openAi.requestTimeoutMs / 1000) + 30;
+		for (let handled = 0; handled < 25; handled++) {
+			if (this.stopped) return;
+			let didWork = false;
+			const turn = this.store.claimPhoneApiTurn({
+				advisorModel: this.config.phone.apiAgent.advisorModel,
+				leaseSeconds: modelLeaseSeconds,
+			});
+			if (turn) {
+				didWork = true;
+				try {
+					const result = await this.apiAgent.complete(turn);
+					this.store.completePhoneApiModel(turn.id, {
+						replyBody: result.reply,
+						selectedModel: result.selectedModel,
+					});
+				} catch (error) {
+					this.store.failPhoneApiTurn(
+						turn.id,
+						error?.code === "openai_result_uncertain" ? "uncertain" : "failed",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
+			if (this.stopped) return;
+
+			const delivery = this.store.claimPhoneApiSend(45);
+			if (delivery) {
+				didWork = true;
+				try {
+					const receipt = await this.sendDirect(delivery, delivery.replyBody);
+					this.store.completePhoneApiSend(delivery.id, {
+						providerMessageId: receipt.providerMessageId,
+						providerStatus: receipt.status,
+					});
+				} catch (error) {
+					this.store.failPhoneApiTurn(
+						delivery.id,
+						error instanceof PhoneDeliveryUncertainError ? "uncertain" : "failed",
+						error instanceof Error ? error.message : String(error),
+					);
+				}
+			}
+			if (!didWork) return;
+		}
+	}
+
 	async acceptWebhook(payload, { observedAt = Date.now() } = {}) {
 		const message = sendlyObject(payload);
 		const type = eventType(payload, message);
@@ -463,7 +549,9 @@ export class PhoneGateway {
 		if (STATUS_EVENTS.has(type)) {
 			const from = normalizePhoneAddress(firstString(message.from, message.from_number, message.fromNumber));
 			if (from === this.config.phone.senderAddress) {
-				this.store.updatePhoneOutboxStatus(providerMessageId, statusFor(type, message));
+				const providerStatus = statusFor(type, message);
+				this.store.updatePhoneOutboxStatus(providerMessageId, providerStatus);
+				this.store.updatePhoneApiProviderStatus(providerMessageId, providerStatus);
 			}
 			this.store.markSeen("phone-webhook", providerEventId, "status");
 			return "status";
@@ -486,6 +574,9 @@ export class PhoneGateway {
 			this.store.markSeen("phone-webhook", providerEventId, "ignored_event");
 			return "ignored_event";
 		}
+		const apiAgentFeatureEnabled = Boolean(
+			this.apiAgent && this.config.phone.apiAgent.featureSenders.includes(from),
+		);
 
 		const text = firstString(message.text, message.body, message.message) || "";
 		const keyword = text.trim().toLowerCase();
@@ -508,6 +599,30 @@ export class PhoneGateway {
 		if (!text) {
 			this.store.markSeen("phone-webhook", providerEventId, "quarantined:empty");
 			return "quarantined:empty";
+		}
+		if (apiAgentFeatureEnabled) {
+			const conversation = this.store.upsertPhoneConversation(this.prepareConversation(from));
+			if (conversation.optedOut) {
+				this.store.markSeen("phone-webhook", providerEventId, "ignored:opted_out");
+				return "ignored:opted_out";
+			}
+			const command = text.trim().toLowerCase();
+			const modeCommand = command === "/config"
+				? "config"
+				: command === "/chat"
+					? "chat"
+					: undefined;
+			this.store.queuePhoneApiTurn({
+				id: `phone-api:${providerMessageId}`,
+				providerMessageId,
+				threadTarget: conversation.threadTarget,
+				modeCommand,
+				inboundBody: text,
+				defaultModel: this.config.phone.apiAgent.defaultModel,
+			});
+			this.store.markSeen("phone-webhook", providerEventId, "phone_api_queued");
+			if (!this.stopped) this.requestApiAgentFlush();
+			return "phone_api_queued";
 		}
 
 		let attributionResolution;

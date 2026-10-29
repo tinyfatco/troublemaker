@@ -38,6 +38,7 @@ export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"scheduled_prompts",
 	"outbox",
 	"phone_conversations",
+	"phone_api_turns",
 	"relationship_funnels",
 	"relationship_funnel_milestones",
 	"relationship_funnel_turns",
@@ -465,6 +466,49 @@ export class HostStore {
 				observed_at TEXT NOT NULL,
 				FOREIGN KEY (principal_hash) REFERENCES principals(id)
 			);
+
+			CREATE TABLE IF NOT EXISTS phone_api_sessions (
+				thread_target TEXT PRIMARY KEY,
+				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
+				selected_model TEXT NOT NULL,
+				generation INTEGER NOT NULL DEFAULT 1 CHECK(generation > 0),
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (thread_target) REFERENCES phone_conversations(thread_target)
+					ON DELETE CASCADE
+			);
+
+			CREATE TABLE IF NOT EXISTS phone_api_turns (
+				id TEXT PRIMARY KEY,
+				provider_message_id TEXT NOT NULL UNIQUE,
+				thread_target TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				context_id TEXT NOT NULL,
+				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
+				model TEXT,
+				inbound_body TEXT NOT NULL,
+				status TEXT NOT NULL CHECK(status IN (
+					'queued', 'running', 'model_ready', 'sending',
+					'completed', 'failed', 'uncertain'
+				)),
+				reply_body TEXT,
+				selected_model TEXT,
+				provider_reply_message_id TEXT UNIQUE,
+				provider_status TEXT,
+				lease_expires_at TEXT,
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				completed_at TEXT,
+				FOREIGN KEY (thread_target) REFERENCES phone_conversations(thread_target)
+					ON DELETE CASCADE
+			);
+
+			CREATE INDEX IF NOT EXISTS phone_api_turns_status
+				ON phone_api_turns(status, created_at, id);
+
+			CREATE INDEX IF NOT EXISTS phone_api_turns_thread
+				ON phone_api_turns(thread_target, created_at, id);
 
 			CREATE TABLE IF NOT EXISTS relationship_funnels (
 				context_id TEXT PRIMARY KEY,
@@ -2201,6 +2245,278 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT opted_out AS optedOut FROM phone_opt_outs WHERE principal_hash = ?
 		`).get(principalHash)?.optedOut === 1;
+	}
+
+	getPhoneApiSession(threadTarget) {
+		return this.database.prepare(`
+			SELECT thread_target AS threadTarget, mode, selected_model AS selectedModel,
+				generation, created_at AS createdAt, updated_at AS updatedAt
+			FROM phone_api_sessions WHERE thread_target = ?
+		`).get(threadTarget);
+	}
+
+	getPhoneApiTurn(id) {
+		return this.database.prepare(`
+			SELECT id, provider_message_id AS providerMessageId,
+				thread_target AS threadTarget, target_id AS targetId, context_id AS contextId,
+				mode, model, inbound_body AS inboundBody,
+				status, reply_body AS replyBody, selected_model AS selectedModel,
+				provider_reply_message_id AS providerReplyMessageId,
+				provider_status AS providerStatus, lease_expires_at AS leaseExpiresAt,
+				last_error AS lastError, created_at AS createdAt,
+				updated_at AS updatedAt, completed_at AS completedAt
+			FROM phone_api_turns WHERE id = ?
+		`).get(id);
+	}
+
+	queuePhoneApiTurn({
+		id,
+		providerMessageId,
+		threadTarget,
+		modeCommand,
+		inboundBody,
+		defaultModel,
+	}) {
+		if (modeCommand !== undefined && !["config", "chat"].includes(modeCommand)) {
+			throw new Error("phone API mode command is invalid");
+		}
+		requireHostdOpenAiModel(defaultModel, "phone API default model");
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const duplicate = this.database.prepare(`
+				SELECT id, thread_target AS threadTarget
+				FROM phone_api_turns WHERE provider_message_id = ?
+			`).get(providerMessageId);
+			if (duplicate) {
+				if (duplicate.threadTarget !== threadTarget) {
+					throw new Error("phone API provider message identity crossed conversations");
+				}
+				this.database.exec("COMMIT");
+				return {
+					created: false,
+					session: this.getPhoneApiSession(threadTarget),
+					turn: this.getPhoneApiTurn(duplicate.id),
+				};
+			}
+			const conversation = this.getPhoneConversation(threadTarget);
+			if (!conversation || conversation.status !== "active") {
+				throw new Error("phone API conversation is unavailable");
+			}
+			this.database.prepare(`
+				INSERT INTO phone_api_sessions(
+					thread_target, mode, selected_model, generation, created_at, updated_at
+				) VALUES (?, 'config', ?, 1, ?, ?)
+				ON CONFLICT(thread_target) DO NOTHING
+			`).run(threadTarget, defaultModel, timestamp, timestamp);
+			if (modeCommand) {
+				this.database.prepare(`
+					UPDATE phone_api_sessions SET mode = ?, generation = generation + 1,
+						updated_at = ? WHERE thread_target = ?
+				`).run(modeCommand, timestamp, threadTarget);
+			}
+			const session = this.getPhoneApiSession(threadTarget);
+			if (!session) throw new Error("phone API session was not created");
+			const inserted = this.database.prepare(`
+				INSERT INTO phone_api_turns(
+					id, provider_message_id, thread_target, target_id, context_id,
+					mode, inbound_body, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+				ON CONFLICT(provider_message_id) DO NOTHING
+			`).run(
+				id,
+				providerMessageId,
+				threadTarget,
+				conversation.targetId,
+				conversation.contextId,
+				session.mode,
+				inboundBody,
+				timestamp,
+				timestamp,
+			);
+			this.database.exec("COMMIT");
+			return {
+				created: inserted.changes === 1,
+				session: this.getPhoneApiSession(threadTarget),
+				turn: this.getPhoneApiTurn(id),
+			};
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	claimPhoneApiTurn({ advisorModel, leaseSeconds }) {
+		requireHostdOpenAiModel(advisorModel, "phone API advisor model");
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			this.database.prepare(`
+				UPDATE phone_api_turns SET status = 'uncertain', lease_expires_at = NULL,
+					last_error = 'stale_in_progress_turn', updated_at = ?, completed_at = ?
+				WHERE status IN ('running', 'sending') AND lease_expires_at <= ?
+			`).run(timestamp, timestamp, timestamp);
+			const row = this.database.prepare(`
+				SELECT turn.id, turn.mode, session.selected_model AS selectedModel
+				FROM phone_api_turns AS turn
+				INNER JOIN phone_api_sessions AS session
+					ON session.thread_target = turn.thread_target
+				WHERE turn.status = 'queued'
+				ORDER BY turn.created_at, turn.id LIMIT 1
+			`).get();
+			if (!row) {
+				this.database.exec("COMMIT");
+				return undefined;
+			}
+			const model = row.mode === "config" ? advisorModel : row.selectedModel;
+			requireHostdOpenAiModel(model, "phone API selected model");
+			const claimed = this.database.prepare(`
+				UPDATE phone_api_turns SET status = 'running', model = ?,
+					lease_expires_at = ?, updated_at = ?
+				WHERE id = ? AND status = 'queued'
+			`).run(model, future(leaseSeconds), timestamp, row.id);
+			if (claimed.changes !== 1) throw new Error("phone API turn claim conflicted");
+			const turn = this.database.prepare(`
+				SELECT turn.id, turn.provider_message_id AS providerMessageId,
+					turn.thread_target AS threadTarget, turn.mode, turn.model,
+					turn.inbound_body AS inboundBody, turn.status,
+					turn.target_id AS targetId, turn.context_id AS contextId,
+					conversation.principal_hash AS principalHash
+				FROM phone_api_turns AS turn
+				INNER JOIN phone_conversations AS conversation
+					ON conversation.thread_target = turn.thread_target
+					AND conversation.target_id = turn.target_id
+					AND conversation.context_id = turn.context_id
+				WHERE turn.id = ?
+			`).get(row.id);
+			this.database.exec("COMMIT");
+			return turn;
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	listPhoneApiHistory(threadTarget, maximumMessages = 24) {
+		const maximumTurns = Math.ceil(Math.max(0, maximumMessages) / 2);
+		if (maximumTurns === 0) return [];
+		return this.database.prepare(`
+			SELECT inbound_body AS inboundBody, reply_body AS replyBody, mode, model
+			FROM phone_api_turns
+			WHERE thread_target = ? AND status = 'completed' AND reply_body IS NOT NULL
+			ORDER BY created_at DESC, id DESC LIMIT ?
+		`).all(threadTarget, maximumTurns).reverse().flatMap((turn) => ([
+			{ role: "user", body: turn.inboundBody },
+			{ role: "assistant", body: turn.replyBody },
+		])).slice(-maximumMessages);
+	}
+
+	completePhoneApiModel(id, { replyBody, selectedModel }) {
+		if (selectedModel !== undefined) {
+			requireHostdOpenAiModel(selectedModel, "phone API selected model");
+		}
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const turn = this.getPhoneApiTurn(id);
+			if (!turn || turn.status !== "running") throw new Error("phone API turn is no longer running");
+			if (selectedModel !== undefined && turn.mode !== "config") {
+				throw new Error("phone API chat turn cannot change the selected model");
+			}
+			const updated = this.database.prepare(`
+				UPDATE phone_api_turns SET status = 'model_ready', reply_body = ?,
+					selected_model = ?, lease_expires_at = NULL, updated_at = ?
+				WHERE id = ? AND status = 'running'
+			`).run(replyBody, selectedModel ?? null, timestamp, id);
+			if (updated.changes !== 1) throw new Error("phone API model completion conflicted");
+			if (selectedModel !== undefined) {
+				this.database.prepare(`
+					UPDATE phone_api_sessions SET selected_model = ?,
+						generation = generation + 1, updated_at = ?
+					WHERE thread_target = ?
+				`).run(selectedModel, timestamp, turn.threadTarget);
+			}
+			this.database.exec("COMMIT");
+			return this.getPhoneApiTurn(id);
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	claimPhoneApiSend(leaseSeconds) {
+		const timestamp = now();
+		this.database.exec("BEGIN IMMEDIATE");
+		try {
+			const row = this.database.prepare(`
+				SELECT id FROM phone_api_turns WHERE status = 'model_ready'
+				ORDER BY created_at, id LIMIT 1
+			`).get();
+			if (!row) {
+				this.database.exec("COMMIT");
+				return undefined;
+			}
+			const updated = this.database.prepare(`
+				UPDATE phone_api_turns SET status = 'sending', lease_expires_at = ?,
+					updated_at = ? WHERE id = ? AND status = 'model_ready'
+			`).run(future(leaseSeconds), timestamp, row.id);
+			if (updated.changes !== 1) throw new Error("phone API send claim conflicted");
+			const result = this.database.prepare(`
+				SELECT turn.id, turn.thread_target AS threadTarget,
+					turn.reply_body AS replyBody, turn.status,
+					conversation.provider, conversation.provider_thread_id AS providerThreadId,
+					conversation.principal_hash AS principalHash,
+					turn.target_id AS targetId, turn.context_id AS contextId,
+					conversation.contact_ciphertext AS contactCiphertext,
+					conversation.contact_last_four AS contactLastFour,
+					conversation.status AS conversationStatus
+				FROM phone_api_turns AS turn
+				INNER JOIN phone_conversations AS conversation
+					ON conversation.thread_target = turn.thread_target
+					AND conversation.target_id = turn.target_id
+					AND conversation.context_id = turn.context_id
+				WHERE turn.id = ?
+			`).get(row.id);
+			this.database.exec("COMMIT");
+			return {
+				...result,
+				status: result.conversationStatus,
+			};
+		} catch (error) {
+			this.database.exec("ROLLBACK");
+			throw error;
+		}
+	}
+
+	completePhoneApiSend(id, { providerMessageId, providerStatus }) {
+		const timestamp = now();
+		const updated = this.database.prepare(`
+			UPDATE phone_api_turns SET status = 'completed', provider_reply_message_id = ?,
+				provider_status = ?, lease_expires_at = NULL, last_error = NULL,
+				updated_at = ?, completed_at = ?
+			WHERE id = ? AND status = 'sending'
+		`).run(providerMessageId, providerStatus, timestamp, timestamp, id);
+		if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
+		return this.getPhoneApiTurn(id);
+	}
+
+	failPhoneApiTurn(id, status, error) {
+		if (!["failed", "uncertain"].includes(status)) throw new Error("phone API failure status is invalid");
+		const timestamp = now();
+		const updated = this.database.prepare(`
+			UPDATE phone_api_turns SET status = ?, lease_expires_at = NULL,
+				last_error = ?, updated_at = ?, completed_at = ?
+			WHERE id = ? AND status IN ('running', 'model_ready', 'sending')
+		`).run(status, String(error).slice(0, 1000), timestamp, timestamp, id);
+		if (updated.changes !== 1) throw new Error("phone API failure completion conflicted");
+		return this.getPhoneApiTurn(id);
+	}
+
+	updatePhoneApiProviderStatus(providerMessageId, providerStatus) {
+		return this.database.prepare(`
+			UPDATE phone_api_turns SET provider_status = ?, updated_at = ?
+			WHERE provider_reply_message_id = ?
+		`).run(providerStatus, now(), providerMessageId).changes === 1;
 	}
 
 	getWebChatConversation(sessionId) {
@@ -4945,6 +5261,8 @@ export class HostStore {
 					WHERE context_id = ? AND status = 'in_progress')
 				+ (SELECT COUNT(*) FROM openai_requests
 					WHERE context_id = ? AND status = 'reserved')
+				+ (SELECT COUNT(*) FROM phone_api_turns
+					WHERE context_id = ? AND status IN ('running', 'model_ready', 'sending'))
 				+ (SELECT COUNT(*) FROM gmail_tool_requests
 					WHERE context_id = ? AND status = 'running')
 				+ (SELECT COUNT(*) FROM gmail_drafts
@@ -4958,7 +5276,7 @@ export class HostStore {
 				+ (SELECT COUNT(*) FROM site_deployment_bindings
 					WHERE context_id = ? AND status = 'creating')
 				AS count
-		`).get(...Array(11).fill(contextId));
+		`).get(...Array(12).fill(contextId));
 		return row.count > 0;
 	}
 

@@ -183,6 +183,7 @@ async function components(configPath) {
 			scheduler,
 			controlNotifier,
 			firstContact,
+			openAiGateway,
 		})
 		: undefined;
 	return {
