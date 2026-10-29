@@ -12,6 +12,7 @@ import { contextCapability } from "./security.mjs";
 const OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses";
 const MAXIMUM_USAGE_PARSE_BYTES = 2 * 1024 * 1024;
 const TOKENS_PER_MILLION = 1_000_000;
+const DIRECT_PHONE_THINKING_OVERRIDES = new Set(["low"]);
 const ALLOWED_BODY_FIELDS = new Set([
 	"model",
 	"input",
@@ -278,7 +279,15 @@ export class HostOpenAi {
 		);
 	}
 
-	async completeDirectPhone(target, contextId, modelId, maximumOutputTokens, body, signal) {
+	async completeDirectPhone(
+		target,
+		contextId,
+		modelId,
+		maximumOutputTokens,
+		body,
+		signal,
+		{ thinkingOverride } = {},
+	) {
 		const route = this.store.getRouteForContext(contextId);
 		if (
 			!route
@@ -288,7 +297,16 @@ export class HostOpenAi {
 		) {
 			throw new OpenAiError(403, "openai_context_denied");
 		}
-		const model = requireHostdOpenAiModel(modelId, "direct phone OpenAI model");
+		const configuredModel = requireHostdOpenAiModel(modelId, "direct phone OpenAI model");
+		if (
+			thinkingOverride !== undefined
+			&& !DIRECT_PHONE_THINKING_OVERRIDES.has(thinkingOverride)
+		) {
+			throw new OpenAiError(403, "openai_thinking_denied");
+		}
+		const model = thinkingOverride === undefined
+			? configuredModel
+			: { ...configuredModel, thinking: thinkingOverride };
 		return this.#completePinned(
 			target,
 			contextId,

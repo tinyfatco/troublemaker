@@ -244,6 +244,26 @@ function modelResponse(output, model = "gpt-5.6-luna") {
 	}), { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
+function incompleteModelResponse(model = "gpt-5.6-luna") {
+	const encoder = new TextEncoder();
+	const body = [
+		`data: ${JSON.stringify({
+			type: "response.incomplete",
+			response: {
+				model,
+				usage: { input_tokens: 10, output_tokens: 128, total_tokens: 138 },
+			},
+		})}\n\n`,
+		"data: [DONE]\n\n",
+	].join("");
+	return new Response(new ReadableStream({
+		start(controller) {
+			controller.enqueue(encoder.encode(body));
+			controller.close();
+		},
+	}), { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 test("verifies the timestamped raw-body webhook signature and rejects stale delivery", () => {
 	const rawBody = JSON.stringify(inbound());
 	const timestamp = String(Math.floor(Date.now() / 1000));
@@ -367,8 +387,8 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 		apiPhone(),
 		undefined,
 		{
-			async completeDirectPhone(target, contextId, model, maximumOutputTokens, body) {
-				advisorCalls.push({ target, contextId, model, maximumOutputTokens, body });
+			async completeDirectPhone(target, contextId, model, maximumOutputTokens, body, _signal, options) {
+				advisorCalls.push({ target, contextId, model, maximumOutputTokens, body, options });
 				return modelResponse(JSON.stringify({
 					reply: "Need a hand choosing?",
 				}), model);
@@ -395,6 +415,8 @@ test("config reads the authenticated catalog and chat sends the selected catalog
 		assert.equal(advisorCalls.length, 1);
 		assert.equal(advisorCalls[0].model, "gpt-5.6-luna");
 		assert.equal(advisorCalls[0].maximumOutputTokens, 128);
+		assert.deepEqual(advisorCalls[0].options, { thinkingOverride: "low" });
+		assert.equal(advisorCalls[0].body.reasoning.effort, "low");
 		assert.deepEqual(advisorCalls[0].body.tools, []);
 		assert.equal(advisorCalls[0].body.tool_choice, "none");
 		assert.match(advisorCalls[0].body.input[0].content[0].text, /optional follow-up/);
@@ -486,6 +508,40 @@ test("config help uses a stale last-good catalog and precedes a failed Luna nudg
 		assert.equal(nudge.status, "completed");
 		assert.equal(nudge.providerStatus, "skipped");
 		assert.equal(nudge.providerReplyMessageId, null);
+		assert.equal(nudge.lastError, "config_nudge_failed");
+	} finally {
+		state.close();
+	}
+});
+
+test("an incomplete Luna nudge is skipped with a bounded diagnostic and no second SMS", async () => {
+	let providerCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			return Response.json({ id: `provider-incomplete-${providerCalls}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _context, model, tokens, body, _signal, options) {
+				assert.equal(tokens, 128);
+				assert.equal(body.reasoning.effort, "low");
+				assert.deepEqual(options, { thinkingOverride: "low" });
+				return incompleteModelResponse(model);
+			},
+		},
+		localGateway(),
+	);
+	try {
+		state.gateway.stopped = false;
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(providerCalls, 1);
+		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
+		assert.equal(nudge.status, "completed");
+		assert.equal(nudge.providerStatus, "skipped");
+		assert.equal(nudge.lastError, "config_nudge_incomplete");
 	} finally {
 		state.close();
 	}
@@ -527,7 +583,7 @@ test("config help reaches the provider before a bounded Luna timeout and the tim
 		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
 		assert.equal(nudge.status, "completed");
 		assert.equal(nudge.providerStatus, "skipped");
-		assert.equal(nudge.lastError, null);
+		assert.equal(nudge.lastError, "config_nudge_timeout");
 	} finally {
 		state.close();
 	}
@@ -578,6 +634,7 @@ test("new config input preempts an optional Luna nudge before an exact switch", 
 		const nudge = state.store.getPhoneApiTurn("phone-api:provider-message-inbound:config-nudge");
 		assert.equal(nudge.status, "completed");
 		assert.equal(nudge.providerStatus, "skipped");
+		assert.equal(nudge.lastError, "config_nudge_preempted");
 		assert.equal(state.store.getPhoneApiSession(nudge.threadTarget).selectedModel, "example-beta");
 	} finally {
 		state.close();

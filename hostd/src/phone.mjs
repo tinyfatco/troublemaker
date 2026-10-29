@@ -33,6 +33,14 @@ function firstString(...values) {
 	return values.find((value) => typeof value === "string" && value.trim())?.trim();
 }
 
+function configNudgeSkipReason(error) {
+	if (error?.message === "response.incomplete") return "config_nudge_incomplete";
+	if (error?.message === "response.failed") return "config_nudge_model_failed";
+	if (error?.name === "TimeoutError") return "config_nudge_timeout";
+	if (error?.name === "AbortError") return "config_nudge_preempted";
+	return "config_nudge_failed";
+}
+
 function strings(value) {
 	if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
 	return typeof value === "string" && value.trim() ? [value] : [];
@@ -557,7 +565,7 @@ export class PhoneGateway {
 					});
 				} catch (error) {
 					if (turn.isConfigNudge) {
-						this.store.skipPhoneApiTurn(turn.id);
+						this.store.skipPhoneApiTurn(turn.id, configNudgeSkipReason(error));
 					} else {
 						this.store.failPhoneApiTurn(
 							turn.id,

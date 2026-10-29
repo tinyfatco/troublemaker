@@ -221,7 +221,7 @@ export class PhoneApiAgent {
 			.finally(() => { this.pendingCatalogRefresh = null; });
 	}
 
-	async completeHosted(target, turn, body, signal) {
+	async completeHosted(target, turn, body, signal, { thinkingOverride } = {}) {
 		const policy = this.config.phone.apiAgent;
 		const model = requireHostdOpenAiModel(turn.model, "phone API advisor model");
 		if (model.id !== policy.advisorModel) {
@@ -234,6 +234,7 @@ export class PhoneApiAgent {
 			body.max_output_tokens,
 			body,
 			signal,
+			{ thinkingOverride },
 		);
 		return collectOutputText(response);
 	}
@@ -314,7 +315,7 @@ export class PhoneApiAgent {
 				store: false,
 				prompt_cache_key: "phone-api-agent-v3:config-nudge",
 				max_output_tokens: Math.min(policy.maximumOutputTokens, 128),
-				reasoning: { effort: model.thinking },
+				reasoning: { effort: "low" },
 				service_tier: "default",
 				tools: [],
 				tool_choice: "none",
@@ -326,6 +327,7 @@ export class PhoneApiAgent {
 				turn,
 				body,
 				boundedSignal(policy.configNudgeTimeoutMs, signal),
+				{ thinkingOverride: "low" },
 			);
 			let result;
 			try {

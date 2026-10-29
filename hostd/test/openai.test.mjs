@@ -421,13 +421,42 @@ test("direct phone completion is internal-only, route-bound, model-pinned, and f
 		assert.equal(upstreamRequests[0].max_output_tokens, 512);
 		assert.deepEqual(upstreamRequests[0].tools, []);
 		assert.equal(upstreamRequests[0].tool_choice, "none");
-		assert.equal(state.store.openAiStatus(state.config.openAi).settled, 1);
 
+		const lowBody = {
+			...body,
+			reasoning: { effort: "low" },
+			max_output_tokens: 128,
+		};
+		const lowResponse = await gateway.completeDirectPhone(
+			state.target,
+			CONTEXT_A,
+			SOL_MODEL,
+			128,
+			lowBody,
+			undefined,
+			{ thinkingOverride: "low" },
+		);
+		assert.match(await lowResponse.text(), /response\.completed/);
+		assert.equal(upstreamRequests[1].reasoning.effort, "low");
+		assert.equal(upstreamRequests[1].max_output_tokens, 128);
+		assert.equal(state.store.openAiStatus(state.config.openAi).settled, 2);
+
+		await assert.rejects(
+			gateway.completeDirectPhone(state.target, CONTEXT_A, SOL_MODEL, 128, lowBody),
+			/openai_thinking_denied/,
+		);
+		await assert.rejects(
+			gateway.completeDirectPhone(
+				state.target, CONTEXT_A, SOL_MODEL, 128, lowBody, undefined,
+				{ thinkingOverride: "none" },
+			),
+			/openai_thinking_denied/,
+		);
 		await assert.rejects(
 			gateway.completeDirectPhone(state.target, CONTEXT_B, LUNA_MODEL, 512, requestBody()),
 			/openai_context_denied/,
 		);
-		assert.equal(upstreamRequests.length, 1);
+		assert.equal(upstreamRequests.length, 2);
 	} finally {
 		closeFixture(state);
 	}

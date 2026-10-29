@@ -678,7 +678,8 @@ The two mode commands are case-insensitive:
   one-line `about`; it never waits on Luna or the local gateway. Hostd refreshes
   `/v1/models` in the background and retains the last validated copy when the
   gateway is unavailable. Only after help is provider-accepted does Hostd try
-  one separately bounded Luna greeting; timeout or failure is silently skipped.
+  one separately bounded, low-reasoning Luna greeting; timeout or failure is
+  silently skipped while a bounded diagnostic token remains in the private ledger.
 - In config mode, an exact case-insensitive catalog `name` or `id` switches
   deterministically without Luna. Fuzzy requests alone reach Luna, which may
   select only one cached authenticated ID. Hostd owns all menu and switch

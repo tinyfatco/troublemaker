@@ -35,6 +35,14 @@ function approvedPhoneModel(modelId, allowedModels, label) {
 	return modelId;
 }
 
+const CONFIG_NUDGE_SKIP_REASONS = new Set([
+	"config_nudge_incomplete",
+	"config_nudge_model_failed",
+	"config_nudge_timeout",
+	"config_nudge_preempted",
+	"config_nudge_failed",
+]);
+
 export const CONTEXT_CUSTODY_TABLES = Object.freeze([
 	"routes",
 	"mcp_handoffs",
@@ -2630,14 +2638,17 @@ export class HostStore {
 		}
 	}
 
-	skipPhoneApiTurn(id) {
+	skipPhoneApiTurn(id, reason) {
+		if (!CONFIG_NUDGE_SKIP_REASONS.has(reason)) {
+			throw new Error("phone API config nudge skip reason is invalid");
+		}
 		const timestamp = now();
 		const updated = this.database.prepare(`
 			UPDATE phone_api_turns SET status = 'completed', reply_body = NULL,
-				provider_status = 'skipped', lease_expires_at = NULL, last_error = NULL,
+				provider_status = 'skipped', lease_expires_at = NULL, last_error = ?,
 				updated_at = ?, completed_at = ?
 			WHERE id = ? AND status = 'running' AND is_config_nudge = 1
-		`).run(timestamp, timestamp, id);
+		`).run(reason, timestamp, timestamp, id);
 		if (updated.changes !== 1) throw new Error("phone API config nudge skip conflicted");
 		return this.getPhoneApiTurn(id);
 	}
@@ -2646,8 +2657,8 @@ export class HostStore {
 		const timestamp = now();
 		return this.database.prepare(`
 			UPDATE phone_api_turns SET status = 'completed', reply_body = NULL,
-				provider_status = 'skipped', lease_expires_at = NULL, last_error = NULL,
-				updated_at = ?, completed_at = ?
+				provider_status = 'skipped', lease_expires_at = NULL,
+				last_error = 'config_nudge_preempted', updated_at = ?, completed_at = ?
 			WHERE thread_target = ? AND status IN ('queued', 'model_ready')
 				AND is_config_nudge = 1
 		`).run(timestamp, timestamp, threadTarget).changes;
