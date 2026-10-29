@@ -501,6 +501,7 @@ export class HostStore {
 				target_id TEXT NOT NULL,
 				context_id TEXT NOT NULL,
 				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
+				is_mode_command INTEGER NOT NULL DEFAULT 0 CHECK(is_mode_command IN (0, 1)),
 				model TEXT,
 				model_generation INTEGER NOT NULL DEFAULT 1 CHECK(model_generation > 0),
 				inbound_body TEXT NOT NULL,
@@ -841,6 +842,11 @@ export class HostStore {
 		add("workers_ai_requests", "rejection_count INTEGER NOT NULL DEFAULT 0");
 		add("phone_api_sessions", "model_generation INTEGER NOT NULL DEFAULT 1");
 		add("phone_api_turns", "model_generation INTEGER NOT NULL DEFAULT 1");
+		add("phone_api_turns", "is_mode_command INTEGER NOT NULL DEFAULT 0 CHECK(is_mode_command IN (0, 1))");
+		this.database.prepare(`
+			UPDATE phone_api_turns SET is_mode_command = 1
+			WHERE is_mode_command = 0 AND LOWER(TRIM(inbound_body)) = '/chat'
+		`).run();
 		add("mcp_handoffs", "relationship_id TEXT");
 		add("mcp_handoffs", "session_token_hash TEXT");
 		add("mcp_handoffs", "session_expires_at TEXT");
@@ -2279,7 +2285,8 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT id, provider_message_id AS providerMessageId,
 				thread_target AS threadTarget, target_id AS targetId, context_id AS contextId,
-				mode, model, model_generation AS modelGeneration, inbound_body AS inboundBody,
+				mode, is_mode_command AS isModeCommand,
+				model, model_generation AS modelGeneration, inbound_body AS inboundBody,
 				status, reply_body AS replyBody, selected_model AS selectedModel,
 				provider_reply_message_id AS providerReplyMessageId,
 				provider_status AS providerStatus, lease_expires_at AS leaseExpiresAt,
@@ -2339,12 +2346,14 @@ export class HostStore {
 			const session = this.getPhoneApiSession(threadTarget);
 			if (!session) throw new Error("phone API session was not created");
 			phoneModelId(session.selectedModel, "phone API selected model");
+			const isModeCommand = modeCommand === "chat" ? 1 : 0;
 			const queuedModel = session.mode === "chat" ? session.selectedModel : null;
 			const inserted = this.database.prepare(`
 				INSERT INTO phone_api_turns(
 					id, provider_message_id, thread_target, target_id, context_id,
-					mode, model, model_generation, inbound_body, status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+					mode, is_mode_command, model, model_generation,
+					inbound_body, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
 				ON CONFLICT(provider_message_id) DO NOTHING
 			`).run(
 				id,
@@ -2353,6 +2362,7 @@ export class HostStore {
 				conversation.targetId,
 				conversation.contextId,
 				session.mode,
+				isModeCommand,
 				queuedModel,
 				session.modelGeneration,
 				inboundBody,
@@ -2382,7 +2392,7 @@ export class HostStore {
 				WHERE status IN ('running', 'sending') AND lease_expires_at <= ?
 			`).run(timestamp, timestamp, timestamp);
 			const row = this.database.prepare(`
-				SELECT id, mode, model AS queuedModel
+				SELECT id, mode, is_mode_command AS isModeCommand, model AS queuedModel
 				FROM phone_api_turns
 				WHERE status = 'queued'
 				ORDER BY created_at, id LIMIT 1
@@ -2402,7 +2412,8 @@ export class HostStore {
 			if (claimed.changes !== 1) throw new Error("phone API turn claim conflicted");
 			const turn = this.database.prepare(`
 				SELECT turn.id, turn.provider_message_id AS providerMessageId,
-					turn.thread_target AS threadTarget, turn.mode, turn.model,
+					turn.thread_target AS threadTarget, turn.mode,
+					turn.is_mode_command AS isModeCommand, turn.model,
 					turn.model_generation AS modelGeneration,
 					turn.inbound_body AS inboundBody, turn.status,
 					turn.target_id AS targetId, turn.context_id AS contextId,
@@ -2432,6 +2443,7 @@ export class HostStore {
 			SELECT inbound_body AS inboundBody, reply_body AS replyBody, mode, model
 			FROM phone_api_turns
 			WHERE thread_target = ? AND model_generation = ? AND mode = 'chat'
+				AND is_mode_command = 0
 				AND status = 'completed' AND reply_body IS NOT NULL
 			ORDER BY created_at DESC, id DESC LIMIT ?
 		`).all(threadTarget, modelGeneration, maximumTurns).reverse().flatMap((turn) => ([
@@ -2496,7 +2508,8 @@ export class HostStore {
 			if (updated.changes !== 1) throw new Error("phone API send claim conflicted");
 			const result = this.database.prepare(`
 				SELECT turn.id, turn.thread_target AS threadTarget,
-					turn.reply_body AS replyBody, turn.status, turn.mode, turn.model,
+					turn.reply_body AS replyBody, turn.status, turn.mode,
+					turn.is_mode_command AS isModeCommand, turn.model,
 					turn.inbound_body AS inboundBody, turn.last_error AS lastError,
 					conversation.provider, conversation.provider_thread_id AS providerThreadId,
 					conversation.principal_hash AS principalHash,

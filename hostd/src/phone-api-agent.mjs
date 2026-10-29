@@ -15,9 +15,6 @@ function commandInput(mode, body) {
 	if (command === "/config") {
 		return "I entered configuration mode. Help me choose an approved model for this text conversation.";
 	}
-	if (command === "/chat") {
-		return "I entered chat mode. Briefly confirm that chat mode is active and ask what I want to discuss.";
-	}
 	return body;
 }
 
@@ -132,6 +129,17 @@ export class PhoneApiAgent {
 		if (!session) throw new Error("phone API session is missing");
 		const catalog = await this.localChatGateway.listModels(signal);
 		const allowedModels = catalog.map((model) => model.id);
+		if (turn.isModeCommand) {
+			const selected = catalog.find((model) => model.id === turn.model);
+			if (!selected) {
+				throw new Error("phone API chat command selected a model outside the authenticated catalog");
+			}
+			const reply = `Chat mode is on with ${selected.name}.`;
+			if (reply.length > policy.maximumReplyCharacters) {
+				throw new Error("phone API chat command reply exceeded its character bound");
+			}
+			return { reply, selectedModel: undefined, allowedModels };
+		}
 		let output;
 		if (turn.mode === "chat") {
 			if (!allowedModels.includes(turn.model)) {
@@ -150,7 +158,7 @@ export class PhoneApiAgent {
 					content: "Rewrite your answer to my previous message for carrier-safe SMS. Return only the replacement reply, and do not mention or repeat alcohol, sexual, hateful, firearm, tobacco, or cannabis content.",
 				}] : []),
 			], signal, { catalog });
-		} else {
+		} else if (turn.mode === "config") {
 			const model = requireHostdOpenAiModel(turn.model, "phone API advisor model");
 			if (model.id !== policy.advisorModel) {
 				throw new Error("phone API configuration turn did not use the configured advisor");
@@ -181,6 +189,8 @@ export class PhoneApiAgent {
 				signal,
 			);
 			output = await collectOutputText(response);
+		} else {
+			throw new Error("phone API turn mode is invalid");
 		}
 		if (turn.mode === "config") {
 			let result;

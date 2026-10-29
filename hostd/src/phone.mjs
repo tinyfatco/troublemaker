@@ -565,6 +565,7 @@ export class PhoneGateway {
 					if (
 						error instanceof PhoneProviderComplianceError
 						&& delivery.mode === "chat"
+						&& !delivery.isModeCommand
 						&& !delivery.lastError
 					) {
 						try {
