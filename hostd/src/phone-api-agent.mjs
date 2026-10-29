@@ -6,7 +6,7 @@ const MAXIMUM_STREAM_BYTES = 2 * 1024 * 1024;
 function inputText(role, text) {
 	return {
 		role,
-		content: [{ type: "input_text", text }],
+		content: [{ type: role === "assistant" ? "output_text" : "input_text", text }],
 	};
 }
 

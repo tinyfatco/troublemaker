@@ -410,6 +410,18 @@ test("config and chat modes use approved models and send directly from Hostd", a
 			modelCalls[1].body.input.some((entry) => JSON.stringify(entry).includes("Sol is the deeper option")),
 			true,
 		);
+		assert.deepEqual(
+			modelCalls[1].body.input.map((entry) => [
+				entry.role,
+				entry.content.map((part) => part.type),
+			]),
+			[
+				["developer", ["input_text"]],
+				["user", ["input_text"]],
+				["assistant", ["output_text"]],
+				["user", ["input_text"]],
+			],
+		);
 		assert.equal(providerSends[1].text, "Chat mode is active. What would you like to discuss?");
 		assert.equal(await state.gateway.acceptWebhook({
 			id: "provider-event-direct-delivered",
