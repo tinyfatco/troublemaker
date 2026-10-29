@@ -2475,7 +2475,8 @@ export class HostStore {
 			if (updated.changes !== 1) throw new Error("phone API send claim conflicted");
 			const result = this.database.prepare(`
 				SELECT turn.id, turn.thread_target AS threadTarget,
-					turn.reply_body AS replyBody, turn.status,
+					turn.reply_body AS replyBody, turn.status, turn.mode, turn.model,
+					turn.inbound_body AS inboundBody, turn.last_error AS lastError,
 					conversation.provider, conversation.provider_thread_id AS providerThreadId,
 					conversation.principal_hash AS principalHash,
 					turn.target_id AS targetId, turn.context_id AS contextId,
@@ -2498,6 +2499,26 @@ export class HostStore {
 			this.database.exec("ROLLBACK");
 			throw error;
 		}
+	}
+
+	retryPhoneApiSendAfterCompliance(id, { replyBody, providerCode, category }) {
+		if (typeof replyBody !== "string" || !replyBody.trim()) {
+			throw new Error("phone API compliance retry reply is invalid");
+		}
+		const timestamp = now();
+		const detail = [providerCode, category].filter(Boolean).join(":");
+		const updated = this.database.prepare(`
+			UPDATE phone_api_turns SET status = 'model_ready', reply_body = ?,
+				lease_expires_at = NULL, last_error = ?, updated_at = ?
+			WHERE id = ? AND status = 'sending' AND last_error IS NULL
+		`).run(
+			replyBody.trim(),
+			`provider_compliance_rewrite${detail ? `:${detail}` : ""}`.slice(0, 1000),
+			timestamp,
+			id,
+		);
+		if (updated.changes !== 1) throw new Error("phone API compliance retry conflicted");
+		return this.getPhoneApiTurn(id);
 	}
 
 	completePhoneApiSend(id, { providerMessageId, providerStatus }) {

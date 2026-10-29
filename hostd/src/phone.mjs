@@ -144,6 +144,34 @@ export class PhoneDeliveryUncertainError extends Error {
 	}
 }
 
+function safeProviderToken(value) {
+	return typeof value === "string" && /^[A-Za-z0-9_.:-]{1,80}$/.test(value)
+		? value
+		: undefined;
+}
+
+export class PhoneProviderRejectedError extends Error {
+	constructor(status, result = {}) {
+		const providerError = safeProviderToken(result.error);
+		const providerCode = safeProviderToken(result.code);
+		const category = safeProviderToken(result.category);
+		const detail = [providerError, providerCode, category].filter(Boolean).join("/");
+		super(`phone provider rejected delivery with HTTP ${status}${detail ? ` (${detail})` : ""}`);
+		this.name = "PhoneProviderRejectedError";
+		this.status = status;
+		this.providerError = providerError;
+		this.providerCode = providerCode;
+		this.category = category;
+	}
+}
+
+export class PhoneProviderComplianceError extends PhoneProviderRejectedError {
+	constructor(status, result) {
+		super(status, result);
+		this.name = "PhoneProviderComplianceError";
+	}
+}
+
 export class SendlyDirectProvider {
 	constructor(config, { fetchImpl = fetch } = {}) {
 		this.config = config;
@@ -180,7 +208,10 @@ export class SendlyDirectProvider {
 			// The bounded status error below intentionally excludes arbitrary provider HTML.
 		}
 		if (!response.ok) {
-			throw new Error(`phone provider rejected delivery with HTTP ${response.status}`);
+			if (result.error === "compliance_blocked" && result.code === "SHAFT_CONTENT_DETECTED") {
+				throw new PhoneProviderComplianceError(response.status, result);
+			}
+			throw new PhoneProviderRejectedError(response.status, result);
 		}
 		const providerMessageId = firstString(result.id, result.message_id, result.messageId);
 		if (!providerMessageId) {
@@ -532,11 +563,39 @@ export class PhoneGateway {
 						providerStatus: receipt.status,
 					});
 				} catch (error) {
-					this.store.failPhoneApiTurn(
-						delivery.id,
-						error instanceof PhoneDeliveryUncertainError ? "uncertain" : "failed",
-						error instanceof Error ? error.message : String(error),
-					);
+					if (
+						error instanceof PhoneProviderComplianceError
+						&& delivery.mode === "chat"
+						&& !delivery.lastError
+					) {
+						try {
+							const turn = this.store.getPhoneApiTurn(delivery.id);
+							const replacement = await this.apiAgent.complete(
+								turn,
+								undefined,
+								{ providerComplianceRetry: true },
+							);
+							this.store.retryPhoneApiSendAfterCompliance(delivery.id, {
+								replyBody: replacement.reply,
+								providerCode: error.providerCode,
+								category: error.category,
+							});
+						} catch (retryError) {
+							this.store.failPhoneApiTurn(
+								delivery.id,
+								["openai_result_uncertain", "local_model_result_uncertain"].includes(retryError?.code)
+									? "uncertain"
+									: "failed",
+								retryError instanceof Error ? retryError.message : String(retryError),
+							);
+						}
+					} else {
+						this.store.failPhoneApiTurn(
+							delivery.id,
+							error instanceof PhoneDeliveryUncertainError ? "uncertain" : "failed",
+							error instanceof Error ? error.message : String(error),
+						);
+					}
 				}
 			}
 			if (!didWork) return;

@@ -511,6 +511,126 @@ test("config selects Example Local and chat uses only the bounded local gateway"
 	}
 });
 
+test("a definitive provider content rejection gets one carrier-safe local rewrite", async () => {
+	const providerSends = [];
+	const localCalls = [];
+	const state = subject(
+		async (_url, options) => {
+			providerSends.push(JSON.parse(options.body));
+			if (providerSends.length === 2) {
+				return Response.json({
+					error: "compliance_blocked",
+					message: "Synthetic restricted content.",
+					code: "SHAFT_CONTENT_DETECTED",
+					category: "alcohol",
+					matchedTerms: ["synthetic-term"],
+					suggestion: "Rewrite without the restricted topic.",
+				}, { status: 400 });
+			}
+			return Response.json({ id: `provider-compliance-${providerSends.length}`, status: "queued" });
+		},
+		localApiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				return modelResponse(JSON.stringify({
+					reply: "Example Local is selected for chat.",
+					selected_model: "example-local",
+				}), model);
+			},
+		},
+		{
+			has(modelId) { return modelId === "example-local"; },
+			async complete(modelId, messages) {
+				localCalls.push({ modelId, messages });
+				return localCalls.length === 1
+					? "A synthetic first draft rejected by the provider."
+					: "A playful carrier-safe replacement.";
+			},
+		},
+	);
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+		const chat = inbound({ id: "provider-message-compliance", text: "/chat" });
+		chat.id = "provider-event-compliance";
+		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(providerSends.length, 3);
+		assert.equal(localCalls.length, 2);
+		assert.doesNotMatch(localCalls[0].messages[0].content, /carrier-safe|provider rejected the prior draft/i);
+		assert.match(localCalls[1].messages[0].content, /provider rejected the prior draft/i);
+		assert.equal(localCalls[1].messages.at(-1).role, "user");
+		assert.match(localCalls[1].messages.at(-1).content, /Rewrite your answer.*carrier-safe SMS/i);
+		assert.equal(providerSends[1].text, "A synthetic first draft rejected by the provider.");
+		assert.equal(providerSends[2].text, "A playful carrier-safe replacement.");
+		const turn = state.store.getPhoneApiTurn("phone-api:provider-message-compliance");
+		assert.equal(turn.status, "completed");
+		assert.equal(turn.replyBody, "A playful carrier-safe replacement.");
+		assert.equal(turn.providerReplyMessageId, "provider-compliance-3");
+		assert.equal(turn.lastError, null);
+	} finally {
+		state.close();
+	}
+});
+
+test("a second provider content rejection fails closed without a third send", async () => {
+	let providerCalls = 0;
+	let localCalls = 0;
+	const state = subject(
+		async () => {
+			providerCalls += 1;
+			if (providerCalls === 1) {
+				return Response.json({ id: "provider-config", status: "queued" });
+			}
+			return Response.json({
+				error: "compliance_blocked",
+				message: "Synthetic restricted content.",
+				code: "SHAFT_CONTENT_DETECTED",
+				category: "alcohol",
+				matchedTerms: ["synthetic-term"],
+				suggestion: "Rewrite without the restricted topic.",
+			}, { status: 400 });
+		},
+		localApiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				return modelResponse(JSON.stringify({
+					reply: "Example Local is selected for chat.",
+					selected_model: "example-local",
+				}), model);
+			},
+		},
+		{
+			has(modelId) { return modelId === "example-local"; },
+			async complete() {
+				localCalls += 1;
+				return `Synthetic local draft ${localCalls}.`;
+			},
+		},
+	);
+	try {
+		assert.equal(await state.gateway.acceptWebhook(inbound({ text: "/config" })), "phone_api_queued");
+		state.gateway.stopped = false;
+		await state.gateway.flushApiAgent();
+		const chat = inbound({ id: "provider-message-compliance-twice", text: "/chat" });
+		chat.id = "provider-event-compliance-twice";
+		assert.equal(await state.gateway.acceptWebhook(chat), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+		assert.equal(providerCalls, 3);
+		assert.equal(localCalls, 2);
+		const turn = state.store.getPhoneApiTurn("phone-api:provider-message-compliance-twice");
+		assert.equal(turn.status, "failed");
+		assert.match(turn.lastError, /compliance_blocked\/SHAFT_CONTENT_DETECTED\/alcohol/);
+		await state.gateway.flushApiAgent();
+		assert.equal(providerCalls, 3);
+	} finally {
+		state.close();
+	}
+});
+
 test("an ambiguous direct provider result is never retried", async () => {
 	let providerCalls = 0;
 	const state = subject(

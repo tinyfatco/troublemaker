@@ -101,7 +101,7 @@ function displayName(config, modelId) {
 	return config.localModels.find((model) => model.id === modelId)?.displayName ?? modelId;
 }
 
-function systemPrompt(config, turn, selectedModel) {
+function systemPrompt(config, turn, selectedModel, { providerComplianceRetry = false } = {}) {
 	const allowed = config.allowedModels
 		.map((modelId) => `${modelId} (${displayName(config, modelId)})`)
 		.join(", ");
@@ -122,6 +122,9 @@ function systemPrompt(config, turn, selectedModel) {
 		`This turn uses the sender's approved model selection: ${turn.model}.`,
 		"Stay within the current conversation. You have no tools and cannot contact another number or agent.",
 		`Keep the reply within ${config.maximumReplyCharacters} characters.`,
+		...(providerComplianceRetry ? [
+			"The provider rejected the prior draft for restricted content. Write a fresh carrier-safe answer without naming or echoing the restricted topic.",
+		] : []),
 		"Never claim an external action was performed. Keep the reply compact and useful.",
 	].join("\n");
 }
@@ -134,7 +137,7 @@ export class PhoneApiAgent {
 		this.localChatGateway = localChatGateway ?? new LocalChatModelGateway({ config });
 	}
 
-	async complete(turn, signal) {
+	async complete(turn, signal, { providerComplianceRetry = false } = {}) {
 		const policy = this.config.phone.apiAgent;
 		if (!policy.allowedModels.includes(turn.model)) {
 			throw new Error("phone API turn selected a model outside its allowlist");
@@ -147,13 +150,17 @@ export class PhoneApiAgent {
 			turn.threadTarget,
 			policy.maximumHistoryMessages,
 		);
-		const prompt = systemPrompt(policy, turn, session.selectedModel);
+		const prompt = systemPrompt(policy, turn, session.selectedModel, { providerComplianceRetry });
 		let output;
 		if (turn.mode === "chat" && this.localChatGateway.has(turn.model)) {
 			output = await this.localChatGateway.complete(turn.model, [
 				{ role: "system", content: prompt },
 				...history.map((message) => ({ role: message.role, content: message.body })),
 				{ role: "user", content: commandInput(turn.mode, turn.inboundBody) },
+				...(providerComplianceRetry ? [{
+					role: "user",
+					content: "Rewrite your answer to my previous message for carrier-safe SMS. Return only the replacement reply, and do not mention or repeat alcohol, sexual, hateful, firearm, tobacco, or cannabis content.",
+				}] : []),
 			], signal);
 		} else {
 			const model = requireHostdOpenAiModel(turn.model, "phone API turn model");
