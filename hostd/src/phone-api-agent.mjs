@@ -97,35 +97,22 @@ function configFormat(allowedModels) {
 	};
 }
 
-function displayName(config, modelId) {
-	return config.localModels.find((model) => model.id === modelId)?.displayName ?? modelId;
-}
-
-function systemPrompt(config, turn, selectedModel, { providerComplianceRetry = false } = {}) {
-	const allowed = config.allowedModels
-		.map((modelId) => `${modelId} (${displayName(config, modelId)})`)
-		.join(", ");
-	if (turn.mode === "config") {
-		return [
-			"You are Luna, TinyFat's model-selection advisor over SMS.",
-			`The only approved model IDs and names are: ${allowed}.`,
-			`The currently selected chat model is ${selectedModel} (${displayName(config, selectedModel)}).`,
-			"Luna is the economical default for normal conversation. Sol is the deeper, more expensive option for work that genuinely benefits from it.",
-			"Give concise, accurate advice in plain text suitable for SMS.",
-			`Keep the reply within ${config.maximumReplyCharacters} characters.`,
-			"Set selected_model only when the person clearly chooses one approved model; otherwise return null.",
-			"You have no tools, cannot contact another number or agent, and must not imply that you performed an external action.",
-		].join("\n");
-	}
+function configPrompt(config, catalog, selectedModel) {
+	const current = catalog.find((model) => model.id === selectedModel);
+	const choices = catalog
+		.map((model) => `- ${model.id} (${model.name}): ${model.about}`)
+		.join("\n");
 	return [
-		`You are ${displayName(config, turn.model)}, a concise conversational agent replying over SMS.`,
-		`This turn uses the sender's approved model selection: ${turn.model}.`,
-		"Stay within the current conversation. You have no tools and cannot contact another number or agent.",
+		"You are Luna, TinyFat's model-selection advisor over SMS.",
+		"The only approved chat models are the authenticated local catalog entries below:",
+		choices,
+		current
+			? `The currently selected chat model is ${current.id} (${current.name}).`
+			: `The current selection ${selectedModel} is no longer in the catalog; help the person choose a listed model.`,
+		"Give concise, accurate advice in plain text suitable for SMS.",
 		`Keep the reply within ${config.maximumReplyCharacters} characters.`,
-		...(providerComplianceRetry ? [
-			"The provider rejected the prior draft for restricted content. Write a fresh carrier-safe answer without naming or echoing the restricted topic.",
-		] : []),
-		"Never claim an external action was performed. Keep the reply compact and useful.",
+		"Set selected_model only when the person clearly chooses one listed model; otherwise return null.",
+		"You have no tools, cannot contact another number or agent, and must not imply that you performed an external action.",
 	].join("\n");
 }
 
@@ -139,50 +126,51 @@ export class PhoneApiAgent {
 
 	async complete(turn, signal, { providerComplianceRetry = false } = {}) {
 		const policy = this.config.phone.apiAgent;
-		if (!policy.allowedModels.includes(turn.model)) {
-			throw new Error("phone API turn selected a model outside its allowlist");
-		}
 		const target = this.config.targetsById.get(turn.targetId);
 		if (!target) throw new Error("phone API turn selected an unavailable agent target");
 		const session = this.store.getPhoneApiSession(turn.threadTarget);
 		if (!session) throw new Error("phone API session is missing");
-		const history = this.store.listPhoneApiHistory(
-			turn.threadTarget,
-			policy.maximumHistoryMessages,
-		);
-		const prompt = systemPrompt(policy, turn, session.selectedModel, { providerComplianceRetry });
+		const catalog = await this.localChatGateway.listModels(signal);
+		const allowedModels = catalog.map((model) => model.id);
 		let output;
-		if (turn.mode === "chat" && this.localChatGateway.has(turn.model)) {
+		if (turn.mode === "chat") {
+			if (!allowedModels.includes(turn.model)) {
+				throw new Error("phone API turn selected a model outside the authenticated catalog");
+			}
+			const history = this.store.listPhoneApiHistory(
+				turn.threadTarget,
+				turn.modelGeneration,
+				policy.maximumHistoryMessages,
+			);
 			output = await this.localChatGateway.complete(turn.model, [
-				{ role: "system", content: prompt },
 				...history.map((message) => ({ role: message.role, content: message.body })),
 				{ role: "user", content: commandInput(turn.mode, turn.inboundBody) },
 				...(providerComplianceRetry ? [{
 					role: "user",
 					content: "Rewrite your answer to my previous message for carrier-safe SMS. Return only the replacement reply, and do not mention or repeat alcohol, sexual, hateful, firearm, tobacco, or cannabis content.",
 				}] : []),
-			], signal);
+			], signal, { catalog });
 		} else {
-			const model = requireHostdOpenAiModel(turn.model, "phone API turn model");
+			const model = requireHostdOpenAiModel(turn.model, "phone API advisor model");
+			if (model.id !== policy.advisorModel) {
+				throw new Error("phone API configuration turn did not use the configured advisor");
+			}
 			const body = {
 				model: model.id,
 				input: [
-					inputText("developer", prompt),
-					...history.map((message) => inputText(message.role, message.body)),
+					inputText("developer", configPrompt(policy, catalog, session.selectedModel)),
 					inputText("user", commandInput(turn.mode, turn.inboundBody)),
 				],
 				stream: true,
 				store: false,
-				prompt_cache_key: `phone-api-agent-v1:${turn.mode}`,
+				prompt_cache_key: "phone-api-agent-v2:config",
 				max_output_tokens: policy.maximumOutputTokens,
 				reasoning: { effort: model.thinking },
 				service_tier: "default",
 				tools: [],
 				tool_choice: "none",
 				parallel_tool_calls: false,
-				text: turn.mode === "config"
-					? configFormat(policy.allowedModels)
-					: { format: { type: "text" } },
+				text: configFormat(allowedModels),
 			};
 			const response = await this.openAiGateway.completeDirectPhone(
 				target,
@@ -206,17 +194,17 @@ export class PhoneApiAgent {
 				? undefined
 				: result?.selected_model;
 			if (!reply) throw new Error("phone API configuration response had no reply");
-			if (selectedModel !== undefined && !policy.allowedModels.includes(selectedModel)) {
+			if (selectedModel !== undefined && !allowedModels.includes(selectedModel)) {
 				throw new Error("phone API configuration response selected an unapproved model");
 			}
 			if (reply.length > policy.maximumReplyCharacters) {
 				throw new Error("phone API configuration reply exceeded its character bound");
 			}
-			return { reply, selectedModel };
+			return { reply, selectedModel, allowedModels };
 		}
 		if (output.length > policy.maximumReplyCharacters) {
 			throw new Error("phone API chat reply exceeded its character bound");
 		}
-		return { reply: output, selectedModel: undefined };
+		return { reply: output, selectedModel: undefined, allowedModels };
 	}
 }

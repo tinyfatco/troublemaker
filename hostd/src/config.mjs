@@ -652,114 +652,90 @@ function phoneApiAgentConfig(raw, environment) {
 		throw new Error("phone.apiAgent.featureSenders cannot repeat a sender");
 	}
 
-	const rawLocalModels = apiAgent.localModels ?? [];
-	if (!Array.isArray(rawLocalModels) || rawLocalModels.length > 8) {
-		throw new Error("phone.apiAgent.localModels must contain at most 8 local models");
+	if (apiAgent.localModels !== undefined || apiAgent.allowedModels !== undefined) {
+		throw new Error("phone.apiAgent must use localCatalog instead of static localModels or allowedModels");
 	}
-	const localModels = rawLocalModels.map((rawModel, index) => {
-		const label = `phone.apiAgent.localModels[${index}]`;
-		const model = object(rawModel, label);
-		const id = text(model.id, `${label}.id`).toLowerCase();
-		if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(id) || getHostdOpenAiModel(id)) {
-			throw new Error(`${label}.id must be a distinct local model ID`);
-		}
-		const displayName = text(model.displayName, `${label}.displayName`);
-		if (displayName.length > 64 || /[\u0000-\u001f\u007f]/u.test(displayName)) {
-			throw new Error(`${label}.displayName is invalid`);
-		}
-		const providerModel = text(model.providerModel, `${label}.providerModel`);
-		if (providerModel.length > 200 || /[\u0000-\u001f\u007f]/u.test(providerModel)) {
-			throw new Error(`${label}.providerModel is invalid`);
-		}
-		const parsed = new URL(httpUrl(model.baseUrl, `${label}.baseUrl`));
-		if (parsed.protocol !== "http:" || parsed.hostname !== "127.0.0.1"
-			|| parsed.pathname !== "/v1" || parsed.search || parsed.hash) {
-			throw new Error(`${label}.baseUrl must be exact loopback HTTP ending in /v1`);
-		}
-		const apiKey = envSecret(model.apiKeyEnv, `${label}.apiKeyEnv`, environment);
-		if (apiKey.length < 24 || apiKey.length > 512 || !/^[A-Za-z0-9._~-]+$/.test(apiKey)) {
-			throw new Error(`${label}.apiKeyEnv must contain a bounded token`);
-		}
-		return {
-			id,
-			displayName,
-			providerModel,
-			baseUrl: parsed.toString().replace(/\/$/, ""),
-			apiKey,
-			maximumOutputTokens: integer(
-				model.maximumOutputTokens,
-				150,
-				`${label}.maximumOutputTokens`,
-				16,
-				400,
-			),
-			repetitionPenalty: decimal(
-				model.repetitionPenalty,
-				1.1,
-				`${label}.repetitionPenalty`,
-				1,
-				2,
-			),
-			requestTimeoutMs: integer(
-				model.requestTimeoutMs,
-				60_000,
-				`${label}.requestTimeoutMs`,
-				1_000,
-				120_000,
-			),
-			maximumRequestBytes: integer(
-				model.maximumRequestBytes,
-				64 * 1024,
-				`${label}.maximumRequestBytes`,
-				1024,
-				64 * 1024,
-			),
-		};
-	});
-	if (new Set(localModels.map((model) => model.id)).size !== localModels.length) {
-		throw new Error("phone.apiAgent.localModels cannot repeat an ID");
+	const rawCatalog = object(apiAgent.localCatalog, "phone.apiAgent.localCatalog");
+	const parsedCatalogUrl = new URL(httpUrl(
+		rawCatalog.baseUrl,
+		"phone.apiAgent.localCatalog.baseUrl",
+	));
+	if (parsedCatalogUrl.protocol !== "http:" || parsedCatalogUrl.hostname !== "127.0.0.1"
+		|| parsedCatalogUrl.pathname !== "/v1" || parsedCatalogUrl.search || parsedCatalogUrl.hash) {
+		throw new Error("phone.apiAgent.localCatalog.baseUrl must be exact loopback HTTP ending in /v1");
 	}
-	const localModelIds = new Set(localModels.map((model) => model.id));
-	const rawAllowedModels = apiAgent.allowedModels;
-	if (!Array.isArray(rawAllowedModels) || rawAllowedModels.length === 0 || rawAllowedModels.length > 16) {
-		throw new Error("phone.apiAgent.allowedModels must contain from 1 to 16 approved models");
+	const catalogApiKey = envSecret(
+		rawCatalog.apiKeyEnv,
+		"phone.apiAgent.localCatalog.apiKeyEnv",
+		environment,
+	);
+	if (catalogApiKey.length < 24 || catalogApiKey.length > 512
+		|| !/^[A-Za-z0-9._~-]+$/.test(catalogApiKey)) {
+		throw new Error("phone.apiAgent.localCatalog.apiKeyEnv must contain a bounded token");
 	}
-	const allowedModels = rawAllowedModels.map((value, index) => {
-		const modelId = text(value, `phone.apiAgent.allowedModels[${index}]`);
-		if (!localModelIds.has(modelId)) {
-			requireHostdOpenAiModel(modelId, `phone.apiAgent.allowedModels[${index}]`);
-		}
-		return modelId;
-	});
-	if (new Set(allowedModels).size !== allowedModels.length) {
-		throw new Error("phone.apiAgent.allowedModels cannot repeat a model");
-	}
-	for (const localModel of localModels) {
-		if (!allowedModels.includes(localModel.id)) {
-			throw new Error(`phone.apiAgent local model ${localModel.id} is not approved`);
-		}
-	}
+	const localCatalog = {
+		baseUrl: parsedCatalogUrl.toString().replace(/\/$/, ""),
+		apiKey: catalogApiKey,
+		maximumOutputTokens: integer(
+			rawCatalog.maximumOutputTokens,
+			150,
+			"phone.apiAgent.localCatalog.maximumOutputTokens",
+			16,
+			400,
+		),
+		repetitionPenalty: decimal(
+			rawCatalog.repetitionPenalty,
+			1.1,
+			"phone.apiAgent.localCatalog.repetitionPenalty",
+			1,
+			2,
+		),
+		requestTimeoutMs: integer(
+			rawCatalog.requestTimeoutMs,
+			60_000,
+			"phone.apiAgent.localCatalog.requestTimeoutMs",
+			1_000,
+			120_000,
+		),
+		maximumRequestBytes: integer(
+			rawCatalog.maximumRequestBytes,
+			64 * 1024,
+			"phone.apiAgent.localCatalog.maximumRequestBytes",
+			1024,
+			64 * 1024,
+		),
+		maximumCatalogBytes: integer(
+			rawCatalog.maximumCatalogBytes,
+			64 * 1024,
+			"phone.apiAgent.localCatalog.maximumCatalogBytes",
+			1024,
+			64 * 1024,
+		),
+		maximumModels: integer(
+			rawCatalog.maximumModels,
+			16,
+			"phone.apiAgent.localCatalog.maximumModels",
+			1,
+			32,
+		),
+	};
 	const advisorModel = text(
 		apiAgent.advisorModel ?? HOSTD_OPENAI_DEFAULT_MODEL,
 		"phone.apiAgent.advisorModel",
 	);
-	const defaultModel = text(
-		apiAgent.defaultModel ?? advisorModel,
-		"phone.apiAgent.defaultModel",
-	);
 	requireHostdOpenAiModel(advisorModel, "phone.apiAgent.advisorModel");
-	if (!allowedModels.includes(advisorModel)) {
-		throw new Error("phone.apiAgent.advisorModel must be in phone.apiAgent.allowedModels");
-	}
-	if (!allowedModels.includes(defaultModel)) {
-		throw new Error("phone.apiAgent.defaultModel must be in phone.apiAgent.allowedModels");
+	const defaultModel = text(
+		apiAgent.defaultModel,
+		"phone.apiAgent.defaultModel",
+	).toLowerCase();
+	if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(defaultModel) || getHostdOpenAiModel(defaultModel)) {
+		throw new Error("phone.apiAgent.defaultModel must be a local catalog model ID");
 	}
 	return {
 		featureSenders,
 		advisorModel,
 		defaultModel,
-		allowedModels,
-		localModels,
+		localCatalog,
 		maximumHistoryMessages: integer(
 			apiAgent.maximumHistoryMessages,
 			24,

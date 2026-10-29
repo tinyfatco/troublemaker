@@ -509,7 +509,7 @@ test("loads an optional host-owned Meta Contact exporter without exposing author
 	}
 });
 
-test("loads a direct phone API feature flag only with exact senders and approved models", async () => {
+test("loads a direct phone API feature with one authenticated dynamic catalog", async () => {
 	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
 	const directory = await mkdtemp(join(tmpdir(), "hostd-phone-api-agent-config-"));
 	const path = join(directory, "config.json");
@@ -517,23 +517,35 @@ test("loads a direct phone API feature flag only with exact senders and approved
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.phone.apiAgent = {
 			featureSenders: ["+15555550123", "+15555550124"],
-			localModels: [],
 			advisorModel: "gpt-5.6-luna",
-			defaultModel: "gpt-5.6-luna",
-			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol"],
+			defaultModel: "example-alpha",
+			localCatalog: {
+				baseUrl: "http://127.0.0.1:19043/v1",
+				apiKeyEnv: "EXAMPLE_LOCAL_MODEL_TOKEN",
+				maximumOutputTokens: 150,
+				repetitionPenalty: 1.1,
+				requestTimeoutMs: 60_000,
+				maximumRequestBytes: 64 * 1024,
+				maximumCatalogBytes: 32 * 1024,
+				maximumModels: 8,
+			},
 			maximumHistoryMessages: 18,
 			maximumReplyCharacters: 900,
 			maximumOutputTokens: 512,
 			pollIntervalSeconds: 2,
 		};
 		await writeFile(path, JSON.stringify(raw));
-		assert.deepEqual((await loadConfig(path, ENVIRONMENT)).phone.apiAgent, raw.phone.apiAgent);
+		const config = (await loadConfig(path, ENVIRONMENT)).phone.apiAgent;
+		const expected = {
+			...raw.phone.apiAgent,
+			localCatalog: {
+				...raw.phone.apiAgent.localCatalog,
+				apiKey: ENVIRONMENT.EXAMPLE_LOCAL_MODEL_TOKEN,
+			},
+		};
+		delete expected.localCatalog.apiKeyEnv;
+		assert.deepEqual(config, expected);
 
-		raw.phone.apiAgent.allowedModels.push("gpt-example-unapproved");
-		await writeFile(path, JSON.stringify(raw));
-		await assert.rejects(loadConfig(path, ENVIRONMENT), /not an approved Hostd OpenAI model/);
-
-		raw.phone.apiAgent.allowedModels = ["gpt-5.6-luna", "gpt-5.6-sol"];
 		raw.phone.apiAgent.featureSenders.push(raw.phone.apiAgent.featureSenders[0]);
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /featureSenders cannot repeat a sender/);
@@ -555,63 +567,46 @@ test("loads a direct phone API feature flag only with exact senders and approved
 	}
 });
 
-test("loads one authenticated loopback-only local phone model", async () => {
+test("rejects unsafe or legacy phone model catalog configuration", async () => {
 	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
-	const directory = await mkdtemp(join(tmpdir(), "hostd-local-phone-model-config-"));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-local-phone-catalog-config-"));
 	const path = join(directory, "config.json");
 	try {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.phone.apiAgent = {
-			featureSenders: ["+15555550123", "+15555550124"],
+			featureSenders: ["+15555550123"],
 			advisorModel: "gpt-5.6-luna",
-			defaultModel: "gpt-5.6-luna",
-			allowedModels: ["gpt-5.6-luna", "gpt-5.6-sol", "example-local"],
-			localModels: [{
-				id: "example-local",
-				displayName: "Example Local",
-				providerModel: "example/local-model",
+			defaultModel: "example-alpha",
+			localCatalog: {
 				baseUrl: "http://127.0.0.1:19043/v1",
 				apiKeyEnv: "EXAMPLE_LOCAL_MODEL_TOKEN",
 				maximumOutputTokens: 150,
-				repetitionPenalty: 1.1,
-				requestTimeoutMs: 60_000,
-				maximumRequestBytes: 64 * 1024,
-			}],
+			},
 		};
-		await writeFile(path, JSON.stringify(raw));
-		const config = await loadConfig(path, ENVIRONMENT);
-		assert.deepEqual(config.phone.apiAgent.allowedModels, raw.phone.apiAgent.allowedModels);
-		assert.deepEqual(config.phone.apiAgent.localModels, [{
-			id: "example-local",
-			displayName: "Example Local",
-			providerModel: "example/local-model",
-			baseUrl: "http://127.0.0.1:19043/v1",
-			apiKey: ENVIRONMENT.EXAMPLE_LOCAL_MODEL_TOKEN,
-			maximumOutputTokens: 150,
-			repetitionPenalty: 1.1,
-			requestTimeoutMs: 60_000,
-			maximumRequestBytes: 64 * 1024,
-		}]);
-
-		raw.phone.apiAgent.localModels[0].baseUrl = "http://192.0.2.10:19043/v1";
+		raw.phone.apiAgent.localCatalog.baseUrl = "http://192.0.2.10:19043/v1";
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be exact loopback HTTP/);
 
-		raw.phone.apiAgent.localModels[0].baseUrl = "http://127.0.0.1:19043/v1";
-		raw.phone.apiAgent.localModels[0].maximumOutputTokens = 401;
+		raw.phone.apiAgent.localCatalog.baseUrl = "http://127.0.0.1:19043/v1";
+		raw.phone.apiAgent.localCatalog.maximumOutputTokens = 401;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(loadConfig(path, ENVIRONMENT), /maximumOutputTokens must be an integer from 16 to 400/);
 
-		raw.phone.apiAgent.localModels[0].maximumOutputTokens = 150;
+		raw.phone.apiAgent.localCatalog.maximumOutputTokens = 150;
 		await writeFile(path, JSON.stringify(raw));
 		await assert.rejects(
 			loadConfig(path, { ...ENVIRONMENT, EXAMPLE_LOCAL_MODEL_TOKEN: undefined }),
 			/references unavailable environment variable EXAMPLE_LOCAL_MODEL_TOKEN/,
 		);
 
-		raw.phone.apiAgent.localModels[0].id = "gpt-5.6-luna";
+		raw.phone.apiAgent.defaultModel = "Qwen/Qwen3.5-4B";
 		await writeFile(path, JSON.stringify(raw));
-		await assert.rejects(loadConfig(path, ENVIRONMENT), /distinct local model ID/);
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be a local catalog model ID/);
+
+		raw.phone.apiAgent.defaultModel = "example-alpha";
+		raw.phone.apiAgent.localModels = [];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must use localCatalog/);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

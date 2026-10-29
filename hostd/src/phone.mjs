@@ -529,7 +529,6 @@ export class PhoneGateway {
 			let didWork = false;
 			const turn = this.store.claimPhoneApiTurn({
 				advisorModel: this.config.phone.apiAgent.advisorModel,
-				allowedModels: this.config.phone.apiAgent.allowedModels,
 				leaseSeconds: modelLeaseSeconds,
 			});
 			if (turn) {
@@ -539,7 +538,7 @@ export class PhoneGateway {
 					this.store.completePhoneApiModel(turn.id, {
 						replyBody: result.reply,
 						selectedModel: result.selectedModel,
-						allowedModels: this.config.phone.apiAgent.allowedModels,
+						allowedModels: result.allowedModels,
 					});
 				} catch (error) {
 					this.store.failPhoneApiTurn(
@@ -683,7 +682,6 @@ export class PhoneGateway {
 				modeCommand,
 				inboundBody: text,
 				defaultModel: this.config.phone.apiAgent.defaultModel,
-				allowedModels: this.config.phone.apiAgent.allowedModels,
 			});
 			this.store.markSeen("phone-webhook", providerEventId, "phone_api_queued");
 			if (!this.stopped) this.requestApiAgentFlush();

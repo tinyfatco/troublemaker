@@ -20,11 +20,15 @@ function future(seconds) {
 	return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
-function approvedPhoneModel(modelId, allowedModels, label) {
-	if (typeof modelId !== "string" || !modelId || modelId.length > 200
-		|| /[\u0000-\u001f\u007f]/u.test(modelId)) {
+function phoneModelId(modelId, label) {
+	if (typeof modelId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(modelId)) {
 		throw new Error(`${label} is invalid`);
 	}
+	return modelId;
+}
+
+function approvedPhoneModel(modelId, allowedModels, label) {
+	phoneModelId(modelId, label);
 	if (!Array.isArray(allowedModels) || !allowedModels.includes(modelId)) {
 		throw new Error(`${label} is not approved`);
 	}
@@ -482,6 +486,7 @@ export class HostStore {
 				thread_target TEXT PRIMARY KEY,
 				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
 				selected_model TEXT NOT NULL,
+				model_generation INTEGER NOT NULL DEFAULT 1 CHECK(model_generation > 0),
 				generation INTEGER NOT NULL DEFAULT 1 CHECK(generation > 0),
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
@@ -497,6 +502,7 @@ export class HostStore {
 				context_id TEXT NOT NULL,
 				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
 				model TEXT,
+				model_generation INTEGER NOT NULL DEFAULT 1 CHECK(model_generation > 0),
 				inbound_body TEXT NOT NULL,
 				status TEXT NOT NULL CHECK(status IN (
 					'queued', 'running', 'model_ready', 'sending',
@@ -833,6 +839,8 @@ export class HostStore {
 		add("gmail_drafts", "to_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("gmail_drafts", "cc_addresses_json TEXT NOT NULL DEFAULT '[]'");
 		add("workers_ai_requests", "rejection_count INTEGER NOT NULL DEFAULT 0");
+		add("phone_api_sessions", "model_generation INTEGER NOT NULL DEFAULT 1");
+		add("phone_api_turns", "model_generation INTEGER NOT NULL DEFAULT 1");
 		add("mcp_handoffs", "relationship_id TEXT");
 		add("mcp_handoffs", "session_token_hash TEXT");
 		add("mcp_handoffs", "session_expires_at TEXT");
@@ -2261,7 +2269,8 @@ export class HostStore {
 	getPhoneApiSession(threadTarget) {
 		return this.database.prepare(`
 			SELECT thread_target AS threadTarget, mode, selected_model AS selectedModel,
-				generation, created_at AS createdAt, updated_at AS updatedAt
+				model_generation AS modelGeneration, generation,
+				created_at AS createdAt, updated_at AS updatedAt
 			FROM phone_api_sessions WHERE thread_target = ?
 		`).get(threadTarget);
 	}
@@ -2270,7 +2279,7 @@ export class HostStore {
 		return this.database.prepare(`
 			SELECT id, provider_message_id AS providerMessageId,
 				thread_target AS threadTarget, target_id AS targetId, context_id AS contextId,
-				mode, model, inbound_body AS inboundBody,
+				mode, model, model_generation AS modelGeneration, inbound_body AS inboundBody,
 				status, reply_body AS replyBody, selected_model AS selectedModel,
 				provider_reply_message_id AS providerReplyMessageId,
 				provider_status AS providerStatus, lease_expires_at AS leaseExpiresAt,
@@ -2287,12 +2296,11 @@ export class HostStore {
 		modeCommand,
 		inboundBody,
 		defaultModel,
-		allowedModels,
 	}) {
 		if (modeCommand !== undefined && !["config", "chat"].includes(modeCommand)) {
 			throw new Error("phone API mode command is invalid");
 		}
-		approvedPhoneModel(defaultModel, allowedModels, "phone API default model");
+		phoneModelId(defaultModel, "phone API default model");
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -2317,8 +2325,9 @@ export class HostStore {
 			}
 			this.database.prepare(`
 				INSERT INTO phone_api_sessions(
-					thread_target, mode, selected_model, generation, created_at, updated_at
-				) VALUES (?, 'config', ?, 1, ?, ?)
+					thread_target, mode, selected_model, model_generation,
+					generation, created_at, updated_at
+				) VALUES (?, 'config', ?, 1, 1, ?, ?)
 				ON CONFLICT(thread_target) DO NOTHING
 			`).run(threadTarget, defaultModel, timestamp, timestamp);
 			if (modeCommand) {
@@ -2329,11 +2338,13 @@ export class HostStore {
 			}
 			const session = this.getPhoneApiSession(threadTarget);
 			if (!session) throw new Error("phone API session was not created");
+			phoneModelId(session.selectedModel, "phone API selected model");
+			const queuedModel = session.mode === "chat" ? session.selectedModel : null;
 			const inserted = this.database.prepare(`
 				INSERT INTO phone_api_turns(
 					id, provider_message_id, thread_target, target_id, context_id,
-					mode, inbound_body, status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+					mode, model, model_generation, inbound_body, status, created_at, updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
 				ON CONFLICT(provider_message_id) DO NOTHING
 			`).run(
 				id,
@@ -2342,6 +2353,8 @@ export class HostStore {
 				conversation.targetId,
 				conversation.contextId,
 				session.mode,
+				queuedModel,
+				session.modelGeneration,
 				inboundBody,
 				timestamp,
 				timestamp,
@@ -2358,8 +2371,8 @@ export class HostStore {
 		}
 	}
 
-	claimPhoneApiTurn({ advisorModel, allowedModels, leaseSeconds }) {
-		approvedPhoneModel(advisorModel, allowedModels, "phone API advisor model");
+	claimPhoneApiTurn({ advisorModel, leaseSeconds }) {
+		requireHostdOpenAiModel(advisorModel, "phone API advisor model");
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -2369,19 +2382,18 @@ export class HostStore {
 				WHERE status IN ('running', 'sending') AND lease_expires_at <= ?
 			`).run(timestamp, timestamp, timestamp);
 			const row = this.database.prepare(`
-				SELECT turn.id, turn.mode, session.selected_model AS selectedModel
-				FROM phone_api_turns AS turn
-				INNER JOIN phone_api_sessions AS session
-					ON session.thread_target = turn.thread_target
-				WHERE turn.status = 'queued'
-				ORDER BY turn.created_at, turn.id LIMIT 1
+				SELECT id, mode, model AS queuedModel
+				FROM phone_api_turns
+				WHERE status = 'queued'
+				ORDER BY created_at, id LIMIT 1
 			`).get();
 			if (!row) {
 				this.database.exec("COMMIT");
 				return undefined;
 			}
-			const model = row.mode === "config" ? advisorModel : row.selectedModel;
-			approvedPhoneModel(model, allowedModels, "phone API selected model");
+			const model = row.mode === "config"
+				? advisorModel
+				: phoneModelId(row.queuedModel, "phone API selected model");
 			const claimed = this.database.prepare(`
 				UPDATE phone_api_turns SET status = 'running', model = ?,
 					lease_expires_at = ?, updated_at = ?
@@ -2391,6 +2403,7 @@ export class HostStore {
 			const turn = this.database.prepare(`
 				SELECT turn.id, turn.provider_message_id AS providerMessageId,
 					turn.thread_target AS threadTarget, turn.mode, turn.model,
+					turn.model_generation AS modelGeneration,
 					turn.inbound_body AS inboundBody, turn.status,
 					turn.target_id AS targetId, turn.context_id AS contextId,
 					conversation.principal_hash AS principalHash
@@ -2409,15 +2422,19 @@ export class HostStore {
 		}
 	}
 
-	listPhoneApiHistory(threadTarget, maximumMessages = 24) {
+	listPhoneApiHistory(threadTarget, modelGeneration, maximumMessages = 24) {
 		const maximumTurns = Math.ceil(Math.max(0, maximumMessages) / 2);
 		if (maximumTurns === 0) return [];
+		if (!Number.isInteger(modelGeneration) || modelGeneration < 1) {
+			throw new Error("phone API model generation is invalid");
+		}
 		return this.database.prepare(`
 			SELECT inbound_body AS inboundBody, reply_body AS replyBody, mode, model
 			FROM phone_api_turns
-			WHERE thread_target = ? AND status = 'completed' AND reply_body IS NOT NULL
+			WHERE thread_target = ? AND model_generation = ? AND mode = 'chat'
+				AND status = 'completed' AND reply_body IS NOT NULL
 			ORDER BY created_at DESC, id DESC LIMIT ?
-		`).all(threadTarget, maximumTurns).reverse().flatMap((turn) => ([
+		`).all(threadTarget, modelGeneration, maximumTurns).reverse().flatMap((turn) => ([
 			{ role: "user", body: turn.inboundBody },
 			{ role: "assistant", body: turn.replyBody },
 		])).slice(-maximumMessages);
@@ -2443,10 +2460,14 @@ export class HostStore {
 			if (updated.changes !== 1) throw new Error("phone API model completion conflicted");
 			if (selectedModel !== undefined) {
 				this.database.prepare(`
-					UPDATE phone_api_sessions SET selected_model = ?,
-						generation = generation + 1, updated_at = ?
+					UPDATE phone_api_sessions SET
+						model_generation = CASE
+							WHEN selected_model = ? THEN model_generation
+							ELSE model_generation + 1
+						END,
+						selected_model = ?, generation = generation + 1, updated_at = ?
 					WHERE thread_target = ?
-				`).run(selectedModel, timestamp, turn.threadTarget);
+				`).run(selectedModel, selectedModel, timestamp, turn.threadTarget);
 			}
 			this.database.exec("COMMIT");
 			return this.getPhoneApiTurn(id);

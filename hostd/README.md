@@ -673,29 +673,34 @@ those holds remain authoritative for the existing website-bot path.
 The two mode commands are case-insensitive:
 
 - `/config` switches that sender's durable session into model-advisor mode.
-  The advisor always runs on the configured Luna model and may select only one
-  of `allowedModels` when the sender clearly chooses it.
-- `/chat` switches the same durable session into chat mode. The selected
-  approved hosted or local model answers inside that same exact phone session.
+  Luna reads the authenticated loopback gateway's current `/v1/models` catalog
+  and may select only one returned ID. Catalog `id`, `name`, and `about` fields
+  are supplied to Luna; static Hostd model lists are not used.
+- `/chat` switches the same durable session into chat mode. Hostd sends the
+  selected catalog ID as the Chat Completions `model` value.
+
+Each model change increments a durable model generation. Chat history includes
+only completed chat turns from that exact generation, so switching away and
+back starts another clean thread and no local model sees another model's
+replies. Local chat requests contain only user/assistant messages plus the
+current user turn. Hostd sends no system/developer persona prompt; personality
+comes from the gateway's selected steering. A definitive provider SHAFT content
+rejection may append one carrier-safe user rewrite instruction and make one
+replacement send. A second rejection fails closed, and ambiguous outcomes are
+never retried.
 
 The direct agent receives no tools. Its response does not enter a runtime and
 cannot call `send_message`. Hostd durably records the inbound turn, performs one
 bounded model request, records the model result, and then makes one direct
-provider attempt to the encrypted conversation
-recipient. A stale model/send lease or ambiguous provider result becomes
-`uncertain` and is never retried automatically. Provider status webhooks update
-the same durable turn. STOP/opt-out and the existing direct-only, signature,
-relay, duplicate, and recipient-custody checks remain authoritative.
+provider attempt to the encrypted conversation recipient. Provider status
+webhooks update the same durable turn. STOP/opt-out and the existing direct-only,
+signature, relay, duplicate, and recipient-custody checks remain authoritative.
 
-Optional `localModels` remain narrower than hosted models. Each local gateway
-must be exact loopback HTTP at `/v1`, authenticate with a host-owned environment
-secret, use one pinned provider model, cap requests at 64 KB and output at 400
-tokens or less, and return the exact pinned model identity. Hostd sends only a
-non-streaming Chat Completions request with system/user/assistant text, no tool
-definitions, and no caller-selected URL, credential, provider model, or output
-bound. Transport ambiguity is terminal and never retried automatically. Reach a
-remote loopback gateway only through a separately protected encrypted tunnel;
-never widen the gateway listener.
+`localCatalog` must be exact loopback HTTP at `/v1`, authenticate with a
+host-owned environment secret, cap catalog and chat responses, and return
+unique bounded `id`, `name`, and `about` fields. Chat responses must echo the
+selected catalog ID as their model identity. Reach a remote loopback gateway
+only through a separately protected encrypted tunnel; never widen the listener.
 
 Synthetic configuration shape:
 
@@ -705,21 +710,17 @@ Synthetic configuration shape:
     "apiAgent": {
       "featureSenders": ["+15555550123", "+15555550124"],
       "advisorModel": "gpt-5.6-luna",
-      "defaultModel": "gpt-5.6-luna",
-      "allowedModels": ["gpt-5.6-luna", "gpt-5.6-sol", "example-local"],
-      "localModels": [
-        {
-          "id": "example-local",
-          "displayName": "Example Local",
-          "providerModel": "example/local-model",
-          "baseUrl": "http://127.0.0.1:19043/v1",
-          "apiKeyEnv": "EXAMPLE_LOCAL_MODEL_TOKEN",
-          "maximumOutputTokens": 150,
-          "repetitionPenalty": 1.1,
-          "requestTimeoutMs": 60000,
-          "maximumRequestBytes": 65536
-        }
-      ],
+      "defaultModel": "example-local",
+      "localCatalog": {
+        "baseUrl": "http://127.0.0.1:19043/v1",
+        "apiKeyEnv": "EXAMPLE_LOCAL_MODEL_TOKEN",
+        "maximumOutputTokens": 150,
+        "repetitionPenalty": 1.1,
+        "requestTimeoutMs": 60000,
+        "maximumRequestBytes": 65536,
+        "maximumCatalogBytes": 65536,
+        "maximumModels": 16
+      },
       "maximumHistoryMessages": 24,
       "maximumReplyCharacters": 1200,
       "maximumOutputTokens": 1024,
