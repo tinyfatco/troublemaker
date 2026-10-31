@@ -118,6 +118,41 @@ function statusFor(type, message) {
 	return "rejected";
 }
 
+function phoneProjectionEvent(conversation, { direction, providerMessageId, text, timestamp }) {
+	if (!["inbound", "outbound"].includes(direction)) {
+		throw new Error("phone projection direction is invalid");
+	}
+	const source = direction === "inbound" ? "phone" : "phone_outbound";
+	return {
+		id: `${source}:${providerMessageId}`,
+		source,
+		providerMessageId,
+		providerThreadId: conversation.providerThreadId,
+		principalHash: conversation.principalHash,
+		targetId: conversation.targetId,
+		contextId: conversation.contextId,
+		payload: {
+			direction,
+			sender: direction === "inbound"
+				? `Phone ending ${conversation.contactLastFour}`
+				: "Business SMS",
+			recipient: direction === "inbound"
+				? "Business SMS"
+				: `Phone ending ${conversation.contactLastFour}`,
+			message: {
+				id: providerMessageId,
+				body: text,
+				...(timestamp ? { timestamp } : {}),
+			},
+			phone: {
+				threadTarget: conversation.threadTarget,
+				displayName: `SMS •••• ${conversation.contactLastFour}`,
+			},
+			route: { projectSlug: "intake" },
+		},
+	};
+}
+
 function isGroupOrMedia(message) {
 	const metadata = object(message.metadata);
 	const destinations = strings(message.to ?? message.to_number ?? message.toNumber);
@@ -592,7 +627,14 @@ export class PhoneGateway {
 					const completed = this.store.completePhoneApiSend(delivery.id, {
 						providerMessageId: receipt.providerMessageId,
 						providerStatus: receipt.status,
+						projectionEvent: phoneProjectionEvent(delivery, {
+							direction: "outbound",
+							providerMessageId: receipt.providerMessageId,
+							text: delivery.replyBody,
+							timestamp: new Date().toISOString(),
+						}),
 					});
+					this.controlNotifier?.wake();
 					if (completed.isModeCommand && completed.mode === "config") {
 						this.apiAgent.refreshCatalogInBackground();
 					}
@@ -712,15 +754,22 @@ export class PhoneGateway {
 				: command === "/chat"
 					? "chat"
 					: undefined;
-			this.store.queuePhoneApiTurn({
+			const queued = this.store.queuePhoneApiTurn({
 				id: `phone-api:${providerMessageId}`,
 				providerMessageId,
 				threadTarget: conversation.threadTarget,
 				modeCommand,
 				inboundBody: text,
 				defaultModel: this.config.phone.apiAgent.defaultModel,
+				projectionEvent: phoneProjectionEvent(conversation, {
+					direction: "inbound",
+					providerMessageId,
+					text,
+					timestamp: sendlyTimestamp(payload, message),
+				}),
 			});
 			this.store.markSeen("phone-webhook", providerEventId, "phone_api_queued");
+			if (queued.created) this.controlNotifier?.wake();
 			if (!this.stopped) this.requestApiAgentFlush();
 			return "phone_api_queued";
 		}

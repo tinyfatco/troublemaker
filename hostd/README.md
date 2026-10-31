@@ -698,6 +698,13 @@ rejection may append one carrier-safe user rewrite instruction and make one
 replacement send. A second rejection fails closed, and ambiguous outcomes are
 never retried.
 
+Each newly accepted feature-sender inbound SMS and each exact provider-accepted
+outbound SMS body enters the existing private SMS feed through the TINYFAT Zulip
+projector. Projection events are already completed and never enter a model
+runtime. Their payload is only the standard SMS sender, recipient, message body,
+and conversation envelope; model, reasoning, generation, retry, and trace state
+remain private. Existing turns are not backfilled when this behavior is enabled.
+
 The direct agent receives no tools. Its response does not enter a runtime and
 cannot call `send_message`. Hostd durably records each inbound turn, records any bounded model result, and
 makes direct provider attempts only to the encrypted conversation recipient.

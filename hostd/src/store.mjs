@@ -2344,6 +2344,7 @@ export class HostStore {
 		modeCommand,
 		inboundBody,
 		defaultModel,
+		projectionEvent,
 	}) {
 		if (modeCommand !== undefined && !["config", "chat"].includes(modeCommand)) {
 			throw new Error("phone API mode command is invalid");
@@ -2410,6 +2411,17 @@ export class HostStore {
 				timestamp,
 				timestamp,
 			);
+			if (projectionEvent && inserted.changes === 1) {
+				if (
+					projectionEvent.source !== "phone"
+					|| projectionEvent.providerMessageId !== providerMessageId
+					|| projectionEvent.providerThreadId !== conversation.providerThreadId
+					|| projectionEvent.principalHash !== conversation.principalHash
+					|| projectionEvent.targetId !== conversation.targetId
+					|| projectionEvent.contextId !== conversation.contextId
+				) throw new Error("phone inbound projection crossed conversation scope");
+				this.insertPhoneProjectionEvent(projectionEvent);
+			}
 			this.database.exec("COMMIT");
 			return {
 				created: inserted.changes === 1,
@@ -2599,7 +2611,7 @@ export class HostStore {
 		return this.getPhoneApiTurn(id);
 	}
 
-	completePhoneApiSend(id, { providerMessageId, providerStatus }) {
+	completePhoneApiSend(id, { providerMessageId, providerStatus, projectionEvent }) {
 		const timestamp = now();
 		this.database.exec("BEGIN IMMEDIATE");
 		try {
@@ -2611,6 +2623,19 @@ export class HostStore {
 			`).run(providerMessageId, providerStatus, timestamp, timestamp, id);
 			if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
 			const turn = this.getPhoneApiTurn(id);
+			if (projectionEvent) {
+				const conversation = this.getPhoneConversation(turn.threadTarget);
+				if (
+					!conversation
+					|| projectionEvent.source !== "phone_outbound"
+					|| projectionEvent.providerMessageId !== providerMessageId
+					|| projectionEvent.providerThreadId !== conversation.providerThreadId
+					|| projectionEvent.principalHash !== conversation.principalHash
+					|| projectionEvent.targetId !== turn.targetId
+					|| projectionEvent.contextId !== turn.contextId
+				) throw new Error("phone outbound projection crossed conversation scope");
+				this.insertPhoneProjectionEvent(projectionEvent);
+			}
 			if (turn.isModeCommand && turn.mode === "config") {
 				this.database.prepare(`
 					INSERT INTO phone_api_turns(
@@ -4919,6 +4944,88 @@ export class HostStore {
 			FROM events WHERE status IN ('queued', 'failed')
 			ORDER BY received_at
 		`).all();
+	}
+
+	insertPhoneProjectionEvent(event) {
+		if (!event || !["phone", "phone_outbound"].includes(event.source)) {
+			throw new Error("phone projection source is invalid");
+		}
+		if (event.id !== `${event.source}:${event.providerMessageId}`) {
+			throw new Error("phone projection identity is invalid");
+		}
+		for (const [label, value] of Object.entries({
+			providerMessageId: event.providerMessageId,
+			providerThreadId: event.providerThreadId,
+			principalHash: event.principalHash,
+			targetId: event.targetId,
+			contextId: event.contextId,
+		})) {
+			if (typeof value !== "string" || !value) {
+				throw new Error(`phone projection ${label} is invalid`);
+			}
+		}
+		const payload = event.payload;
+		const expectedDirection = event.source === "phone" ? "inbound" : "outbound";
+		if (
+			!payload
+			|| typeof payload !== "object"
+			|| Array.isArray(payload)
+			|| payload.direction !== expectedDirection
+			|| typeof payload.sender !== "string"
+			|| typeof payload.recipient !== "string"
+			|| typeof payload.message?.body !== "string"
+			|| JSON.stringify(Object.keys(payload).sort())
+				!== JSON.stringify(["direction", "message", "phone", "recipient", "route", "sender"])
+			|| JSON.stringify(Object.keys(payload.message).sort())
+				!== JSON.stringify(payload.message.timestamp === undefined
+					? ["body", "id"]
+					: ["body", "id", "timestamp"])
+			|| JSON.stringify(Object.keys(payload.phone ?? {}).sort())
+				!== JSON.stringify(["displayName", "threadTarget"])
+			|| JSON.stringify(Object.keys(payload.route ?? {}).sort()) !== JSON.stringify(["projectSlug"])
+		) {
+			throw new Error("phone projection payload is invalid");
+		}
+		const existing = this.getEventByProviderMessage(event.source, event.providerMessageId);
+		if (existing) {
+			if (
+				existing.id !== event.id
+				|| existing.providerThreadId !== event.providerThreadId
+				|| existing.principalHash !== event.principalHash
+				|| existing.targetId !== event.targetId
+				|| existing.contextId !== event.contextId
+				|| existing.payloadJson !== JSON.stringify(payload)
+			) throw new Error("phone projection identity crossed scope");
+			this.insertControlNotification(event, existing);
+			return { created: false, event: existing };
+		}
+		const timestamp = now();
+		const awarenessSequence = this.nextAwarenessSequence(event.contextId);
+		this.database.prepare(`
+			INSERT INTO events(
+				id, source, provider_message_id, provider_thread_id,
+				principal_hash, target_id, context_id, awareness_sequence, status, payload_json,
+				received_at, available_at, updated_at, completed_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?)
+		`).run(
+			event.id,
+			event.source,
+			event.providerMessageId,
+			event.providerThreadId,
+			event.principalHash,
+			event.targetId,
+			event.contextId,
+			awarenessSequence,
+			JSON.stringify(payload),
+			timestamp,
+			timestamp,
+			timestamp,
+			timestamp,
+		);
+		const stored = this.getEventByProviderMessage(event.source, event.providerMessageId);
+		if (!stored) throw new Error("phone projection event was not stored");
+		this.insertControlNotification(event, stored);
+		return { created: true, event: stored };
 	}
 
 	upsertEvent(event) {

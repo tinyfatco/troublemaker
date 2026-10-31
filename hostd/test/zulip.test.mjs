@@ -312,6 +312,38 @@ test("projects redacted direct SMS ledger events into the bound customer channel
 	assert.match(posted.content, /> Can you help with an estimate\?/);
 });
 
+test("projects an accepted neuron reply as only the exact SMS sent text", async () => {
+	const provisioner = new ZulipProvisioner({}, {});
+	provisioner.ensureContext = async () => ({ channelId: 9 });
+	let posted;
+	provisioner.request = async (_path, input) => {
+		posted = Object.fromEntries(input.form);
+		return { id: 43 };
+	};
+	const exactText = "A concise synthetic model reply.";
+	const result = await provisioner.postEmailLedgerNotification({
+		contextId: "front-desk:0123456789abcdef01234567:intake",
+		source: "phone_outbound",
+		providerMessageId: "provider-neuron-reply",
+		payloadJson: JSON.stringify({
+			sender: "Business SMS",
+			recipient: "Phone ending 0123",
+			message: { body: exactText },
+		}),
+	});
+	assert.equal(result, "43");
+	assert.equal(posted.type, "channel");
+	assert.equal(posted.to, "9");
+	assert.equal(posted.topic, "");
+	assert.equal(posted.content, [
+		"**SMS sent**",
+		"**From:** Business SMS",
+		"**To:** Phone ending 0123",
+		"",
+		"> A concise synthetic model reply.",
+	].join("\n"));
+});
+
 test("projects a connected MCP message into only its exact relationship channel", async () => {
 	const provisioner = new ZulipProvisioner({}, {});
 	const ensured = [];

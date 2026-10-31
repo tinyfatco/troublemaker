@@ -342,7 +342,7 @@ test("the exact feature flag grants a host-direct reply without clearing a runti
 	const state = subject(
 		async () => {
 			providerCalls += 1;
-			return Response.json({ id: "provider-feature-reply", status: "queued" });
+			return Response.json({ id: `provider-feature-reply-${providerCalls}`, status: "queued" });
 		},
 		apiPhone(),
 		undefined,
@@ -369,8 +369,67 @@ test("the exact feature flag grants a host-direct reply without clearing a runti
 		assert.deepEqual(state.config.phone.deliveryHolds, [conversation.contextId]);
 		assert.equal(modelCalls, 1);
 		assert.equal(providerCalls, 2);
+		const projected = state.store.database.prepare(`
+			SELECT source, status, payload_json AS payloadJson
+			FROM events ORDER BY awareness_sequence
+		`).all().map((event) => ({ ...event, payload: JSON.parse(event.payloadJson) }));
+		assert.deepEqual(projected.map((event) => [event.source, event.status]), [
+			["phone", "completed"],
+			["phone_outbound", "completed"],
+			["phone_outbound", "completed"],
+		]);
+		assert.equal(projected[0].payload.message.body, "/config");
+		assert.match(projected[1].payload.message.body, /^Config mode\. Current: Example Alpha\./);
+		assert.equal(projected[2].payload.message.body, "Configuration mode is active.");
+		for (const event of projected) {
+			assert.deepEqual(Object.keys(event.payload).sort(), [
+				"direction", "message", "phone", "recipient", "route", "sender",
+			]);
+			assert.deepEqual(
+				Object.keys(event.payload).filter((key) => /model|generation|reason|retry|trace/i.test(key)),
+				[],
+			);
+		}
+		assert.equal(state.store.database.prepare(`
+			SELECT COUNT(*) AS count FROM control_notifications WHERE status = 'queued'
+		`).get().count, 3);
+		assert.deepEqual(state.counts(), { schedulerPumps: 0, notifierWakes: 3 });
 	} finally {
 		state.close();
+	}
+});
+
+test("existing neuron turns are never backfilled into the Zulip SMS feed", () => {
+	const state = subject(undefined, apiPhone(), undefined, {
+		async completeDirectPhone() { throw new Error("model must not run"); },
+	}, localGateway());
+	let reopened;
+	let originalOpen = true;
+	try {
+		const conversation = state.store.upsertPhoneConversation(
+			state.gateway.prepareConversation(CONTACT_NUMBER),
+		);
+		state.store.queuePhoneApiTurn({
+			id: "phone-api:historical-neuron-message",
+			providerMessageId: "historical-neuron-message",
+			threadTarget: conversation.threadTarget,
+			modeCommand: "config",
+			inboundBody: "/config",
+			defaultModel: state.config.phone.apiAgent.defaultModel,
+		});
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns").get().count, 1);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM events").get().count, 0);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM control_notifications").get().count, 0);
+		state.store.close();
+		originalOpen = false;
+		reopened = new HostStore(state.statePath);
+		assert.equal(reopened.database.prepare("SELECT COUNT(*) AS count FROM phone_api_turns").get().count, 1);
+		assert.equal(reopened.database.prepare("SELECT COUNT(*) AS count FROM events").get().count, 0);
+		assert.equal(reopened.database.prepare("SELECT COUNT(*) AS count FROM control_notifications").get().count, 0);
+	} finally {
+		if (originalOpen) state.store.close();
+		reopened?.close();
+		rmSync(state.directory, { recursive: true, force: true });
 	}
 });
 
@@ -840,6 +899,15 @@ test("a definitive provider content rejection gets one carrier-safe local rewrit
 		assert.equal(turn.replyBody, "A playful carrier-safe replacement.");
 		assert.equal(turn.providerReplyMessageId, "provider-compliance-6");
 		assert.equal(turn.lastError, null);
+		const outboundProjectionBodies = state.store.database.prepare(`
+			SELECT payload_json AS payloadJson FROM events
+			WHERE source = 'phone_outbound' ORDER BY awareness_sequence
+		`).all().map((event) => JSON.parse(event.payloadJson).message.body);
+		assert.equal(outboundProjectionBodies.at(-1), "A playful carrier-safe replacement.");
+		assert.equal(
+			outboundProjectionBodies.includes("A synthetic first draft rejected by the provider."),
+			false,
+		);
 	} finally {
 		state.close();
 	}
@@ -905,6 +973,9 @@ test("a second provider content rejection fails closed without a third send", as
 		assert.match(turn.lastError, /compliance_blocked\/SHAFT_CONTENT_DETECTED\/alcohol/);
 		await state.gateway.flushApiAgent();
 		assert.equal(providerCalls, 6);
+		assert.equal(state.store.database.prepare(`
+			SELECT COUNT(*) AS count FROM events WHERE source = 'phone_outbound'
+		`).get().count, 4);
 	} finally {
 		state.close();
 	}
@@ -945,6 +1016,9 @@ test("an ambiguous direct provider result is never retried", async () => {
 		await state.gateway.flushApiAgent();
 		assert.equal(providerCalls, 2);
 		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS count FROM outbox").get().count, 0);
+		assert.equal(state.store.database.prepare(`
+			SELECT COUNT(*) AS count FROM events WHERE source = 'phone_outbound'
+		`).get().count, 1);
 	} finally {
 		state.close();
 	}
