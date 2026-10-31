@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import WebSocket, { WebSocketServer } from "ws";
 import { contextCapability, stablePrivateKey } from "../src/security.mjs";
 import { createWebAppAssertionHeaders } from "../src/web-app-auth.mjs";
-import { createWebAppServer } from "../src/web-app-server.mjs";
+import { CANVAS_MAXIMUM_REQUEST_BYTES, createWebAppServer, validatedPng } from "../src/web-app-server.mjs";
 
 const SECRET = "example-web-app-secret-at-least-32-bytes";
 const ROUTING_KEY = Buffer.alloc(32, 7);
@@ -37,6 +38,40 @@ const SITE = {
 	allowedBranches: ["main"],
 	previewHostname: "example-business.example.com",
 };
+
+function crc32(bytes) {
+	let c = 0xffffffff;
+	for (const byte of bytes) {
+		c ^= byte;
+		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+	}
+	return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(data.length);
+	const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+	const crc = Buffer.alloc(4);
+	crc.writeUInt32BE(crc32(body));
+	return Buffer.concat([length, body, crc]);
+}
+
+function makePng(width, height, { idat = true } = {}) {
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(width, 0);
+	ihdr.writeUInt32BE(height, 4);
+	ihdr[8] = 8;
+	ihdr[9] = 2;
+	const rows = Math.min(height, 4);
+	const raw = Buffer.alloc(rows * (1 + Math.min(width, 4) * 3), 0xff);
+	return Buffer.concat([
+		Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+		pngChunk("IHDR", ihdr),
+		...(idat ? [pngChunk("IDAT", deflateSync(raw))] : []),
+		pngChunk("IEND", Buffer.alloc(0)),
+	]);
+}
 
 function listen(server) {
 	return new Promise((resolve, reject) => {
@@ -550,5 +585,115 @@ test("does not relay active content from a runtime onto the product origin", asy
 	} finally {
 		await close(appServer);
 		await close(runtimeServer);
+	}
+});
+
+test("WebsitePaint canvas lands in the scoped workspace and steers the project's builder turn", async () => {
+	const contextsDirectory = await mkdtemp(join(tmpdir(), "hostd-canvas-"));
+	const target = { ...TARGET, contextsDirectory };
+	const received = [];
+	let busy = false;
+	const runtimeServer = createServer((request, response) => {
+		assert.equal(request.url, "/api/v2/agents/current/messages");
+		assert.equal(
+			request.headers.authorization,
+			`Bearer ${contextCapability(TARGET.inboundToken, "web-app", CONTEXT_ID)}`,
+		);
+		const chunks = [];
+		request.on("data", (chunk) => chunks.push(chunk));
+		request.on("end", () => {
+			received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			if (busy) {
+				response.writeHead(409, { "content-type": "application/json" });
+				response.end('{"error":"busy"}');
+				return;
+			}
+			// A long-lived turn stream: the painter must not wait for it.
+			response.writeHead(200, { "content-type": "text/event-stream" });
+			response.write('data: {"type":"text_delta","delta":"Looking"}\n\n');
+			setTimeout(() => response.end("data: [DONE]\n\n"), 300);
+		});
+	});
+	const runtimePort = await listen(runtimeServer);
+	const viewer = [{ accountEmail: EMAIL, subject: SUBJECT, principalEmail: EMAIL, role: "viewer", agent: AGENT }];
+	const appServer = createWebAppServer(state(runtimePort, undefined, { target }));
+	const viewerServer = createWebAppServer(state(runtimePort, viewer, { target }));
+	const appPort = await listen(appServer);
+	const viewerPort = await listen(viewerServer);
+	const png = makePng(500, 700);
+	const post = (port, payload) => {
+		const path = "/v1/app/canvas?project=website";
+		const body = Buffer.from(JSON.stringify(payload));
+		return fetch(`http://127.0.0.1:${port}${path}`, {
+			method: "POST",
+			headers: { ...signedHeaders("POST", path, body), "content-type": "application/json" },
+			body,
+		});
+	};
+	try {
+		const started = Date.now();
+		const ok = await post(appPort, { png_base64: png.toString("base64"), prompt: "  a bakery in Austin " });
+		assert.equal(ok.status, 202);
+		assert.deepEqual(await ok.json(), { status: "started" });
+		assert.ok(Date.now() - started < 300, "canvas response does not wait for the turn to finish");
+		const { readFile } = await import("node:fs/promises");
+		const written = await readFile(join(contextsDirectory, CONTEXT_ID.replace(/[^a-z0-9_.-]/gi, "_"), "workspace", "websitepaint", "website", "latest.png"));
+		assert.ok(written.equals(png));
+		assert.equal(received.length, 1);
+		assert.equal(received[0].channelId, "web-app:website");
+		assert.equal(received[0].source, "web");
+		assert.match(received[0].message, /websitepaint\/website\/latest\.png/);
+		assert.match(received[0].message, /Notes from the painter: a bakery in Austin$/);
+
+		busy = true;
+		const queued = await post(appPort, { png_base64: png.toString("base64") });
+		assert.equal(queued.status, 409);
+		assert.deepEqual(await queued.json(), { error: "busy" });
+		busy = false;
+
+		const badCrc = Buffer.from(png);
+		badCrc[20] ^= 1;
+		const b64 = png.toString("base64");
+		for (const bad of [
+			{ png_base64: Buffer.from("not a png at all, just some text that is long enough to pass").toString("base64") },
+			{ png_base64: "%%%" },
+			{ png_base64: `${b64.slice(0, 40)}\n${b64.slice(40)}` },
+			{ png_base64: b64.replace(/=+$/, "") === b64 ? `${b64}=` : b64.replace(/=+$/, "") },
+			{ png_base64: b64, extra: true },
+			{ png_base64: b64, prompt: "x".repeat(5000) },
+			{ png_base64: badCrc.toString("base64") },
+			{ png_base64: makePng(5000, 10).toString("base64") },
+			{ png_base64: makePng(4096, 4096).toString("base64") },
+			{ png_base64: makePng(10, 10, { idat: false }).toString("base64") },
+			{ png_base64: Buffer.concat([png, Buffer.from([0])]).toString("base64") },
+			{ png_base64: png.subarray(0, png.length - 12).toString("base64") },
+		]) {
+			const rejected = await post(appPort, bad);
+			assert.equal(rejected.status, 400, JSON.stringify(bad).slice(0, 80));
+			assert.deepEqual(await rejected.json(), { error: "invalid_canvas" });
+		}
+
+		// The canvas route alone gets room for a 4 MiB PNG; every other route keeps the default cap.
+		assert.ok(CANVAS_MAXIMUM_REQUEST_BYTES >= Math.ceil((4 * 1024 * 1024) / 3) * 4);
+		const huge = await post(appPort, { png_base64: "A".repeat(CANVAS_MAXIMUM_REQUEST_BYTES) });
+		assert.equal(huge.status, 413);
+		const messagePath = "/v1/app/messages?project=website";
+		const bigMessage = Buffer.from(JSON.stringify({ message: "x".repeat(200 * 1024) }));
+		const tooBig = await fetch(`http://127.0.0.1:${appPort}${messagePath}`, {
+			method: "POST",
+			headers: { ...signedHeaders("POST", messagePath, bigMessage), "content-type": "application/json" },
+			body: bigMessage,
+		});
+		assert.equal(tooBig.status, 413);
+		assert.deepEqual(validatedPng(png), { width: 500, height: 700 });
+
+		const forbidden = await post(viewerPort, { png_base64: png.toString("base64") });
+		assert.equal(forbidden.status, 403);
+		assert.equal(received.length, 2, "rejected canvases never reach the runtime");
+	} finally {
+		await close(appServer);
+		await close(viewerServer);
+		await close(runtimeServer);
+		await rm(contextsDirectory, { recursive: true, force: true });
 	}
 });

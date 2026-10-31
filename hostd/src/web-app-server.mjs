@@ -1,10 +1,11 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
 import {
+	contextWorkspacePath,
 	readComputerControlState,
 	siteDeploymentBindings,
 	writeComputerControlState,
@@ -319,6 +320,132 @@ function normalizedMessageBody(body, scope, route) {
 	}));
 }
 
+// WebsitePaint: a settled canvas is a PNG, base64 in JSON.
+export const CANVAS_MAXIMUM_PNG_BYTES = 4 * 1024 * 1024;
+const CANVAS_MAXIMUM_PROMPT_BYTES = 4 * 1024;
+// base64 of the PNG cap plus the prompt and JSON framing.
+export const CANVAS_MAXIMUM_REQUEST_BYTES = Math.ceil(CANVAS_MAXIMUM_PNG_BYTES / 3) * 4 + 64 * 1024;
+const CANVAS_MAXIMUM_SIDE = 4096;
+const CANVAS_MAXIMUM_PIXELS = 4 * 1024 * 1024;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+const CRC_TABLE = (() => {
+	const table = new Uint32Array(256);
+	for (let n = 0; n < 256; n++) {
+		let c = n;
+		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+		table[n] = c >>> 0;
+	}
+	return table;
+})();
+
+function crc32(bytes) {
+	let c = 0xffffffff;
+	for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+	return (c ^ 0xffffffff) >>> 0;
+}
+
+/** Walk every chunk: IHDR first with bounded dimensions, valid CRCs, IDAT present, IEND last. */
+export function validatedPng(png) {
+	const fail = () => {
+		throw new WebAppRequestError(400, "invalid_canvas");
+	};
+	if (png.length < 8 + 25 + 12 || png.length > CANVAS_MAXIMUM_PNG_BYTES) fail();
+	if (!png.subarray(0, 8).equals(PNG_SIGNATURE)) fail();
+	let offset = 8;
+	let index = 0;
+	let sawIdat = false;
+	let dimensions;
+	while (offset < png.length) {
+		if (offset + 12 > png.length) fail();
+		const length = png.readUInt32BE(offset);
+		const type = png.toString("latin1", offset + 4, offset + 8);
+		if (!/^[A-Za-z]{4}$/.test(type) || length > png.length - offset - 12) fail();
+		const data = png.subarray(offset + 8, offset + 8 + length);
+		if (crc32(png.subarray(offset + 4, offset + 8 + length)) !== png.readUInt32BE(offset + 8 + length)) fail();
+		if (index === 0) {
+			if (type !== "IHDR" || length !== 13) fail();
+			const width = data.readUInt32BE(0);
+			const height = data.readUInt32BE(4);
+			if (
+				width < 1 || height < 1
+				|| width > CANVAS_MAXIMUM_SIDE || height > CANVAS_MAXIMUM_SIDE
+				|| width * height > CANVAS_MAXIMUM_PIXELS
+			) fail();
+			dimensions = { width, height };
+		} else if (type === "IHDR") {
+			fail();
+		}
+		if (type === "IDAT") sawIdat = true;
+		offset += 12 + length;
+		index += 1;
+		if (type === "IEND") {
+			if (length !== 0 || offset !== png.length || !sawIdat) fail();
+			return dimensions;
+		}
+	}
+	return fail();
+}
+
+export function parsedCanvasBody(body) {
+	let parsed;
+	try {
+		parsed = JSON.parse(body.toString("utf8"));
+	} catch {
+		throw new WebAppRequestError(400, "invalid_json");
+	}
+	if (
+		!parsed
+		|| typeof parsed !== "object"
+		|| Array.isArray(parsed)
+		|| Object.keys(parsed).some((key) => key !== "png_base64" && key !== "prompt")
+		|| typeof parsed.png_base64 !== "string"
+		|| (parsed.prompt !== undefined && typeof parsed.prompt !== "string")
+	) {
+		throw new WebAppRequestError(400, "invalid_canvas");
+	}
+	const png = Buffer.from(parsed.png_base64, "base64");
+	// Canonical base64 only: no whitespace, URL alphabet, or loose padding.
+	if (png.toString("base64") !== parsed.png_base64) throw new WebAppRequestError(400, "invalid_canvas");
+	validatedPng(png);
+	const prompt = (parsed.prompt ?? "").trim();
+	if (Buffer.byteLength(prompt, "utf8") > CANVAS_MAXIMUM_PROMPT_BYTES) {
+		throw new WebAppRequestError(400, "invalid_canvas");
+	}
+	return { png, prompt };
+}
+
+/** Workspace-relative canvas location for one project; slug is already validated. */
+export function canvasRelativePath(projectSlug) {
+	return `websitepaint/${projectSlug}/latest.png`;
+}
+
+async function writeCanvas(target, contextId, projectSlug, png) {
+	const path = join(contextWorkspacePath(target, contextId), canvasRelativePath(projectSlug));
+	await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
+	const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
+	let file;
+	try {
+		file = await open(temporaryPath, "wx", 0o600);
+		await file.writeFile(png);
+		await file.close();
+		file = undefined;
+		await rename(temporaryPath, path);
+	} catch (error) {
+		await file?.close().catch(() => {});
+		await unlink(temporaryPath).catch(() => {});
+		throw error;
+	}
+}
+
+export function canvasMessage(projectSlug, prompt) {
+	const message = `[WebsitePaint] The canvas settled. Look at ${canvasRelativePath(projectSlug)} in your workspace `
+		+ "(read the image) and keep building this project's website to match it: "
+		+ "layout, colors and blocks as painted. When the page is coherent, update the project and deploy "
+		+ "the review preview with the existing site deployment so the painter sees it.";
+	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;
+}
+
 function requestedComputerControl(body) {
 	let parsed;
 	try {
@@ -373,6 +500,7 @@ const ROUTES = new Map([
 	["GET /v1/app/live", "live"],
 	["POST /v1/app/messages", "messages"],
 	["POST /v1/app/messages/stop", "messages-stop"],
+	["POST /v1/app/canvas", "canvas"],
 	["GET /v1/app/desktop/status", "desktop-status"],
 	["POST /v1/app/desktop/control", "desktop-control"],
 ]);
@@ -437,7 +565,12 @@ export function createWebAppServer(state, {
 			) {
 				throw new WebAppRequestError(415, "json_required");
 			}
-			const body = await readBody(request, state.config.webApp.maximumRequestBytes);
+			const body = await readBody(
+				request,
+				route === "canvas"
+					? Math.max(CANVAS_MAXIMUM_REQUEST_BYTES, state.config.webApp.maximumRequestBytes)
+					: state.config.webApp.maximumRequestBytes,
+			);
 			const claims = assertionVerifier.verify({
 				headers: request.headers,
 				method,
@@ -500,18 +633,30 @@ export function createWebAppServer(state, {
 				});
 				return;
 			}
-			const outboundBody = method === "POST"
-				? normalizedMessageBody(body, scope, route)
-				: undefined;
+			let upstreamRoute = route;
+			let outboundBody;
+			if (route === "canvas") {
+				if (scope.binding.role === "viewer") throw new WebAppRequestError(403, "canvas_not_allowed");
+				const canvas = parsedCanvasBody(body);
+				await writeCanvas(scope.target, scope.route.contextId, scope.project.slug, canvas.png);
+				upstreamRoute = "messages";
+				outboundBody = normalizedMessageBody(
+					Buffer.from(JSON.stringify({ message: canvasMessage(scope.project.slug, canvas.prompt) })),
+					scope,
+					"messages",
+				);
+			} else if (method === "POST") {
+				outboundBody = normalizedMessageBody(body, scope, route);
+			}
 			const controller = new AbortController();
 			const abortIfIncomplete = () => {
 				if (!response.writableEnded) controller.abort();
 			};
-			request.once("aborted", () => controller.abort());
+			if (route !== "canvas") request.once("aborted", () => controller.abort());
 			response.once("close", abortIfIncomplete);
 			try {
 				const upstream = await fetchImpl(
-					`http://127.0.0.1:${runtime.port}${upstreamPath(route, url)}`,
+					`http://127.0.0.1:${runtime.port}${upstreamPath(upstreamRoute, url)}`,
 					{
 						method,
 						headers: {
@@ -529,6 +674,25 @@ export function createWebAppServer(state, {
 						signal: controller.signal,
 					},
 				);
+				if (route === "canvas") {
+					// The turn keeps running; the painter only needs to know it was accepted.
+					// Drain the turn stream in the background so the runtime never blocks on it.
+					response.off("close", abortIfIncomplete);
+					if (upstream.ok) {
+						void (async () => {
+							try {
+								for await (const _ of upstream.body ?? []) { /* drain */ }
+							} catch { /* turn stream closed */ }
+						})();
+						json(response, 202, { status: "started" });
+					} else {
+						await upstream.body?.cancel();
+						json(response, upstream.status === 409 ? 409 : 502, {
+							error: upstream.status === 409 ? "busy" : "invalid_upstream_response",
+						});
+					}
+					return;
+				}
 				await writeUpstream(response, upstream);
 			} finally {
 				response.off("close", abortIfIncomplete);
