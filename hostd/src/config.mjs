@@ -1179,6 +1179,7 @@ function webAppConfig(raw, environment) {
 			1024 * 1024,
 		),
 		defaultProject,
+		websitePaintEnabled: boolean(webApp.websitePaintEnabled, false, "webApp.websitePaintEnabled"),
 		accountBindings,
 	};
 }

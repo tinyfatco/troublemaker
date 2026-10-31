@@ -177,6 +177,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		assertionTtlSeconds: 60,
 		maximumRequestBytes: 128 * 1024,
 		defaultProject: undefined,
+		websitePaintEnabled: false,
 		accountBindings: [{
 			accountEmail: "customer@example.com",
 			principalPhone: "+15555550123",

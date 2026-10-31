@@ -517,6 +517,18 @@ only a project that already belongs to that principal.
 }
 ```
 
+`webApp.websitePaintEnabled` (default `false`) turns on WebsitePaint. When it is
+on, the session reports `capabilities.paint` for non-viewer accounts whose
+project has a preview site, and `POST /v1/app/canvas?project=` accepts
+`{png_base64, prompt?}`: canonical base64 of a structurally valid PNG (IHDR
+first, at most 4096 px per side and 4 Mi pixels, valid CRCs, IDAT, terminal
+IEND) up to 4 MiB, plus an optional 4 KiB prompt. Hostd uploads it through the
+scoped runtime's own `/api/v2/agents/current/upload` as
+`websitepaint/latest.png` (replaced each time), then steers the project's
+web-app turn to build from it and deploy the review preview. It returns `202`
+without holding the turn stream; a busy runtime returns `409`. Otherwise the
+route returns `404 paint_not_available`.
+
 Every `accountBindings` entry names one durable agent for one verified product
 account. The mailbox local part must match `agent.slug`; production can use the
 deployment's dedicated agent-mail domain. `operator` is a role, not a default

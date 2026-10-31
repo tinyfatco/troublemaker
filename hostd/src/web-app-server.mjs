@@ -1,11 +1,11 @@
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
 import {
-	contextWorkspacePath,
 	readComputerControlState,
 	siteDeploymentBindings,
 	writeComputerControlState,
@@ -277,6 +277,7 @@ function sessionPayload(state, claims, scope) {
 			desktop: scope.target.computer?.enabled === true,
 			takeover: scope.target.computer?.enabled === true && scope.binding.role !== "viewer",
 			preview: sites.length > 0,
+			paint: paintAllowed(state, scope, sites),
 		},
 	};
 }
@@ -415,31 +416,61 @@ export function parsedCanvasBody(body) {
 	return { png, prompt };
 }
 
-/** Workspace-relative canvas location for one project; slug is already validated. */
-export function canvasRelativePath(projectSlug) {
-	return `websitepaint/${projectSlug}/latest.png`;
+// Fixed, project-scoped location inside the context's own workspace. Contexts are per project.
+export const CANVAS_TARGET_DIR = "websitepaint";
+export const CANVAS_FILENAME = "latest.png";
+export const CANVAS_RELATIVE_PATH = `${CANVAS_TARGET_DIR}/${CANVAS_FILENAME}`;
+
+export function paintAllowed(state, scope, sites) {
+	return state.config.webApp.websitePaintEnabled === true
+		&& sites.length > 0
+		&& scope.binding.role !== "viewer";
 }
 
-async function writeCanvas(target, contextId, projectSlug, png) {
-	const path = join(contextWorkspacePath(target, contextId), canvasRelativePath(projectSlug));
-	await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
-	const temporaryPath = `${path}.tmp-${process.pid}-${Date.now()}`;
-	let file;
+/**
+ * Upload through the scoped runtime's own upload endpoint so any symlink inside the
+ * agent-writable workspace resolves within the runtime's isolated mount, never with
+ * Hostd's host filesystem authority. Only latest.png is ever written (replaced in place).
+ */
+async function uploadCanvas(fetchImpl, runtime, scope, png) {
+	const boundary = `----websitepaint${randomBytes(12).toString("hex")}`;
+	const body = Buffer.concat([
+		Buffer.from(
+			`--${boundary}\r\nContent-Disposition: form-data; name="targetDir"\r\n\r\n${CANVAS_TARGET_DIR}\r\n`
+			+ `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${CANVAS_FILENAME}"\r\n`
+			+ "Content-Type: image/png\r\n\r\n",
+		),
+		png,
+		Buffer.from(`\r\n--${boundary}--\r\n`),
+	]);
+	let upstream;
 	try {
-		file = await open(temporaryPath, "wx", 0o600);
-		await file.writeFile(png);
-		await file.close();
-		file = undefined;
-		await rename(temporaryPath, path);
-	} catch (error) {
-		await file?.close().catch(() => {});
-		await unlink(temporaryPath).catch(() => {});
-		throw error;
+		upstream = await fetchImpl(`http://127.0.0.1:${runtime.port}/api/v2/agents/current/upload`, {
+			method: "POST",
+			headers: {
+				authorization: `Bearer ${contextCapability(scope.target.inboundToken, "web-app", scope.route.contextId)}`,
+				"content-type": `multipart/form-data; boundary=${boundary}`,
+			},
+			body,
+			signal: AbortSignal.timeout(15_000),
+		});
+	} catch {
+		throw new WebAppRequestError(502, "canvas_upload_failed");
+	}
+	let uploaded;
+	try {
+		uploaded = upstream.ok ? (await upstream.json())?.uploaded : undefined;
+	} catch {
+		uploaded = undefined;
+	}
+	if (!upstream.ok) await upstream.body?.cancel().catch(() => {});
+	if (!Array.isArray(uploaded) || uploaded.length !== 1 || uploaded[0] !== CANVAS_RELATIVE_PATH) {
+		throw new WebAppRequestError(502, "canvas_upload_failed");
 	}
 }
 
-export function canvasMessage(projectSlug, prompt) {
-	const message = `[WebsitePaint] The canvas settled. Look at ${canvasRelativePath(projectSlug)} in your workspace `
+export function canvasMessage(prompt) {
+	const message = `[WebsitePaint] The canvas settled. Look at ${CANVAS_RELATIVE_PATH} in your workspace `
 		+ "(read the image) and keep building this project's website to match it: "
 		+ "layout, colors and blocks as painted. When the page is coherent, update the project and deploy "
 		+ "the review preview with the existing site deployment so the painter sees it.";
@@ -588,6 +619,14 @@ export function createWebAppServer(state, {
 				json(response, 200, sessionPayload(state, claims, scope));
 				return;
 			}
+			let canvas;
+			if (route === "canvas") {
+				if (!paintAllowed(state, scope, previewSites(state, scope))) {
+					throw new WebAppRequestError(404, "paint_not_available");
+				}
+				// Validate before waking the runtime.
+				canvas = parsedCanvasBody(body);
+			}
 			if ((route === "desktop-status" || route === "desktop-control") && !scope.target.computer?.enabled) {
 				throw new WebAppRequestError(404, "desktop_not_available");
 			}
@@ -636,12 +675,10 @@ export function createWebAppServer(state, {
 			let upstreamRoute = route;
 			let outboundBody;
 			if (route === "canvas") {
-				if (scope.binding.role === "viewer") throw new WebAppRequestError(403, "canvas_not_allowed");
-				const canvas = parsedCanvasBody(body);
-				await writeCanvas(scope.target, scope.route.contextId, scope.project.slug, canvas.png);
+				await uploadCanvas(fetchImpl, runtime, scope, canvas.png);
 				upstreamRoute = "messages";
 				outboundBody = normalizedMessageBody(
-					Buffer.from(JSON.stringify({ message: canvasMessage(scope.project.slug, canvas.prompt) })),
+					Buffer.from(JSON.stringify({ message: canvasMessage(canvas.prompt) })),
 					scope,
 					"messages",
 				);

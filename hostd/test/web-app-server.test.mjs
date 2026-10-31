@@ -90,7 +90,7 @@ function state(runtimePort, accountBindings = [{
 	principalEmail: EMAIL,
 	role: "owner",
 	agent: AGENT,
-}], { target = TARGET, onExternalActivityProbe } = {}) {
+}], { target = TARGET, onExternalActivityProbe, websitePaintEnabled = false } = {}) {
 	const project = {
 		slug: "website",
 		name: "Example website",
@@ -107,6 +107,7 @@ function state(runtimePort, accountBindings = [{
 				assertionTtlSeconds: 60,
 				maximumRequestBytes: 128 * 1024,
 				defaultProject: "website",
+				websitePaintEnabled,
 				accountBindings,
 			},
 			sites: { previewApex: "example.com" },
@@ -588,21 +589,27 @@ test("does not relay active content from a runtime onto the product origin", asy
 	}
 });
 
-test("WebsitePaint canvas lands in the scoped workspace and steers the project's builder turn", async () => {
-	const contextsDirectory = await mkdtemp(join(tmpdir(), "hostd-canvas-"));
-	const target = { ...TARGET, contextsDirectory };
+test("WebsitePaint canvas uploads through the scoped runtime, then steers the builder turn", async () => {
 	const received = [];
+	const uploads = [];
 	let busy = false;
+	let uploadResult = () => ({ status: 200, body: { uploaded: ["websitepaint/latest.png"] } });
+	const capability = `Bearer ${contextCapability(TARGET.inboundToken, "web-app", CONTEXT_ID)}`;
 	const runtimeServer = createServer((request, response) => {
-		assert.equal(request.url, "/api/v2/agents/current/messages");
-		assert.equal(
-			request.headers.authorization,
-			`Bearer ${contextCapability(TARGET.inboundToken, "web-app", CONTEXT_ID)}`,
-		);
+		assert.equal(request.headers.authorization, capability);
 		const chunks = [];
 		request.on("data", (chunk) => chunks.push(chunk));
 		request.on("end", () => {
-			received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+			const raw = Buffer.concat(chunks);
+			if (request.url === "/api/v2/agents/current/upload") {
+				uploads.push({ contentType: request.headers["content-type"], raw });
+				const result = uploadResult();
+				response.writeHead(result.status, { "content-type": "application/json" });
+				response.end(JSON.stringify(result.body));
+				return;
+			}
+			assert.equal(request.url, "/api/v2/agents/current/messages");
+			received.push(JSON.parse(raw.toString("utf8")));
 			if (busy) {
 				response.writeHead(409, { "content-type": "application/json" });
 				response.end('{"error":"busy"}');
@@ -616,10 +623,12 @@ test("WebsitePaint canvas lands in the scoped workspace and steers the project's
 	});
 	const runtimePort = await listen(runtimeServer);
 	const viewer = [{ accountEmail: EMAIL, subject: SUBJECT, principalEmail: EMAIL, role: "viewer", agent: AGENT }];
-	const appServer = createWebAppServer(state(runtimePort, undefined, { target }));
-	const viewerServer = createWebAppServer(state(runtimePort, viewer, { target }));
-	const appPort = await listen(appServer);
-	const viewerPort = await listen(viewerServer);
+	const servers = [
+		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true })),
+		createWebAppServer(state(runtimePort, viewer, { websitePaintEnabled: true })),
+		createWebAppServer(state(runtimePort)),
+	];
+	const [appPort, viewerPort, flagOffPort] = await Promise.all(servers.map(listen));
 	const png = makePng(500, 700);
 	const post = (port, payload) => {
 		const path = "/v1/app/canvas?project=website";
@@ -630,19 +639,33 @@ test("WebsitePaint canvas lands in the scoped workspace and steers the project's
 			body,
 		});
 	};
+	const capabilities = async (port) => {
+		const path = "/v1/app/session?project=website";
+		const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: signedHeaders("GET", path) });
+		return (await response.json()).capabilities;
+	};
 	try {
+		assert.equal((await capabilities(appPort)).paint, true);
+		assert.equal((await capabilities(viewerPort)).paint, false);
+		assert.equal((await capabilities(flagOffPort)).paint, false);
+
 		const started = Date.now();
 		const ok = await post(appPort, { png_base64: png.toString("base64"), prompt: "  a bakery in Austin " });
 		assert.equal(ok.status, 202);
 		assert.deepEqual(await ok.json(), { status: "started" });
 		assert.ok(Date.now() - started < 300, "canvas response does not wait for the turn to finish");
-		const { readFile } = await import("node:fs/promises");
-		const written = await readFile(join(contextsDirectory, CONTEXT_ID.replace(/[^a-z0-9_.-]/gi, "_"), "workspace", "websitepaint", "website", "latest.png"));
-		assert.ok(written.equals(png));
+		assert.equal(uploads.length, 1);
+		const boundary = uploads[0].contentType.match(/^multipart\/form-data; boundary=(.+)$/)[1];
+		const multipart = uploads[0].raw.toString("latin1");
+		assert.match(multipart, /name="targetDir"\r\n\r\nwebsitepaint\r\n/);
+		assert.match(multipart, /name="file"; filename="latest\.png"\r\nContent-Type: image\/png\r\n\r\n/);
+		assert.ok(uploads[0].raw.includes(png));
+		assert.ok(multipart.endsWith(`--${boundary}--\r\n`));
 		assert.equal(received.length, 1);
 		assert.equal(received[0].channelId, "web-app:website");
 		assert.equal(received[0].source, "web");
-		assert.match(received[0].message, /websitepaint\/website\/latest\.png/);
+		assert.match(received[0].message, /websitepaint\/latest\.png/);
+		assert.match(received[0].message, /deploy the review preview/);
 		assert.match(received[0].message, /Notes from the painter: a bakery in Austin$/);
 
 		busy = true;
@@ -650,6 +673,21 @@ test("WebsitePaint canvas lands in the scoped workspace and steers the project's
 		assert.equal(queued.status, 409);
 		assert.deepEqual(await queued.json(), { error: "busy" });
 		busy = false;
+
+		// A failed or unexpected upload never posts a turn.
+		for (const result of [
+			{ status: 500, body: { error: "disk" } },
+			{ status: 200, body: { uploaded: ["websitepaint/latest.png", "extra"] } },
+			{ status: 200, body: { uploaded: ["elsewhere/latest.png"] } },
+		]) {
+			uploadResult = () => result;
+			const failed = await post(appPort, { png_base64: png.toString("base64") });
+			assert.equal(failed.status, 502);
+			assert.deepEqual(await failed.json(), { error: "canvas_upload_failed" });
+		}
+		uploadResult = () => ({ status: 200, body: { uploaded: ["websitepaint/latest.png"] } });
+		const messagesBefore = received.length;
+		const uploadsBefore = uploads.length;
 
 		const badCrc = Buffer.from(png);
 		badCrc[20] ^= 1;
@@ -674,7 +712,7 @@ test("WebsitePaint canvas lands in the scoped workspace and steers the project's
 		}
 
 		// The canvas route alone gets room for a 4 MiB PNG; every other route keeps the default cap.
-		assert.ok(CANVAS_MAXIMUM_REQUEST_BYTES >= Math.ceil((4 * 1024 * 1024) / 3) * 4);
+		assert.equal(CANVAS_MAXIMUM_REQUEST_BYTES, Math.ceil((4 * 1024 * 1024) / 3) * 4 + 64 * 1024);
 		const huge = await post(appPort, { png_base64: "A".repeat(CANVAS_MAXIMUM_REQUEST_BYTES) });
 		assert.equal(huge.status, 413);
 		const messagePath = "/v1/app/messages?project=website";
@@ -687,13 +725,15 @@ test("WebsitePaint canvas lands in the scoped workspace and steers the project's
 		assert.equal(tooBig.status, 413);
 		assert.deepEqual(validatedPng(png), { width: 500, height: 700 });
 
-		const forbidden = await post(viewerPort, { png_base64: png.toString("base64") });
-		assert.equal(forbidden.status, 403);
-		assert.equal(received.length, 2, "rejected canvases never reach the runtime");
+		for (const port of [viewerPort, flagOffPort]) {
+			const hidden = await post(port, { png_base64: b64 });
+			assert.equal(hidden.status, 404);
+			assert.deepEqual(await hidden.json(), { error: "paint_not_available" });
+		}
+		assert.equal(received.length, messagesBefore, "rejected canvases never reach the runtime");
+		assert.equal(uploads.length, uploadsBefore, "rejected canvases are never uploaded");
 	} finally {
-		await close(appServer);
-		await close(viewerServer);
+		await Promise.all(servers.map(close));
 		await close(runtimeServer);
-		await rm(contextsDirectory, { recursive: true, force: true });
 	}
 });
