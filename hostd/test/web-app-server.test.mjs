@@ -57,12 +57,22 @@ function pngChunk(type, data) {
 	return Buffer.concat([length, body, crc]);
 }
 
-function makePng(width, height, { idat = true } = {}) {
+function makePng(width, height, {
+	idat = true,
+	bitDepth = 8,
+	colorType = 2,
+	compression = 0,
+	filter = 0,
+	interlace = 0,
+} = {}) {
 	const ihdr = Buffer.alloc(13);
 	ihdr.writeUInt32BE(width, 0);
 	ihdr.writeUInt32BE(height, 4);
-	ihdr[8] = 8;
-	ihdr[9] = 2;
+	ihdr[8] = bitDepth;
+	ihdr[9] = colorType;
+	ihdr[10] = compression;
+	ihdr[11] = filter;
+	ihdr[12] = interlace;
 	const rows = Math.min(height, 4);
 	const raw = Buffer.alloc(rows * (1 + Math.min(width, 4) * 3), 0xff);
 	return Buffer.concat([
@@ -90,11 +100,16 @@ function state(runtimePort, accountBindings = [{
 	principalEmail: EMAIL,
 	role: "owner",
 	agent: AGENT,
-}], { target = TARGET, onExternalActivityProbe, websitePaintEnabled = false } = {}) {
+}], {
+	target = TARGET,
+	onExternalActivityProbe,
+	websitePaintEnabled = false,
+	siteDeployments = [SITE],
+} = {}) {
 	const project = {
 		slug: "website",
 		name: "Example website",
-		siteDeployments: [SITE],
+		siteDeployments,
 	};
 	return {
 		config: {
@@ -627,8 +642,9 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true })),
 		createWebAppServer(state(runtimePort, viewer, { websitePaintEnabled: true })),
 		createWebAppServer(state(runtimePort)),
+		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true, siteDeployments: [] })),
 	];
-	const [appPort, viewerPort, flagOffPort] = await Promise.all(servers.map(listen));
+	const [appPort, viewerPort, flagOffPort, noPreviewPort] = await Promise.all(servers.map(listen));
 	const png = makePng(500, 700);
 	const post = (port, payload) => {
 		const path = "/v1/app/canvas?project=website";
@@ -648,6 +664,7 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		assert.equal((await capabilities(appPort)).paint, true);
 		assert.equal((await capabilities(viewerPort)).paint, false);
 		assert.equal((await capabilities(flagOffPort)).paint, false);
+		assert.equal((await capabilities(noPreviewPort)).paint, false);
 
 		const started = Date.now();
 		const ok = await post(appPort, { png_base64: png.toString("base64"), prompt: "  a bakery in Austin " });
@@ -702,6 +719,11 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 			{ png_base64: badCrc.toString("base64") },
 			{ png_base64: makePng(5000, 10).toString("base64") },
 			{ png_base64: makePng(4096, 4096).toString("base64") },
+			{ png_base64: makePng(10, 10, { bitDepth: 4, colorType: 2 }).toString("base64") },
+			{ png_base64: makePng(10, 10, { colorType: 1 }).toString("base64") },
+			{ png_base64: makePng(10, 10, { compression: 1 }).toString("base64") },
+			{ png_base64: makePng(10, 10, { filter: 1 }).toString("base64") },
+			{ png_base64: makePng(10, 10, { interlace: 2 }).toString("base64") },
 			{ png_base64: makePng(10, 10, { idat: false }).toString("base64") },
 			{ png_base64: Buffer.concat([png, Buffer.from([0])]).toString("base64") },
 			{ png_base64: png.subarray(0, png.length - 12).toString("base64") },
@@ -725,7 +747,7 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		assert.equal(tooBig.status, 413);
 		assert.deepEqual(validatedPng(png), { width: 500, height: 700 });
 
-		for (const port of [viewerPort, flagOffPort]) {
+		for (const port of [viewerPort, flagOffPort, noPreviewPort]) {
 			const hidden = await post(port, { png_base64: b64 });
 			assert.equal(hidden.status, 404);
 			assert.deepEqual(await hidden.json(), { error: "paint_not_available" });

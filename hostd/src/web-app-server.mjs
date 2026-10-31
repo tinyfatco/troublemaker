@@ -329,6 +329,13 @@ export const CANVAS_MAXIMUM_REQUEST_BYTES = Math.ceil(CANVAS_MAXIMUM_PNG_BYTES /
 const CANVAS_MAXIMUM_SIDE = 4096;
 const CANVAS_MAXIMUM_PIXELS = 4 * 1024 * 1024;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_COLOR_DEPTHS = new Map([
+	[0, new Set([1, 2, 4, 8, 16])],
+	[2, new Set([8, 16])],
+	[3, new Set([1, 2, 4, 8])],
+	[4, new Set([8, 16])],
+	[6, new Set([8, 16])],
+]);
 
 const CRC_TABLE = (() => {
 	const table = new Uint32Array(256);
@@ -368,10 +375,16 @@ export function validatedPng(png) {
 			if (type !== "IHDR" || length !== 13) fail();
 			const width = data.readUInt32BE(0);
 			const height = data.readUInt32BE(4);
+			const bitDepth = data[8];
+			const colorType = data[9];
 			if (
 				width < 1 || height < 1
 				|| width > CANVAS_MAXIMUM_SIDE || height > CANVAS_MAXIMUM_SIDE
 				|| width * height > CANVAS_MAXIMUM_PIXELS
+				|| !PNG_COLOR_DEPTHS.get(colorType)?.has(bitDepth)
+				|| data[10] !== 0
+				|| data[11] !== 0
+				|| (data[12] !== 0 && data[12] !== 1)
 			) fail();
 			dimensions = { width, height };
 		} else if (type === "IHDR") {
