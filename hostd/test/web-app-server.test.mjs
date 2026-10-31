@@ -608,7 +608,7 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 	const received = [];
 	const uploads = [];
 	let busy = false;
-	let uploadResult = () => ({ status: 200, body: { uploaded: ["websitepaint/latest.png"] } });
+	let uploadResult = () => ({ status: 200, body: { uploaded: [`websitepaint/${SITE.siteSlug}/latest.png`] } });
 	const capability = `Bearer ${contextCapability(TARGET.inboundToken, "web-app", CONTEXT_ID)}`;
 	const runtimeServer = createServer((request, response) => {
 		assert.equal(request.headers.authorization, capability);
@@ -648,7 +648,7 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 	const png = makePng(500, 700);
 	const post = (port, payload) => {
 		const path = "/v1/app/canvas?project=website";
-		const body = Buffer.from(JSON.stringify(payload));
+		const body = Buffer.from(JSON.stringify({ site_slug: SITE.siteSlug, ...payload }));
 		return fetch(`http://127.0.0.1:${port}${path}`, {
 			method: "POST",
 			headers: { ...signedHeaders("POST", path, body), "content-type": "application/json" },
@@ -674,14 +674,15 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		assert.equal(uploads.length, 1);
 		const boundary = uploads[0].contentType.match(/^multipart\/form-data; boundary=(.+)$/)[1];
 		const multipart = uploads[0].raw.toString("latin1");
-		assert.match(multipart, /name="targetDir"\r\n\r\nwebsitepaint\r\n/);
+		assert.match(multipart, /name="targetDir"\r\n\r\nwebsitepaint\/example-business\r\n/);
 		assert.match(multipart, /name="file"; filename="latest\.png"\r\nContent-Type: image\/png\r\n\r\n/);
 		assert.ok(uploads[0].raw.includes(png));
 		assert.ok(multipart.endsWith(`--${boundary}--\r\n`));
 		assert.equal(received.length, 1);
 		assert.equal(received[0].channelId, "web-app:website");
 		assert.equal(received[0].source, "web");
-		assert.match(received[0].message, /websitepaint\/latest\.png/);
+		assert.match(received[0].message, /websitepaint\/example-business\/latest\.png/);
+		assert.match(received[0].message, /exact site example-business/);
 		assert.match(received[0].message, /deploy the review preview/);
 		assert.match(received[0].message, /Notes from the painter: a bakery in Austin$/);
 
@@ -694,22 +695,31 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		// A failed or unexpected upload never posts a turn.
 		for (const result of [
 			{ status: 500, body: { error: "disk" } },
-			{ status: 200, body: { uploaded: ["websitepaint/latest.png", "extra"] } },
-			{ status: 200, body: { uploaded: ["elsewhere/latest.png"] } },
+			{ status: 200, body: { uploaded: [`websitepaint/${SITE.siteSlug}/latest.png`, "extra"] } },
+			{ status: 200, body: { uploaded: ["websitepaint/other-site/latest.png"] } },
 		]) {
 			uploadResult = () => result;
 			const failed = await post(appPort, { png_base64: png.toString("base64") });
 			assert.equal(failed.status, 502);
 			assert.deepEqual(await failed.json(), { error: "canvas_upload_failed" });
 		}
-		uploadResult = () => ({ status: 200, body: { uploaded: ["websitepaint/latest.png"] } });
+		uploadResult = () => ({ status: 200, body: { uploaded: [`websitepaint/${SITE.siteSlug}/latest.png`] } });
 		const messagesBefore = received.length;
 		const uploadsBefore = uploads.length;
+
+		const wrongSite = await post(appPort, {
+			png_base64: png.toString("base64"),
+			site_slug: "other-site",
+		});
+		assert.equal(wrongSite.status, 404);
+		assert.deepEqual(await wrongSite.json(), { error: "site_not_available" });
 
 		const badCrc = Buffer.from(png);
 		badCrc[20] ^= 1;
 		const b64 = png.toString("base64");
 		for (const bad of [
+			{ png_base64: png.toString("base64"), site_slug: undefined },
+			{ png_base64: png.toString("base64"), site_slug: "../escape" },
 			{ png_base64: Buffer.from("not a png at all, just some text that is long enough to pass").toString("base64") },
 			{ png_base64: "%%%" },
 			{ png_base64: `${b64.slice(0, 40)}\n${b64.slice(40)}` },

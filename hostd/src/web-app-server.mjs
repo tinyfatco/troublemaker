@@ -412,8 +412,10 @@ export function parsedCanvasBody(body) {
 		!parsed
 		|| typeof parsed !== "object"
 		|| Array.isArray(parsed)
-		|| Object.keys(parsed).some((key) => key !== "png_base64" && key !== "prompt")
+		|| Object.keys(parsed).some((key) => !["png_base64", "prompt", "site_slug"].includes(key))
 		|| typeof parsed.png_base64 !== "string"
+		|| typeof parsed.site_slug !== "string"
+		|| !/^[a-z0-9][a-z0-9-]{0,62}$/.test(parsed.site_slug)
 		|| (parsed.prompt !== undefined && typeof parsed.prompt !== "string")
 	) {
 		throw new WebAppRequestError(400, "invalid_canvas");
@@ -426,13 +428,16 @@ export function parsedCanvasBody(body) {
 	if (Buffer.byteLength(prompt, "utf8") > CANVAS_MAXIMUM_PROMPT_BYTES) {
 		throw new WebAppRequestError(400, "invalid_canvas");
 	}
-	return { png, prompt };
+	return { png, prompt, siteSlug: parsed.site_slug };
 }
 
-// Fixed, project-scoped location inside the context's own workspace. Contexts are per project.
-export const CANVAS_TARGET_DIR = "websitepaint";
+// One bounded current canvas per authorized site inside the scoped runtime workspace.
+export const CANVAS_ROOT_DIR = "websitepaint";
 export const CANVAS_FILENAME = "latest.png";
-export const CANVAS_RELATIVE_PATH = `${CANVAS_TARGET_DIR}/${CANVAS_FILENAME}`;
+export function canvasTarget(siteSlug) {
+	const targetDir = `${CANVAS_ROOT_DIR}/${siteSlug}`;
+	return { targetDir, relativePath: `${targetDir}/${CANVAS_FILENAME}` };
+}
 
 export function paintAllowed(state, scope, sites) {
 	return state.config.webApp.websitePaintEnabled === true
@@ -445,11 +450,12 @@ export function paintAllowed(state, scope, sites) {
  * agent-writable workspace resolves within the runtime's isolated mount, never with
  * Hostd's host filesystem authority. Only latest.png is ever written (replaced in place).
  */
-async function uploadCanvas(fetchImpl, runtime, scope, png) {
+async function uploadCanvas(fetchImpl, runtime, scope, siteSlug, png) {
+	const { targetDir, relativePath } = canvasTarget(siteSlug);
 	const boundary = `----websitepaint${randomBytes(12).toString("hex")}`;
 	const body = Buffer.concat([
 		Buffer.from(
-			`--${boundary}\r\nContent-Disposition: form-data; name="targetDir"\r\n\r\n${CANVAS_TARGET_DIR}\r\n`
+			`--${boundary}\r\nContent-Disposition: form-data; name="targetDir"\r\n\r\n${targetDir}\r\n`
 			+ `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${CANVAS_FILENAME}"\r\n`
 			+ "Content-Type: image/png\r\n\r\n",
 		),
@@ -477,16 +483,17 @@ async function uploadCanvas(fetchImpl, runtime, scope, png) {
 		uploaded = undefined;
 	}
 	if (!upstream.ok) await upstream.body?.cancel().catch(() => {});
-	if (!Array.isArray(uploaded) || uploaded.length !== 1 || uploaded[0] !== CANVAS_RELATIVE_PATH) {
+	if (!Array.isArray(uploaded) || uploaded.length !== 1 || uploaded[0] !== relativePath) {
 		throw new WebAppRequestError(502, "canvas_upload_failed");
 	}
 }
 
-export function canvasMessage(prompt) {
-	const message = `[WebsitePaint] The canvas settled. Look at ${CANVAS_RELATIVE_PATH} in your workspace `
-		+ "(read the image) and keep building this project's website to match it: "
+export function canvasMessage(prompt, siteSlug) {
+	const { relativePath } = canvasTarget(siteSlug);
+	const message = `[WebsitePaint] The canvas settled for site ${siteSlug}. Look at ${relativePath} in your workspace `
+		+ "(read the image) and keep building that exact site's website to match it: "
 		+ "layout, colors and blocks as painted. When the page is coherent, update the project and deploy "
-		+ "the review preview with the existing site deployment so the painter sees it.";
+		+ `the review preview for exact site ${siteSlug} with the existing site deployment so the painter sees it.`;
 	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;
 }
 
@@ -633,12 +640,16 @@ export function createWebAppServer(state, {
 				return;
 			}
 			let canvas;
+			let canvasSite;
 			if (route === "canvas") {
-				if (!paintAllowed(state, scope, previewSites(state, scope))) {
+				const sites = previewSites(state, scope);
+				if (!paintAllowed(state, scope, sites)) {
 					throw new WebAppRequestError(404, "paint_not_available");
 				}
-				// Validate before waking the runtime.
+				// Validate and bind the exact authorized site before waking the runtime.
 				canvas = parsedCanvasBody(body);
+				canvasSite = sites.find((site) => site.slug === canvas.siteSlug);
+				if (!canvasSite) throw new WebAppRequestError(404, "site_not_available");
 			}
 			if ((route === "desktop-status" || route === "desktop-control") && !scope.target.computer?.enabled) {
 				throw new WebAppRequestError(404, "desktop_not_available");
@@ -688,10 +699,10 @@ export function createWebAppServer(state, {
 			let upstreamRoute = route;
 			let outboundBody;
 			if (route === "canvas") {
-				await uploadCanvas(fetchImpl, runtime, scope, canvas.png);
+				await uploadCanvas(fetchImpl, runtime, scope, canvasSite.slug, canvas.png);
 				upstreamRoute = "messages";
 				outboundBody = normalizedMessageBody(
-					Buffer.from(JSON.stringify({ message: canvasMessage(canvas.prompt) })),
+					Buffer.from(JSON.stringify({ message: canvasMessage(canvas.prompt, canvasSite.slug) })),
 					scope,
 					"messages",
 				);
