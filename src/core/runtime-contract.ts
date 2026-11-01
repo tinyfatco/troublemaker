@@ -224,6 +224,11 @@ export interface RuntimeRunCompleteEvent {
 	type: "run_complete";
 	channelId?: string;
 	mode?: RuntimeMode;
+	/**
+	 * Last durable context entry the run persisted. Live clients keep the run's
+	 * settled snapshot until this entry appears in their durable history.
+	 */
+	lastEntryId?: string;
 }
 
 export type RuntimeStreamEvent =
