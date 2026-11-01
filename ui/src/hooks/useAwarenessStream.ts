@@ -11,7 +11,17 @@ import { awarenessStreamUrl, fetchAwarenessBacklog, runtimeLiveStreamUrl } from 
 import { applyRuntimeSteeringEnvelope, mergeAwarenessEntries, parseRuntimeSteeringEnvelope } from '../steeringProjection';
 import { parseContextLine, type AwarenessEntry } from '../types';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
-import { dropUnsettledLiveRuns, expireLiveRuns, nextLiveRunExpiry, parseLiveRunEnvelope, reduceLiveRuns, type LiveRun } from '../liveRuns';
+import {
+  dropUnsettledLiveRuns,
+  expireLiveRuns,
+  nextLiveRunExpiry,
+  parseLiveRunEnvelope,
+  pauseLiveRunSettleClocks,
+  pruneSettledLiveRuns,
+  reduceLiveRuns,
+  resumeLiveRunSettleClocks,
+  type LiveRun,
+} from '../liveRuns';
 
 export interface UseAwarenessStreamReturn {
   entries: AwarenessEntry[];
@@ -45,6 +55,19 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   // Track the oldest line offset we've loaded (for pagination)
   const oldestOffsetRef = useRef<number>(Infinity);
 
+  // Durable feed caught up = initial backlog loaded AND the awareness SSE is
+  // open with its reconnect refetch settled. Only then can a completed live
+  // run's missing successor count against its bounded settle window.
+  const backlogLoadedRef = useRef(false);
+  const durableOpenRef = useRef(false);
+  const durableCaughtUpRef = useRef(false);
+  const updateDurableCaughtUp = useCallback(() => {
+    const caughtUp = backlogLoadedRef.current && durableOpenRef.current;
+    if (caughtUp === durableCaughtUpRef.current) return;
+    durableCaughtUpRef.current = caughtUp;
+    setLiveRuns((prev) => (caughtUp ? resumeLiveRunSettleClocks(prev) : pauseLiveRunSettleClocks(prev)));
+  }, []);
+
   const mergeRecentBacklog = useCallback((data: { lines: string[]; offset: number }, replaceEmpty = false) => {
     const parsed = data.lines
       .map((line: string) => parseContextLine(line))
@@ -75,6 +98,8 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
           if (cancelled) return;
           setIsLoading(false);
           setBacklogDone(true);
+          backlogLoadedRef.current = true;
+          updateDurableCaughtUp();
           return;
         } catch {
           if (cancelled) return;
@@ -86,12 +111,14 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
           setIsLoading(false);
           setBacklogDone(true);
           setError('Failed to load awareness history');
+          backlogLoadedRef.current = true;
+          updateDurableCaughtUp();
         }
       }
     })();
 
     return () => { cancelled = true; };
-  }, [refreshRecentBacklog]);
+  }, [refreshRecentBacklog, updateDurableCaughtUp]);
 
   // Connect SSE for live updates (no backlog replay)
   useEffect(() => {
@@ -108,6 +135,8 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onerror = () => {
       setConnectionState('reconnecting');
       setError('Connection lost; reconnecting.');
+      durableOpenRef.current = false;
+      updateDurableCaughtUp();
       refreshRecentBacklog(false).catch(() => {});
       setTimeout(() => setError(null), 3000);
     };
@@ -115,11 +144,21 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onopen = () => {
       setConnectionState('connected');
       setError(null);
-      refreshRecentBacklog(false).catch(() => {});
+      refreshRecentBacklog(false)
+        .catch(() => {})
+        .finally(() => {
+          if (es.readyState !== EventSource.OPEN) return;
+          durableOpenRef.current = true;
+          updateDurableCaughtUp();
+        });
     };
 
-    return () => { es.close(); };
-  }, [refreshRecentBacklog]);
+    return () => {
+      es.close();
+      durableOpenRef.current = false;
+      updateDurableCaughtUp();
+    };
+  }, [refreshRecentBacklog, updateDurableCaughtUp]);
 
   // The companion live stream replays only server-confirmed steering state.
   // Durable awareness delivery above remains unchanged.
@@ -128,7 +167,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onmessage = (event) => {
       const liveRun = parseLiveRunEnvelope(event.data);
       if (liveRun) {
-        setLiveRuns((prev) => reduceLiveRuns(prev, liveRun));
+        setLiveRuns((prev) => reduceLiveRuns(prev, liveRun, Date.now(), durableCaughtUpRef.current));
         if (liveRun.kind === 'reset') return;
       }
       const steering = parseRuntimeSteeringEnvelope(event.data);
@@ -143,6 +182,11 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     es.onerror = () => { setLiveRuns(dropUnsettledLiveRuns); };
     return () => { es.close(); setLiveRuns([]); };
   }, []);
+
+  // A completed run's durable successor landed: forget the settled reply.
+  useEffect(() => {
+    setLiveRuns((prev) => pruneSettledLiveRuns(prev, entries));
+  }, [entries]);
 
   // One timer for the earliest completed-run expiry (no polling).
   useEffect(() => {

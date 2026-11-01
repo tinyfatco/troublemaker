@@ -15,6 +15,9 @@ import type { AwarenessEntry, ContentBlock } from './types';
  * - a completed run keeps its settled snapshot until the durable entry named by
  *   `run_complete.lastEntryId` is in history, so the reply never blinks out
  *   between the two streams. A bounded expiry and reset/disconnect clear it.
+ *   The expiry clock only runs while the durable feed is connected and caught
+ *   up: while it is down or refetching, the successor is demonstrably still
+ *   pending, so the settled reply is kept.
  */
 
 export interface LiveRun {
@@ -26,6 +29,11 @@ export interface LiveRun {
   entry: AwarenessEntry | null;
   /** Client clock (ms) when run_complete arrived; unset while running. */
   completedAt?: number;
+  /**
+   * Client clock (ms) the settle expiry counts from: completion, or the moment
+   * the durable feed caught up again. Unset while the durable feed is down.
+   */
+  settleClockAt?: number;
   /** Durable successor announced by run_complete. */
   lastEntryId?: string;
 }
@@ -98,7 +106,12 @@ export function parseLiveRunEnvelope(data: string): LiveRunEnvelope | null {
   }
 }
 
-export function reduceLiveRuns(runs: LiveRun[], envelope: LiveRunEnvelope, now: number = Date.now()): LiveRun[] {
+export function reduceLiveRuns(
+  runs: LiveRun[],
+  envelope: LiveRunEnvelope,
+  now: number = Date.now(),
+  durableCaughtUp = true,
+): LiveRun[] {
   if (envelope.kind === 'reset') return runs.length ? [] : runs;
   const index = runs.findIndex((run) => run.runId === envelope.runId);
   if (envelope.eventType === 'run_complete') {
@@ -108,6 +121,7 @@ export function reduceLiveRuns(runs: LiveRun[], envelope: LiveRunEnvelope, now: 
     next[index] = {
       ...run,
       completedAt: now,
+      settleClockAt: durableCaughtUp ? now : undefined,
       ...(envelope.lastEntryId ? { lastEntryId: envelope.lastEntryId } : {}),
       // Settled: stop the streaming cursor, keep the text on screen.
       entry: run.entry ? { ...run.entry, isStreaming: false } : null,
@@ -133,7 +147,33 @@ export function reduceLiveRuns(runs: LiveRun[], envelope: LiveRunEnvelope, now: 
 
 /** Drop completed runs whose bounded wait for a durable successor has expired. */
 export function expireLiveRuns(runs: LiveRun[], now: number = Date.now(), timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS): LiveRun[] {
-  const kept = runs.filter((run) => run.completedAt === undefined || now - run.completedAt < timeoutMs);
+  const kept = runs.filter((run) => run.settleClockAt === undefined || now - run.settleClockAt < timeoutMs);
+  return kept.length === runs.length ? runs : kept;
+}
+
+/** Durable feed dropped: the successor may be in flight, so stop every settle clock. */
+export function pauseLiveRunSettleClocks(runs: LiveRun[]): LiveRun[] {
+  if (!runs.some((run) => run.settleClockAt !== undefined)) return runs;
+  return runs.map((run) => (run.settleClockAt === undefined ? run : { ...run, settleClockAt: undefined }));
+}
+
+/** Durable feed connected and refetched: give each waiting run a fresh bounded window. */
+export function resumeLiveRunSettleClocks(runs: LiveRun[], now: number = Date.now()): LiveRun[] {
+  if (!runs.some((run) => run.completedAt !== undefined && run.settleClockAt === undefined)) return runs;
+  return runs.map((run) => (run.completedAt !== undefined && run.settleClockAt === undefined ? { ...run, settleClockAt: now } : run));
+}
+
+/**
+ * Forget completed runs whose durable successor is in history. Pruned rather
+ * than merely hidden so the settled reply cannot resurface if that row later
+ * leaves the loaded window.
+ */
+export function pruneSettledLiveRuns(runs: LiveRun[], entries: AwarenessEntry[]): LiveRun[] {
+  const waiting = runs.filter((run) => run.completedAt !== undefined && run.lastEntryId);
+  if (waiting.length === 0) return runs;
+  const durableIds = new Set<string>();
+  for (const entry of entries) if (!entry.isStreaming) durableIds.add(entry.id);
+  const kept = runs.filter((run) => !(run.completedAt !== undefined && run.lastEntryId && durableIds.has(run.lastEntryId)));
   return kept.length === runs.length ? runs : kept;
 }
 
@@ -145,7 +185,7 @@ export function dropUnsettledLiveRuns(runs: LiveRun[]): LiveRun[] {
 
 /** Earliest pending expiry, for scheduling one timer instead of polling. */
 export function nextLiveRunExpiry(runs: LiveRun[], timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS): number | null {
-  const times = runs.filter((run) => run.completedAt !== undefined).map((run) => (run.completedAt as number) + timeoutMs);
+  const times = runs.filter((run) => run.settleClockAt !== undefined).map((run) => (run.settleClockAt as number) + timeoutMs);
   return times.length ? Math.min(...times) : null;
 }
 

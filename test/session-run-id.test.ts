@@ -36,7 +36,9 @@ test('message entries persisted during a run carry its run id beside, not inside
 		assert.deepEqual(stamped, [`run-a:${user}`, `run-a:${reply}`], 'reports each stamped entry so the run can name its last durable successor');
 
 		const reopened = SessionManager.open(file, dir);
-		assert.equal(reopened.buildSessionContext().messages.length, 4, 'stamped file reloads normally');
+		const modelContext = reopened.buildSessionContext();
+		assert.equal(modelContext.messages.length, 4, 'stamped file reloads normally');
+		assert.ok(!JSON.stringify(modelContext).includes('run-a'), 'run id is render/dedup metadata only; never in model-facing context');
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

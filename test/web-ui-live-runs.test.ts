@@ -8,7 +8,10 @@ import {
 	mergeLiveRuns,
 	nextLiveRunExpiry,
 	parseLiveRunEnvelope,
+	pauseLiveRunSettleClocks,
+	pruneSettledLiveRuns,
 	reduceLiveRuns,
+	resumeLiveRunSettleClocks,
 	type LiveRun,
 } from '../ui/src/liveRuns.ts';
 import { parseContextLine, type AwarenessEntry } from '../ui/src/types.ts';
@@ -25,10 +28,10 @@ function snapshot(text: string) {
 function complete(lastEntryId?: string) {
 	return { type: 'run_complete', channelId: 'c', ...(lastEntryId ? { lastEntryId } : {}) };
 }
-function step(runs: LiveRun[], data: string, now = T0): LiveRun[] {
+function step(runs: LiveRun[], data: string, now = T0, durableCaughtUp = true): LiveRun[] {
 	const envelope = parseLiveRunEnvelope(data);
 	assert.ok(envelope, `parses ${data.slice(0, 60)}`);
-	return reduceLiveRuns(runs, envelope, now);
+	return reduceLiveRuns(runs, envelope, now, durableCaughtUp);
 }
 function durable(id: string, role: 'user' | 'assistant' | 'toolResult', text: string, runId?: string, at = '2026-11-01T03:30:02.000Z'): AwarenessEntry {
 	return { id, type: 'message', role, timestamp: at, content: [{ type: 'text', text }], ...(runId ? { runId } : {}) };
@@ -146,4 +149,72 @@ test('durable entries carry their run id from context.jsonl', () => {
 	assert.equal(parseContextLine(line)?.runId, 'r1');
 	const untagged = JSON.stringify({ type: 'message', id: 'e0', parentId: null, timestamp: '2026-11-01T03:30:02.000Z', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } });
 	assert.equal(parseContextLine(untagged)?.runId, undefined);
+});
+
+const TIMEOUT = LIVE_RUN_SETTLE_TIMEOUT_MS;
+
+test('reconnect before the durable reply arrives: settled reply survives, then the exact successor takes over', () => {
+	const history = [durable('u1', 'user', 'hi'), durable('a-tool', 'assistant', 'tool turn', 'r1')];
+	let runs = step([], live('r1', 'zulip', snapshot('Final answer')));
+	runs = step(runs, live('r1', 'zulip', complete('a-final')), T0);
+
+	// Both feeds drop before the durable reply is visible.
+	runs = dropUnsettledLiveRuns(runs); // /live onerror
+	runs = pauseLiveRunSettleClocks(runs); // awareness onerror
+	assert.equal(nextLiveRunExpiry(runs), null, 'no expiry is scheduled while the successor is demonstrably pending');
+	runs = expireLiveRuns(runs, T0 + 10 * TIMEOUT);
+	assert.deepEqual(ids(mergeLiveRuns(history, runs, NONE)), ['u1', 'live-run:r1'], 'a long outage cannot expire the settled reply');
+
+	// /live reconnects first: replay carries only active runs, so nothing new; settled reply kept.
+	runs = reduceLiveRuns(runs, parseLiveRunEnvelope(live('r9', 'slack', snapshot('other')))!, T0 + 11 * TIMEOUT, false);
+	assert.ok(runs.some((run) => run.runId === 'r1'));
+
+	// Awareness reconnects and its refetch is settled: the bounded window restarts from now.
+	const reopenedAt = T0 + 12 * TIMEOUT;
+	runs = resumeLiveRunSettleClocks(runs, reopenedAt);
+	assert.equal(nextLiveRunExpiry(runs), reopenedAt + TIMEOUT);
+	assert.ok(expireLiveRuns(runs, reopenedAt + TIMEOUT - 1).some((run) => run.runId === 'r1'));
+
+	// The refetch delivers the successor: settled reply pruned, durable rows take over once.
+	const refetched = [...history, durable('a-final', 'assistant', 'Final answer, full details', 'r1')];
+	runs = pruneSettledLiveRuns(runs, refetched);
+	assert.ok(!runs.some((run) => run.runId === 'r1'));
+	assert.deepEqual(ids(mergeLiveRuns(refetched, runs, NONE)), ['u1', 'a-tool', 'a-final', 'live-run:r9']);
+});
+
+test('a run completing while the durable feed is down starts no clock until it catches up', () => {
+	let runs = step([], live('r1', 'zulip', snapshot('x')));
+	runs = step(runs, live('r1', 'zulip', complete('a-final')), T0, false);
+	assert.equal(runs[0].settleClockAt, undefined);
+	assert.equal(expireLiveRuns(runs, T0 + 10 * TIMEOUT).length, 1);
+	runs = resumeLiveRunSettleClocks(runs, T0 + 10 * TIMEOUT);
+	assert.equal(expireLiveRuns(runs, T0 + 11 * TIMEOUT).length, 0, 'bounded once the feed is caught up and the successor still has not landed');
+});
+
+test('reconnect after the durable reply arrived: nothing resurfaces or duplicates', () => {
+	let runs = step([], live('r1', 'zulip', snapshot('Final answer')));
+	runs = step(runs, live('r1', 'zulip', complete('a-final')), T0);
+	const history = [durable('u1', 'user', 'hi'), durable('a-final', 'assistant', 'Final answer, full details', 'r1')];
+	runs = pruneSettledLiveRuns(runs, history);
+	assert.deepEqual(runs, [], 'successor observed: run forgotten');
+
+	// Both feeds drop and reconnect; /live replays only active runs (r1 is complete, so absent).
+	runs = dropUnsettledLiveRuns(pauseLiveRunSettleClocks(runs));
+	runs = resumeLiveRunSettleClocks(runs, T0 + TIMEOUT);
+	assert.deepEqual(ids(mergeLiveRuns(history, runs, NONE)), ['u1', 'a-final'], 'exactly one durable copy');
+
+	// Even if the durable row later leaves the loaded window, the transient reply cannot come back.
+	assert.deepEqual(ids(mergeLiveRuns([durable('u1', 'user', 'hi')], runs, NONE)), ['u1']);
+});
+
+test('old untagged durable history is never altered by live runs', () => {
+	const oldHistory = [
+		durable('h1', 'user', 'old q', undefined, '2026-10-01T00:00:00.000Z'),
+		durable('h2', 'assistant', 'old a', undefined, '2026-10-01T00:00:01.000Z'),
+		durable('h3', 'toolResult', 'old t', undefined, '2026-10-01T00:00:02.000Z'),
+	];
+	let runs = step([], live('r1', 'zulip', snapshot('live')));
+	runs = step(runs, live('r2', 'web', snapshot('other tab')));
+	const view = mergeLiveRuns(oldHistory, runs, new Set(['r2']));
+	assert.deepEqual(view.slice(0, 3), oldHistory, 'same rows, same order, same objects');
 });
