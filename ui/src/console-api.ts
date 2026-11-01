@@ -114,6 +114,7 @@ const HOSTD_APP_CONSOLE_ROUTES = new Map([
   ['/messages', 'messages'],
   ['/messages/stop', 'messages/stop'],
   ['/canvas/image', 'canvas/image'],
+  ['/image', 'image'],
 ]);
 
 function currentAgentId(): string {
@@ -235,27 +236,38 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-const websitePaintImages = new Map<string, Promise<string | null>>();
+const chatImages = new Map<string, Promise<string | null>>();
 
-/** A WebsitePaint image Hostd still holds in memory, as a data: URL (the UI CSP allows only data: images). */
-export function fetchWebsitePaintImage(id: string): Promise<string | null> {
-  if (!isHostdAppMode() || !/^[a-f0-9]{16}$/.test(id)) return Promise.resolve(null);
-  let pending = websitePaintImages.get(id);
+function cachedChatImage(key: string, url: string): Promise<string | null> {
+  let pending = chatImages.get(key);
   if (!pending) {
     pending = (async () => {
       try {
-        const resp = await fetchWithTimeout(consoleAgentUrl(`/canvas/image?id=${id}`), {}, 15000);
+        const resp = await fetchWithTimeout(url, {}, 15000);
         if (!resp.ok) return null;
         const body = await resp.json() as { image?: unknown };
-        return typeof body.image === 'string' && body.image.startsWith('data:image/png;base64,') ? body.image : null;
+        return typeof body.image === 'string' && /^data:image\/(png|jpeg|webp|gif);base64,/.test(body.image) ? body.image : null;
       } catch {
         return null;
       }
     })();
-    websitePaintImages.set(id, pending);
-    void pending.then((image) => { if (!image) websitePaintImages.delete(id); });
+    chatImages.set(key, pending);
+    // Misses are retried next time (the agent may still be writing the file).
+    void pending.then((image) => { if (!image) chatImages.delete(key); });
   }
   return pending;
+}
+
+/** A WebsitePaint image Hostd still holds in memory, as a data: URL (the UI CSP allows only data: images). */
+export function fetchWebsitePaintImage(id: string): Promise<string | null> {
+  if (!isHostdAppMode() || !/^[a-f0-9]{16}$/.test(id)) return Promise.resolve(null);
+  return cachedChatImage(`paint:${id}`, consoleAgentUrl(`/canvas/image?id=${id}`));
+}
+
+/** An image from the agent's workspace, as a data: URL. */
+export function fetchWorkspaceImage(path: string, version = ''): Promise<string | null> {
+  // version (the message time) keeps an older message from showing a file rewritten later in this session.
+  return cachedChatImage(`workspace:${version}:${path}`, consoleAgentUrl(`/image?${new URLSearchParams({ path })}`));
 }
 
 export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {

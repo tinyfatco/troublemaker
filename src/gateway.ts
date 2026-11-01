@@ -469,6 +469,20 @@ export class Gateway {
 		}
 	}
 
+	/** Handle GET /api/v2/agents/:id/image — a workspace image for the chat, as JSON with a data: URL */
+	private handleImageApi(req: IncomingMessage, res: ServerResponse): void {
+		const service = this.requireConsoleService(res);
+		if (!service) return;
+		const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+		try {
+			const { image } = service.readImage(url.searchParams.get("path") || "");
+			res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+			res.end(JSON.stringify({ image }));
+		} catch (err) {
+			this.sendConsoleError(res, err, 404);
+		}
+	}
+
 	/** Handle GET /api/file — read file contents */
 	private handleFileApi(req: IncomingMessage, res: ServerResponse): void {
 		const service = this.requireConsoleService(res);
@@ -866,6 +880,11 @@ export class Gateway {
 
 			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/file")) {
 				this.handleFileApi(req, res);
+				return;
+			}
+
+			if (req.method === "GET" && this.isConsoleAgentPath(urlPath, "/image")) {
+				this.handleImageApi(req, res);
 				return;
 			}
 
