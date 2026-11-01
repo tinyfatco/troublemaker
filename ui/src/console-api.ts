@@ -113,6 +113,7 @@ const HOSTD_APP_CONSOLE_ROUTES = new Map([
   ['/live', 'live'],
   ['/messages', 'messages'],
   ['/messages/stop', 'messages/stop'],
+  ['/canvas/image', 'canvas/image'],
 ]);
 
 function currentAgentId(): string {
@@ -232,6 +233,29 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+const websitePaintImages = new Map<string, Promise<string | null>>();
+
+/** A WebsitePaint image Hostd still holds in memory, as a data: URL (the UI CSP allows only data: images). */
+export function fetchWebsitePaintImage(id: string): Promise<string | null> {
+  if (!isHostdAppMode() || !/^[a-f0-9]{16}$/.test(id)) return Promise.resolve(null);
+  let pending = websitePaintImages.get(id);
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const resp = await fetchWithTimeout(consoleAgentUrl(`/canvas/image?id=${id}`), {}, 15000);
+        if (!resp.ok) return null;
+        const body = await resp.json() as { image?: unknown };
+        return typeof body.image === 'string' && body.image.startsWith('data:image/png;base64,') ? body.image : null;
+      } catch {
+        return null;
+      }
+    })();
+    websitePaintImages.set(id, pending);
+    void pending.then((image) => { if (!image) websitePaintImages.delete(id); });
+  }
+  return pending;
 }
 
 export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {

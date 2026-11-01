@@ -14,12 +14,65 @@ import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, 
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
+import { fetchWebsitePaintImage } from '../console-api';
+import { parseWebsitePaintMessage, websitePaintElementLabel, type WebsitePaintRequest } from '../websitePaint';
 
 function formatTime(ts: string): string {
   try {
     const d = new Date(ts);
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   } catch { return ''; }
+}
+
+function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; rawText: string }) {
+  const [image, setImage] = useState<string | null>(null);
+  const [imageMissing, setImageMissing] = useState(!request.imageId);
+
+  useEffect(() => {
+    if (!request.imageId) return;
+    let alive = true;
+    void fetchWebsitePaintImage(request.imageId).then((url) => {
+      if (!alive) return;
+      setImage(url);
+      setImageMissing(!url);
+    });
+    return () => { alive = false; };
+  }, [request.imageId]);
+
+  const isMarkup = request.kind === 'markup';
+  const chips = request.elements.filter((element) => element.text || element.tag).slice(0, 6);
+
+  return (
+    <div className={`websitepaint-card ${isMarkup ? 'is-markup' : 'is-canvas'}`}>
+      <div className="websitepaint-card-bar">
+        <span className="websitepaint-card-dots" aria-hidden="true"><i /><i /><i /></span>
+        <span className="websitepaint-card-address">
+          {request.site}
+          {request.pagePath && request.pagePath !== '/' && <span className="websitepaint-card-path">{request.pagePath}</span>}
+        </span>
+        <span className="websitepaint-card-kind">{isMarkup ? 'Marked up' : 'Painted'}</span>
+      </div>
+      {!imageMissing && (
+        <div className="websitepaint-card-stage">
+          {image
+            ? <img className="websitepaint-card-image" src={image} alt={isMarkup ? 'Marks drawn on the page' : 'Painted canvas'} />
+            : <div className="websitepaint-card-loading" aria-label="Loading image" />}
+        </div>
+      )}
+      {request.note && <p className="websitepaint-card-note">{request.note}</p>}
+      {chips.length > 0 && (
+        <div className="websitepaint-card-chips">
+          {chips.map((element, i) => (
+            <span key={i} className="websitepaint-card-chip">{websitePaintElementLabel(element)}</span>
+          ))}
+        </div>
+      )}
+      <details className="websitepaint-card-raw">
+        <summary>What the agent received</summary>
+        <pre>{rawText}</pre>
+      </details>
+    </div>
+  );
 }
 
 interface AwarenessEntryProps {
@@ -606,6 +659,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
       );
     }
 
+    const websitePaint = parseWebsitePaintMessage(text);
     return (
       <div className={`awareness-entry user-entry ${entry.channel === 'web' ? 'web-user-entry' : ''}`}>
         <div className="awareness-meta">
@@ -613,7 +667,9 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           {showChannels && entry.channel && <ChannelBadge channel={entry.channel} />}
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
-        <div className="awareness-user-text">{text}</div>
+        {websitePaint
+          ? <WebsitePaintCard request={websitePaint} rawText={text} />
+          : <div className="awareness-user-text">{text}</div>}
         {entry.steeringProjection?.state === 'accepted' && (
           <div className="awareness-steering-status">queued · steered</div>
         )}
