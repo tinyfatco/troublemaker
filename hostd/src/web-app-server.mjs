@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
 import { extname, join } from "node:path";
@@ -166,6 +166,11 @@ function validateQuery(url, route) {
 		allowed.add("before");
 	}
 	if (route === "live") allowed.add("after");
+	if (route === "canvas-image") {
+		allowed.add("id");
+		const ids = url.searchParams.getAll("id");
+		if (ids.length !== 1 || !PAINT_IMAGE_ID_RE.test(ids[0])) throw new WebAppRequestError(400, "invalid_query");
+	}
 	for (const key of url.searchParams.keys()) {
 		if (!allowed.has(key)) throw new WebAppRequestError(400, "invalid_query");
 	}
@@ -571,16 +576,36 @@ async function uploadCanvas(fetchImpl, runtime, scope, siteSlug, png, markup = f
 	}
 }
 
-export function canvasMessage(prompt, siteSlug) {
+// Recent accepted paint images, kept in Hostd memory so the chat can show them as a card.
+// Keyed by context so one account can never read another context's image. Lost on restart;
+// the chat then falls back to a card without the picture.
+export const PAINT_IMAGE_ID_RE = /^[a-f0-9]{16}$/;
+const PAINT_IMAGE_MAXIMUM_ENTRIES = 16;
+export function paintImageId(png) {
+	return createHash("sha256").update(png).digest("hex").slice(0, 16);
+}
+export function rememberPaintImage(images, contextId, png) {
+	const id = paintImageId(png);
+	const key = `${contextId}:${id}`;
+	images.delete(key);
+	images.set(key, png);
+	while (images.size > PAINT_IMAGE_MAXIMUM_ENTRIES) images.delete(images.keys().next().value);
+	return id;
+}
+function paintTag(imageId) {
+	return imageId ? ` (image ${imageId})` : "";
+}
+
+export function canvasMessage(prompt, siteSlug, imageId) {
 	const { relativePath } = canvasTarget(siteSlug);
-	const message = `[WebsitePaint] The canvas settled for site ${siteSlug}. Look at ${relativePath} in your workspace `
+	const message = `[WebsitePaint]${paintTag(imageId)} The canvas settled for site ${siteSlug}. Look at ${relativePath} in your workspace `
 		+ "(read the image) and keep building that exact site's website to match it: "
 		+ "layout, colors and blocks as painted. When the page is coherent, update the project and deploy "
 		+ `the review preview for exact site ${siteSlug} with the existing site deployment so the painter sees it.`;
 	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;
 }
 
-export function markupMessage(prompt, siteSlug, markup) {
+export function markupMessage(prompt, siteSlug, markup, imageId) {
 	const { relativePath } = canvasTarget(siteSlug, true);
 	const details = JSON.stringify({
 		page_url: markup.pageUrl.href,
@@ -589,7 +614,7 @@ export function markupMessage(prompt, siteSlug, markup) {
 		marks_origin_in_page: markup.origin,
 		marked_elements: markup.targets,
 	}, null, 1).replaceAll("`", "\\u0060"); // page text can never close the fence
-	const message = `[WebsitePaint] The painter drew marks directly on top of the live review preview for site ${siteSlug}. `
+	const message = `[WebsitePaint]${paintTag(imageId)} The painter drew marks directly on top of the live review preview for site ${siteSlug}. `
 		+ `${relativePath} in your workspace is a transparent image of just the marks; its top-left corner sits at `
 		+ "marks_origin_in_page (page pixels, at the given viewport width). Open page_url at that viewport, "
 		+ "look at the page with the marks laid over it, and change only what is marked: circles, arrows, "
@@ -656,6 +681,7 @@ const ROUTES = new Map([
 	["POST /v1/app/messages", "messages"],
 	["POST /v1/app/messages/stop", "messages-stop"],
 	["POST /v1/app/canvas", "canvas"],
+	["GET /v1/app/canvas/image", "canvas-image"],
 	["GET /v1/app/desktop/status", "desktop-status"],
 	["POST /v1/app/desktop/control", "desktop-control"],
 ]);
@@ -693,6 +719,7 @@ export function createWebAppServer(state, {
 	const assertionVerifier = verifier ?? new WebAppAssertionVerifier(state.config.webApp);
 	const desktopConnections = new Map();
 	const humanLeases = new Map();
+	const paintImages = new Map();
 	state.runtime.setExternalActivityProbe?.((contextId) => (
 		(desktopConnections.get(contextId) ?? 0) > 0
 			|| (humanLeases.get(contextId) ?? 0) > Date.now()
@@ -741,6 +768,13 @@ export function createWebAppServer(state, {
 			const scope = resolveScope(state, claims, requestedProject(url));
 			if (route === "session") {
 				json(response, 200, sessionPayload(state, claims, scope));
+				return;
+			}
+			if (route === "canvas-image") {
+				// Served from memory only; never wakes the runtime or touches the workspace.
+				const png = paintImages.get(`${scope.route.contextId}:${url.searchParams.get("id")}`);
+				if (!png) throw new WebAppRequestError(404, "image_not_available");
+				json(response, 200, { image: `data:image/png;base64,${png.toString("base64")}` });
 				return;
 			}
 			let canvas;
@@ -808,9 +842,10 @@ export function createWebAppServer(state, {
 			if (route === "canvas") {
 				await uploadCanvas(fetchImpl, runtime, scope, canvasSite.slug, canvas.png, Boolean(canvas.markup));
 				upstreamRoute = "messages";
+				const imageId = rememberPaintImage(paintImages, scope.route.contextId, canvas.png);
 				const message = canvas.markup
-					? markupMessage(canvas.prompt, canvasSite.slug, canvas.markup)
-					: canvasMessage(canvas.prompt, canvasSite.slug);
+					? markupMessage(canvas.prompt, canvasSite.slug, canvas.markup, imageId)
+					: canvasMessage(canvas.prompt, canvasSite.slug, imageId);
 				outboundBody = normalizedMessageBody(
 					Buffer.from(JSON.stringify({ message })),
 					scope,

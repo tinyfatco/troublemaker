@@ -1581,6 +1581,140 @@ html, body, #root {
   color: var(--text);
 }
 
+/* WebsitePaint request — the painted image and the note, not the model-facing prompt */
+.websitepaint-card {
+  margin-top: 0.3rem;
+  max-width: 34rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface-raised);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 8px 24px -16px rgb(0 0 0 / 0.25);
+}
+
+.websitepaint-card-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.7rem;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.websitepaint-card-dots { display: inline-flex; gap: 0.25rem; }
+.websitepaint-card-dots i {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+.websitepaint-card-address {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.websitepaint-card-path { color: var(--text-muted); }
+
+.websitepaint-card-kind {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-weight: 600;
+  color: var(--entry-user);
+  background: color-mix(in srgb, var(--entry-user) 12%, transparent);
+}
+
+.websitepaint-card-stage {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 7rem;
+  max-height: 22rem;
+  padding: 0.9rem;
+  background-color: #fbfbf8;
+  background-image: radial-gradient(rgb(0 0 0 / 0.09) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+
+.websitepaint-card.is-canvas .websitepaint-card-stage { padding: 0; background: #fbfbf8; }
+
+.websitepaint-card-image {
+  display: block;
+  max-width: 100%;
+  max-height: 20rem;
+  object-fit: contain;
+}
+
+.websitepaint-card.is-canvas .websitepaint-card-image { max-height: 22rem; }
+
+.websitepaint-card-loading {
+  width: 60%;
+  height: 5rem;
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgb(0 0 0 / 0.04), rgb(0 0 0 / 0.09), rgb(0 0 0 / 0.04));
+  background-size: 200% 100%;
+  animation: websitepaint-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes websitepaint-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+.websitepaint-card-note {
+  margin: 0;
+  padding: 0.75rem 0.9rem 0.2rem;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.websitepaint-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  padding: 0.5rem 0.9rem 0;
+}
+
+.websitepaint-card-chip {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.websitepaint-card-raw {
+  padding: 0.5rem 0.9rem 0.65rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.websitepaint-card-raw summary { cursor: pointer; width: fit-content; }
+.websitepaint-card-raw summary:hover { color: var(--text); }
+
+.websitepaint-card-raw pre {
+  margin: 0.4rem 0 0;
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+}
+
 .awareness-steering-status {
   margin-top: 0.35rem;
   font-size: 0.68rem;
