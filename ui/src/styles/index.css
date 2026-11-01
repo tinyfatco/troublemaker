@@ -1714,6 +1714,7 @@ html, body, #root {
 }
 
 .websitepaint-card.is-canvas .websitepaint-card-stage { padding: 0; background: #fbfbf8; }
+.websitepaint-card.is-composite .websitepaint-card-stage { padding: 0; background: #fbfbf8; }
 
 .websitepaint-card-stage .chat-image { margin: 0; max-width: 100%; }
 .websitepaint-card-stage .chat-image-img {
@@ -1724,6 +1725,7 @@ html, body, #root {
   background: transparent;
 }
 .websitepaint-card.is-canvas .websitepaint-card-stage .chat-image-img { max-height: 22rem; }
+.websitepaint-card.is-composite .websitepaint-card-stage .chat-image-img { max-height: 22rem; }
 
 .websitepaint-card-note {
   margin: 0;

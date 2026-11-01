@@ -11,6 +11,8 @@ export interface WebsitePaintRequest {
   kind: 'markup' | 'canvas';
   site: string;
   imageId?: string;
+  /** The image is a screenshot of the page with the marks already on top. */
+  composite?: boolean;
   note?: string;
   pagePath?: string;
   origin?: { x: number; y: number };
@@ -20,6 +22,7 @@ export interface WebsitePaintRequest {
 const HEADER_RE = /^\[WebsitePaint\](?: \(image ([a-f0-9]{16})\))? (?:(The painter drew marks directly on top of the live review preview)|The canvas settled) for site ([a-z0-9][a-z0-9-]*)/;
 const NOTES_RE = /\n\nNotes from the painter: ([\s\S]*)$/;
 const DETAILS_RE = /```json\n([\s\S]+?)\n```/;
+const COMPOSITE_RE = /^[^`]*? websitepaint\/[a-z0-9][a-z0-9-]*\/markup-composite\.png is a screenshot of page_url/;
 
 function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -46,6 +49,8 @@ export function parseWebsitePaintMessage(raw: string): WebsitePaintRequest | nul
   const note = notes?.[1].trim();
   if (note) request.note = note;
   const body = notes ? text.slice(0, notes.index) : text;
+
+  if (request.kind === 'markup' && COMPOSITE_RE.test(body)) request.composite = true;
 
   const fenced = body.match(DETAILS_RE);
   if (fenced) {
