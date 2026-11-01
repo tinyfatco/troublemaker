@@ -2255,13 +2255,19 @@ export class HostStore {
 		if (funnel.providerThreadId === providerThreadId) return true;
 		const linked = this.getRoute(source, providerThreadId);
 		const owner = this.getRoute(source, funnel.providerThreadId);
+		// Both the linked edge and the funnel's owner route must be bound to this
+		// exact context, principal, target, and project, with participant rows.
 		return Boolean(
 			linked && owner
 			&& linked.contextId === funnel.contextId
 			&& owner.contextId === funnel.contextId
 			&& linked.principalHash === principalHash
+			&& owner.principalHash === principalHash
 			&& linked.targetId === targetId
-			&& this.hasRouteParticipant(source, providerThreadId, principalHash),
+			&& owner.targetId === targetId
+			&& linked.projectSlug === owner.projectSlug
+			&& this.hasRouteParticipant(source, providerThreadId, principalHash)
+			&& this.hasRouteParticipant(source, funnel.providerThreadId, principalHash),
 		);
 	}
 
@@ -2364,7 +2370,8 @@ export class HostStore {
 	getPhoneApiTurn(id) {
 		return this.database.prepare(`
 			SELECT id, provider_message_id AS providerMessageId,
-				thread_target AS threadTarget, reply_thread_target AS replyThreadTarget,
+				thread_target AS sessionThreadTarget,
+				COALESCE(reply_thread_target, thread_target) AS replyThreadTarget,
 				target_id AS targetId, context_id AS contextId,
 				mode, is_mode_command AS isModeCommand,
 				is_config_nudge AS isConfigNudge,
@@ -2383,6 +2390,7 @@ export class HostStore {
 			return conversation;
 		}
 		const edge = this.getPhoneConversation(replyThreadTarget);
+		const route = edge && this.getRoute("phone", edge.providerThreadId);
 		if (
 			!edge
 			|| edge.status !== "active"
@@ -2390,6 +2398,13 @@ export class HostStore {
 			|| edge.principalHash !== conversation.principalHash
 			|| edge.targetId !== conversation.targetId
 			|| edge.contextId !== conversation.contextId
+			// The edge must be router-bound to this person in this context, not
+			// merely a phone_conversations row that claims to be.
+			|| !route
+			|| route.principalHash !== edge.principalHash
+			|| route.targetId !== edge.targetId
+			|| route.contextId !== edge.contextId
+			|| !this.hasRouteParticipant("phone", edge.providerThreadId, edge.principalHash)
 		) throw new Error("phone API reply edge crossed conversation scope");
 		return edge;
 	}
@@ -2530,7 +2545,9 @@ export class HostStore {
 			if (claimed.changes !== 1) throw new Error("phone API turn claim conflicted");
 			const turn = this.database.prepare(`
 				SELECT turn.id, turn.provider_message_id AS providerMessageId,
-					turn.thread_target AS threadTarget, turn.mode,
+					turn.thread_target AS sessionThreadTarget,
+					COALESCE(turn.reply_thread_target, turn.thread_target) AS replyThreadTarget,
+					turn.mode,
 					turn.is_mode_command AS isModeCommand,
 					turn.is_config_nudge AS isConfigNudge, turn.model,
 					turn.model_generation AS modelGeneration,
@@ -2598,7 +2615,7 @@ export class HostStore {
 						END,
 						selected_model = ?, generation = generation + 1, updated_at = ?
 					WHERE thread_target = ?
-				`).run(selectedModel, selectedModel, timestamp, turn.threadTarget);
+				`).run(selectedModel, selectedModel, timestamp, turn.sessionThreadTarget);
 			}
 			this.database.exec("COMMIT");
 			return this.getPhoneApiTurn(id);
@@ -2626,8 +2643,8 @@ export class HostStore {
 			`).run(future(leaseSeconds), timestamp, row.id);
 			if (updated.changes !== 1) throw new Error("phone API send claim conflicted");
 			const result = this.database.prepare(`
-				SELECT turn.id, conversation.thread_target AS threadTarget,
-					turn.thread_target AS canonicalThreadTarget,
+				SELECT turn.id, turn.thread_target AS sessionThreadTarget,
+					conversation.thread_target AS replyThreadTarget,
 					turn.reply_body AS replyBody, turn.status, turn.mode,
 					turn.is_mode_command AS isModeCommand,
 					turn.is_config_nudge AS isConfigNudge, turn.model,
@@ -2689,7 +2706,7 @@ export class HostStore {
 			if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
 			const turn = this.getPhoneApiTurn(id);
 			if (projectionEvent) {
-				const conversation = this.getPhoneConversation(turn.replyThreadTarget || turn.threadTarget);
+				const conversation = this.getPhoneConversation(turn.replyThreadTarget);
 				if (
 					!conversation
 					|| projectionEvent.source !== "phone_outbound"
@@ -2713,8 +2730,8 @@ export class HostStore {
 				`).run(
 					`${turn.id}:config-nudge`,
 					`${turn.providerMessageId}:config-nudge`,
-					turn.threadTarget,
-					turn.replyThreadTarget,
+					turn.sessionThreadTarget,
+					turn.replyThreadTarget === turn.sessionThreadTarget ? null : turn.replyThreadTarget,
 					turn.targetId,
 					turn.contextId,
 					turn.modelGeneration,

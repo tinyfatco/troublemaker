@@ -264,6 +264,9 @@ export class LoopGateway {
 
 		const text = firstString(payload.text) || "";
 		const keyword = text.trim().toLowerCase();
+		// Empty webhooks are quarantined before any linked route is created or touched.
+		if (!text) return done("quarantined:empty");
+
 		let conversation;
 		try {
 			conversation = this.prepareConversation(from);
@@ -277,8 +280,6 @@ export class LoopGateway {
 			this.store.setPhoneOptOut(stored.principalHash, optedOut);
 			return done(optedOut ? "opted_out" : "opted_in");
 		}
-		if (!text) return done("quarantined:empty");
-
 		// Feature senders talk to the direct phone agent. The canonical SMS
 		// conversation owns that session and history; Loop is only this turn's
 		// reply transport.

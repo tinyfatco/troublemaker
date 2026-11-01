@@ -594,13 +594,17 @@ export class PhoneGateway {
 	registerReplyTransport(provider, transport) {
 		if (provider === this.config.phone.provider) throw new Error("reply transport cannot replace the canonical provider");
 		this.replyTransports ??= new Map();
+		const existing = this.replyTransports.get(provider);
+		if (existing && existing !== transport) {
+			throw new Error(`reply transport for ${provider} is already registered`);
+		}
 		this.replyTransports.set(provider, transport);
 	}
 
 	cancelConfigNudge(threadTarget) {
 		this.store.skipQueuedPhoneApiConfigNudges(threadTarget);
 		if (this.currentApiAgentTurn?.isConfigNudge
-			&& this.currentApiAgentTurn.threadTarget === threadTarget) {
+			&& this.currentApiAgentTurn.sessionThreadTarget === threadTarget) {
 			this.currentApiAgentController?.abort();
 		}
 	}
@@ -671,11 +675,13 @@ export class PhoneGateway {
 			if (delivery) {
 				didWork = true;
 				try {
-					const receipt = await this.sendDirect(delivery, delivery.replyBody);
+					// Transport is always the reply edge; history stays on the session thread.
+					const replyEdge = { ...delivery, threadTarget: delivery.replyThreadTarget };
+					const receipt = await this.sendDirect(replyEdge, delivery.replyBody);
 					const completed = this.store.completePhoneApiSend(delivery.id, {
 						providerMessageId: receipt.providerMessageId,
 						providerStatus: receipt.status,
-						projectionEvent: phoneProjectionEvent(delivery, {
+						projectionEvent: phoneProjectionEvent(replyEdge, {
 							direction: "outbound",
 							providerMessageId: receipt.providerMessageId,
 							text: delivery.replyBody,

@@ -795,8 +795,8 @@ constant time. It dedupes on `webhook_id` and acknowledges quickly. Receipts
 (`message_scheduled`, `message_sent`, `message_delivered`, `message_failed`)
 only update outbox status. They carry Hostd's own outbound text and never wake
 the agent. Only direct, text-only `message_inbound` events with
-`channel: "imessage"`, the configured `sender`, and an exact `allowedContacts`
-number are queued. SMS, RCS, or fallback channels, groups, any non-empty or
+`channel: "imessage"`, an exact `allowedContacts` number, and, when `senderId`
+is configured, an exactly matching `sender` are queued. SMS, RCS, or fallback channels, groups, any non-empty or
 malformed `attachments`, audio, email contacts, missing or other senders, and
 unknown events are recorded and dropped. Group, read-receipt, fallback,
 media, and typing semantics are not supported. STOP and

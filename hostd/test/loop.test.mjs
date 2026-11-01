@@ -194,6 +194,18 @@ test("a direct-agent reply edge must be the same person in the same context", ()
 		const strangerSms = loop.seed(STRANGER);
 		assert.throws(() => loop.store.phoneApiReplyEdge(sms, strangerSms.threadTarget), /reply edge crossed/);
 		assert.throws(() => loop.store.phoneApiReplyEdge(sms, "phone-00000000000000000000"), /reply edge crossed/);
+		// Same person, same context, but no router binding: a forged row is not an edge.
+		const forged = loop.store.upsertPhoneConversation({
+			...edge,
+			threadTarget: "phone-11111111111111111111",
+			providerThreadId: "forged-loop-thread-without-route",
+		});
+		assert.equal(forged.contextId, sms.contextId);
+		assert.equal(loop.store.getRoute("phone", forged.providerThreadId), undefined);
+		assert.throws(() => loop.store.phoneApiReplyEdge(sms, forged.threadTarget), /reply edge crossed/);
+		// A route that drifted from the edge row is refused too.
+		loop.store.database.prepare("UPDATE routes SET target_id = 'other-target' WHERE provider_thread_id = ?").run(edge.providerThreadId);
+		assert.throws(() => loop.store.phoneApiReplyEdge(sms, edge.threadTarget), /reply edge crossed/);
 		assert.throws(() => loop.store.queuePhoneApiTurn({
 			id: "phone-api:forged",
 			providerMessageId: "forged",
@@ -202,6 +214,55 @@ test("a direct-agent reply edge must be the same person in the same context", ()
 			inboundBody: "x",
 			defaultModel: "example-alpha",
 		}), /reply edge crossed/);
+	} finally {
+		loop.close();
+	}
+});
+
+test("linked funnel scope also proves the owner route", () => {
+	const cases = [
+		["owner principal", (db, sms) => db.prepare("UPDATE routes SET principal_hash = 'drift' WHERE provider_thread_id = ?").run(sms.providerThreadId)],
+		["owner target", (db, sms) => db.prepare("UPDATE routes SET target_id = 'drift' WHERE provider_thread_id = ?").run(sms.providerThreadId)],
+		["owner project", (db, sms) => db.prepare("UPDATE routes SET project_slug = 'drift' WHERE provider_thread_id = ?").run(sms.providerThreadId)],
+		["linked project", (db, _sms, edge) => db.prepare("UPDATE routes SET project_slug = 'drift' WHERE provider_thread_id = ?").run(edge.providerThreadId)],
+		["owner participant", (db, sms) => db.prepare("DELETE FROM route_participants WHERE provider_thread_id = ?").run(sms.providerThreadId)],
+		["linked participant", (db, _sms, edge) => db.prepare("DELETE FROM route_participants WHERE provider_thread_id = ?").run(edge.providerThreadId)],
+	];
+	for (const [name, drift] of cases) {
+		const loop = subject();
+		try {
+			const sms = loop.smsConversation;
+			const edge = loop.store.upsertPhoneConversation(loop.gateway.prepareConversation(ALLOWED));
+			const base = { contextId: sms.contextId, source: "phone", principalHash: sms.principalHash, targetId: sms.targetId };
+			const funnel = loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: sms.providerThreadId, observedAt: "2026-10-31T10:00:00.000Z", evidenceId: "sms-1" });
+			assert.equal(loop.store.relationshipThreadInScope(funnel, { ...base, providerThreadId: edge.providerThreadId }), true, name);
+			// Simulate storage drift directly; foreign keys would otherwise reject it.
+			loop.store.database.exec("PRAGMA foreign_keys = OFF");
+			drift(loop.store.database, sms, edge);
+			loop.store.database.exec("PRAGMA foreign_keys = ON");
+			assert.equal(loop.store.relationshipThreadInScope(funnel, { ...base, providerThreadId: edge.providerThreadId }), false, name);
+			assert.throws(() => loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: edge.providerThreadId, observedAt: "2026-10-31T10:05:00.000Z", evidenceId: "loop-1" }), /relationship_funnel_scope_conflict/, name);
+		} finally {
+			loop.close();
+		}
+	}
+});
+
+test("empty Loop text is quarantined before any linked route is created", () => {
+	const none = subject(undefined, { seedSms: false });
+	try {
+		assert.equal(none.gateway.acceptWebhook(inbound({ text: " ", webhook_id: "e0" })), "quarantined:empty");
+	} finally {
+		none.close();
+	}
+	const loop = subject();
+	try {
+		const routes = () => loop.store.database.prepare("SELECT COUNT(*) AS n FROM routes").get().n;
+		const before = routes();
+		assert.equal(loop.gateway.acceptWebhook(inbound({ text: "", webhook_id: "e1" })), "quarantined:empty");
+		assert.equal(loop.gateway.acceptWebhook(inbound({ text: undefined, webhook_id: "e2" })), "quarantined:empty");
+		assert.equal(routes(), before);
+		assert.equal(loop.store.database.prepare("SELECT COUNT(*) AS n FROM phone_conversations WHERE provider = 'loop'").get().n, 0);
 	} finally {
 		loop.close();
 	}
