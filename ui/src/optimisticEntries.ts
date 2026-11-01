@@ -77,6 +77,14 @@ export function stampSteeringOffsets(
   offsets: Map<string, number>,
 ): AwarenessEntry[] {
   const streamedBlocks = streamingEntry?.isStreaming ? (streamingEntry.content?.length ?? 0) : undefined;
+  // Lifecycle: drop offsets whose steering input is no longer in this view
+  // (stream cleared, reconnect backlog, project switch). Only this view's map is touched.
+  const live = new Set<string>();
+  for (const entry of entries) {
+    if (entry.steeringProjection?.id) live.add(entry.steeringProjection.id);
+    if (entry.replacesSteeringId) live.add(entry.replacesSteeringId);
+  }
+  for (const id of [...offsets.keys()]) if (!live.has(id)) offsets.delete(id);
   return entries.map((entry) => {
     const projectionId = entry.steeringProjection?.id;
     if (projectionId) {
