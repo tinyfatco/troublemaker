@@ -57,11 +57,20 @@ function bindingMarker(contextId) {
 	return createHash("sha256").update(contextId, "utf8").digest("hex").slice(0, 16);
 }
 
-function channelDescription(contextId) {
+function channelDescription(contextId, lane = "customer") {
+	const subject = lane === "owner" ? "owner" : lane;
 	return [
-		"Private customer exchange feed backed by one isolated agent runtime.",
+		`Private ${subject} conversation backed by one isolated agent runtime.`,
 		`Hostd binding: ${bindingMarker(contextId)}`,
 	].join("\n");
+}
+
+function titleFromSlug(value) {
+	return cleanInline(value)
+		.split(/[-_]+/)
+		.filter(Boolean)
+		.map((word) => `${word[0]?.toUpperCase() || ""}${word.slice(1)}`)
+		.join(" ");
 }
 
 function ownedByContext(stream, contextId) {
@@ -96,11 +105,17 @@ export class ZulipProvisioner {
 	constructor(config, store, {
 		knownEmailsByPrincipalHash = new Map(),
 		knownLabelsByPrincipalHash = new Map(),
+		userPrincipalRefs = [],
 	} = {}) {
 		this.config = config;
 		this.store = store;
 		this.knownEmailsByPrincipalHash = knownEmailsByPrincipalHash;
 		this.knownLabelsByPrincipalHash = knownLabelsByPrincipalHash;
+		this.ownerPrincipalRefs = new Set(config.ownerPrincipalRefs ?? []);
+		this.userPrincipalRefs = new Set([
+			...(config.userPrincipalRefs ?? []),
+			...userPrincipalRefs,
+		]);
 		this.contextPromises = new Map();
 		this.identityPromise = null;
 	}
@@ -231,6 +246,44 @@ export class ZulipProvisioner {
 		});
 	}
 
+	contextRoutes(contextId) {
+		const latest = this.store.getRouteForContext?.(contextId);
+		if (!latest) return [];
+		return this.store.listRoutesForContext?.(contextId, latest.targetId) ?? [latest];
+	}
+
+	contextPrincipalRefs(contextId) {
+		const routed = this.contextRoutes(contextId)
+			.map((route) => route.principalHash?.slice(0, 24))
+			.filter(Boolean);
+		return new Set(routed.length > 0 ? routed : [contextId.split(":")[1]]);
+	}
+
+	contextLane(contextId) {
+		const principalRefs = this.contextPrincipalRefs(contextId);
+		if ([...principalRefs].some((reference) => this.ownerPrincipalRefs.has(reference))) {
+			return "owner";
+		}
+		if ([...principalRefs].some((reference) => this.userPrincipalRefs.has(reference))) {
+			return "user";
+		}
+		const sources = new Set(this.contextRoutes(contextId).map((route) => route.source));
+		return sources.has("web-chat") || sources.has("web-app") ? "user" : "customer";
+	}
+
+	ownerContextLabel(contextId) {
+		const routes = this.contextRoutes(contextId);
+		const sources = new Set(routes.map((route) => route.source));
+		const projects = [...new Set(routes.map((route) => route.projectSlug).filter(Boolean))];
+		if (sources.has("phone")) return "Messages";
+		if (sources.has("web-app")) return "App";
+		const project = projects.find((candidate) => candidate !== "intake");
+		if (project) return titleFromSlug(project);
+		if (sources.has("gmail")) return "Email";
+		if (sources.has("web-chat")) return "Web chat";
+		return "Conversation";
+	}
+
 	channelName(contextId) {
 		const email = verifiedContextEmail(
 			this.store,
@@ -238,12 +291,18 @@ export class ZulipProvisioner {
 			this.knownEmailsByPrincipalHash,
 		);
 		const principalHash = contextId.split(":")[1];
-		const storedLabel = this.store.getPrincipal?.(principalHash)?.displayLabel;
-		return `customer · ${principalLabel(
+		const lane = this.contextLane(contextId);
+		if (lane === "owner") {
+			return `${cleanInline(this.config.ownerDisplayName) || "Owner"} · ${this.ownerContextLabel(contextId)}`;
+		}
+		const routedPrincipalHash = this.contextRoutes(contextId)[0]?.principalHash ?? principalHash;
+		const routedPrincipalRef = routedPrincipalHash.slice(0, 24);
+		const storedLabel = this.store.getPrincipal?.(routedPrincipalHash)?.displayLabel;
+		return `${lane} · ${principalLabel(
 			email,
 			contextId,
 			storedLabel,
-			this.knownLabelsByPrincipalHash.get(principalHash),
+			this.knownLabelsByPrincipalHash.get(routedPrincipalRef),
 		)}`;
 	}
 
@@ -289,14 +348,18 @@ export class ZulipProvisioner {
 
 	async ensureContextInner(contextId, { reconcile = false } = {}) {
 		const identities = await this.identities();
+		const lane = this.contextLane(contextId);
 		const baseName = this.channelName(contextId);
 		const existing = this.store.getZulipBinding(contextId);
 		let streams = await this.listChannels();
 		let stream = existing
 			? streams.find((candidate) => Number(candidate.stream_id) === Number(existing.channelId))
 			: null;
-		const fresh = stream ? null : this.freshChannel(streams, contextId, baseName);
-		let desiredName = stream ? existing.channelName : fresh.name;
+		const named = stream && !reconcile
+			? null
+			: this.freshChannel(streams, contextId, baseName);
+		const fresh = stream ? null : named;
+		let desiredName = stream && !reconcile ? existing.channelName : named.name;
 		if (!stream) stream = fresh.stream;
 
 		if (!stream) {
@@ -307,7 +370,7 @@ export class ZulipProvisioner {
 						method: "POST",
 						form: zulipForm({
 							name: desiredName,
-							description: channelDescription(contextId),
+							description: channelDescription(contextId, lane),
 							subscribers: this.desiredSubscriberIds(identities),
 							invite_only: true,
 							history_public_to_subscribers: false,
@@ -351,7 +414,7 @@ export class ZulipProvisioner {
 				method: "PATCH",
 				form: zulipForm({
 					...(stream.name === desiredName ? {} : { new_name: desiredName }),
-					description: channelDescription(contextId),
+					description: channelDescription(contextId, lane),
 					topics_policy: "empty_topic_only",
 				}),
 			});

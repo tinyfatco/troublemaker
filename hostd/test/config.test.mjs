@@ -85,6 +85,35 @@ test("service mailbox grants one exact named-agent address to one exact context"
 	}
 });
 
+test("validates disjoint Zulip owner and user lane principals", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-zulip-lanes-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		const ownerHash = "a".repeat(24);
+		const userHash = "b".repeat(24);
+		raw.zulip.ownerDisplayName = "Casey";
+		raw.zulip.ownerPrincipalRefs = [ownerHash];
+		raw.zulip.userPrincipalRefs = [userHash];
+		await writeFile(path, JSON.stringify(raw));
+		const config = await loadConfig(path, ENVIRONMENT);
+		assert.equal(config.zulip.ownerDisplayName, "Casey");
+		assert.deepEqual(config.zulip.ownerPrincipalRefs, [ownerHash]);
+		assert.deepEqual(config.zulip.userPrincipalRefs, [userHash]);
+
+		raw.zulip.userPrincipalRefs = [ownerHash];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be disjoint/);
+
+		raw.zulip.userPrincipalRefs = ["not-a-principal-hash"];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(loadConfig(path, ENVIRONMENT), /must be a 24-character principal reference/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("requires distinct MCP assertion authority for each edge issuer", async () => {
 	const path = fileURLToPath(new URL("../config.example.json", import.meta.url));
 	const config = await loadConfig(path, ENVIRONMENT);

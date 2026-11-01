@@ -611,9 +611,38 @@ function contactRelayConfig(raw, index, environment) {
 	};
 }
 
+function principalReferenceArray(value, label) {
+	if (value === undefined) return [];
+	if (!Array.isArray(value) || value.length > 256) {
+		throw new Error(`${label} must be an array of at most 256 principal references`);
+	}
+	const hashes = value.map((candidate, index) => {
+		const hash = text(candidate, `${label}[${index}]`).toLowerCase();
+		if (!/^[a-f0-9]{24}$/.test(hash)) {
+			throw new Error(`${label}[${index}] must be a 24-character principal reference`);
+		}
+		return hash;
+	});
+	if (new Set(hashes).size !== hashes.length) {
+		throw new Error(`${label} cannot repeat a principal reference`);
+	}
+	return hashes;
+}
+
 function zulipConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const zulip = object(raw, "zulip");
+	const ownerPrincipalRefs = principalReferenceArray(
+		zulip.ownerPrincipalRefs,
+		"zulip.ownerPrincipalRefs",
+	);
+	const userPrincipalRefs = principalReferenceArray(
+		zulip.userPrincipalRefs,
+		"zulip.userPrincipalRefs",
+	);
+	if (ownerPrincipalRefs.some((hash) => userPrincipalRefs.includes(hash))) {
+		throw new Error("zulip owner and user principal references must be disjoint");
+	}
 	return {
 		url: httpUrl(zulip.url, "zulip.url"),
 		administratorEmail: normalizeAddress(zulip.administratorEmail, "zulip.administratorEmail"),
@@ -628,6 +657,11 @@ function zulipConfig(raw, environment) {
 		projectorApiKey: envSecret(zulip.projectorApiKeyEnv, "zulip.projectorApiKeyEnv", environment),
 		memberEmails: emailArray(zulip.memberEmails, "zulip.memberEmails"),
 		observerEmails: emailArray(zulip.observerEmails, "zulip.observerEmails"),
+		ownerDisplayName: zulip.ownerDisplayName === undefined
+			? "Owner"
+			: text(zulip.ownerDisplayName, "zulip.ownerDisplayName"),
+		ownerPrincipalRefs,
+		userPrincipalRefs,
 		agentDisplayName: zulip.agentDisplayName === undefined
 			? "Operator"
 			: text(zulip.agentDisplayName, "zulip.agentDisplayName"),

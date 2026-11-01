@@ -75,6 +75,143 @@ test("configured customer names label pre-provisioned Zulip channels", () => {
 	);
 });
 
+test("owner, user, and customer contexts receive distinct channel lanes", () => {
+	const ownerHash = "a".repeat(24);
+	const configuredUserHash = "b".repeat(24);
+	const webUserHash = "c".repeat(24);
+	const customerHash = "d".repeat(24);
+	const directUserHash = "e".repeat(24);
+	const ownerContextHash = "f".repeat(24);
+	const directUserContextHash = "1".repeat(24);
+	const routes = new Map([
+		[`operator:${ownerContextHash}:relationship-owner`, [
+			{
+				source: "phone",
+				projectSlug: "intake",
+				targetId: "operator",
+				principalHash: "a".repeat(64),
+			},
+		]],
+		[`operator:${directUserContextHash}:relationship-user`, [
+			{
+				source: "phone",
+				projectSlug: "intake",
+				targetId: "operator",
+				principalHash: "e".repeat(64),
+			},
+		]],
+		[`operator:${webUserHash}:website-chat`, [
+			{
+				source: "web-chat",
+				projectSlug: "website-chat",
+				targetId: "operator",
+				principalHash: "c".repeat(64),
+			},
+		]],
+		[`operator:${customerHash}:intake`, [
+			{
+				source: "gmail",
+				projectSlug: "intake",
+				targetId: "operator",
+				principalHash: "d".repeat(64),
+			},
+		]],
+	]);
+	const store = {
+		getLatestContextEventPayload() { return undefined; },
+		getPrincipal(hash) { return { displayLabel: `Example ${hash[0].toUpperCase()}` }; },
+		getRouteForContext(contextId) { return routes.get(contextId)?.[0]; },
+		listRoutesForContext(contextId) { return routes.get(contextId) ?? []; },
+	};
+	const provisioner = new ZulipProvisioner({
+		ownerDisplayName: "Casey",
+		ownerPrincipalRefs: [ownerHash],
+		userPrincipalRefs: [configuredUserHash],
+	}, store, {
+		userPrincipalRefs: [directUserHash],
+	});
+
+	assert.equal(
+		provisioner.channelName(`operator:${ownerContextHash}:relationship-owner`),
+		"Casey · Messages",
+	);
+	assert.equal(
+		provisioner.channelName(`operator:${configuredUserHash}:intake`),
+		"user · Example B",
+	);
+	assert.equal(
+		provisioner.channelName(`operator:${directUserContextHash}:relationship-user`),
+		"user · Example E",
+	);
+	assert.equal(
+		provisioner.channelName(`operator:${webUserHash}:website-chat`),
+		"user · Example C",
+	);
+	assert.equal(
+		provisioner.channelName(`operator:${customerHash}:intake`),
+		"customer · Example D",
+	);
+});
+
+test("explicit reconciliation renames an owned channel into its configured lane", async () => {
+	const principalHash = "e".repeat(24);
+	const contextId = `operator:${principalHash}:relationship-owner`;
+	let binding = { contextId, channelId: 7, channelName: "customer · Example Owner" };
+	const marker = createHash("sha256").update(contextId, "utf8").digest("hex").slice(0, 16);
+	const streams = [{
+		stream_id: 7,
+		name: binding.channelName,
+		description: `Private customer conversation.\nHostd binding: ${marker}`,
+		topics_policy: "empty_topic_only",
+	}];
+	const store = {
+		getLatestContextEventPayload() { return undefined; },
+		getPrincipal() { return { displayLabel: "Example Owner" }; },
+		getRouteForContext() {
+			return { source: "phone", projectSlug: "intake", targetId: "operator" };
+		},
+		listRoutesForContext() {
+			return [{ source: "phone", projectSlug: "intake", targetId: "operator" }];
+		},
+		getZulipBinding() { return binding; },
+		upsertZulipBinding(input) { binding = input; return input; },
+	};
+	const provisioner = new ZulipProvisioner({
+		ownerDisplayName: "Casey",
+		ownerPrincipalRefs: [principalHash],
+	}, store);
+	provisioner.identities = async () => ({
+		administrator: { user_id: 1 },
+		agent: { user_id: 2 },
+		projector: { user_id: 3 },
+		members: [],
+		observers: [],
+	});
+	provisioner.listChannels = async () => streams;
+	const requests = [];
+	provisioner.request = async (path, input) => {
+		requests.push({ path, input });
+		if (path === "streams/7") {
+			streams[0] = {
+				...streams[0],
+				name: input.form.get("new_name"),
+				description: input.form.get("description"),
+			};
+		}
+		return { result: "success" };
+	};
+
+	const result = await provisioner.ensureContext(contextId, { reconcile: true });
+	assert.equal(result.channelName, "Casey · Messages");
+	assert.equal(binding.channelName, "Casey · Messages");
+	assert.deepEqual(requests.map((request) => request.path), [
+		"streams/7",
+		"users/me/subscriptions",
+	]);
+	assert.equal(requests[0].input.form.get("new_name"), "Casey · Messages");
+	assert.match(requests[0].input.form.get("description"), /^Private owner conversation/);
+});
+
 test("authenticated Zulip administrator may have a realm-hidden API email", async () => {
 	const provisioner = new ZulipProvisioner(
 		{

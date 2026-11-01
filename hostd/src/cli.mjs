@@ -87,10 +87,14 @@ async function components(configPath) {
 	const rocketChat = config.rocketChat
 		? new RocketChatProvisioner(config.rocketChat, store, { knownEmailsByPrincipalHash })
 		: undefined;
+	const userPrincipalRefs = (config.phone?.apiAgent?.featureSenders ?? []).map((sender) => (
+		stablePrivateKey(routingKey, "phone-principal", sender).slice(0, 24)
+	));
 	const zulip = config.zulip
 		? new ZulipProvisioner(config.zulip, store, {
 			knownEmailsByPrincipalHash,
 			knownLabelsByPrincipalHash,
+			userPrincipalRefs,
 		})
 		: undefined;
 	const channelControl = zulip ?? rocketChat ?? mattermost;
