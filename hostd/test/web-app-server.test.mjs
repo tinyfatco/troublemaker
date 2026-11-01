@@ -1084,7 +1084,12 @@ test("composite output parsing accepts only a bounded base64 PNG", () => {
 	for (const bad of ["", "not base64!", Buffer.from("GIF89a....").toString("base64"), undefined]) {
 		assert.equal(parsedCompositeOutput(bad), undefined, String(bad));
 	}
-	assert.match(MARKUP_COMPOSITE_SCRIPT, /executablePath: "\/usr\/bin\/chromium"/);
+	const oversized = Buffer.concat([png, Buffer.alloc(4 * 1024 * 1024)]).toString("base64");
+	assert.equal(parsedCompositeOutput(oversized), undefined, "composite remains inside the existing PNG limit");
+	assert.doesNotThrow(() => new Function(MARKUP_COMPOSITE_SCRIPT));
+	assert.match(MARKUP_COMPOSITE_SCRIPT, /spawn\("\/usr\/bin\/chromium"/);
+	assert.match(MARKUP_COMPOSITE_SCRIPT, /new WebSocket\(endpoint\)/);
+	assert.doesNotMatch(MARKUP_COMPOSITE_SCRIPT, /puppeteer/);
 	assert.doesNotMatch(MARKUP_COMPOSITE_SCRIPT, /\$\{/, "script is passed verbatim to node -e");
 });
 

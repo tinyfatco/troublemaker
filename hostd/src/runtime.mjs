@@ -661,47 +661,141 @@ async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
 	throw new Error(`runtime did not become steering-ready: ${lastState}`);
 }
 
-// Runs inside the agent's own runtime container (node + puppeteer-core + /usr/bin/chromium).
+// Runs inside the agent's own runtime container with only Node 22 and /usr/bin/chromium.
 // Renders the reviewed page at the painter's viewport and scroll, lays the transparent marks
 // over it at their page position and prints a viewport PNG as base64. Inputs arrive as argv,
 // never through a shell; the marks file is the one Hostd just uploaded into /data.
 export const MARKUP_COMPOSITE_SCRIPT = `
 const fs = require("fs");
-const puppeteer = require("puppeteer-core");
+const { spawn } = require("child_process");
 const [pageUrl, w, h, sx, sy, ox, oy, marksPath, outPath] = process.argv.slice(1);
-setTimeout(() => process.exit(3), 20000).unref();
+const numbers = [w, h, sx, sy, ox, oy].map(Number);
+let chrome;
+let socket;
+let profile;
+const stopChrome = (signal) => {
+	try { if (chrome && chrome.pid) process.kill(-chrome.pid, signal); } catch {}
+};
+const deadline = setTimeout(() => {
+	try { socket && socket.close(); } catch {}
+	stopChrome("SIGKILL");
+	try { profile && fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+	process.exit(3);
+}, 20000);
+deadline.unref();
 (async () => {
-	const marks = "data:image/png;base64," + fs.readFileSync(marksPath).toString("base64");
-	const browser = await puppeteer.launch({
-		executablePath: "/usr/bin/chromium",
-		headless: true,
-		args: ["--no-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars"],
-	});
-	try {
-		const page = await browser.newPage();
-		await page.setViewport({ width: Number(w), height: Number(h), deviceScaleFactor: 1 });
-		await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => {});
-		await page.evaluate(async (marks, sx, sy, ox, oy) => {
-			window.scrollTo(sx, sy);
-			await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-			const img = document.createElement("img");
-			img.style.cssText = "position:fixed;margin:0;padding:0;border:0;max-width:none;max-height:none;"
-				+ "pointer-events:none;z-index:2147483647;left:" + (ox - window.scrollX) + "px;top:" + (oy - window.scrollY) + "px";
-			const loaded = new Promise((r) => { img.onload = r; img.onerror = r; });
-			img.src = marks;
-			document.documentElement.appendChild(img);
-			await loaded;
-		}, marks, Number(sx), Number(sy), Number(ox), Number(oy));
-		const png = await page.screenshot({ type: "png" });
-		if (outPath) fs.writeFileSync(outPath, png);
-		process.stdout.write(Buffer.from(png).toString("base64"));
-	} finally {
-		await browser.close().catch(() => {});
+	const parsedUrl = new URL(pageUrl);
+	if (!["http:", "https:"].includes(parsedUrl.protocol) || numbers.some((value) => !Number.isFinite(value))) {
+		throw new Error("invalid composite input");
 	}
-})().then(() => process.exit(0), () => process.exit(2));
+	const [width, height, scrollX, scrollY, originX, originY] = numbers;
+	if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || width > 4096 || height < 320 || height > 4096) {
+		throw new Error("invalid composite viewport");
+	}
+	const marks = "data:image/png;base64," + fs.readFileSync(marksPath).toString("base64");
+	profile = "/tmp/websitepaint-chromium-" + process.pid;
+	chrome = spawn("/usr/bin/chromium", [
+		"--headless", "--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--hide-scrollbars",
+		"--disable-background-networking", "--disable-component-update", "--disable-default-apps", "--disable-sync",
+		"--metrics-recording-only", "--no-first-run", "--remote-debugging-port=0",
+		"--user-data-dir=" + profile, "--window-size=" + width + "," + height, "about:blank",
+	], { detached: true, stdio: ["ignore", "ignore", "pipe"] });
+	const endpoint = await new Promise((resolve, reject) => {
+		let stderr = "";
+		chrome.stderr.on("data", (chunk) => {
+			stderr = (stderr + chunk.toString("utf8")).slice(-8192);
+			const marker = "DevTools listening on ";
+			const markerAt = stderr.lastIndexOf(marker);
+			if (markerAt >= 0) {
+				const candidate = stderr.slice(markerAt + marker.length).split(String.fromCharCode(10), 1)[0].trim();
+				if (candidate.startsWith("ws://")) resolve(candidate);
+			}
+		});
+		chrome.once("error", reject);
+		chrome.once("exit", (code) => reject(new Error("chromium exited " + code)));
+	});
+	socket = new WebSocket(endpoint);
+	await new Promise((resolve, reject) => {
+		socket.addEventListener("open", resolve, { once: true });
+		socket.addEventListener("error", () => reject(new Error("cdp socket failed")), { once: true });
+	});
+	let sequence = 0;
+	const pending = new Map();
+	socket.addEventListener("message", (event) => {
+		const message = JSON.parse(String(event.data));
+		if (!message.id) return;
+		const waiter = pending.get(message.id);
+		if (!waiter) return;
+		pending.delete(message.id);
+		if (message.error) waiter.reject(new Error(message.error.message || "cdp error"));
+		else waiter.resolve(message.result || {});
+	});
+	const send = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
+		const id = ++sequence;
+		pending.set(id, { resolve, reject });
+		socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+	});
+	const target = await send("Target.createTarget", { url: "about:blank" });
+	const attached = await send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+	const sessionId = attached.sessionId;
+	await send("Page.enable", {}, sessionId);
+	await send("Runtime.enable", {}, sessionId);
+	await send("Emulation.setDeviceMetricsOverride", {
+		width, height, deviceScaleFactor: 1, mobile: false,
+	}, sessionId);
+	const navigation = await send("Page.navigate", { url: parsedUrl.href }, sessionId);
+	if (navigation.errorText) throw new Error("navigation failed");
+	let pageReady = false;
+	for (let attempt = 0; attempt < 75; attempt += 1) {
+		const state = await send("Runtime.evaluate", {
+			expression: "({href:location.href,ready:document.readyState})", returnByValue: true,
+		}, sessionId);
+		const value = state.result && state.result.value;
+		if (value && value.href !== "about:blank" && value.ready === "complete") {
+			pageReady = true;
+			break;
+		}
+		await new Promise((resolve) => setTimeout(resolve, 200));
+	}
+	if (!pageReady) throw new Error("page load timed out");
+	await new Promise((resolve) => setTimeout(resolve, 500));
+	const expression = "(async()=>{window.scrollTo(" + scrollX + "," + scrollY + ");"
+		+ "await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));"
+		+ "const img=document.createElement('img');"
+		+ "img.style.cssText='position:fixed;margin:0;padding:0;border:0;max-width:none;max-height:none;pointer-events:none;z-index:2147483647;left:'+("
+		+ originX + "-window.scrollX)+'px;top:'+(" + originY + "-window.scrollY)+'px';"
+		+ "const loaded=new Promise(r=>{img.onload=r;img.onerror=r});img.src=" + JSON.stringify(marks) + ";"
+		+ "document.documentElement.appendChild(img);await loaded;})()";
+	const rendered = await send("Runtime.evaluate", {
+		expression, awaitPromise: true, returnByValue: true,
+	}, sessionId);
+	if (rendered.exceptionDetails) throw new Error("composite evaluation failed");
+	const screenshot = await send("Page.captureScreenshot", {
+		format: "png", fromSurface: true, captureBeyondViewport: false,
+	}, sessionId);
+	const png = Buffer.from(screenshot.data || "", "base64");
+	const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+	if (png.length < signature.length || png.length > 4 * 1024 * 1024 || !png.subarray(0, signature.length).equals(signature)) {
+		throw new Error("invalid composite screenshot");
+	}
+	if (outPath) fs.writeFileSync(outPath, png);
+	process.stdout.write(png.toString("base64"));
+	await send("Browser.close").catch(() => {});
+})().then(() => {
+	clearTimeout(deadline);
+	stopChrome("SIGTERM");
+	try { profile && fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+	process.exit(0);
+}, () => {
+	clearTimeout(deadline);
+	try { socket && socket.close(); } catch {}
+	stopChrome("SIGKILL");
+	try { profile && fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+	process.exit(2);
+});
 `;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const MARKUP_COMPOSITE_MAXIMUM_BYTES = 12 * 1024 * 1024;
+const MARKUP_COMPOSITE_MAXIMUM_BYTES = 4 * 1024 * 1024;
 
 /** Decode the container's base64 PNG output; anything else is treated as no composite. */
 export function parsedCompositeOutput(stdout) {
