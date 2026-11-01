@@ -57,6 +57,8 @@ export interface SteeringProjection {
   id: string;
   state: SteeringProjectionState;
   deliveryMode: 'steered';
+  /** Number of assistant content blocks visible when this input was accepted. */
+  contentBlockOffset?: number;
 }
 
 export interface AwarenessEntry {
@@ -83,6 +85,8 @@ export interface AwarenessEntry {
   isSystemAction?: boolean;
   /** Server-confirmed steering input that has not yet reached durable history. */
   steeringProjection?: SteeringProjection;
+  /** Render-only cursor retained while a steering projection becomes durable. */
+  streamContentBlockOffset?: number;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */
