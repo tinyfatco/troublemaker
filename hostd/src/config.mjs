@@ -1803,8 +1803,9 @@ export async function loadConfig(path, environment = process.env) {
 	if (metaContact && !phone) throw new Error("metaContact requires phone configuration");
 	if (webChat && !zulip) throw new Error("webChat integration currently requires zulip");
 	if (loop && !zulip) throw new Error("loop integration currently requires zulip");
-	if (!phone && !loop && knownPhonePrincipals.length > 0) {
-		throw new Error("routing.knownPhonePrincipals requires phone or loop configuration");
+	if (loop && !phone) throw new Error("loop requires phone configuration for the canonical conversation");
+	if (!phone && knownPhonePrincipals.length > 0) {
+		throw new Error("routing.knownPhonePrincipals requires phone configuration");
 	}
 	for (const [index, contextId] of (loop?.deliveryHolds ?? []).entries()) {
 		if (!targetIds.has(contextId.split(":", 1)[0])) {

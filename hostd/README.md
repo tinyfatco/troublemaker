@@ -772,22 +772,28 @@ runtime, URL, credential, or Hostd target.
 
 ## Loop iMessage sender
 
-An optional `loop` block adds LoopMessage as a separate iMessage sender. It
-feeds the same phone pipeline as SMS. The person-level phone principal is
-derived from the number alone, so one person's iMessage and SMS threads share
-a principal while keeping separate conversations, contexts, and outboxes.
-Inbound text becomes an ordinary `phone` event. Replies use the existing
-`/v1/outbound/phone` path, which dispatches by the conversation's stored
-provider. Zulip projections are labelled iMessage.
+An optional `loop` block adds LoopMessage as an iMessage transport for the
+existing phone lane, and requires the `phone` block. One person has one
+conversation. Loop keeps its own provider thread and `phone-*` reply target,
+but its route joins the person's single active SMS conversation context for
+the same phone principal and configured SMS provider. If there is no such SMS
+conversation, more than one, or any principal, target, or context mismatch,
+Loop inbound is quarantined rather than given a new context. Inbound text
+becomes an ordinary `phone` event in that shared context. Replies use the
+existing `/v1/outbound/phone` path, which sends over the transport of the
+`thread_target` being answered. Zulip projections are labelled iMessage.
 
 Loop authenticates webhooks with the Authorization header value configured
 in its dashboard. Hostd compares that value, raw or as a Bearer token, in
 constant time. It dedupes on `webhook_id` and acknowledges quickly. Receipts
 (`message_scheduled`, `message_sent`, `message_delivered`, `message_failed`)
 only update outbox status. They carry Hostd's own outbound text and never wake
-the agent. Only direct, text-only `message_inbound` events from an exact
-`allowedContacts` number are queued. Groups, attachments, audio, email
-contacts, other senders, and unknown events are recorded and dropped. STOP and
+the agent. Only direct, text-only `message_inbound` events with
+`channel: "imessage"`, the configured `sender`, and an exact `allowedContacts`
+number are queued. SMS, RCS, or fallback channels, groups, any non-empty or
+malformed `attachments`, audio, email contacts, missing or other senders, and
+unknown events are recorded and dropped. Group, read-receipt, fallback,
+media, and typing semantics are not supported. STOP and
 START share the phone opt-out state. Sends refuse any number outside the
 allowlist.
 

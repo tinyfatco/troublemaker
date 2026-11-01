@@ -1167,12 +1167,12 @@ export class HostStore {
 		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
 		let existing = this.getRelationshipFunnel(contextId);
 		if (existing) {
-			if (
-				existing.source !== source
-				|| existing.providerThreadId !== providerThreadId
-				|| existing.principalHash !== principalHash
-				|| existing.targetId !== targetId
-			) throw new Error("relationship_funnel_scope_conflict");
+			if (!this.relationshipThreadInScope(existing, {
+				source,
+				providerThreadId,
+				principalHash,
+				targetId,
+			})) throw new Error("relationship_funnel_scope_conflict");
 			if (Date.parse(observedAt) < Date.parse(existing.firstInboundAt)) {
 				this.database.prepare(`
 					UPDATE relationship_funnels SET first_inbound_at = ?, updated_at = ?
@@ -1247,13 +1247,12 @@ export class HostStore {
 		} else if (!funnel) {
 			return undefined;
 		}
-		if (
-			!funnel
-			|| funnel.source !== source
-			|| funnel.providerThreadId !== providerThreadId
-			|| funnel.principalHash !== principalHash
-			|| funnel.targetId !== targetId
-		) throw new Error("relationship_funnel_scope_conflict");
+		if (!this.relationshipThreadInScope(funnel, {
+			source,
+			providerThreadId,
+			principalHash,
+			targetId,
+		})) throw new Error("relationship_funnel_scope_conflict");
 		const digest = evidenceSha256(
 			"relationship-turn-v1",
 			contextId,
@@ -1387,13 +1386,12 @@ export class HostStore {
 			throw new Error("relationship_progress_event_scope_required");
 		}
 		const funnel = this.getRelationshipFunnel(conversation.contextId);
-		if (
-			!funnel
-			|| funnel.source !== "phone"
-			|| funnel.providerThreadId !== conversation.providerThreadId
-			|| funnel.principalHash !== conversation.principalHash
-			|| funnel.targetId !== conversation.targetId
-		) throw new Error("relationship_progress_scope_denied");
+		if (!this.relationshipThreadInScope(funnel, {
+			source: "phone",
+			providerThreadId: conversation.providerThreadId,
+			principalHash: conversation.principalHash,
+			targetId: conversation.targetId,
+		})) throw new Error("relationship_progress_scope_denied");
 		const milestones = new Set(funnel.milestones.map((entry) => entry.milestone));
 		if (normalized.milestone) {
 			const authority = milestoneAuthority(normalized.milestone);
@@ -2223,6 +2221,46 @@ export class HostStore {
 				created_at AS createdAt, last_seen_at AS lastSeenAt
 			FROM phone_conversations WHERE provider_thread_id = ?
 		`).get(providerThreadId);
+	}
+
+	listActivePhoneConversationsForPrincipal(principalHash, provider) {
+		return this.database.prepare(`
+			SELECT thread_target AS threadTarget, provider,
+				provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, contact_ciphertext AS contactCiphertext,
+				contact_last_four AS contactLastFour, status,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM phone_conversations
+			WHERE principal_hash = ? AND provider = ? AND status = 'active'
+			ORDER BY created_at, thread_target
+		`).all(principalHash, provider);
+	}
+
+	/**
+	 * A relationship funnel is owned by the thread that opened its context. A
+	 * different provider edge (for example Loop iMessage beside SMS) counts as
+	 * the same relationship only when the router bound both threads onto this
+	 * exact context, principal, and target.
+	 */
+	relationshipThreadInScope(funnel, { source, providerThreadId, principalHash, targetId }) {
+		if (
+			!funnel
+			|| funnel.source !== source
+			|| funnel.principalHash !== principalHash
+			|| funnel.targetId !== targetId
+		) return false;
+		if (funnel.providerThreadId === providerThreadId) return true;
+		const linked = this.getRoute(source, providerThreadId);
+		const owner = this.getRoute(source, funnel.providerThreadId);
+		return Boolean(
+			linked && owner
+			&& linked.contextId === funnel.contextId
+			&& owner.contextId === funnel.contextId
+			&& linked.principalHash === principalHash
+			&& linked.targetId === targetId
+			&& this.hasRouteParticipant(source, providerThreadId, principalHash),
+		);
 	}
 
 	upsertPhoneConversation({

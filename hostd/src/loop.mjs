@@ -4,6 +4,7 @@ import {
 	PhoneDeliveryUncertainError,
 	PhoneProviderRejectedError,
 } from "./phone.mjs";
+import { LinkedPhoneContextError } from "./router.mjs";
 import {
 	openPrivateValue,
 	sealPrivateValue,
@@ -66,12 +67,25 @@ export function loopProviderMessageId(messageId) {
 	return `${LOOP_PROVIDER}:${messageId}`;
 }
 
+function present(value) {
+	if (value === undefined || value === null) return false;
+	if (Array.isArray(value)) return value.length > 0;
+	if (typeof value === "string") return value.trim().length > 0;
+	if (typeof value === "object") return Object.keys(value).length > 0;
+	return true;
+}
+
 function isNonDirectText(payload) {
 	const messageType = (firstString(payload.message_type) || "text").toLowerCase();
-	const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
-	return (payload.group !== undefined && payload.group !== null && payload.group !== "")
+	// Any non-empty or malformed attachments field is media; only an absent,
+	// null, or empty-array field counts as text-only.
+	const attachments = payload.attachments;
+	const noAttachments = attachments === undefined
+		|| attachments === null
+		|| (Array.isArray(attachments) && attachments.length === 0);
+	return present(payload.group)
 		|| messageType !== "text"
-		|| attachments.length > 0;
+		|| !noAttachments;
 }
 
 export class LoopDirectProvider {
@@ -217,7 +231,7 @@ export class LoopGateway {
 		};
 
 		const senderId = firstString(payload.sender);
-		if (this.config.loop.senderId && senderId && senderId !== this.config.loop.senderId) {
+		if (this.config.loop.senderId && senderId !== this.config.loop.senderId) {
 			return done("unrelated_sender");
 		}
 
@@ -237,19 +251,27 @@ export class LoopGateway {
 		const from = normalizePhoneAddress(payload.contact);
 		if (!from) return done("quarantined:non_phone_contact");
 		if (!this.config.loop.allowedContacts.includes(from)) return done("unrelated_contact");
+		// This lane is iMessage only; Loop SMS/RCS/fallback traffic must not enter it.
+		if (firstString(payload.channel) !== "imessage") return done("quarantined:non_imessage");
 		if (isNonDirectText(payload)) return done("quarantined:non_direct_text");
 
 		const text = firstString(payload.text) || "";
 		const keyword = text.trim().toLowerCase();
+		let conversation;
+		try {
+			conversation = this.prepareConversation(from);
+		} catch (error) {
+			if (error instanceof LinkedPhoneContextError) return done(`quarantined:no_canonical_conversation:${error.reason}`);
+			throw error;
+		}
 		if (OPT_OUT_WORDS.has(keyword) || OPT_IN_WORDS.has(keyword)) {
-			const conversation = this.store.upsertPhoneConversation(this.prepareConversation(from));
+			const stored = this.store.upsertPhoneConversation(conversation);
 			const optedOut = OPT_OUT_WORDS.has(keyword);
-			this.store.setPhoneOptOut(conversation.principalHash, optedOut);
+			this.store.setPhoneOptOut(stored.principalHash, optedOut);
 			return done(optedOut ? "opted_out" : "opted_in");
 		}
 		if (!text) return done("quarantined:empty");
 
-		const conversation = this.prepareConversation(from);
 		const providerMessageId = loopProviderMessageId(messageId);
 		const occurredAt = new Date(observedAt).toISOString();
 		this.store.upsertPhoneInbound({
@@ -301,9 +323,12 @@ export class LoopGateway {
 		).slice(0, 20)}`;
 		const existing = this.store.getPhoneConversation(threadTarget);
 		const contactLastFour = contactAddress.slice(-4);
-		const route = this.router.resolvePhone({
+		// One person, one conversation: Loop keeps its own provider edge but joins
+		// the person's single active SMS conversation context.
+		const route = this.router.resolveLinkedPhone({
 			providerThreadId,
 			contactAddress,
+			canonicalProvider: this.config.phone.provider,
 			label: `iMessage •••• ${contactLastFour}`,
 		});
 		return {

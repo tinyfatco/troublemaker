@@ -21,7 +21,10 @@ const STRANGER = "+15555550199";
 const SECRET = "example-loop-webhook-authorization-value";
 const SENDER_ID = "example-sender-id";
 
-function subject(fetchImpl = async () => Response.json({ message_id: "LOOP-OUT-1", contact: ALLOWED, text: "hi" })) {
+function subject(
+	fetchImpl = async () => Response.json({ message_id: "LOOP-OUT-1", contact: ALLOWED, text: "hi" }),
+	{ seedSms = true } = {},
+) {
 	const directory = mkdtempSync(join(tmpdir(), "hostd-loop-"));
 	const routingKey = Buffer.alloc(32, 7);
 	const target = { id: "front-desk", driver: "oci", outboundToken: "example-outbound-token-at-least-32-bytes" };
@@ -36,6 +39,7 @@ function subject(fetchImpl = async () => Response.json({ message_id: "LOOP-OUT-1
 			apiBaseUrl: "https://loop.example",
 			ingress: { host: "127.0.0.1", port: 0, path: "/webhooks/loop" },
 		},
+		phone: { provider: "sendly", senderAddress: "+15555550100" },
 		routing: { actorTarget: target.id, knownPrincipals: [], knownPhonePrincipals: [] },
 		targetsById: new Map([[target.id, target]]),
 	};
@@ -56,12 +60,19 @@ function subject(fetchImpl = async () => Response.json({ message_id: "LOOP-OUT-1
 			return fetchImpl(url, init);
 		},
 	});
+	const sms = new PhoneGateway({ config, store, router, routingKey });
+	// The person's one canonical SMS conversation, as the Sendly lane creates it.
+	const seed = (contact = ALLOWED) => store.upsertPhoneConversation(sms.prepareConversation(contact));
+	const smsConversation = seedSms ? seed() : undefined;
 	return {
 		config,
 		store,
 		router,
 		routingKey,
 		gateway,
+		sms,
+		seed,
+		smsConversation,
 		calls,
 		counts: () => ({ wakes, pumps }),
 		eventCount: () => store.database.prepare("SELECT COUNT(*) AS n FROM events").get().n,
@@ -120,23 +131,89 @@ test("allowlisted Loop inbound joins the shared phone pipeline exactly once", ()
 	}
 });
 
-test("Loop and SMS threads for one number share a principal but keep separate conversations", () => {
+test("Loop joins the one active SMS conversation context for the same person", () => {
 	const loop = subject();
 	try {
-		loop.config.phone = { provider: "sendly", senderAddress: "+15555550100" };
-		const sms = new PhoneGateway({
-			config: loop.config,
-			store: loop.store,
-			router: loop.router,
-			routingKey: loop.routingKey,
-		});
-		const smsConversation = sms.prepareConversation(ALLOWED);
-		const loopConversation = loop.gateway.prepareConversation(ALLOWED);
-		assert.equal(smsConversation.principalHash, loopConversation.principalHash);
-		assert.notEqual(smsConversation.threadTarget, loopConversation.threadTarget);
-		assert.notEqual(smsConversation.providerThreadId, loopConversation.providerThreadId);
+		const sms = loop.smsConversation;
+		assert.equal(loop.gateway.acceptWebhook(inbound()), "queued");
+		const stored = loop.store.getEventByProviderMessage("phone", "loop:59C55CE8-41D6-43CC-9116-8CFB2E696D7B");
+		const event = { ...stored, payload: JSON.parse(stored.payloadJson) };
+		const loopConversation = loop.store.getPhoneConversation(event.payload.phone.threadTarget);
+		// Same principal and the same context: one person, one conversation.
+		assert.equal(loopConversation.principalHash, sms.principalHash);
+		assert.equal(loopConversation.contextId, sms.contextId);
+		assert.equal(loopConversation.targetId, sms.targetId);
+		assert.equal(event.contextId, sms.contextId);
+		// Distinct provider edges, so replies go back over the transport they came in on.
+		assert.notEqual(loopConversation.providerThreadId, sms.providerThreadId);
+		assert.notEqual(loopConversation.threadTarget, sms.threadTarget);
+		assert.equal(loopConversation.provider, "loop");
+		assert.equal(sms.provider, "sendly");
+		const loopRoute = loop.store.getRoute("phone", loopConversation.providerThreadId);
+		const smsRoute = loop.store.getRoute("phone", sms.providerThreadId);
+		assert.equal(loopRoute.contextId, smsRoute.contextId);
+		assert.equal(loopRoute.projectSlug, smsRoute.projectSlug);
+		// One shared context for /app and Zulip projection: every phone event in it.
+		const contexts = loop.store.database.prepare(
+			"SELECT DISTINCT context_id AS contextId FROM phone_conversations WHERE principal_hash = ?",
+		).all(sms.principalHash);
+		assert.deepEqual(contexts.map((row) => row.contextId), [sms.contextId]);
+		// A second inbound reuses the bound edge without rebinding.
+		assert.equal(loop.gateway.acceptWebhook(inbound({ message_id: "M2", webhook_id: "W2" })), "queued");
+		assert.equal(loop.gateway.prepareConversation(ALLOWED).contextId, sms.contextId);
 	} finally {
 		loop.close();
+	}
+});
+
+test("Loop relationship funnel turns share the SMS funnel without scope conflicts", () => {
+	const loop = subject();
+	try {
+		const sms = loop.smsConversation;
+		const loopConversation = loop.store.upsertPhoneConversation(loop.gateway.prepareConversation(ALLOWED));
+		const base = { contextId: sms.contextId, source: "phone", principalHash: sms.principalHash, targetId: sms.targetId };
+		loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: sms.providerThreadId, observedAt: "2026-10-31T10:00:00.000Z", evidenceId: "sms-1" });
+		const funnel = loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: loopConversation.providerThreadId, observedAt: "2026-10-31T10:05:00.000Z", evidenceId: "loop-1" });
+		assert.equal(funnel.contextId, sms.contextId);
+		// An unbound thread claiming this context is still refused.
+		assert.throws(() => loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: "forged-thread", observedAt: "2026-10-31T10:06:00.000Z", evidenceId: "x" }), /relationship_funnel_scope_conflict/);
+		assert.throws(() => loop.store.ensureRelationshipFunnel({ ...base, providerThreadId: loopConversation.providerThreadId, principalHash: "other", observedAt: "2026-10-31T10:07:00.000Z", evidenceId: "y" }), /relationship_funnel_scope_conflict/);
+	} finally {
+		loop.close();
+	}
+});
+
+test("Loop fails closed with zero or multiple canonical SMS conversations", () => {
+	const none = subject(undefined, { seedSms: false });
+	try {
+		assert.equal(none.gateway.acceptWebhook(inbound()), "quarantined:no_canonical_conversation:none");
+		assert.equal(none.gateway.acceptWebhook(inbound({ text: "STOP", webhook_id: "stop" })), "quarantined:no_canonical_conversation:none");
+		assert.equal(none.eventCount(), 0);
+		assert.equal(none.store.getRoute("phone", stablePrivateKey(none.routingKey, "phone-provider-thread", `loop\0${SENDER_ID}\0${ALLOWED}`)), undefined);
+		assert.deepEqual(none.counts(), { wakes: 0, pumps: 0 });
+	} finally {
+		none.close();
+	}
+	const many = subject();
+	try {
+		const first = many.smsConversation;
+		// A second active SMS conversation for the same person makes the target ambiguous.
+		const otherThread = "second-sms-thread";
+		const route = many.store.bindRoute({ source: "phone", providerThreadId: otherThread, principalHash: first.principalHash, projectSlug: "intake", targetId: first.targetId, contextId: "ctx-second" });
+		many.store.upsertPhoneConversation({ ...first, threadTarget: "phone-ffffffffffffffffffff", providerThreadId: otherThread, contextId: route.contextId });
+		assert.equal(many.gateway.acceptWebhook(inbound()), "quarantined:no_canonical_conversation:ambiguous");
+		assert.equal(many.eventCount(), 0);
+	} finally {
+		many.close();
+	}
+	const mismatch = subject();
+	try {
+		// Canonical row whose route disagrees on context is refused, not repaired.
+		mismatch.store.database.prepare("UPDATE routes SET context_id = 'ctx-drift' WHERE provider_thread_id = ?").run(mismatch.smsConversation.providerThreadId);
+		assert.equal(mismatch.gateway.acceptWebhook(inbound()), "quarantined:no_canonical_conversation:mismatch");
+		assert.equal(mismatch.eventCount(), 0);
+	} finally {
+		mismatch.close();
 	}
 });
 
@@ -170,8 +247,31 @@ test("Loop inbound outside the direct allowlisted text lane is never queued", ()
 		assert.equal(loop.gateway.acceptWebhook(inbound({ message_type: "audio", webhook_id: "e" })), "quarantined:non_direct_text");
 		assert.equal(loop.gateway.acceptWebhook(inbound({ text: "  ", webhook_id: "f" })), "quarantined:empty");
 		assert.equal(loop.gateway.acceptWebhook(inbound({ sender: "someone-else", webhook_id: "g" })), "unrelated_sender");
+		// Configured sender: a missing or empty sender also fails closed.
+		assert.equal(loop.gateway.acceptWebhook(inbound({ sender: undefined, webhook_id: "g2" })), "unrelated_sender");
+		assert.equal(loop.gateway.acceptWebhook(inbound({ sender: "", webhook_id: "g3" })), "unrelated_sender");
+		// Only exact iMessage enters this lane; SMS/RCS/fallback or missing channel is quarantined.
+		for (const [index, channel] of [["sms"], ["rcs"], ["iMessage"], [""], [undefined], [["imessage"]]].entries()) {
+			assert.equal(loop.gateway.acceptWebhook(inbound({ channel: channel[0], webhook_id: `ch-${index}` })), "quarantined:non_imessage");
+		}
+		// Any non-empty or malformed attachments field is media.
+		for (const [index, attachments] of [[{ url: "x" }], [{}], ["x.jpg"], [""], [42], [true], [false], [[null]]].entries()) {
+			assert.equal(loop.gateway.acceptWebhook(inbound({ attachments: attachments[0], webhook_id: `att-${index}` })), "quarantined:non_direct_text", JSON.stringify(attachments));
+		}
 		assert.throws(() => loop.gateway.acceptWebhook(inbound({ webhook_id: undefined })), /provider identity/);
 		assert.equal(loop.eventCount(), 0);
+	} finally {
+		loop.close();
+	}
+});
+
+test("Loop text with absent, null, or empty-array attachments still queues", () => {
+	const loop = subject();
+	try {
+		for (const [index, attachments] of [[undefined], [null], [[]]].entries()) {
+			assert.equal(loop.gateway.acceptWebhook(inbound({ attachments: attachments[0], message_id: `ok-${index}`, webhook_id: `att-ok-${index}` })), "queued");
+		}
+		assert.equal(loop.eventCount(), 3);
 	} finally {
 		loop.close();
 	}
@@ -350,9 +450,13 @@ test("loop config requires an allowlist, a strong webhook secret, and a free loo
 		LOOP_WEBHOOK_AUTHORIZATION: SECRET,
 		LOOP_API_KEY: "example-loop-api-key",
 	};
-	const write = async (loopBlock) => {
+	const write = async (loopBlock, { dropPhone = false } = {}) => {
 		const raw = JSON.parse(await readFile(examplePath, "utf8"));
 		raw.loop = loopBlock;
+		if (dropPhone) {
+			delete raw.phone;
+			if (raw.routing) raw.routing.knownPhonePrincipals = [];
+		}
 		await writeFile(path, JSON.stringify(raw));
 	};
 	const valid = {
@@ -369,6 +473,10 @@ test("loop config requires an allowlist, a strong webhook secret, and a free loo
 		assert.equal(config.loop.apiBaseUrl, "https://a.loopmessage.com");
 		assert.deepEqual(config.loop.ingress, { host: "127.0.0.1", port: 3111, path: "/webhooks/loop" });
 
+		assert.ok(config.phone, "example config carries the canonical phone lane");
+
+		await write(valid, { dropPhone: true });
+		await assert.rejects(loadConfig(path, environment), /loop requires phone/);
 		await write({ ...valid, allowedContacts: [] });
 		await assert.rejects(loadConfig(path, environment), /allowedContacts/);
 		await write(valid);
