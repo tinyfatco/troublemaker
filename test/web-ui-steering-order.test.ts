@@ -4,7 +4,6 @@ import {
 	applyRuntimeSteeringEnvelope,
 	mergeAwarenessEntries,
 	parseRuntimeSteeringEnvelope,
-	recordActiveStreamingContentBlockCount,
 } from '../ui/src/steeringProjection.js';
 import type { AwarenessEntry } from '../ui/src/types.js';
 
@@ -32,11 +31,11 @@ const accepted = parseRuntimeSteeringEnvelope(JSON.stringify({
 }));
 assert(accepted);
 
-recordActiveStreamingContentBlockCount(streaming.content?.length || 0);
+const offsets = new Map<string, number>();
 let awareness = applyRuntimeSteeringEnvelope([turnUser], accepted);
 
 function visible(entry: AwarenessEntry): AwarenessEntry[] {
-	return mergeOptimisticEntries(awareness, optimisticUser, entry);
+	return mergeOptimisticEntries(awareness, optimisticUser, entry, [], offsets);
 }
 
 assert.deepEqual(
@@ -91,3 +90,14 @@ assert.equal(finalVisible.filter((entry) => entry.strippedText === 'also check t
 assert.equal(finalVisible.find((entry) => entry.strippedText === 'also check tests')?.channel, 'web');
 
 console.log('web UI steering order tests passed');
+
+// Offsets are owned by each chat view: a second view (or conversation) with its
+// own map never inherits another view's cursor.
+{
+	const otherView = new Map<string, number>();
+	const idle = mergeOptimisticEntries(applyRuntimeSteeringEnvelope([turnUser], accepted), null, null, [], otherView);
+	assert.equal(otherView.size, 0, 'no stream in this view means no stamped offset');
+	assert.equal(idle.at(-1)?.steeringProjection?.contentBlockOffset, undefined, 'unstamped projection appends normally');
+	assert.equal(offsets.get('steer-1'), 2, 'the first view keeps its own offset');
+}
+console.log('web-ui-steering-order: isolation ok');

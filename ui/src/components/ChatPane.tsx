@@ -33,7 +33,8 @@ export function ChatPane() {
 
   const error = localError || chatError || streamError;
 
-  const visibleEntries = mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries);
+  const steeringOffsetsRef = useRef(new Map<string, number>());
+  const visibleEntries = mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries, steeringOffsetsRef.current);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 

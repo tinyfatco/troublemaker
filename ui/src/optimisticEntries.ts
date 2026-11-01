@@ -34,7 +34,9 @@ export function mergeOptimisticEntries(
   userEntry: AwarenessEntry | null,
   streamingEntry: AwarenessEntry | null,
   localEntries: AwarenessEntry[] = [],
+  steeringOffsets?: Map<string, number>,
 ): AwarenessEntry[] {
+  if (steeringOffsets) entries = stampSteeringOffsets(entries, streamingEntry, steeringOffsets);
   const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry, localEntries);
   const visibleBaseEntries = [...entries, ...filterLocalEntries(entries, localEntries)];
 
@@ -62,6 +64,34 @@ export function mergeOptimisticEntries(
   }
 
   return merged;
+}
+
+/**
+ * Pin each steering input to the number of assistant blocks streamed when it
+ * first appeared. Offsets live in a caller-owned map (one per chat view), so
+ * separate panes, projects, and conversations never share cursor state.
+ */
+export function stampSteeringOffsets(
+  entries: AwarenessEntry[],
+  streamingEntry: AwarenessEntry | null,
+  offsets: Map<string, number>,
+): AwarenessEntry[] {
+  const streamedBlocks = streamingEntry?.isStreaming ? (streamingEntry.content?.length ?? 0) : undefined;
+  return entries.map((entry) => {
+    const projectionId = entry.steeringProjection?.id;
+    if (projectionId) {
+      if (!offsets.has(projectionId) && streamedBlocks !== undefined) offsets.set(projectionId, streamedBlocks);
+      const offset = offsets.get(projectionId);
+      return offset === undefined || entry.steeringProjection?.contentBlockOffset !== undefined
+        ? entry
+        : { ...entry, steeringProjection: { ...entry.steeringProjection!, contentBlockOffset: offset } };
+    }
+    if (entry.replacesSteeringId && entry.streamContentBlockOffset === undefined) {
+      const offset = offsets.get(entry.replacesSteeringId);
+      if (offset !== undefined) return { ...entry, streamContentBlockOffset: offset };
+    }
+    return entry;
+  });
 }
 
 function interleaveStreamingEntry(streamingEntry: AwarenessEntry, entries: AwarenessEntry[]): AwarenessEntry[] {

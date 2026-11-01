@@ -15,7 +15,6 @@ import type { AwarenessEntry } from '../types';
 import { getWebChatStreamEffect, reduceWebChatStreamEntry } from '../webChatStream';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
 import { shouldSendAsSteering } from '../webChatRouting';
-import { recordActiveStreamingContentBlockCount } from '../steeringProjection';
 
 export type StreamStatus =
   | 'idle'
@@ -111,7 +110,6 @@ export function useWebChat(): UseWebChatReturn {
       ? (next as (prev: AwarenessEntry | null) => AwarenessEntry | null)(activeStreamingEntryRef.current)
       : next;
     activeStreamingEntryRef.current = value;
-    recordActiveStreamingContentBlockCount(value?.content?.length ?? 0);
     debugStream('active-entry:set', { next: summarizeEntry(value) });
     setStreamingEntry(value);
   }, []);

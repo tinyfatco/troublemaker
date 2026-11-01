@@ -85,6 +85,8 @@ export interface AwarenessEntry {
   isSystemAction?: boolean;
   /** Server-confirmed steering input that has not yet reached durable history. */
   steeringProjection?: SteeringProjection;
+  /** Steering projection id this durable entry replaced, used to keep its render position. */
+  replacesSteeringId?: string;
   /** Render-only cursor retained while a steering projection becomes durable. */
   streamContentBlockOffset?: number;
 }
