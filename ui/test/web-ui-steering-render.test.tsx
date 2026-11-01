@@ -27,13 +27,14 @@ mergeOptimisticEntries(feed, { ...user, id: 'live-u' }, before, [], view); // st
 
 const after: AwarenessEntry = { ...before, content: [
 	...before.content!,
+	{ type: 'toolOutput', toolCallId: 'tool-1', stream: 'stdout', text: 'compiling…' },
 	{ type: 'toolResult', toolCallId: 'tool-1', result: 'build ok' },
 	{ type: 'text', text: 'Still working' },
 ] };
 const parts = mergeOptimisticEntries(feed, { ...user, id: 'live-u' }, after, [], view);
 const html = (entry: AwarenessEntry) => renderToStaticMarkup(createElement(AwarenessEntryComponent, { entry }));
 const head = parts.find((e) => e.id === 'a-slice-0-1');
-const tail = parts.find((e) => e.id === 'a-slice-1-3');
+const tail = parts.find((e) => e.id === 'a-slice-1-4');
 assert(head && tail, 'turn is split around the steering message');
 
 const headHtml = html(head);
@@ -42,6 +43,15 @@ assert(headHtml.includes('tool-call-row') && !headHtml.includes('tool-call-row r
 assert(!headHtml.includes('tool-spinner'), 'resolved tool shows no spinner');
 assert(!headHtml.includes('waiting-spinner'), 'head slice renders no writing cursor/spinner');
 assert(!/assistant-entry[^"]*streaming/.test(headHtml), 'head slice text is not marked streaming');
+
+assert(head.content?.some((b) => b.type === 'toolOutput' && b.toolCallId === 'tool-1'), 'pre-steer tool receives its later output');
+assert(head.content?.some((b) => b.type === 'toolResult' && b.toolCallId === 'tool-1'), 'pre-steer tool receives its later result');
+
+const cursorCount = (entries: AwarenessEntry[]) => entries
+	.filter((e) => e.role === 'assistant')
+	.map(html).join('')
+	.match(/assistant-entry[^"]*streaming|aria-label="(Waiting for agent response|Agent is writing)"/g)?.length ?? 0;
+assert.equal(cursorCount(parts), 1, 'exactly one writing cursor across the split turn');
 
 const tailHtml = html(tail);
 assert(/assistant-entry[^"]*streaming/.test(tailHtml), 'tail slice owns the streaming text state');
@@ -52,4 +62,11 @@ const pending = mergeOptimisticEntries(feed, { ...user, id: 'live-u' },
 const pendingHead = pending.find((e) => e.id === 'a-slice-0-1');
 assert(pendingHead);
 assert(html(pendingHead).includes('tool-call-row running'), 'unresolved tool before the steer still renders running');
+// After completion (same turn id, isStreaming false): no stale running marker or cursor.
+const done = mergeOptimisticEntries(feed, { ...user, id: 'live-u' }, { ...after, isStreaming: false }, [], view);
+assert.equal(view.turnId, 'a', 'turn key survives isStreaming true→false');
+assert.equal(view.offsets.get('s1'), 1, 'offset survives completion so the durable row does not jump');
+const doneHtml = done.filter((e) => e.role === 'assistant').map(html).join('');
+assert(!doneHtml.includes('running') && !doneHtml.includes('tool-spinner'), 'no stale running marker after completion');
+assert.equal(cursorCount(done), 0, 'no cursor after completion');
 console.log('web-ui-steering-render tests passed');
