@@ -890,6 +890,9 @@ export class PhoneGateway {
 	}
 
 	async sendDirect(conversation, text) {
+		if (conversation.provider !== this.config.phone.provider) {
+			throw new Error("conversation belongs to a different phone provider");
+		}
 		if (conversation.status !== "active") throw new Error("phone conversation is not active");
 		if (this.store.isPhoneOptedOut(conversation.principalHash)) {
 			throw new Error("phone recipient has opted out");

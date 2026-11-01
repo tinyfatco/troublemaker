@@ -24,6 +24,7 @@ import { validateOpenAiContextModels } from "./runtime-model.mjs";
 import { readRoutingKey, stablePrivateKey } from "./security.mjs";
 import { EventScheduler } from "./scheduler.mjs";
 import { ScheduledWakeManager } from "./scheduled-wakes.mjs";
+import { LoopGateway } from "./loop.mjs";
 import { createHostServer } from "./server.mjs";
 import { HostSites } from "./sites.mjs";
 import { HostStore } from "./store.mjs";
@@ -186,6 +187,16 @@ async function components(configPath) {
 			openAiGateway,
 		})
 		: undefined;
+	const loopGateway = config.loop
+		? new LoopGateway({
+			config,
+			store,
+			router,
+			routingKey,
+			scheduler,
+			controlNotifier,
+		})
+		: undefined;
 	return {
 		config,
 		store,
@@ -210,6 +221,7 @@ async function components(configPath) {
 		webChatGateway,
 		firstContact,
 		phoneGateway,
+		loopGateway,
 		daemon,
 	};
 }
@@ -273,6 +285,7 @@ async function serve(configPath) {
 	await state.zulipGateway?.start();
 	await state.controlNotifier?.start();
 	await state.phoneGateway?.start();
+	await state.loopGateway?.start();
 	await state.webChatGateway?.start();
 	await state.workersAiGateway?.start();
 	void state.runtime.reconcileSiteRelationships().catch((error) => {
@@ -298,6 +311,7 @@ async function serve(configPath) {
 		await state.webChatGateway?.stop();
 		await state.zulipGateway?.stop();
 		await state.phoneGateway?.stop();
+		await state.loopGateway?.stop();
 		await state.workersAiGateway?.stop();
 		await state.controlNotifier?.stop();
 		if (webAppServer) {

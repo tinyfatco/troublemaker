@@ -431,7 +431,7 @@ export class ZulipProvisioner {
 					to: binding.channelId,
 					topic: "",
 					content: [
-						phoneOutbound ? "**SMS sent**" : "**SMS received**",
+						`**${payload.phone?.provider === "loop" ? "iMessage" : "SMS"} ${phoneOutbound ? "sent" : "received"}**`,
 						`**From:** ${sender}`,
 						...(recipient ? [`**To:** ${recipient}`] : []),
 						"",

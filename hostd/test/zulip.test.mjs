@@ -451,3 +451,31 @@ test("an explicit Operator Zulip post is mirrored only when its context is a web
 		await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 	}
 });
+
+test("labels Loop phone ledger events as iMessage in the bound customer channel", async () => {
+	const provisioner = new ZulipProvisioner({}, {});
+	provisioner.ensureContext = async () => ({ channelId: 9 });
+	const posted = [];
+	provisioner.request = async (_path, input) => {
+		posted.push(Object.fromEntries(input.form));
+		return { id: 44 + posted.length };
+	};
+	for (const [source, sender, recipient] of [
+		["phone", "iMessage ending 0123", "Business iMessage"],
+		["phone_outbound", "Business iMessage", "iMessage ending 0123"],
+	]) {
+		await provisioner.postEmailLedgerNotification({
+			contextId: "front-desk:0123456789abcdef01234567:intake",
+			source,
+			providerMessageId: `loop:${source}`,
+			payloadJson: JSON.stringify({
+				sender,
+				recipient,
+				message: { body: "Synthetic iMessage text." },
+				phone: { provider: "loop", threadTarget: "phone-0123456789abcdef0123" },
+			}),
+		});
+	}
+	assert.match(posted[0].content, /^\*\*iMessage received\*\*/);
+	assert.match(posted[1].content, /^\*\*iMessage sent\*\*/);
+});
