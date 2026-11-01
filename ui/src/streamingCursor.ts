@@ -5,13 +5,17 @@ export function stripSessionContext(text: string): string {
   return stripModelContextBlocks(text);
 }
 
-export function shouldRenderStreamingPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming'>): boolean {
-  if (!entry.isStreaming) return false;
+export function ownsStreamingCursor(entry: Pick<AwarenessEntry, 'isStreaming' | 'ownsStreamingCursor'>): boolean {
+  return !!entry.isStreaming && entry.ownsStreamingCursor !== false;
+}
+
+export function shouldRenderStreamingPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming' | 'ownsStreamingCursor'>): boolean {
+  if (!ownsStreamingCursor(entry)) return false;
   return !(entry.content || []).some(isVisibleStreamingBlock);
 }
 
-export function shouldRenderContinuationPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming'>): boolean {
-  if (!entry.isStreaming || shouldRenderStreamingPlaceholder(entry)) return false;
+export function shouldRenderContinuationPlaceholder(entry: Pick<AwarenessEntry, 'content' | 'isStreaming' | 'ownsStreamingCursor'>): boolean {
+  if (!ownsStreamingCursor(entry) || shouldRenderStreamingPlaceholder(entry)) return false;
   const content = entry.content || [];
   const toolCallIds = content
     .filter((block) => block.type === 'toolCall' && block.id)

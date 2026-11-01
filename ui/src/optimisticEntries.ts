@@ -34,7 +34,7 @@ export function mergeOptimisticEntries(
   userEntry: AwarenessEntry | null,
   streamingEntry: AwarenessEntry | null,
   localEntries: AwarenessEntry[] = [],
-  steeringOffsets?: Map<string, number>,
+  steeringOffsets?: SteeringOffsetState,
 ): AwarenessEntry[] {
   if (steeringOffsets) entries = stampSteeringOffsets(entries, streamingEntry, steeringOffsets);
   const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry, localEntries);
@@ -66,36 +66,45 @@ export function mergeOptimisticEntries(
   return merged;
 }
 
+/** Per-chat-view steering positions, scoped to exactly one active turn. */
+export interface SteeringOffsetState {
+  turnId: string | null;
+  offsets: Map<string, number>;
+}
+
+export function createSteeringOffsetState(): SteeringOffsetState {
+  return { turnId: null, offsets: new Map() };
+}
+
 /**
  * Pin each steering input to the number of assistant blocks streamed when it
- * first appeared. Offsets live in a caller-owned map (one per chat view), so
- * separate panes, projects, and conversations never share cursor state.
+ * first appeared. State is caller-owned (one per chat view) and keyed to the
+ * active streaming turn: a new turn or a cleared stream resets it, so it never
+ * holds more than one turn and never leaks across views.
  */
 export function stampSteeringOffsets(
   entries: AwarenessEntry[],
   streamingEntry: AwarenessEntry | null,
-  offsets: Map<string, number>,
+  state: SteeringOffsetState,
 ): AwarenessEntry[] {
-  const streamedBlocks = streamingEntry?.isStreaming ? (streamingEntry.content?.length ?? 0) : undefined;
-  // Lifecycle: drop offsets whose steering input is no longer in this view
-  // (stream cleared, reconnect backlog, project switch). Only this view's map is touched.
-  const live = new Set<string>();
-  for (const entry of entries) {
-    if (entry.steeringProjection?.id) live.add(entry.steeringProjection.id);
-    if (entry.replacesSteeringId) live.add(entry.replacesSteeringId);
+  const turnId = streamingEntry?.id ?? null;
+  if (turnId !== state.turnId) {
+    state.offsets.clear();
+    state.turnId = turnId;
   }
-  for (const id of [...offsets.keys()]) if (!live.has(id)) offsets.delete(id);
+  if (turnId === null) return entries;
+  const streamedBlocks = streamingEntry?.isStreaming ? (streamingEntry.content?.length ?? 0) : undefined;
   return entries.map((entry) => {
     const projectionId = entry.steeringProjection?.id;
     if (projectionId) {
-      if (!offsets.has(projectionId) && streamedBlocks !== undefined) offsets.set(projectionId, streamedBlocks);
-      const offset = offsets.get(projectionId);
+      if (!state.offsets.has(projectionId) && streamedBlocks !== undefined) state.offsets.set(projectionId, streamedBlocks);
+      const offset = state.offsets.get(projectionId);
       return offset === undefined || entry.steeringProjection?.contentBlockOffset !== undefined
         ? entry
         : { ...entry, steeringProjection: { ...entry.steeringProjection!, contentBlockOffset: offset } };
     }
     if (entry.replacesSteeringId && entry.streamContentBlockOffset === undefined) {
-      const offset = offsets.get(entry.replacesSteeringId);
+      const offset = state.offsets.get(entry.replacesSteeringId);
       if (offset !== undefined) return { ...entry, streamContentBlockOffset: offset };
     }
     return entry;
@@ -131,10 +140,21 @@ function interleaveStreamingEntry(streamingEntry: AwarenessEntry, entries: Aware
 }
 
 function streamingSlice(entry: AwarenessEntry, start: number, end: number): AwarenessEntry {
+  const all = entry.content || [];
+  const own = all.slice(start, end);
+  const isTail = end >= all.length;
+  // Tool results/outputs can stream after a steering split; earlier slices keep
+  // the ones that belong to their own tool calls so status resolves correctly.
+  const callIds = new Set(own.flatMap((block) => (block.type === 'toolCall' && block.id ? [block.id] : [])));
+  const pairedLater = all.slice(end).filter((block) => (
+    (block.type === 'toolResult' && callIds.has(block.toolCallId))
+    || (block.type === 'toolOutput' && callIds.has((block as { toolCallId?: string }).toolCallId ?? ''))
+  ));
   return {
     ...entry,
     id: `${entry.id}-slice-${start}-${end}`,
-    content: (entry.content || []).slice(start, end),
+    content: [...own, ...pairedLater],
+    ...(isTail ? {} : { ownsStreamingCursor: false }),
   };
 }
 

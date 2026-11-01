@@ -1,7 +1,7 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { useAwarenessStream } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
-import { mergeOptimisticEntries } from '../optimisticEntries';
+import { createSteeringOffsetState, mergeOptimisticEntries } from '../optimisticEntries';
 import { AwarenessEntryComponent } from './AwarenessEntry';
 import { InputBar } from './InputBar';
 import { SettingsMenu } from './SettingsMenu';
@@ -33,7 +33,7 @@ export function ChatPane() {
 
   const error = localError || chatError || streamError;
 
-  const steeringOffsetsRef = useRef(new Map<string, number>());
+  const steeringOffsetsRef = useRef(createSteeringOffsetState());
   const visibleEntries = mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries, steeringOffsetsRef.current);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
