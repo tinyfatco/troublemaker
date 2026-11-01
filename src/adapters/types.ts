@@ -58,6 +58,8 @@ export interface RunResult {
 	stopReason: string;
 	errorMessage?: string;
 	failureKind?: "model_credential_unavailable";
+	/** Id of the last durable message entry this run persisted, if any. */
+	lastEntryId?: string;
 }
 
 export interface ChannelInfo {
@@ -188,6 +190,12 @@ export interface MomContext {
 	updateToolProgress?: (update: ToolProgressUpdate) => Promise<void>;
 	/** Emit a structured content block via SSE (web adapter only, others no-op) */
 	emitContentBlock?: (block: { type: string; [key: string]: unknown }) => void;
+	/**
+	 * Tell the originating client which runtime run is answering it (web adapter
+	 * only). The web UI uses this exact id to recognize its own run on the shared
+	 * /live feed instead of guessing from source and timing.
+	 */
+	announceRun?: (runId: string) => void;
 }
 
 /**

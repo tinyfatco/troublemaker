@@ -37,6 +37,8 @@ export interface UseWebChatReturn {
   status: StreamStatus;
   error: string | null;
   startedAt: string | null;
+  /** Exact /live run ids announced on this tab's own sends. */
+  ownRunIds: ReadonlySet<string>;
   sendMessage: (text: string, options?: SendMessageOptions) => void;
   abortStream: () => void;
   clearError: () => void;
@@ -92,6 +94,21 @@ export function useWebChat(): UseWebChatReturn {
   const [status, setStatus] = useState<StreamStatus>('idle');
   const [error, setError] = useState<string | null>(null);
   const [startedAt, setStartedAt] = useState<string | null>(null);
+  /**
+   * Run ids announced on this tab's own POST streams. Only these exact runs are
+   * suppressed on the shared /live feed; every other run renders as foreign.
+   */
+  const [ownRunIds, setOwnRunIds] = useState<ReadonlySet<string>>(() => new Set());
+  const claimRun = useCallback((runId: string) => {
+    setOwnRunIds((prev) => {
+      if (prev.has(runId)) return prev;
+      const next = new Set(prev);
+      next.add(runId);
+      // Bounded: a long-lived tab keeps only its recent sends.
+      while (next.size > 64) next.delete(next.values().next().value as string);
+      return next;
+    });
+  }, []);
   const abortControllerRef = useRef<AbortController | null>(null);
   const activeUserEntryRef = useRef<AwarenessEntry | null>(null);
   const activeStreamingEntryRef = useRef<AwarenessEntry | null>(null);
@@ -227,7 +244,7 @@ export function useWebChat(): UseWebChatReturn {
       }
 
       if (response.body) {
-        endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError);
+        endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError, claimRun);
         if (endedWithError) return;
       }
 
@@ -263,7 +280,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, setActiveStreamingEntry, setActiveUserEntry]);
+  }, [activateStreamingEntry, claimRun, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, setActiveStreamingEntry, setActiveUserEntry]);
 
   const sendMessage = useCallback(async (text: string, options: SendMessageOptions = {}) => {
     const trimmed = text.trim();
@@ -352,7 +369,7 @@ export function useWebChat(): UseWebChatReturn {
 
       if (!response.body) throw new Error('No response body');
 
-      endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError);
+      endedWithError = await readSseResponse(response, controls.setEntry, controls.setStatus, controls.setError, claimRun);
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         debugStream('send:normal:abort', { requestId });
@@ -401,7 +418,7 @@ export function useWebChat(): UseWebChatReturn {
       setStartedAt(null);
       abortControllerRef.current = null;
     }
-  }, [activateStreamingEntry, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, sendSteeringMessage, setActiveStreamingEntry, setActiveUserEntry]);
+  }, [activateStreamingEntry, claimRun, makeScopedStreamControls, preserveActiveTurnBeforeReplacement, sendSteeringMessage, setActiveStreamingEntry, setActiveUserEntry]);
 
   const abortStream = useCallback(() => {
     if (abortControllerRef.current) {
@@ -428,7 +445,7 @@ export function useWebChat(): UseWebChatReturn {
     setStatus('idle');
   }, []);
 
-  return { localEntries, userEntry, streamingEntry, isStreaming, status, error, startedAt, sendMessage, abortStream, clearError };
+  return { localEntries, userEntry, streamingEntry, isStreaming, status, error, startedAt, ownRunIds, sendMessage, abortStream, clearError };
 }
 
 function createMessagePayload(message: string, options: SendMessageOptions): Record<string, unknown> {
@@ -476,6 +493,7 @@ async function readSseResponse(
   setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
   setStatus: (s: StreamStatus) => void,
   setError: (e: string | null) => void,
+  onRun?: (runId: string) => void,
 ): Promise<boolean> {
   if (!response.body) return false;
 
@@ -515,7 +533,7 @@ async function readSseResponse(
         continue;
       }
       eventCount += 1;
-      const result = processEvent(data, setEntry, setStatus, setError);
+      const result = processEvent(data, setEntry, setStatus, setError, onRun);
       if (result.endedWithError) endedWithError = true;
       if (result.completed) {
         await reader.cancel().catch(() => undefined);
@@ -530,7 +548,7 @@ async function readSseResponse(
     if (remaining !== '[DONE]') {
       eventCount += 1;
       debugStream('sse:remaining', { eventCount, bytes: remaining.length });
-      const result = processEvent(remaining, setEntry, setStatus, setError);
+      const result = processEvent(remaining, setEntry, setStatus, setError, onRun);
       if (result.endedWithError) endedWithError = true;
       if (result.completed) {
         debugStream('sse:remaining:completed', { eventCount });
@@ -550,9 +568,15 @@ function processEvent(
   setEntry: React.Dispatch<React.SetStateAction<AwarenessEntry | null>>,
   setStatus: (s: StreamStatus) => void,
   setError: (e: string | null) => void,
+  onRun?: (runId: string) => void,
 ): { endedWithError: boolean; completed: boolean } {
   try {
     const parsed = JSON.parse(data);
+    if (parsed?.type === 'run') {
+      // Run handshake: the exact /live run id answering this send.
+      if (typeof parsed.runId === 'string' && parsed.runId) onRun?.(parsed.runId);
+      return { endedWithError: false, completed: false };
+    }
     const effect = getWebChatStreamEffect(parsed);
     debugStream('sse:event', {
       event: summarizeEvent(parsed),

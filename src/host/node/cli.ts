@@ -1286,12 +1286,13 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 				channelLabel,
 				source: platform.name,
 			};
+			sourceContext.announceRun?.(liveMetadata.runId);
 			gateway.publishRuntimeEvent(liveMetadata, {
 				type: "status",
 				status: "streaming",
 				message: "Working...",
 			});
-			let result: RunResult;
+			let result: RunResult | undefined;
 			try {
 				result = await state.runner.run(
 					ctx,
@@ -1299,6 +1300,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					undefined,
 					platform.formatInstructions,
 					(runtimeEvent) => { gateway.publishRuntimeEvent(liveMetadata, runtimeEvent); },
+					liveMetadata.runId,
 				);
 			} finally {
 				try {
@@ -1307,6 +1309,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					gateway.publishRuntimeEvent(liveMetadata, {
 						type: "run_complete",
 						channelId: turnEvent.channel,
+						...(result?.lastEntryId ? { lastEntryId: result.lastEntryId } : {}),
 					});
 				}
 			}
