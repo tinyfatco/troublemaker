@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { fetchWebsitePaintImage, fetchWorkspaceImage } from '../console-api';
 
 export type ChatImageSource =
@@ -15,6 +15,8 @@ interface ChatImageProps {
   onMissing?: () => void;
   /** Called when the image's layout settles (decoded or dropped), so a live chat can re-follow the bottom. */
   onSettled?: () => void;
+  /** Image fetcher; defaults to the console API. Overridable for tests. */
+  loader?: (source: ChatImageSource) => Promise<string | null>;
 }
 
 function load(source: ChatImageSource): Promise<string | null> {
@@ -24,22 +26,31 @@ function load(source: ChatImageSource): Promise<string | null> {
 }
 
 /** An image in the chat stream, fetched as a data: URL. Click to view full size. */
-export function ChatImage({ source, alt, caption, className, onMissing, onSettled }: ChatImageProps) {
+export function ChatImage({ source, alt, caption, className, onMissing, onSettled, loader = load }: ChatImageProps) {
   const [image, setImage] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading');
   const [expanded, setExpanded] = useState(false);
   const key = source.kind === 'paint' ? `paint:${source.id}` : `workspace:${source.version ?? ''}:${source.path}`;
+  // Layout settles exactly once per image source, whether it decodes or is dropped.
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+  const settledKeyRef = useRef<string | null>(null);
+  const settle = () => {
+    if (settledKeyRef.current === key) return;
+    settledKeyRef.current = key;
+    onSettledRef.current?.();
+  };
 
   useEffect(() => {
     let alive = true;
     setState('loading');
-    void load(source).then((url) => {
+    void loader(source).then((url) => {
       if (!alive) return;
       setImage(url);
       setState(url ? 'ready' : 'missing');
       if (!url) {
         onMissing?.();
-        onSettled?.();
+        settle();
       }
     });
     return () => { alive = false; };
@@ -80,7 +91,8 @@ export function ChatImage({ source, alt, caption, className, onMissing, onSettle
               tabIndex={0}
               onClick={toggle}
               onKeyDown={onKey}
-              onLoad={onSettled}
+              onLoad={settle}
+              onError={settle}
             />
           )
           : <div className="chat-image-loading" aria-label="Loading image" />}
