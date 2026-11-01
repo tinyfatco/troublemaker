@@ -265,13 +265,20 @@ test("Loop inbound outside the direct allowlisted text lane is never queued", ()
 	}
 });
 
-test("Loop text with absent, null, or empty-array attachments still queues", () => {
+test("Loop text with no attachments or unknown extra fields still queues", () => {
 	const loop = subject();
 	try {
 		for (const [index, attachments] of [[undefined], [null], [[]]].entries()) {
 			assert.equal(loop.gateway.acceptWebhook(inbound({ attachments: attachments[0], message_id: `ok-${index}`, webhook_id: `att-ok-${index}` })), "queued");
 		}
-		assert.equal(loop.eventCount(), 3);
+		// Loop webhooks are forward-compatible: unknown extra fields are ignored.
+		assert.equal(loop.gateway.acceptWebhook(inbound({
+			future_field: { nested: ["value"] },
+			sandbox: true,
+			message_id: "ok-extra",
+			webhook_id: "att-ok-extra",
+		})), "queued");
+		assert.equal(loop.eventCount(), 4);
 	} finally {
 		loop.close();
 	}
@@ -308,7 +315,9 @@ test("Loop send posts the documented request and classifies failures", async () 
 		const call = loop.calls.at(-1);
 		assert.equal(call.url, "https://loop.example/api/v1/message/send/");
 		assert.equal(call.init.headers.authorization, "example-loop-api-key");
-		assert.deepEqual(JSON.parse(call.init.body), { contact: ALLOWED, text: "hello", sender: SENDER_ID });
+		assert.deepEqual(JSON.parse(call.init.body), { contact: ALLOWED, text: "hello", channel: "imessage", sender: SENDER_ID });
+		// Every send pins the iMessage channel so Loop cannot fall back to SMS/RCS.
+		assert.equal(JSON.parse(call.init.body).channel, "imessage");
 
 		mode = "rejected";
 		const rejected = await loop.gateway.sendDirect(conversation, "hello").catch((error) => error);

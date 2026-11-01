@@ -95,7 +95,9 @@ export class LoopDirectProvider {
 	}
 
 	async sendDirect(contactAddress, text) {
-		const body = { contact: contactAddress, text };
+		// Loop auto-selects iMessage/SMS/RCS unless channel is pinned; this lane
+		// must never silently degrade to SMS.
+		const body = { contact: contactAddress, text, channel: "imessage" };
 		if (this.config.senderId) body.sender = this.config.senderId;
 		let response;
 		try {
