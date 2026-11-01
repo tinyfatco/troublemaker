@@ -11,6 +11,7 @@ import { awarenessStreamUrl, fetchAwarenessBacklog, runtimeLiveStreamUrl } from 
 import { applyRuntimeSteeringEnvelope, mergeAwarenessEntries, parseRuntimeSteeringEnvelope } from '../steeringProjection';
 import { parseContextLine, type AwarenessEntry } from '../types';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
+import { parseLiveRunEnvelope, reduceLiveRuns, type LiveRun } from '../liveRuns';
 
 export interface UseAwarenessStreamReturn {
   entries: AwarenessEntry[];
@@ -26,6 +27,8 @@ export interface UseAwarenessStreamReturn {
   connectionState: 'connecting' | 'connected' | 'reconnecting';
   lastEventAt: string | null;
   error: string | null;
+  /** In-flight runs from the shared live feed, streamed as transient entries. */
+  liveRuns: LiveRun[];
 }
 
 export function useAwarenessStream(): UseAwarenessStreamReturn {
@@ -37,6 +40,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   const [connectionState, setConnectionState] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
   const [lastEventAt, setLastEventAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [liveRuns, setLiveRuns] = useState<LiveRun[]>([]);
 
   // Track the oldest line offset we've loaded (for pagination)
   const oldestOffsetRef = useRef<number>(Infinity);
@@ -122,12 +126,20 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
   useEffect(() => {
     const es = new EventSource(runtimeLiveStreamUrl());
     es.onmessage = (event) => {
+      const liveRun = parseLiveRunEnvelope(event.data);
+      if (liveRun) {
+        setLiveRuns((prev) => reduceLiveRuns(prev, liveRun));
+        if (liveRun.kind === 'reset') return;
+      }
       const steering = parseRuntimeSteeringEnvelope(event.data);
       if (!steering) return;
       setLastEventAt(new Date().toISOString());
       setEntries((prev) => applyRuntimeSteeringEnvelope(prev, steering));
     };
-    return () => { es.close(); };
+    // A dropped live connection replays only active runs on reconnect, so
+    // clear anything that may have completed while disconnected.
+    es.onerror = () => { setLiveRuns((prev) => (prev.length ? [] : prev)); };
+    return () => { es.close(); setLiveRuns([]); };
   }, []);
 
   useEffect(() => {
@@ -187,6 +199,7 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     connectionState,
     lastEventAt,
     error,
+    liveRuns,
   };
 }
 
