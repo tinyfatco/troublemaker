@@ -105,7 +105,7 @@ export function formatChannel(channel: string): { label: string; type: string } 
   if (channel === 'heartbeat' || channel.startsWith('heartbeat:')) return { label: 'heartbeat', type: 'heartbeat' };
   if (channel === 'operator' || channel.startsWith('operator:')) return { label: 'operator', type: 'operator' };
   if (channel === 'voice' || channel === 'web-voice') return { label: 'voice', type: 'voice' };
-  if (channel === 'web' || channel === 'web-user') return { label: 'web', type: 'web' };
+  if (channel === 'web' || channel === 'web-user' || channel.startsWith('web-app:')) return { label: 'web', type: 'web' };
   if (channel.startsWith('slack:')) return { label: channel.slice('slack:'.length), type: 'slack' };
   if (channel.startsWith('teams:')) return { label: channel.slice('teams:'.length), type: 'teams' };
   if (channel.startsWith('email-')) return { label: 'email', type: 'email' };
