@@ -13,6 +13,8 @@ interface ChatImageProps {
   className?: string;
   /** Called when the image cannot be loaded, so a card can drop its image area. */
   onMissing?: () => void;
+  /** Called when the image's layout settles (decoded or dropped), so a live chat can re-follow the bottom. */
+  onSettled?: () => void;
 }
 
 function load(source: ChatImageSource): Promise<string | null> {
@@ -22,7 +24,7 @@ function load(source: ChatImageSource): Promise<string | null> {
 }
 
 /** An image in the chat stream, fetched as a data: URL. Click to view full size. */
-export function ChatImage({ source, alt, caption, className, onMissing }: ChatImageProps) {
+export function ChatImage({ source, alt, caption, className, onMissing, onSettled }: ChatImageProps) {
   const [image, setImage] = useState<string | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'missing'>('loading');
   const [expanded, setExpanded] = useState(false);
@@ -35,7 +37,10 @@ export function ChatImage({ source, alt, caption, className, onMissing }: ChatIm
       if (!alive) return;
       setImage(url);
       setState(url ? 'ready' : 'missing');
-      if (!url) onMissing?.();
+      if (!url) {
+        onMissing?.();
+        onSettled?.();
+      }
     });
     return () => { alive = false; };
     // The key fully identifies the source.
@@ -75,6 +80,7 @@ export function ChatImage({ source, alt, caption, className, onMissing }: ChatIm
               tabIndex={0}
               onClick={toggle}
               onKeyDown={onKey}
+              onLoad={onSettled}
             />
           )
           : <div className="chat-image-loading" aria-label="Loading image" />}

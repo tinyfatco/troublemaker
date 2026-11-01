@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { debugStream, summarizeToolCall } from '../streamDebug';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import {
@@ -6,6 +6,7 @@ import {
   shouldAutoCollapseToolDetails,
   shouldAutoOpenToolDetails,
   TOOL_AUTO_COLLAPSE_DELAY_MS,
+  shouldStickToolOutputToBottom,
 } from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { parseOperatorControlEvent, type OperatorControlEvent } from '../operatorControlEvents';
@@ -24,7 +25,7 @@ function formatTime(ts: string): string {
   } catch { return ''; }
 }
 
-function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; rawText: string }) {
+function WebsitePaintCard({ request, rawText, onExpandingContent }: { request: WebsitePaintRequest; rawText: string; onExpandingContent?: () => void }) {
   const [imageMissing, setImageMissing] = useState(!request.imageId);
 
   const isMarkup = request.kind === 'markup';
@@ -48,6 +49,7 @@ function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; 
             caption=""
             className="websitepaint-card-image"
             onMissing={() => setImageMissing(true)}
+            onSettled={onExpandingContent}
           />
         </div>
       )}
@@ -279,6 +281,7 @@ function ToolCallBlock({ block, isRunning, collapseAutoDetails, output, result, 
                   placeholder={isRunning ? 'waiting for output...' : ''}
                   chips={buildOutputChips(output, result)}
                   kind="output"
+                  follow={!!isRunning}
                 />
               </div>
             )}
@@ -301,13 +304,23 @@ interface ToolDetailFrameModel {
   chips: ToolDetailChip[];
 }
 
-function ToolDetailFrame({ text, placeholder, chips, kind }: {
+function ToolDetailFrame({ text, placeholder, chips, kind, follow = false }: {
   text: string;
   placeholder?: string;
   chips: ToolDetailChip[];
   kind: ToolDetailFrameModel['kind'];
+  /** Keep the box scrolled to its newest line while output streams in, unless the reader scrolled up. */
+  follow?: boolean;
 }) {
   const displayText = text || placeholder || '';
+  const preRef = useRef<HTMLPreElement>(null);
+  const stuckToBottomRef = useRef(true);
+
+  useLayoutEffect(() => {
+    const el = preRef.current;
+    if (!el || !follow || !stuckToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [displayText, follow]);
 
   return (
     <div className={`tool-detail-frame ${kind}`}>
@@ -322,7 +335,16 @@ function ToolDetailFrame({ text, placeholder, chips, kind }: {
         </div>
       )}
       {displayText && (
-        <pre className={`tool-detail-text ${text ? '' : 'placeholder'}`}>{displayText}</pre>
+        <pre
+          className={`tool-detail-text ${text ? '' : 'placeholder'}`}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            stuckToBottomRef.current = shouldStickToolOutputToBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
+          }}
+          ref={preRef}
+        >
+          {displayText}
+        </pre>
       )}
     </div>
   );
@@ -660,7 +682,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
         {websitePaint
-          ? <WebsitePaintCard request={websitePaint} rawText={text} />
+          ? <WebsitePaintCard request={websitePaint} rawText={text} onExpandingContent={onExpandingContent} />
           : <div className="awareness-user-text">{text}</div>}
         {entry.steeringProjection?.state === 'accepted' && (
           <div className="awareness-steering-status">queued · steered</div>

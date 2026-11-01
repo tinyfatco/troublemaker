@@ -141,6 +141,7 @@ export function AwarenessPane({
   const programmaticScrollRef = useRef(false);
   const lastScrollTopRef = useRef(0);
   const touchStartYRef = useRef<number | null>(null);
+  const lastLiveEntryIdRef = useRef<string | null>(null);
 
   const isNearBottom = useCallback((threshold = 48) => {
     const el = scrollContainerRef.current;
@@ -240,8 +241,14 @@ export function AwarenessPane({
   useEffect(() => {
     if (!backlogDone || isLoadingMore) return;
 
+    // A newly arrived entry (e.g. a just-sent Paint card) snaps instantly; a
+    // smooth scroll lags behind the card and visibly "pops" before landing.
+    const lastId = visibleEntries[visibleEntries.length - 1]?.id ?? null;
+    const isNewEntry = lastId !== lastLiveEntryIdRef.current;
+    lastLiveEntryIdRef.current = lastId;
+
     if (pinnedToBottomRef.current || isNearBottom()) {
-      scrollToBottom(isStreaming ? 'instant' : 'smooth');
+      scrollToBottom(isStreaming || isNewEntry ? 'instant' : 'smooth');
     }
   }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
 
