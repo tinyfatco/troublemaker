@@ -85,6 +85,8 @@ export interface AwarenessEntry {
   isSystemAction?: boolean;
   /** Server-confirmed steering input that has not yet reached durable history. */
   steeringProjection?: SteeringProjection;
+  /** False on non-tail slices of a streaming turn split by steering: they keep tool state but not the writing cursor. */
+  ownsStreamingCursor?: boolean;
   /** Steering projection id this durable entry replaced, used to keep its render position. */
   replacesSteeringId?: string;
   /** Render-only cursor retained while a steering projection becomes durable. */

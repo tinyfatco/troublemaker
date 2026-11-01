@@ -10,7 +10,7 @@ import type { UseAwarenessStreamReturn } from '../hooks/useAwarenessStream';
 import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { buildContextWindowStatus } from '../contextWindowStatus';
-import { mergeOptimisticEntries } from '../optimisticEntries';
+import { createSteeringOffsetState, mergeOptimisticEntries } from '../optimisticEntries';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
@@ -60,7 +60,7 @@ export function AwarenessPane({
     clearError,
   } = useWebChat();
 
-  const steeringOffsetsRef = useRef(new Map<string, number>());
+  const steeringOffsetsRef = useRef(createSteeringOffsetState());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');

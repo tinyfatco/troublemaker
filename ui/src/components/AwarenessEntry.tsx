@@ -10,7 +10,7 @@ import {
 import { getThinkingPreview } from '../thinkingDisplay';
 import { parseOperatorControlEvent, type OperatorControlEvent } from '../operatorControlEvents';
 import { getAmbientDisplayLines } from '../ambientDisplay';
-import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
+import { ownsStreamingCursor, shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, stripSessionContext } from '../streamingCursor';
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
@@ -700,7 +700,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
         if (!cleaned.trim()) return;
         const phaseClass = block.phase ? `phase-${block.phase.replace('_', '-')}` : '';
         renderedBlocks.push(
-          <div key={i} className={`awareness-entry assistant-entry ${phaseClass} ${entry.isStreaming ? 'streaming' : ''}`}>
+          <div key={i} className={`awareness-entry assistant-entry ${phaseClass} ${ownsStreamingCursor(entry) ? 'streaming' : ''}`}>
             {!entry.isStreaming && entry.timestamp && (
               <div className="awareness-meta">
                 <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>

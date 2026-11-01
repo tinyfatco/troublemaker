@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mergeOptimisticEntries } from '../ui/src/optimisticEntries.js';
+import { createSteeringOffsetState, mergeOptimisticEntries } from '../ui/src/optimisticEntries.js';
 import {
 	applyRuntimeSteeringEnvelope,
 	mergeAwarenessEntries,
@@ -31,7 +31,7 @@ const accepted = parseRuntimeSteeringEnvelope(JSON.stringify({
 }));
 assert(accepted);
 
-const offsets = new Map<string, number>();
+const offsets = createSteeringOffsetState();
 let awareness = applyRuntimeSteeringEnvelope([turnUser], accepted);
 
 function visible(entry: AwarenessEntry): AwarenessEntry[] {
@@ -89,37 +89,33 @@ assert.deepEqual(
 assert.equal(finalVisible.filter((entry) => entry.strippedText === 'also check tests').length, 1);
 assert.equal(finalVisible.find((entry) => entry.strippedText === 'also check tests')?.channel, 'web');
 
-console.log('web UI steering order tests passed');
-
-// Offsets are owned by each chat view: a second view (or conversation) with its
-// own map never inherits another view's cursor.
+// Earlier slices keep their own tool results and do not own the writing cursor.
 {
-	const otherView = new Map<string, number>();
-	const idle = mergeOptimisticEntries(applyRuntimeSteeringEnvelope([turnUser], accepted), null, null, [], otherView);
-	assert.equal(otherView.size, 0, 'no stream in this view means no stamped offset');
-	assert.equal(idle.at(-1)?.steeringProjection?.contentBlockOffset, undefined, 'unstamped projection appends normally');
-	assert.equal(offsets.get('steer-1'), 2, 'the first view keeps its own offset');
+	const parts = visible({ ...continued, isStreaming: true });
+	const head = parts.find((entry) => entry.id === 'turn-assistant-slice-0-2');
+	const tail = parts.find((entry) => entry.id === 'turn-assistant-slice-2-4');
+	assert(head && tail);
+	assert(head.content?.some((block) => block.type === 'toolResult' && block.toolCallId === 'tool-1'),
+		'head slice sees the tool result that streamed after the steer');
+	assert.equal(head.ownsStreamingCursor, false, 'head slice does not own the cursor');
+	assert.notEqual(tail.ownsStreamingCursor, false, 'tail slice owns the cursor');
 }
-console.log('web-ui-steering-order: isolation ok');
 
 // Two mounted views: clearing/reconnecting one never moves or erases the other.
 {
-	const viewA = new Map<string, number>();
-	const viewB = new Map<string, number>();
+	const viewA = createSteeringOffsetState();
+	const viewB = createSteeringOffsetState();
 	const projected = applyRuntimeSteeringEnvelope([turnUser], accepted);
 	const shortStream: AwarenessEntry = { ...streaming, content: streaming.content!.slice(0, 1) };
 
 	const aBefore = mergeOptimisticEntries(projected, optimisticUser, streaming, [], viewA).map((e) => e.id);
 	const bBefore = mergeOptimisticEntries(projected, optimisticUser, shortStream, [], viewB).map((e) => e.id);
-	assert.equal(viewA.get('steer-1'), 2);
-	assert.equal(viewB.get('steer-1'), 1);
+	assert.equal(viewA.offsets.get('steer-1'), 2);
+	assert.equal(viewB.offsets.get('steer-1'), 1);
 
-	// View A reconnects: its backlog no longer carries the projection, so its map prunes.
-	mergeOptimisticEntries([turnUser], null, null, [], viewA);
-	assert.equal(viewA.size, 0, 'cleared view drops its own offsets');
-
-	// View B is untouched and renders exactly as before.
-	assert.equal(viewB.get('steer-1'), 1, 'other view keeps its offset');
+	mergeOptimisticEntries(projected, null, null, [], viewA); // A's stream clears
+	assert.equal(viewA.offsets.size, 0, 'cleared view drops its own offsets');
+	assert.equal(viewB.offsets.get('steer-1'), 1, 'other view keeps its offset');
 	assert.deepEqual(
 		mergeOptimisticEntries(projected, optimisticUser, shortStream, [], viewB).map((e) => e.id),
 		bBefore,
@@ -127,4 +123,25 @@ console.log('web-ui-steering-order: isolation ok');
 	);
 	assert.notDeepEqual(aBefore, bBefore, 'views position steering independently');
 }
-console.log('web-ui-steering-order: two-view isolation ok');
+
+// Repeated turns: old durable rows (with replacesSteeringId) stay in entries,
+// but the next turn resets the state so it only ever holds the active turn.
+{
+	const view = createSteeringOffsetState();
+	let feed = applyRuntimeSteeringEnvelope([turnUser], accepted);
+	mergeOptimisticEntries(feed, optimisticUser, streaming, [], view);
+	feed = applyRuntimeSteeringEnvelope(feed, consumed);
+	feed = mergeAwarenessEntries(feed, [durableSteering, { ...settled, id: 'durable-assistant' }]);
+	assert(feed.some((entry) => entry.replacesSteeringId === 'steer-1'), 'old durable row keeps its replacement marker');
+
+	const turn2User: AwarenessEntry = { ...turnUser, id: 'turn2-user', timestamp: '2026-10-31T12:05:00.000Z',
+		strippedText: 'next thing', content: [{ type: 'text', text: 'next thing' }] };
+	const turn2Stream: AwarenessEntry = { ...streaming, id: 'turn2-assistant', timestamp: '2026-10-31T12:05:00.000Z' };
+	feed = [...feed, turn2User];
+	const turn2 = mergeOptimisticEntries(feed, { ...turn2User, id: 'live-turn2-user' }, turn2Stream, [], view);
+	assert.equal(view.turnId, 'turn2-assistant');
+	assert.equal(view.offsets.size, 0, 'previous turn offsets are gone once a new turn streams');
+	assert.deepEqual(turn2.slice(-2).map((entry) => entry.id), ['turn2-user', 'turn2-assistant'],
+		'new turn renders whole with no leftover split');
+}
+console.log('web UI steering order tests passed');
