@@ -47,4 +47,3 @@ export function nextPinnedToBottom(pinned: boolean, scrollingUp: boolean, atBott
 export function liveFollowBehavior(isStreaming: boolean, isNewEntry: boolean): ScrollBehavior {
   return isStreaming || isNewEntry ? 'instant' : 'smooth';
 }
-
