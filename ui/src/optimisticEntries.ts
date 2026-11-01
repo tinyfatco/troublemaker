@@ -19,10 +19,13 @@ export function getOptimisticVisibility(
   const entriesAfterUser = hasRealUser ? visibleBaseEntries.slice(realUserIndex + 1) : [];
   const hasAssistantAfterUser = hasRealUser &&
     entriesAfterUser.some((entry) => entry.role === 'assistant' && !entry.isStreaming);
+  const hasSteeringSplit = entriesAfterUser.some((entry) => (
+    entry.steeringProjection?.contentBlockOffset !== undefined || entry.streamContentBlockOffset !== undefined
+  ));
 
   return {
     showUserEntry: !!userEntry && !hasRealUser,
-    showStreamingEntry: !!streamingEntry && (streamingEntry.isStreaming || !hasAssistantAfterUser),
+    showStreamingEntry: !!streamingEntry && (streamingEntry.isStreaming || !hasAssistantAfterUser || hasSteeringSplit),
   };
 }
 
@@ -35,10 +38,16 @@ export function mergeOptimisticEntries(
   const { showUserEntry, showStreamingEntry } = getOptimisticVisibility(entries, userEntry, streamingEntry, localEntries);
   const visibleBaseEntries = [...entries, ...filterLocalEntries(entries, localEntries)];
 
-  if (streamingEntry?.isStreaming && showStreamingEntry) {
+  if (streamingEntry && showStreamingEntry) {
     const realUserIndex = findMatchingTurnUserIndex(visibleBaseEntries, userEntry);
-    if (realUserIndex !== -1) {
-      return [...visibleBaseEntries.slice(0, realUserIndex + 1), streamingEntry];
+    const hasSteeringSplit = realUserIndex !== -1 && visibleBaseEntries.slice(realUserIndex + 1).some((entry) => (
+      entry.steeringProjection?.contentBlockOffset !== undefined || entry.streamContentBlockOffset !== undefined
+    ));
+    if (realUserIndex !== -1 && (streamingEntry.isStreaming || hasSteeringSplit)) {
+      const beforeTurn = visibleBaseEntries.slice(0, realUserIndex + 1);
+      const duringTurn = visibleBaseEntries.slice(realUserIndex + 1)
+        .filter((entry) => entry.role !== 'assistant');
+      return [...beforeTurn, ...interleaveStreamingEntry(streamingEntry, duringTurn)];
     }
   }
 
@@ -53,6 +62,42 @@ export function mergeOptimisticEntries(
   }
 
   return merged;
+}
+
+function interleaveStreamingEntry(streamingEntry: AwarenessEntry, entries: AwarenessEntry[]): AwarenessEntry[] {
+  const content = streamingEntry.content || [];
+  const positioned = entries
+    .map((entry, index) => ({
+      entry,
+      index,
+      offset: entry.steeringProjection?.contentBlockOffset ?? entry.streamContentBlockOffset,
+    }))
+    .filter((item): item is typeof item & { offset: number } => item.offset !== undefined)
+    .sort((a, b) => a.offset - b.offset || a.index - b.index);
+
+  if (positioned.length === 0) return [streamingEntry, ...entries];
+
+  const rendered: AwarenessEntry[] = [];
+  let cursor = 0;
+  for (const item of positioned) {
+    const offset = Math.max(cursor, Math.min(content.length, item.offset));
+    if (offset > cursor) rendered.push(streamingSlice(streamingEntry, cursor, offset));
+    rendered.push(item.entry);
+    cursor = offset;
+  }
+  if (cursor < content.length || content.length === 0) {
+    rendered.push(streamingSlice(streamingEntry, cursor, content.length));
+  }
+  rendered.push(...entries.filter((entry) => !positioned.some((item) => item.entry === entry)));
+  return rendered;
+}
+
+function streamingSlice(entry: AwarenessEntry, start: number, end: number): AwarenessEntry {
+  return {
+    ...entry,
+    id: `${entry.id}-slice-${start}-${end}`,
+    content: (entry.content || []).slice(start, end),
+  };
 }
 
 function filterLocalEntries(entries: AwarenessEntry[], localEntries: AwarenessEntry[]): AwarenessEntry[] {

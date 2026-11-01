@@ -20,6 +20,12 @@ interface RuntimeSteeringEnvelope {
   event: LiveSteeringInputEvent;
 }
 
+let activeStreamingContentBlockCount = 0;
+
+export function recordActiveStreamingContentBlockCount(count: number): void {
+  activeStreamingContentBlockCount = Math.max(0, count);
+}
+
 export function parseRuntimeSteeringEnvelope(data: string): RuntimeSteeringEnvelope | null {
   try {
     const parsed = JSON.parse(data) as Record<string, unknown>;
@@ -118,6 +124,7 @@ export function applyRuntimeSteeringEnvelope(
         id: event.id,
         state: 'accepted',
         deliveryMode: event.deliveryMode,
+        contentBlockOffset: activeStreamingContentBlockCount,
       },
     }];
   });
@@ -131,6 +138,8 @@ export function mergeAwarenessEntries(
   const merged = [...existing];
   const seen = new Set(existing.map((entry) => entry.id));
   for (const entry of incoming) {
+    let replacementIndex = -1;
+    let replacementOffset: number | undefined;
     if (entry.role === 'user') {
       for (const input of canonicalUserInputs(entry)) {
         const projectionIndex = merged.findIndex((candidate) => (
@@ -139,6 +148,10 @@ export function mergeAwarenessEntries(
           && canReconcileTimestamps(entry.timestamp, candidate.timestamp)
         ));
         if (projectionIndex !== -1) {
+          if (replacementIndex === -1) {
+            replacementIndex = projectionIndex;
+            replacementOffset = merged[projectionIndex].steeringProjection?.contentBlockOffset;
+          }
           seen.delete(merged[projectionIndex].id);
           merged.splice(projectionIndex, 1);
         }
@@ -148,7 +161,13 @@ export function mergeAwarenessEntries(
     // reconciliation even when a backlog refresh repeats an already-seen row.
     if (seen.has(entry.id)) continue;
     seen.add(entry.id);
-    merged.push(entry);
+    if (replacementIndex !== -1) {
+      merged.splice(replacementIndex, 0, replacementOffset === undefined
+        ? entry
+        : { ...entry, streamContentBlockOffset: replacementOffset });
+    } else {
+      merged.push(entry);
+    }
   }
   return merged;
 }
@@ -190,13 +209,21 @@ function parseCanonicalBatch(text: string): CanonicalUserInput[] {
 
 function sameAwarenessInput(entry: AwarenessEntry, input: CanonicalUserInput): boolean {
   return entry.role === 'user'
-    && entry.channel === input.channel
-    && entry.userName === input.userName
+    && sameSender(entry.channel, entry.userName, input.channel, input.userName)
     && entry.strippedText === input.text;
 }
 
 function sameVisibleInput(a: CanonicalUserInput, b: LiveSteeringInputEntry): boolean {
-  return a.channel === b.channel && a.userName === b.userName && a.text === b.text;
+  return sameSender(a.channel, a.userName, b.channel, b.userName) && a.text === b.text;
+}
+
+function sameSender(aChannel: string | undefined, aUser: string | undefined, bChannel: string, bUser: string): boolean {
+  if (isWebChannel(aChannel) && isWebChannel(bChannel)) return true;
+  return aChannel === bChannel && aUser === bUser;
+}
+
+function isWebChannel(channel: string | undefined): boolean {
+  return channel === 'web' || channel === 'web-user' || channel?.startsWith('web:') === true;
 }
 
 function canReconcileTimestamps(canonicalTimestamp: string, acceptedAt: string): boolean {
