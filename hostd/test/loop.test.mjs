@@ -183,6 +183,30 @@ test("Loop relationship funnel turns share the SMS funnel without scope conflict
 	}
 });
 
+test("a direct-agent reply edge must be the same person in the same context", () => {
+	const loop = subject();
+	try {
+		const sms = loop.smsConversation;
+		const edge = loop.store.upsertPhoneConversation(loop.gateway.prepareConversation(ALLOWED));
+		assert.equal(loop.store.phoneApiReplyEdge(sms, undefined), sms);
+		assert.equal(loop.store.phoneApiReplyEdge(sms, edge.threadTarget).threadTarget, edge.threadTarget);
+		// Another person's conversation can never become this session's reply edge.
+		const strangerSms = loop.seed(STRANGER);
+		assert.throws(() => loop.store.phoneApiReplyEdge(sms, strangerSms.threadTarget), /reply edge crossed/);
+		assert.throws(() => loop.store.phoneApiReplyEdge(sms, "phone-00000000000000000000"), /reply edge crossed/);
+		assert.throws(() => loop.store.queuePhoneApiTurn({
+			id: "phone-api:forged",
+			providerMessageId: "forged",
+			threadTarget: sms.threadTarget,
+			replyThreadTarget: strangerSms.threadTarget,
+			inboundBody: "x",
+			defaultModel: "example-alpha",
+		}), /reply edge crossed/);
+	} finally {
+		loop.close();
+	}
+});
+
 test("Loop fails closed with zero or multiple canonical SMS conversations", () => {
 	const none = subject(undefined, { seedSms: false });
 	try {

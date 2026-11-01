@@ -144,6 +144,7 @@ export class LoopGateway {
 		routingKey,
 		scheduler,
 		controlNotifier,
+		phoneGateway,
 		fetchImpl = fetch,
 	}) {
 		this.config = config;
@@ -152,6 +153,9 @@ export class LoopGateway {
 		this.routingKey = routingKey;
 		this.scheduler = scheduler;
 		this.controlNotifier = controlNotifier;
+		this.phoneGateway = phoneGateway;
+		// Direct-neuron replies for Loop edges are sent by the phone flusher.
+		phoneGateway?.registerReplyTransport(LOOP_PROVIDER, this);
 		this.provider = new LoopDirectProvider(config.loop, { fetchImpl });
 		this.server = null;
 		this.stopped = true;
@@ -244,6 +248,7 @@ export class LoopGateway {
 			if (messageId) {
 				const providerMessageId = loopProviderMessageId(messageId);
 				this.store.updatePhoneOutboxStatus(providerMessageId, status);
+				this.store.updatePhoneApiProviderStatus(providerMessageId, status);
 			}
 			return done("status");
 		}
@@ -273,6 +278,28 @@ export class LoopGateway {
 			return done(optedOut ? "opted_out" : "opted_in");
 		}
 		if (!text) return done("quarantined:empty");
+
+		// Feature senders talk to the direct phone agent. The canonical SMS
+		// conversation owns that session and history; Loop is only this turn's
+		// reply transport.
+		if (this.phoneGateway?.isApiAgentFeatureSender(from)) {
+			const replyConversation = this.store.upsertPhoneConversation(conversation);
+			let canonical;
+			try {
+				canonical = this.canonicalConversation(replyConversation);
+			} catch (error) {
+				if (error instanceof LinkedPhoneContextError) return done(`quarantined:no_canonical_conversation:${error.reason}`);
+				throw error;
+			}
+			const disposition = this.phoneGateway.queueApiAgentInbound({
+				conversation: canonical,
+				replyConversation,
+				providerMessageId: loopProviderMessageId(messageId),
+				text,
+				timestamp: new Date(observedAt).toISOString(),
+			});
+			return done(disposition);
+		}
 
 		const providerMessageId = loopProviderMessageId(messageId);
 		const occurredAt = new Date(observedAt).toISOString();
@@ -310,6 +337,20 @@ export class LoopGateway {
 		this.controlNotifier?.wake();
 		this.scheduler?.pump();
 		return done("queued");
+	}
+
+	canonicalConversation(edge) {
+		const candidates = this.store.listActivePhoneConversationsForPrincipal(
+			edge.principalHash,
+			this.config.phone.provider,
+		);
+		const [canonical] = candidates;
+		if (
+			candidates.length !== 1
+			|| canonical.contextId !== edge.contextId
+			|| canonical.targetId !== edge.targetId
+		) throw new LinkedPhoneContextError(candidates.length > 1 ? "ambiguous" : "mismatch");
+		return canonical;
 	}
 
 	prepareConversation(contactAddress) {

@@ -783,6 +783,12 @@ becomes an ordinary `phone` event in that shared context. Replies use the
 existing `/v1/outbound/phone` path, which sends over the transport of the
 `thread_target` being answered. Zulip projections are labelled iMessage.
 
+For `phone.apiAgent.featureSenders`, Loop inbound enters the same direct phone
+agent session as SMS. The canonical SMS conversation owns the session, mode,
+model generation, and history. Each turn records the edge it arrived on as its
+reply transport, so the agent answers an iMessage over Loop (pinned to
+`channel: "imessage"`) and an SMS over SMS from one shared history.
+
 Loop authenticates webhooks with the Authorization header value configured
 in its dashboard. Hostd compares that value, raw or as a Bearer token, in
 constant time. It dedupes on `webhook_id` and acknowledges quickly. Receipts

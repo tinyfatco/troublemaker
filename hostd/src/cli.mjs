@@ -195,6 +195,7 @@ async function components(configPath) {
 			routingKey,
 			scheduler,
 			controlNotifier,
+			phoneGateway,
 		})
 		: undefined;
 	return {
