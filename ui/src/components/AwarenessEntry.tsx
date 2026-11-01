@@ -25,7 +25,7 @@ function formatTime(ts: string): string {
   } catch { return ''; }
 }
 
-function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; rawText: string }) {
+function WebsitePaintCard({ request, rawText, onExpandingContent }: { request: WebsitePaintRequest; rawText: string; onExpandingContent?: () => void }) {
   const [imageMissing, setImageMissing] = useState(!request.imageId);
 
   const isMarkup = request.kind === 'markup';
@@ -49,6 +49,7 @@ function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; 
             caption=""
             className="websitepaint-card-image"
             onMissing={() => setImageMissing(true)}
+            onSettled={onExpandingContent}
           />
         </div>
       )}
@@ -681,7 +682,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
           {entry.userName && <span className="awareness-username">{(entry.channel === 'web' && (entry.userName === 'user' || entry.userName === 'web-user')) ? 'you' : entry.userName}</span>}
         </div>
         {websitePaint
-          ? <WebsitePaintCard request={websitePaint} rawText={text} />
+          ? <WebsitePaintCard request={websitePaint} rawText={text} onExpandingContent={onExpandingContent} />
           : <div className="awareness-user-text">{text}</div>}
         {entry.steeringProjection?.state === 'accepted' && (
           <div className="awareness-steering-status">queued · steered</div>
