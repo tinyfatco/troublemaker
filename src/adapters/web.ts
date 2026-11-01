@@ -147,6 +147,7 @@ export class WebAdapter implements PlatformAdapter {
 	readonly formatInstructions = `## Web Chat Formatting (Markdown)
 You are responding via web chat. Use standard Markdown formatting.
 Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: [text](url)
+Images: to show a picture in the chat, save it in your workspace (PNG, JPEG, WebP or GIF, under 5 MB) and write ![short caption](relative/path/in/workspace.png) on its own line. Prefer one good image plus a short sentence over long text descriptions of what changed.
 Keep responses concise and helpful.`;
 
 	private workingDir: string;

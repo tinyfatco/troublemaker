@@ -883,3 +883,35 @@ test("WebsitePaint markup uploads marks separately and asks for changes to only 
 		await close(runtimeServer);
 	}
 });
+
+test("chat images: the agent's workspace images reach the chat only as JSON data URLs for safe relative paths", async () => {
+	const seen = [];
+	const runtimeServer = createServer((request, response) => {
+		seen.push(request.url);
+		response.writeHead(200, { "content-type": "application/json" });
+		response.end(JSON.stringify({ image: "data:image/png;base64,AAAA" }));
+	});
+	const runtimePort = await listen(runtimeServer);
+	const appServer = createWebAppServer(state(runtimePort));
+	const appPort = await listen(appServer);
+	const get = (query) => {
+		const path = `/v1/app/image?${query}`;
+		return fetch(`http://127.0.0.1:${appPort}${path}`, { headers: signedHeaders("GET", path) });
+	};
+	try {
+		const ok = await get(`project=website&path=${encodeURIComponent("websitepaint/example-business/after shot (1).png")}`);
+		assert.equal(ok.status, 200);
+		assert.deepEqual(await ok.json(), { image: "data:image/png;base64,AAAA" });
+		assert.deepEqual(seen, ["/api/v2/agents/current/image?path=websitepaint%2Fexample-business%2Fafter+shot+%281%29.png"]);
+		for (const bad of ["/etc/x.png", "../x.png", "a/../x.png", ".ssh/x.png", "a//x.png", "notes.txt", "x.svg", "a\\b.png", "x.png?y"]) {
+			const rejected = await get(`project=website&path=${encodeURIComponent(bad)}`);
+			assert.equal(rejected.status, 400, bad);
+		}
+		assert.equal((await get("project=website")).status, 400);
+		assert.equal((await get("project=website&path=a.png&path=b.png")).status, 400);
+		assert.equal(seen.length, 1, "rejected paths never reach the runtime");
+	} finally {
+		await close(appServer);
+		await close(runtimeServer);
+	}
+});

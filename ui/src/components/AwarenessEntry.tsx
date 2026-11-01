@@ -14,7 +14,7 @@ import { shouldRenderContinuationPlaceholder, shouldRenderStreamingPlaceholder, 
 import type { AwarenessEntry as AwarenessEntryType, ContentBlock, ToolCallContent, ToolOutputContent, ToolResultContent } from '../types';
 import { ChannelBadge } from './ChannelBadge';
 import { Markdown } from './Markdown';
-import { fetchWebsitePaintImage } from '../console-api';
+import { ChatImage } from './ChatImage';
 import { parseWebsitePaintMessage, websitePaintElementLabel, type WebsitePaintRequest } from '../websitePaint';
 
 function formatTime(ts: string): string {
@@ -25,19 +25,7 @@ function formatTime(ts: string): string {
 }
 
 function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; rawText: string }) {
-  const [image, setImage] = useState<string | null>(null);
   const [imageMissing, setImageMissing] = useState(!request.imageId);
-
-  useEffect(() => {
-    if (!request.imageId) return;
-    let alive = true;
-    void fetchWebsitePaintImage(request.imageId).then((url) => {
-      if (!alive) return;
-      setImage(url);
-      setImageMissing(!url);
-    });
-    return () => { alive = false; };
-  }, [request.imageId]);
 
   const isMarkup = request.kind === 'markup';
   const chips = request.elements.filter((element) => element.text || element.tag).slice(0, 6);
@@ -52,11 +40,15 @@ function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; 
         </span>
         <span className="websitepaint-card-kind">{isMarkup ? 'Marked up' : 'Painted'}</span>
       </div>
-      {!imageMissing && (
+      {!imageMissing && request.imageId && (
         <div className="websitepaint-card-stage">
-          {image
-            ? <img className="websitepaint-card-image" src={image} alt={isMarkup ? 'Marks drawn on the page' : 'Painted canvas'} />
-            : <div className="websitepaint-card-loading" aria-label="Loading image" />}
+          <ChatImage
+            source={{ kind: 'paint', id: request.imageId }}
+            alt={isMarkup ? 'Marks drawn on the page' : 'Painted canvas'}
+            caption=""
+            className="websitepaint-card-image"
+            onMissing={() => setImageMissing(true)}
+          />
         </div>
       )}
       {request.note && <p className="websitepaint-card-note">{request.note}</p>}
@@ -762,7 +754,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
                 <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>
               </div>
             )}
-            <Markdown content={cleaned} />
+            <Markdown content={cleaned} imageVersion={entry.timestamp} />
           </div>,
         );
       }

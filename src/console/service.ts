@@ -8,6 +8,17 @@ import type {
 	ConsoleStatus,
 } from "./types.js";
 
+export const CHAT_IMAGE_MAXIMUM_BYTES = 5 * 1024 * 1024;
+
+export function chatImageType(bytes: Uint8Array): string | null {
+	const at = (offset: number, ...values: number[]) => values.every((value, i) => bytes[offset + i] === value);
+	if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "image/png";
+	if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+	if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+	if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+	return null;
+}
+
 export class ConsoleError extends Error {
 	constructor(
 		readonly status: number,
@@ -136,6 +147,19 @@ export class ConsoleService {
 		const content = this.workspace.readText(path);
 		if (content === null) throw new ConsoleError(404, "File not found");
 		return content;
+	}
+
+	/** Read a workspace image for the chat, as a data: URL. The type comes from the bytes, never the name. */
+	readImage(path: string): { image: string; type: string; bytes: number } {
+		if (!path) throw new ConsoleError(400, "Missing path parameter");
+		const stat = this.workspace.stat(path);
+		if (!stat || stat.type !== "file") throw new ConsoleError(404, "Image not found");
+		if (stat.size > CHAT_IMAGE_MAXIMUM_BYTES) throw new ConsoleError(413, "Image too large (>5MB)");
+		const bytes = this.workspace.readBytes(path);
+		if (!bytes) throw new ConsoleError(404, "Image not found");
+		const type = chatImageType(bytes);
+		if (!type) throw new ConsoleError(415, "Not a PNG, JPEG, WebP or GIF image");
+		return { image: `data:${type};base64,${Buffer.from(bytes).toString("base64")}`, type, bytes: bytes.length };
 	}
 
 	writeFile(path: string, content: string): void {
