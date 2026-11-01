@@ -107,6 +107,7 @@ export function createHostServer({
 	rocketChatGateway,
 	zulipGateway,
 	phoneGateway,
+	loopGateway,
 	serviceMailboxGateway,
 	sitesGateway,
 	workersAiGateway,
@@ -560,7 +561,7 @@ export function createHostServer({
 				return;
 			}
 			if (request.method === "POST" && url.pathname === "/v1/outbound/phone") {
-				if (!phoneGateway) {
+				if (!phoneGateway && !loopGateway) {
 					json(response, 503, { error: "phone_unavailable" });
 					return;
 				}
@@ -586,7 +587,16 @@ export function createHostServer({
 					json(response, 403, { error: "conversation_scope_denied" });
 					return;
 				}
-				if (config.phone?.deliveryHolds?.includes(contextId)) {
+				const conversationGateway = conversation.provider === "loop" ? loopGateway : phoneGateway;
+				if (!conversationGateway) {
+					json(response, 503, { error: "phone_unavailable" });
+					return;
+				}
+				const loopConversation = conversation.provider === "loop";
+				if (
+					config.phone?.deliveryHolds?.includes(contextId)
+					|| config.loop?.deliveryHolds?.includes(contextId)
+				) {
 					json(response, 403, { error: "phone_delivery_held" });
 					return;
 				}
@@ -763,7 +773,7 @@ export function createHostServer({
 					return;
 				}
 				try {
-					const receipt = await phoneGateway.sendDirect(conversation, message);
+					const receipt = await conversationGateway.sendDirect(conversation, message);
 					const ledgerEvent = {
 						id: `phone_outbound:${receipt.providerMessageId}`,
 						source: "phone_outbound",
@@ -774,15 +784,16 @@ export function createHostServer({
 						contextId,
 						payload: {
 							direction: "outbound",
-							sender: "Business SMS",
-							recipient: `Phone ending ${conversation.contactLastFour}`,
+							sender: loopConversation ? "Business iMessage" : "Business SMS",
+							recipient: `${loopConversation ? "iMessage" : "Phone"} ending ${conversation.contactLastFour}`,
 							message: {
 								id: receipt.providerMessageId,
 								body: message,
 							},
 							phone: {
+								...(loopConversation ? { provider: "loop" } : {}),
 								threadTarget: conversation.threadTarget,
-								displayName: `SMS •••• ${conversation.contactLastFour}`,
+								displayName: `${loopConversation ? "iMessage" : "SMS"} •••• ${conversation.contactLastFour}`,
 							},
 							route: { projectSlug: "intake" },
 						},

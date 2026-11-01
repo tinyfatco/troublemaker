@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { MetaContactExporter } from "../src/meta-contact.mjs";
+import { LoopGateway } from "../src/loop.mjs";
 import { PhoneGateway, verifySendlyWebhook } from "../src/phone.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { HostStore } from "../src/store.mjs";
@@ -694,7 +695,7 @@ test("new config input preempts an optional Luna nudge before an exact switch", 
 		assert.equal(nudge.status, "completed");
 		assert.equal(nudge.providerStatus, "skipped");
 		assert.equal(nudge.lastError, "config_nudge_preempted");
-		assert.equal(state.store.getPhoneApiSession(nudge.threadTarget).selectedModel, "example-beta");
+		assert.equal(state.store.getPhoneApiSession(nudge.sessionThreadTarget).selectedModel, "example-beta");
 	} finally {
 		state.close();
 	}
@@ -826,6 +827,273 @@ test("a model switch starts a new chat-history thread with no system prompt", as
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-alpha-chat").mode, "chat");
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-alpha-chat").isModeCommand, 1);
 		assert.equal(state.store.getPhoneApiTurn("phone-api:provider-alpha-text").modelGeneration, 3);
+	} finally {
+		state.close();
+	}
+});
+
+test("Loop iMessage and SMS share one direct-agent session and history, replying per edge", async () => {
+	const smsSends = [];
+	const loopSends = [];
+	const localCalls = [];
+	const state = subject(
+		async (_url, options) => {
+			smsSends.push(JSON.parse(options.body));
+			return Response.json({ id: `provider-sms-${smsSends.length}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				return modelResponse(JSON.stringify({
+					reply: "Example Beta is selected for chat.",
+					selected_model: "example-beta",
+				}), model);
+			},
+		},
+		localGateway(async (modelId, messages) => {
+			localCalls.push({ modelId, messages });
+			return `reply-${localCalls.length}`;
+		}),
+	);
+	state.config.loop = {
+		provider: "loop",
+		senderId: "example-sender-id",
+		allowedContacts: [CONTACT_NUMBER],
+		deliveryHolds: [],
+		webhookSecret: "example-loop-webhook-authorization-value",
+		apiKey: "example-loop-api-key",
+		apiBaseUrl: "https://loop.example",
+		ingress: { host: "127.0.0.1", port: 0, path: "/webhooks/loop" },
+	};
+	const loop = new LoopGateway({
+		config: state.config,
+		store: state.store,
+		router: new ContextRouter(state.config, state.store, state.routingKey),
+		routingKey: state.routingKey,
+		phoneGateway: state.gateway,
+		fetchImpl: async (_url, options) => {
+			loopSends.push(JSON.parse(options.body));
+			return Response.json({ message_id: `LOOP-OUT-${loopSends.length}` });
+		},
+	});
+	const loopInbound = (id, text) => ({
+		event: "message_inbound",
+		contact: CONTACT_NUMBER,
+		text,
+		message_type: "text",
+		message_id: id,
+		webhook_id: `webhook-${id}`,
+		sender: "example-sender-id",
+		channel: "imessage",
+	});
+	const sms = async (id, text) => {
+		const event = inbound({ id: `provider-${id}`, text });
+		event.id = `event-${id}`;
+		assert.equal(await state.gateway.acceptWebhook(event), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+	};
+	try {
+		state.gateway.stopped = false;
+		await sms("config", "/config");
+		await sms("select", "example-beta");
+		await sms("chat", "/chat");
+		await sms("first", "First message over SMS.");
+		assert.equal(localCalls.length, 1);
+		const smsCountBeforeLoop = smsSends.length;
+
+		// The same person writes over iMessage: same session, same history.
+		assert.equal(loop.acceptWebhook(loopInbound("IM-1", "Second message over iMessage.")), "phone_api_queued");
+		assert.equal(loop.acceptWebhook(loopInbound("IM-1", "Second message over iMessage.")), "duplicate");
+		await state.gateway.flushApiAgent();
+		assert.equal(localCalls.length, 2);
+		assert.equal(localCalls[1].modelId, "example-beta");
+		assert.deepEqual(localCalls[1].messages, [
+			{ role: "user", content: "First message over SMS." },
+			{ role: "assistant", content: "reply-1" },
+			{ role: "user", content: "Second message over iMessage." },
+		]);
+		// The reply went out over Loop, pinned to iMessage, and not over SMS.
+		assert.equal(smsSends.length, smsCountBeforeLoop);
+		assert.equal(loopSends.length, 1);
+		assert.equal(loopSends[0].text, "reply-2");
+		assert.equal(loopSends[0].channel, "imessage");
+		assert.equal(loopSends[0].contact, CONTACT_NUMBER);
+
+		const loopTurn = state.store.getPhoneApiTurn("phone-api:loop:IM-1");
+		const smsTurn = state.store.getPhoneApiTurn("phone-api:provider-first");
+		assert.equal(loopTurn.status, "completed");
+		assert.equal(loopTurn.providerReplyMessageId, "loop:LOOP-OUT-1");
+		assert.equal(loopTurn.sessionThreadTarget, smsTurn.sessionThreadTarget);
+		assert.equal(loopTurn.modelGeneration, smsTurn.modelGeneration);
+		assert.equal(loopTurn.contextId, smsTurn.contextId);
+		assert.equal(smsTurn.replyThreadTarget, smsTurn.sessionThreadTarget);
+		const edge = state.store.getPhoneConversation(loopTurn.replyThreadTarget);
+		assert.equal(edge.provider, "loop");
+		assert.notEqual(edge.threadTarget, smsTurn.sessionThreadTarget);
+		assert.equal(edge.contextId, smsTurn.contextId);
+		assert.equal(state.store.database.prepare("SELECT COUNT(*) AS n FROM phone_api_sessions").get().n, 1);
+
+		// Projections land in the one shared context, labelled by the edge used.
+		const outRow = state.store.getEventByProviderMessage("phone_outbound", "loop:LOOP-OUT-1");
+		const out = JSON.parse(outRow.payloadJson);
+		assert.equal(outRow.contextId, smsTurn.contextId);
+		assert.equal(out.phone.provider, "loop");
+		assert.equal(out.phone.threadTarget, edge.threadTarget);
+		assert.equal(out.sender, "Business iMessage");
+		const inRow = state.store.getEventByProviderMessage("phone", "loop:IM-1");
+		assert.equal(inRow.contextId, smsTurn.contextId);
+		assert.equal(JSON.parse(inRow.payloadJson).phone.provider, "loop");
+
+		// Loop receipts update the direct-agent turn's provider status.
+		assert.equal(loop.acceptWebhook({
+			event: "message_delivered",
+			contact: CONTACT_NUMBER,
+			message_id: "LOOP-OUT-1",
+			webhook_id: "receipt-1",
+			sender: "example-sender-id",
+			channel: "imessage",
+		}), "status");
+		assert.equal(state.store.getPhoneApiTurn("phone-api:loop:IM-1").providerStatus, "delivered");
+
+		// Back on SMS: history includes the iMessage turn; the reply goes over SMS.
+		await sms("third", "Third message over SMS.");
+		assert.deepEqual(localCalls[2].messages.map((message) => message.content), [
+			"First message over SMS.",
+			"reply-1",
+			"Second message over iMessage.",
+			"reply-2",
+			"Third message over SMS.",
+		]);
+		assert.equal(loopSends.length, 1);
+		assert.equal(smsSends.at(-1).text, "reply-3");
+	} finally {
+		state.close();
+	}
+});
+
+test("/config over Loop changes the shared session generation the next SMS turn uses", async () => {
+	const smsSends = [];
+	const loopSends = [];
+	const localCalls = [];
+	const selections = ["example-beta", "example-alpha"];
+	let advisorCalls = 0;
+	const state = subject(
+		async (_url, options) => {
+			smsSends.push(JSON.parse(options.body));
+			return Response.json({ id: `provider-sms-${smsSends.length}`, status: "queued" });
+		},
+		apiPhone(),
+		undefined,
+		{
+			async completeDirectPhone(_target, _contextId, model) {
+				advisorCalls += 1;
+				const selected = selections[Math.min(advisorCalls - 1, selections.length - 1)];
+				return modelResponse(JSON.stringify({ reply: `Selected ${selected}.`, selected_model: selected }), model);
+			},
+		},
+		localGateway(async (modelId, messages) => {
+			localCalls.push({ modelId, messages });
+			return `reply-${localCalls.length}`;
+		}),
+	);
+	state.config.loop = {
+		provider: "loop",
+		senderId: "example-sender-id",
+		allowedContacts: [CONTACT_NUMBER],
+		deliveryHolds: [],
+		webhookSecret: "example-loop-webhook-authorization-value",
+		apiKey: "example-loop-api-key",
+		apiBaseUrl: "https://loop.example",
+		ingress: { host: "127.0.0.1", port: 0, path: "/webhooks/loop" },
+	};
+	const loop = new LoopGateway({
+		config: state.config,
+		store: state.store,
+		router: new ContextRouter(state.config, state.store, state.routingKey),
+		routingKey: state.routingKey,
+		phoneGateway: state.gateway,
+		fetchImpl: async (_url, options) => {
+			loopSends.push(JSON.parse(options.body));
+			return Response.json({ message_id: `LOOP-OUT-${loopSends.length}` });
+		},
+	});
+	const viaLoop = async (id, text) => {
+		assert.equal(loop.acceptWebhook({
+			event: "message_inbound",
+			contact: CONTACT_NUMBER,
+			text,
+			message_type: "text",
+			message_id: id,
+			webhook_id: `webhook-${id}`,
+			sender: "example-sender-id",
+			channel: "imessage",
+		}), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+	};
+	const viaSms = async (id, text) => {
+		const event = inbound({ id: `provider-${id}`, text });
+		event.id = `event-${id}`;
+		assert.equal(await state.gateway.acceptWebhook(event), "phone_api_queued");
+		await state.gateway.flushApiAgent();
+	};
+	const session = () => state.store.database.prepare(`
+		SELECT COUNT(*) AS n, MAX(selected_model) AS selectedModel,
+			MAX(model_generation) AS modelGeneration, MAX(mode) AS mode
+		FROM phone_api_sessions
+	`).get();
+	try {
+		state.gateway.stopped = false;
+		await viaSms("config", "/config");
+		await viaSms("select", "example-beta");
+		await viaSms("chat", "/chat");
+		await viaSms("first", "Beta thread over SMS.");
+		const before = session();
+		assert.equal(before.selectedModel, "example-beta");
+		const smsBefore = smsSends.length;
+
+		// Reconfigure entirely over iMessage.
+		await viaLoop("IM-config", "/config");
+		assert.equal(session().mode, "config");
+		await viaLoop("IM-select", "Example Alpha");
+		const after = session();
+		assert.equal(after.n, 1);
+		assert.equal(after.selectedModel, "example-alpha");
+		assert.equal(after.modelGeneration, before.modelGeneration + 1);
+		// Loop config replies went out over Loop, pinned to iMessage; SMS got none.
+		assert.equal(smsSends.length, smsBefore);
+		assert.ok(loopSends.length >= 2);
+		assert.ok(loopSends.every((body) => body.channel === "imessage" && body.contact === CONTACT_NUMBER));
+		assert.match(loopSends.at(-1).text, /Example Alpha/);
+		const selectTurn = state.store.getPhoneApiTurn("phone-api:loop:IM-select");
+		assert.equal(selectTurn.status, "completed");
+		assert.notEqual(selectTurn.replyThreadTarget, selectTurn.sessionThreadTarget);
+
+		// The next SMS turns run in the generation Loop selected, and reply over SMS.
+		const loopCount = loopSends.length;
+		await viaSms("chat-2", "/chat");
+		await viaSms("second", "Alpha thread over SMS.");
+		const smsTurn = state.store.getPhoneApiTurn("phone-api:provider-second");
+		assert.equal(smsTurn.sessionThreadTarget, selectTurn.sessionThreadTarget);
+		assert.equal(smsTurn.replyThreadTarget, smsTurn.sessionThreadTarget);
+		assert.equal(smsTurn.modelGeneration, after.modelGeneration);
+		assert.equal(localCalls.at(-1).modelId, "example-alpha");
+		assert.deepEqual(localCalls.at(-1).messages, [{ role: "user", content: "Alpha thread over SMS." }]);
+		assert.equal(loopSends.length, loopCount);
+		assert.equal(smsSends.at(-1).text, `reply-${localCalls.length}`);
+	} finally {
+		state.close();
+	}
+});
+
+test("a reply transport cannot be silently replaced", () => {
+	const state = subject(undefined, apiPhone());
+	try {
+		const first = { sendDirect: async () => ({}) };
+		state.gateway.registerReplyTransport("loop", first);
+		state.gateway.registerReplyTransport("loop", first);
+		assert.throws(() => state.gateway.registerReplyTransport("loop", { sendDirect: async () => ({}) }), /already registered/);
+		assert.throws(() => state.gateway.registerReplyTransport("sendly", first), /canonical provider/);
 	} finally {
 		state.close();
 	}

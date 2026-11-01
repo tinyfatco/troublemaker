@@ -781,6 +781,56 @@ function phoneApiAgentConfig(raw, environment) {
 	};
 }
 
+function loopConfig(raw, environment) {
+	if (raw === undefined) return undefined;
+	const loop = object(raw, "loop");
+	const ingress = object(loop.ingress ?? {}, "loop.ingress");
+	const rawAllowed = loop.allowedContacts;
+	if (!Array.isArray(rawAllowed) || rawAllowed.length < 1 || rawAllowed.length > 64) {
+		throw new Error("loop.allowedContacts must contain from 1 to 64 exact phone numbers");
+	}
+	const allowedContacts = rawAllowed.map((value, index) =>
+		normalizePhoneAddress(value, `loop.allowedContacts[${index}]`));
+	if (new Set(allowedContacts).size !== allowedContacts.length) {
+		throw new Error("loop.allowedContacts cannot repeat a contact");
+	}
+	const rawDeliveryHolds = loop.deliveryHolds ?? [];
+	if (!Array.isArray(rawDeliveryHolds) || rawDeliveryHolds.length > 256) {
+		throw new Error("loop.deliveryHolds must be an array of at most 256 exact contexts");
+	}
+	const deliveryHolds = rawDeliveryHolds.map((value, index) => {
+		const contextId = text(value, `loop.deliveryHolds[${index}]`);
+		if (contextId.length > 256 || /[\u0000-\u001f\u007f]/u.test(contextId) || !contextId.includes(":")) {
+			throw new Error(`loop.deliveryHolds[${index}] must be an exact context ID`);
+		}
+		return contextId;
+	});
+	const webhookSecret = envSecret(loop.webhookSecretEnv, "loop.webhookSecretEnv", environment);
+	if (webhookSecret.length < 24) {
+		throw new Error("loop.webhookSecretEnv must contain at least 24 characters");
+	}
+	const senderId = loop.senderId === undefined ? undefined : text(loop.senderId, "loop.senderId");
+	if (senderId !== undefined && !/^[A-Za-z0-9@._+-]{1,128}$/.test(senderId)) {
+		throw new Error("loop.senderId must be a bounded sender name ID");
+	}
+	const path = ingress.path === undefined ? "/webhooks/loop" : text(ingress.path, "loop.ingress.path");
+	if (!/^\/[a-z0-9/_-]+$/i.test(path)) throw new Error("loop.ingress.path must be an absolute URL path");
+	return {
+		provider: "loop",
+		senderId,
+		allowedContacts,
+		deliveryHolds,
+		webhookSecret,
+		apiKey: envSecret(loop.apiKeyEnv, "loop.apiKeyEnv", environment),
+		apiBaseUrl: httpUrl(loop.apiBaseUrl ?? "https://a.loopmessage.com", "loop.apiBaseUrl"),
+		ingress: {
+			host: loopbackHost(ingress.host, "127.0.0.1", "loop.ingress.host"),
+			port: integer(ingress.port, 3101, "loop.ingress.port", 1024, 65535),
+			path,
+		},
+	};
+}
+
 function phoneConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const phone = object(raw, "phone");
@@ -1685,6 +1735,7 @@ export async function loadConfig(path, environment = process.env) {
 	const rocketChat = rocketChatConfig(raw.rocketChat, environment);
 	const zulip = zulipConfig(raw.zulip, environment);
 	const phone = phoneConfig(raw.phone, environment);
+	const loop = loopConfig(raw.loop, environment);
 	const metaContact = metaContactConfig(raw.metaContact, environment);
 	const webChat = webChatConfig(raw.webChat, environment);
 	const webApp = webAppConfig(raw.webApp, environment);
@@ -1751,8 +1802,26 @@ export async function loadConfig(path, environment = process.env) {
 	if (phone && !zulip) throw new Error("phone integration currently requires zulip");
 	if (metaContact && !phone) throw new Error("metaContact requires phone configuration");
 	if (webChat && !zulip) throw new Error("webChat integration currently requires zulip");
+	if (loop && !zulip) throw new Error("loop integration currently requires zulip");
+	if (loop && !phone) throw new Error("loop requires phone configuration for the canonical conversation");
 	if (!phone && knownPhonePrincipals.length > 0) {
 		throw new Error("routing.knownPhonePrincipals requires phone configuration");
+	}
+	for (const [index, contextId] of (loop?.deliveryHolds ?? []).entries()) {
+		if (!targetIds.has(contextId.split(":", 1)[0])) {
+			throw new Error(`loop.deliveryHolds[${index}] must name a context owned by a configured target`);
+		}
+	}
+	if (loop) {
+		const taken = [
+			["server.port", integer(server.port, 3099, "server.port", 1024, 65535)],
+			["phone.ingress.port", phone?.ingress?.port],
+			["webApp.port", webApp?.port],
+			["mcp.edge.port", mcp?.edge?.port],
+		];
+		for (const [label, port] of taken) {
+			if (port === loop.ingress.port) throw new Error(`loop.ingress.port must differ from ${label}`);
+		}
 	}
 	for (const [index, contextId] of (phone?.deliveryHolds ?? []).entries()) {
 		const targetId = contextId.split(":", 1)[0];
@@ -2028,6 +2097,7 @@ export async function loadConfig(path, environment = process.env) {
 		rocketChat,
 		zulip,
 		phone,
+		loop,
 		metaContact,
 		serviceMailbox: serviceMailbox ? {
 			...serviceMailbox,

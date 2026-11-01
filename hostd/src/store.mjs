@@ -506,6 +506,7 @@ export class HostStore {
 				id TEXT PRIMARY KEY,
 				provider_message_id TEXT NOT NULL UNIQUE,
 				thread_target TEXT NOT NULL,
+				reply_thread_target TEXT,
 				target_id TEXT NOT NULL,
 				context_id TEXT NOT NULL,
 				mode TEXT NOT NULL CHECK(mode IN ('config', 'chat')),
@@ -859,6 +860,7 @@ export class HostStore {
 		add("phone_api_turns", "model_generation INTEGER NOT NULL DEFAULT 1");
 		add("phone_api_turns", "is_mode_command INTEGER NOT NULL DEFAULT 0 CHECK(is_mode_command IN (0, 1))");
 		add("phone_api_turns", "is_config_nudge INTEGER NOT NULL DEFAULT 0 CHECK(is_config_nudge IN (0, 1))");
+		add("phone_api_turns", "reply_thread_target TEXT");
 		this.database.prepare(`
 			UPDATE phone_api_turns SET is_mode_command = 1
 			WHERE is_mode_command = 0 AND LOWER(TRIM(inbound_body)) = '/chat'
@@ -1167,12 +1169,12 @@ export class HostStore {
 		if (!Number.isFinite(Date.parse(observedAt))) throw new Error("relationship_observed_at_invalid");
 		let existing = this.getRelationshipFunnel(contextId);
 		if (existing) {
-			if (
-				existing.source !== source
-				|| existing.providerThreadId !== providerThreadId
-				|| existing.principalHash !== principalHash
-				|| existing.targetId !== targetId
-			) throw new Error("relationship_funnel_scope_conflict");
+			if (!this.relationshipThreadInScope(existing, {
+				source,
+				providerThreadId,
+				principalHash,
+				targetId,
+			})) throw new Error("relationship_funnel_scope_conflict");
 			if (Date.parse(observedAt) < Date.parse(existing.firstInboundAt)) {
 				this.database.prepare(`
 					UPDATE relationship_funnels SET first_inbound_at = ?, updated_at = ?
@@ -1247,13 +1249,12 @@ export class HostStore {
 		} else if (!funnel) {
 			return undefined;
 		}
-		if (
-			!funnel
-			|| funnel.source !== source
-			|| funnel.providerThreadId !== providerThreadId
-			|| funnel.principalHash !== principalHash
-			|| funnel.targetId !== targetId
-		) throw new Error("relationship_funnel_scope_conflict");
+		if (!this.relationshipThreadInScope(funnel, {
+			source,
+			providerThreadId,
+			principalHash,
+			targetId,
+		})) throw new Error("relationship_funnel_scope_conflict");
 		const digest = evidenceSha256(
 			"relationship-turn-v1",
 			contextId,
@@ -1387,13 +1388,12 @@ export class HostStore {
 			throw new Error("relationship_progress_event_scope_required");
 		}
 		const funnel = this.getRelationshipFunnel(conversation.contextId);
-		if (
-			!funnel
-			|| funnel.source !== "phone"
-			|| funnel.providerThreadId !== conversation.providerThreadId
-			|| funnel.principalHash !== conversation.principalHash
-			|| funnel.targetId !== conversation.targetId
-		) throw new Error("relationship_progress_scope_denied");
+		if (!this.relationshipThreadInScope(funnel, {
+			source: "phone",
+			providerThreadId: conversation.providerThreadId,
+			principalHash: conversation.principalHash,
+			targetId: conversation.targetId,
+		})) throw new Error("relationship_progress_scope_denied");
 		const milestones = new Set(funnel.milestones.map((entry) => entry.milestone));
 		if (normalized.milestone) {
 			const authority = milestoneAuthority(normalized.milestone);
@@ -2225,6 +2225,52 @@ export class HostStore {
 		`).get(providerThreadId);
 	}
 
+	listActivePhoneConversationsForPrincipal(principalHash, provider) {
+		return this.database.prepare(`
+			SELECT thread_target AS threadTarget, provider,
+				provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, contact_ciphertext AS contactCiphertext,
+				contact_last_four AS contactLastFour, status,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM phone_conversations
+			WHERE principal_hash = ? AND provider = ? AND status = 'active'
+			ORDER BY created_at, thread_target
+		`).all(principalHash, provider);
+	}
+
+	/**
+	 * A relationship funnel is owned by the thread that opened its context. A
+	 * different provider edge (for example Loop iMessage beside SMS) counts as
+	 * the same relationship only when the router bound both threads onto this
+	 * exact context, principal, and target.
+	 */
+	relationshipThreadInScope(funnel, { source, providerThreadId, principalHash, targetId }) {
+		if (
+			!funnel
+			|| funnel.source !== source
+			|| funnel.principalHash !== principalHash
+			|| funnel.targetId !== targetId
+		) return false;
+		if (funnel.providerThreadId === providerThreadId) return true;
+		const linked = this.getRoute(source, providerThreadId);
+		const owner = this.getRoute(source, funnel.providerThreadId);
+		// Both the linked edge and the funnel's owner route must be bound to this
+		// exact context, principal, target, and project, with participant rows.
+		return Boolean(
+			linked && owner
+			&& linked.contextId === funnel.contextId
+			&& owner.contextId === funnel.contextId
+			&& linked.principalHash === principalHash
+			&& owner.principalHash === principalHash
+			&& linked.targetId === targetId
+			&& owner.targetId === targetId
+			&& linked.projectSlug === owner.projectSlug
+			&& this.hasRouteParticipant(source, providerThreadId, principalHash)
+			&& this.hasRouteParticipant(source, funnel.providerThreadId, principalHash),
+		);
+	}
+
 	upsertPhoneConversation({
 		threadTarget,
 		provider,
@@ -2324,7 +2370,9 @@ export class HostStore {
 	getPhoneApiTurn(id) {
 		return this.database.prepare(`
 			SELECT id, provider_message_id AS providerMessageId,
-				thread_target AS threadTarget, target_id AS targetId, context_id AS contextId,
+				thread_target AS sessionThreadTarget,
+				COALESCE(reply_thread_target, thread_target) AS replyThreadTarget,
+				target_id AS targetId, context_id AS contextId,
 				mode, is_mode_command AS isModeCommand,
 				is_config_nudge AS isConfigNudge,
 				model, model_generation AS modelGeneration, inbound_body AS inboundBody,
@@ -2337,10 +2385,35 @@ export class HostStore {
 		`).get(id);
 	}
 
+	phoneApiReplyEdge(conversation, replyThreadTarget) {
+		if (replyThreadTarget === undefined || replyThreadTarget === conversation.threadTarget) {
+			return conversation;
+		}
+		const edge = this.getPhoneConversation(replyThreadTarget);
+		const route = edge && this.getRoute("phone", edge.providerThreadId);
+		if (
+			!edge
+			|| edge.status !== "active"
+			|| edge.provider === conversation.provider
+			|| edge.principalHash !== conversation.principalHash
+			|| edge.targetId !== conversation.targetId
+			|| edge.contextId !== conversation.contextId
+			// The edge must be router-bound to this person in this context, not
+			// merely a phone_conversations row that claims to be.
+			|| !route
+			|| route.principalHash !== edge.principalHash
+			|| route.targetId !== edge.targetId
+			|| route.contextId !== edge.contextId
+			|| !this.hasRouteParticipant("phone", edge.providerThreadId, edge.principalHash)
+		) throw new Error("phone API reply edge crossed conversation scope");
+		return edge;
+	}
+
 	queuePhoneApiTurn({
 		id,
 		providerMessageId,
 		threadTarget,
+		replyThreadTarget,
 		modeCommand,
 		inboundBody,
 		defaultModel,
@@ -2372,6 +2445,10 @@ export class HostStore {
 			if (!conversation || conversation.status !== "active") {
 				throw new Error("phone API conversation is unavailable");
 			}
+			// The canonical conversation owns the session and model history. A
+			// distinct reply edge (Loop iMessage beside SMS) only carries this
+			// turn's transport, and must be the same person in the same context.
+			const replyEdge = this.phoneApiReplyEdge(conversation, replyThreadTarget);
 			this.database.prepare(`
 				INSERT INTO phone_api_sessions(
 					thread_target, mode, selected_model, model_generation,
@@ -2392,15 +2469,17 @@ export class HostStore {
 			const queuedModel = session.mode === "chat" ? session.selectedModel : null;
 			const inserted = this.database.prepare(`
 				INSERT INTO phone_api_turns(
-					id, provider_message_id, thread_target, target_id, context_id,
+					id, provider_message_id, thread_target, reply_thread_target,
+					target_id, context_id,
 					mode, is_mode_command, model, model_generation,
 					inbound_body, status, created_at, updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
 				ON CONFLICT(provider_message_id) DO NOTHING
 			`).run(
 				id,
 				providerMessageId,
 				threadTarget,
+				replyEdge === conversation ? null : replyEdge.threadTarget,
 				conversation.targetId,
 				conversation.contextId,
 				session.mode,
@@ -2415,7 +2494,7 @@ export class HostStore {
 				if (
 					projectionEvent.source !== "phone"
 					|| projectionEvent.providerMessageId !== providerMessageId
-					|| projectionEvent.providerThreadId !== conversation.providerThreadId
+					|| projectionEvent.providerThreadId !== replyEdge.providerThreadId
 					|| projectionEvent.principalHash !== conversation.principalHash
 					|| projectionEvent.targetId !== conversation.targetId
 					|| projectionEvent.contextId !== conversation.contextId
@@ -2466,7 +2545,9 @@ export class HostStore {
 			if (claimed.changes !== 1) throw new Error("phone API turn claim conflicted");
 			const turn = this.database.prepare(`
 				SELECT turn.id, turn.provider_message_id AS providerMessageId,
-					turn.thread_target AS threadTarget, turn.mode,
+					turn.thread_target AS sessionThreadTarget,
+					COALESCE(turn.reply_thread_target, turn.thread_target) AS replyThreadTarget,
+					turn.mode,
 					turn.is_mode_command AS isModeCommand,
 					turn.is_config_nudge AS isConfigNudge, turn.model,
 					turn.model_generation AS modelGeneration,
@@ -2534,7 +2615,7 @@ export class HostStore {
 						END,
 						selected_model = ?, generation = generation + 1, updated_at = ?
 					WHERE thread_target = ?
-				`).run(selectedModel, selectedModel, timestamp, turn.threadTarget);
+				`).run(selectedModel, selectedModel, timestamp, turn.sessionThreadTarget);
 			}
 			this.database.exec("COMMIT");
 			return this.getPhoneApiTurn(id);
@@ -2562,7 +2643,8 @@ export class HostStore {
 			`).run(future(leaseSeconds), timestamp, row.id);
 			if (updated.changes !== 1) throw new Error("phone API send claim conflicted");
 			const result = this.database.prepare(`
-				SELECT turn.id, turn.thread_target AS threadTarget,
+				SELECT turn.id, turn.thread_target AS sessionThreadTarget,
+					conversation.thread_target AS replyThreadTarget,
 					turn.reply_body AS replyBody, turn.status, turn.mode,
 					turn.is_mode_command AS isModeCommand,
 					turn.is_config_nudge AS isConfigNudge, turn.model,
@@ -2575,7 +2657,7 @@ export class HostStore {
 					conversation.status AS conversationStatus
 				FROM phone_api_turns AS turn
 				INNER JOIN phone_conversations AS conversation
-					ON conversation.thread_target = turn.thread_target
+					ON conversation.thread_target = COALESCE(turn.reply_thread_target, turn.thread_target)
 					AND conversation.target_id = turn.target_id
 					AND conversation.context_id = turn.context_id
 				WHERE turn.id = ?
@@ -2624,7 +2706,7 @@ export class HostStore {
 			if (updated.changes !== 1) throw new Error("phone API send completion conflicted");
 			const turn = this.getPhoneApiTurn(id);
 			if (projectionEvent) {
-				const conversation = this.getPhoneConversation(turn.threadTarget);
+				const conversation = this.getPhoneConversation(turn.replyThreadTarget);
 				if (
 					!conversation
 					|| projectionEvent.source !== "phone_outbound"
@@ -2639,15 +2721,17 @@ export class HostStore {
 			if (turn.isModeCommand && turn.mode === "config") {
 				this.database.prepare(`
 					INSERT INTO phone_api_turns(
-						id, provider_message_id, thread_target, target_id, context_id,
+						id, provider_message_id, thread_target, reply_thread_target,
+						target_id, context_id,
 						mode, is_config_nudge, model, model_generation,
 						inbound_body, status, created_at, updated_at
-					) VALUES (?, ?, ?, ?, ?, 'config', 1, NULL, ?, 'config_nudge', 'queued', ?, ?)
+					) VALUES (?, ?, ?, ?, ?, ?, 'config', 1, NULL, ?, 'config_nudge', 'queued', ?, ?)
 					ON CONFLICT(provider_message_id) DO NOTHING
 				`).run(
 					`${turn.id}:config-nudge`,
 					`${turn.providerMessageId}:config-nudge`,
-					turn.threadTarget,
+					turn.sessionThreadTarget,
+					turn.replyThreadTarget === turn.sessionThreadTarget ? null : turn.replyThreadTarget,
 					turn.targetId,
 					turn.contextId,
 					turn.modelGeneration,
@@ -4981,7 +5065,9 @@ export class HostStore {
 					? ["body", "id"]
 					: ["body", "id", "timestamp"])
 			|| JSON.stringify(Object.keys(payload.phone ?? {}).sort())
-				!== JSON.stringify(["displayName", "threadTarget"])
+				!== JSON.stringify(payload.phone?.provider === "loop"
+					? ["displayName", "provider", "threadTarget"]
+					: ["displayName", "threadTarget"])
 			|| JSON.stringify(Object.keys(payload.route ?? {}).sort()) !== JSON.stringify(["projectSlug"])
 		) {
 			throw new Error("phone projection payload is invalid");

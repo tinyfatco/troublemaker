@@ -118,11 +118,14 @@ function statusFor(type, message) {
 	return "rejected";
 }
 
-function phoneProjectionEvent(conversation, { direction, providerMessageId, text, timestamp }) {
+export function phoneProjectionEvent(conversation, { direction, providerMessageId, text, timestamp }) {
 	if (!["inbound", "outbound"].includes(direction)) {
 		throw new Error("phone projection direction is invalid");
 	}
 	const source = direction === "inbound" ? "phone" : "phone_outbound";
+	const imessage = conversation.provider === "loop";
+	const business = imessage ? "Business iMessage" : "Business SMS";
+	const person = `${imessage ? "iMessage" : "Phone"} ending ${conversation.contactLastFour}`;
 	return {
 		id: `${source}:${providerMessageId}`,
 		source,
@@ -133,20 +136,17 @@ function phoneProjectionEvent(conversation, { direction, providerMessageId, text
 		contextId: conversation.contextId,
 		payload: {
 			direction,
-			sender: direction === "inbound"
-				? `Phone ending ${conversation.contactLastFour}`
-				: "Business SMS",
-			recipient: direction === "inbound"
-				? "Business SMS"
-				: `Phone ending ${conversation.contactLastFour}`,
+			sender: direction === "inbound" ? person : business,
+			recipient: direction === "inbound" ? business : person,
 			message: {
 				id: providerMessageId,
 				body: text,
 				...(timestamp ? { timestamp } : {}),
 			},
 			phone: {
+				...(imessage ? { provider: "loop" } : {}),
 				threadTarget: conversation.threadTarget,
-				displayName: `SMS •••• ${conversation.contactLastFour}`,
+				displayName: `${imessage ? "iMessage" : "SMS"} •••• ${conversation.contactLastFour}`,
 			},
 			route: { projectSlug: "intake" },
 		},
@@ -549,10 +549,62 @@ export class PhoneGateway {
 		}
 	}
 
+	isApiAgentFeatureSender(contactAddress) {
+		return Boolean(this.apiAgent && this.config.phone.apiAgent.featureSenders.includes(contactAddress));
+	}
+
+	/**
+	 * Queue a direct-neuron turn on the canonical conversation. The canonical
+	 * thread owns the session, mode, model generation, and history. When the
+	 * person wrote over another transport edge (Loop iMessage), that edge is
+	 * kept as this turn's reply transport.
+	 */
+	queueApiAgentInbound({ conversation, replyConversation = conversation, providerMessageId, text, timestamp }) {
+		if (conversation.optedOut || this.store.isPhoneOptedOut(conversation.principalHash)) {
+			return "ignored:opted_out";
+		}
+		this.cancelConfigNudge(conversation.threadTarget);
+		const command = text.trim().toLowerCase();
+		const modeCommand = command === "/config"
+			? "config"
+			: command === "/chat"
+				? "chat"
+				: undefined;
+		const queued = this.store.queuePhoneApiTurn({
+			id: `phone-api:${providerMessageId}`,
+			providerMessageId,
+			threadTarget: conversation.threadTarget,
+			replyThreadTarget: replyConversation.threadTarget,
+			modeCommand,
+			inboundBody: text,
+			defaultModel: this.config.phone.apiAgent.defaultModel,
+			projectionEvent: phoneProjectionEvent(replyConversation, {
+				direction: "inbound",
+				providerMessageId,
+				text,
+				timestamp,
+			}),
+		});
+		if (queued.created) this.controlNotifier?.wake();
+		if (!this.stopped) this.requestApiAgentFlush();
+		return "phone_api_queued";
+	}
+
+	/** Register another transport (for example Loop iMessage) for reply edges. */
+	registerReplyTransport(provider, transport) {
+		if (provider === this.config.phone.provider) throw new Error("reply transport cannot replace the canonical provider");
+		this.replyTransports ??= new Map();
+		const existing = this.replyTransports.get(provider);
+		if (existing && existing !== transport) {
+			throw new Error(`reply transport for ${provider} is already registered`);
+		}
+		this.replyTransports.set(provider, transport);
+	}
+
 	cancelConfigNudge(threadTarget) {
 		this.store.skipQueuedPhoneApiConfigNudges(threadTarget);
 		if (this.currentApiAgentTurn?.isConfigNudge
-			&& this.currentApiAgentTurn.threadTarget === threadTarget) {
+			&& this.currentApiAgentTurn.sessionThreadTarget === threadTarget) {
 			this.currentApiAgentController?.abort();
 		}
 	}
@@ -623,11 +675,13 @@ export class PhoneGateway {
 			if (delivery) {
 				didWork = true;
 				try {
-					const receipt = await this.sendDirect(delivery, delivery.replyBody);
+					// Transport is always the reply edge; history stays on the session thread.
+					const replyEdge = { ...delivery, threadTarget: delivery.replyThreadTarget };
+					const receipt = await this.sendDirect(replyEdge, delivery.replyBody);
 					const completed = this.store.completePhoneApiSend(delivery.id, {
 						providerMessageId: receipt.providerMessageId,
 						providerStatus: receipt.status,
-						projectionEvent: phoneProjectionEvent(delivery, {
+						projectionEvent: phoneProjectionEvent(replyEdge, {
 							direction: "outbound",
 							providerMessageId: receipt.providerMessageId,
 							text: delivery.replyBody,
@@ -743,35 +797,14 @@ export class PhoneGateway {
 		}
 		if (apiAgentFeatureEnabled) {
 			const conversation = this.store.upsertPhoneConversation(this.prepareConversation(from));
-			if (conversation.optedOut) {
-				this.store.markSeen("phone-webhook", providerEventId, "ignored:opted_out");
-				return "ignored:opted_out";
-			}
-			this.cancelConfigNudge(conversation.threadTarget);
-			const command = text.trim().toLowerCase();
-			const modeCommand = command === "/config"
-				? "config"
-				: command === "/chat"
-					? "chat"
-					: undefined;
-			const queued = this.store.queuePhoneApiTurn({
-				id: `phone-api:${providerMessageId}`,
+			const disposition = this.queueApiAgentInbound({
+				conversation,
 				providerMessageId,
-				threadTarget: conversation.threadTarget,
-				modeCommand,
-				inboundBody: text,
-				defaultModel: this.config.phone.apiAgent.defaultModel,
-				projectionEvent: phoneProjectionEvent(conversation, {
-					direction: "inbound",
-					providerMessageId,
-					text,
-					timestamp: sendlyTimestamp(payload, message),
-				}),
+				text,
+				timestamp: sendlyTimestamp(payload, message),
 			});
-			this.store.markSeen("phone-webhook", providerEventId, "phone_api_queued");
-			if (queued.created) this.controlNotifier?.wake();
-			if (!this.stopped) this.requestApiAgentFlush();
-			return "phone_api_queued";
+			this.store.markSeen("phone-webhook", providerEventId, disposition);
+			return disposition;
 		}
 
 		let attributionResolution;
@@ -890,6 +923,11 @@ export class PhoneGateway {
 	}
 
 	async sendDirect(conversation, text) {
+		if (conversation.provider !== this.config.phone.provider) {
+			const transport = this.replyTransports?.get(conversation.provider);
+			if (!transport) throw new Error("conversation belongs to a different phone provider");
+			return transport.sendDirect(conversation, text);
+		}
 		if (conversation.status !== "active") throw new Error("phone conversation is not active");
 		if (this.store.isPhoneOptedOut(conversation.principalHash)) {
 			throw new Error("phone recipient has opted out");

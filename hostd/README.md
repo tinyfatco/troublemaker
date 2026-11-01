@@ -770,6 +770,55 @@ protected host configuration. A feature sender may use only this one API-agent
 conversation; the mode commands do not select another phone number, agent,
 runtime, URL, credential, or Hostd target.
 
+## Loop iMessage sender
+
+An optional `loop` block adds LoopMessage as an iMessage transport for the
+existing phone lane, and requires the `phone` block. One person has one
+conversation. Loop keeps its own provider thread and `phone-*` reply target,
+but its route joins the person's single active SMS conversation context for
+the same phone principal and configured SMS provider. If there is no such SMS
+conversation, more than one, or any principal, target, or context mismatch,
+Loop inbound is quarantined rather than given a new context. Inbound text
+becomes an ordinary `phone` event in that shared context. Replies use the
+existing `/v1/outbound/phone` path, which sends over the transport of the
+`thread_target` being answered. Zulip projections are labelled iMessage.
+
+For `phone.apiAgent.featureSenders`, Loop inbound enters the same direct phone
+agent session as SMS. The canonical SMS conversation owns the session, mode,
+model generation, and history. Each turn records the edge it arrived on as its
+reply transport, so the agent answers an iMessage over Loop (pinned to
+`channel: "imessage"`) and an SMS over SMS from one shared history.
+
+Loop authenticates webhooks with the Authorization header value configured
+in its dashboard. Hostd compares that value, raw or as a Bearer token, in
+constant time. It dedupes on `webhook_id` and acknowledges quickly. Receipts
+(`message_scheduled`, `message_sent`, `message_delivered`, `message_failed`)
+only update outbox status. They carry Hostd's own outbound text and never wake
+the agent. Only direct, text-only `message_inbound` events with
+`channel: "imessage"`, an exact `allowedContacts` number, and, when `senderId`
+is configured, an exactly matching `sender` are queued. SMS, RCS, or fallback channels, groups, any non-empty or
+malformed `attachments`, audio, email contacts, missing or other senders, and
+unknown events are recorded and dropped. Group, read-receipt, fallback,
+media, and typing semantics are not supported. STOP and
+START share the phone opt-out state. Sends refuse any number outside the
+allowlist.
+
+The ingress listener is loopback-only. Expose it through the same protected
+edge as other webhooks, and keep the real allowlist, sender ID, and secrets
+only in protected host configuration.
+
+```json
+{
+  "loop": {
+    "senderId": "example-sender-id",
+    "allowedContacts": ["+15555550123"],
+    "webhookSecretEnv": "LOOP_WEBHOOK_AUTHORIZATION",
+    "apiKeyEnv": "LOOP_API_KEY",
+    "ingress": { "host": "127.0.0.1", "port": 3101, "path": "/webhooks/loop" }
+  }
+}
+```
+
 ## Website chat relay
 
 An optional `webChat` relay connects a public website chat to the same private

@@ -17,6 +17,15 @@ export class RelationshipContextMismatchError extends Error {
 	}
 }
 
+export class LinkedPhoneContextError extends Error {
+	constructor(reason) {
+		super(`linked phone edge has no single canonical conversation (${reason})`);
+		this.name = "LinkedPhoneContextError";
+		this.code = "linked_phone_context_unavailable";
+		this.reason = reason;
+	}
+}
+
 export class ContextRouter {
 	constructor(config, store, routingKey) {
 		this.config = config;
@@ -148,6 +157,57 @@ export class ContextRouter {
 			providerThreadId,
 			...scope,
 		});
+	}
+
+	/**
+	 * Bind a secondary phone transport edge (such as Loop iMessage) onto the one
+	 * active canonical conversation for the same phone principal. The edge keeps
+	 * its own provider thread, but shares the canonical route's context, so the
+	 * person has one history across transports. Fails closed on zero or several
+	 * canonical candidates, or on any principal/target/context mismatch.
+	 */
+	resolveLinkedPhone({ providerThreadId, contactAddress, canonicalProvider, label }) {
+		const scope = this.ensurePhoneScope(contactAddress, { providerThreadId, label });
+		const candidates = this.store.listActivePhoneConversationsForPrincipal(
+			scope.principalHash,
+			canonicalProvider,
+		);
+		if (candidates.length === 0) throw new LinkedPhoneContextError("none");
+		if (candidates.length > 1) throw new LinkedPhoneContextError("ambiguous");
+		const [canonical] = candidates;
+		const canonicalRoute = this.store.getRoute("phone", canonical.providerThreadId);
+		if (
+			!canonicalRoute
+			|| canonical.providerThreadId === providerThreadId
+			|| canonicalRoute.principalHash !== scope.principalHash
+			|| canonical.principalHash !== scope.principalHash
+			|| canonicalRoute.targetId !== scope.targetId
+			|| canonical.targetId !== scope.targetId
+			|| canonicalRoute.contextId !== canonical.contextId
+			|| !this.store.hasRouteParticipant("phone", canonical.providerThreadId, scope.principalHash)
+		) throw new LinkedPhoneContextError("mismatch");
+		const linked = {
+			principalHash: scope.principalHash,
+			targetId: canonicalRoute.targetId,
+			contextId: canonicalRoute.contextId,
+			projectSlug: canonicalRoute.projectSlug,
+		};
+		const existing = this.store.getRoute("phone", providerThreadId);
+		if (existing) {
+			if (!this.store.hasRouteParticipant("phone", providerThreadId, scope.principalHash)) {
+				throw new RouteParticipantDeniedError("phone", providerThreadId);
+			}
+			if (
+				existing.principalHash !== linked.principalHash
+				|| existing.projectSlug !== linked.projectSlug
+				|| existing.targetId !== linked.targetId
+				|| existing.contextId !== linked.contextId
+			) throw new RelationshipContextMismatchError("phone");
+			this.store.touchRoute("phone", providerThreadId);
+			this.store.touchRouteParticipant("phone", providerThreadId, scope.principalHash);
+			return existing;
+		}
+		return this.store.bindRoute({ source: "phone", providerThreadId, ...linked });
 	}
 
 	resolve({ source, threadId, sender, project, label, targetId }) {

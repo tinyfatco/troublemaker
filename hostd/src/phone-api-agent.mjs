@@ -243,7 +243,7 @@ export class PhoneApiAgent {
 		const policy = this.config.phone.apiAgent;
 		const target = this.config.targetsById.get(turn.targetId);
 		if (!target) throw new Error("phone API turn selected an unavailable agent target");
-		const session = this.store.getPhoneApiSession(turn.threadTarget);
+		const session = this.store.getPhoneApiSession(turn.sessionThreadTarget);
 		if (!session) throw new Error("phone API session is missing");
 
 		const cached = this.readCachedCatalog();
@@ -280,7 +280,7 @@ export class PhoneApiAgent {
 				throw new Error("phone API turn selected a model outside the authenticated catalog");
 			}
 			const history = this.store.listPhoneApiHistory(
-				turn.threadTarget,
+				turn.sessionThreadTarget,
 				turn.modelGeneration,
 				policy.maximumHistoryMessages,
 			);
