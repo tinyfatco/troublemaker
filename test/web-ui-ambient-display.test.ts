@@ -47,6 +47,7 @@ assert(bareSteeredAmbient?.channel === "slack:#tinyfat", "bare steered ambient c
 assert(bareSteeredAmbient?.userName === "system", "bare steered ambient context is never labeled as a user");
 assert(getAmbientDisplayLines(bareSteeredAmbient?.strippedText || "")[0] === "Casey: please answer inside this thread", "bare steered ambient rendering retains only the posted message");
 assert(formatChannel(bareSteeredAmbient?.channel || "").type === "slack", "prefixed Slack ambient channels keep Slack presentation");
+assert(formatChannel("web-app:intake").label === "web" && formatChannel("web-app:intake").type === "web", "web app channels read as plain web");
 
 const legacyAmbient = `[AMBIENT] A conversation is happening in #tinyfat. Recent messages:
 
