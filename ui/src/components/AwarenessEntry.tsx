@@ -754,7 +754,7 @@ export const AwarenessEntryComponent = memo(function AwarenessEntryComponent({ e
                 <span className="entry-timestamp">{formatTime(entry.timestamp)}</span>
               </div>
             )}
-            <Markdown content={cleaned} imageVersion={entry.timestamp} />
+            <Markdown content={cleaned} imageVersion={entry.isStreaming ? undefined : entry.timestamp} />
           </div>,
         );
       }

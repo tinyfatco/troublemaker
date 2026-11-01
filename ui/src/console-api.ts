@@ -236,38 +236,35 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
   }
 }
 
-const chatImages = new Map<string, Promise<string | null>>();
-
-function cachedChatImage(key: string, url: string): Promise<string | null> {
-  let pending = chatImages.get(key);
-  if (!pending) {
-    pending = (async () => {
-      try {
-        const resp = await fetchWithTimeout(url, {}, 15000);
-        if (!resp.ok) return null;
-        const body = await resp.json() as { image?: unknown };
-        return typeof body.image === 'string' && /^data:image\/(png|jpeg|webp|gif);base64,/.test(body.image) ? body.image : null;
-      } catch {
-        return null;
-      }
-    })();
-    chatImages.set(key, pending);
-    // Misses are retried next time (the agent may still be writing the file).
-    void pending.then((image) => { if (!image) chatImages.delete(key); });
+async function fetchChatImage(url: string): Promise<string | null> {
+  try {
+    const resp = await fetchWithTimeout(url, {}, 15000);
+    if (!resp.ok) return null;
+    const body = await resp.json() as { image?: unknown };
+    return typeof body.image === 'string' && /^data:image\/(png|jpeg|webp|gif);base64,/.test(body.image) ? body.image : null;
+  } catch {
+    return null;
   }
-  return pending;
 }
 
-/** A WebsitePaint image Hostd still holds in memory, as a data: URL (the UI CSP allows only data: images). */
+/** A WebsitePaint image Hostd still holds in memory, as a data: URL (the UI CSP allows only data: images).
+ * Reads are reauthorized instead of retained across later logins in the same browser tab.
+ */
 export function fetchWebsitePaintImage(id: string): Promise<string | null> {
   if (!isHostdAppMode() || !/^[a-f0-9]{16}$/.test(id)) return Promise.resolve(null);
-  return cachedChatImage(`paint:${id}`, consoleAgentUrl(`/canvas/image?id=${id}`));
+  return fetchChatImage(consoleAgentUrl(`/canvas/image?id=${id}`));
 }
 
 /** An image from the agent's workspace, as a data: URL. */
-export function fetchWorkspaceImage(path: string, version = ''): Promise<string | null> {
-  // version (the message time) keeps an older message from showing a file rewritten later in this session.
-  return cachedChatImage(`workspace:${version}:${path}`, consoleAgentUrl(`/image?${new URLSearchParams({ path })}`));
+export function fetchWorkspaceImage(path: string, _version = ''): Promise<string | null> {
+  if (
+    path.length < 1
+    || path.length > 512
+    || !/^[A-Za-z0-9._ ()/-]+$/.test(path)
+    || !/\.(png|jpe?g|webp|gif)$/i.test(path)
+    || !path.split('/').every((segment) => segment.length > 0 && !segment.startsWith('.'))
+  ) return Promise.resolve(null);
+  return fetchChatImage(consoleAgentUrl(`/image?${new URLSearchParams({ path })}`));
 }
 
 export async function fetchWorkspaceStatus(): Promise<WorkspaceStatus> {

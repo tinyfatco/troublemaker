@@ -17,7 +17,10 @@ function SafeHtml({ content, className }: { content: string; className: string }
 }
 
 export function Markdown({ content, className, imageVersion }: MarkdownProps) {
-  const segments = useMemo(() => splitChatImages(content), [content]);
+  const segments = useMemo(
+    () => imageVersion ? splitChatImages(content) : [{ type: 'markdown' as const, text: content }],
+    [content, imageVersion],
+  );
   const classes = ['markdown-content', className].filter(Boolean).join(' ');
 
   if (segments.length === 1 && segments[0].type === 'markdown') {

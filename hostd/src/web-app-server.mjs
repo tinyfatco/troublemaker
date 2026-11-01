@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { connect as connectSocket } from "node:net";
@@ -6,6 +6,7 @@ import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { contextCapability, stablePrivateKey } from "./security.mjs";
 import {
+	contextWorkspacePath,
 	readComputerControlState,
 	siteDeploymentBindings,
 	writeComputerControlState,
@@ -601,10 +602,16 @@ export function paintImageId(png) {
 }
 export function rememberPaintImage(images, contextId, png) {
 	const id = paintImageId(png);
-	const key = `${contextId}:${id}`;
-	images.delete(key);
-	images.set(key, png);
-	while (images.size > PAINT_IMAGE_MAXIMUM_ENTRIES) images.delete(images.keys().next().value);
+	let contextImages = images.get(contextId);
+	if (!contextImages) {
+		contextImages = new Map();
+		images.set(contextId, contextImages);
+	}
+	contextImages.delete(id);
+	contextImages.set(id, png);
+	while (contextImages.size > PAINT_IMAGE_MAXIMUM_ENTRIES) {
+		contextImages.delete(contextImages.keys().next().value);
+	}
 	return id;
 }
 function afterImageRequest(siteSlug, imageId) {
@@ -647,6 +654,61 @@ export function markupMessage(prompt, siteSlug, markup, imageId) {
 		+ `${afterImageRequest(siteSlug, imageId)}\n\n`
 		+ "```json\n" + details + "\n```";
 	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;
+}
+
+function canvasTurnBlockTerminal(block) {
+	const data = block.split("\n")
+		.filter((line) => line.startsWith("data:"))
+		.map((line) => line.slice(5).trimStart())
+		.join("\n");
+	if (data === "[DONE]") return true;
+	try {
+		return ["run_complete", "error"].includes(JSON.parse(data)?.type);
+	} catch {
+		return false;
+	}
+}
+
+/** A reported runtime terminal or the clean SSE DONE marker prevents a duplicate synthetic failure. */
+export async function canvasTurnStreamCompleted(body) {
+	if (!body) return false;
+	const decoder = new TextDecoder();
+	let pending = "";
+	try {
+		for await (const chunk of body) {
+			pending += decoder.decode(chunk, { stream: true });
+			const blocks = pending.split("\n\n");
+			pending = blocks.pop() || "";
+			if (blocks.some(canvasTurnBlockTerminal)) return true;
+		}
+		pending += decoder.decode();
+		return canvasTurnBlockTerminal(pending);
+	} catch {
+		return false;
+	}
+}
+
+export async function recordInterruptedCanvasTurn(target, contextId, siteSlug) {
+	const workspace = contextWorkspacePath(target, contextId);
+	const timestamp = new Date().toISOString();
+	const message = "The agent process stopped before this WebsitePaint turn reported completion. "
+		+ "The review preview has been refreshed; check the site and chat before sending another change.";
+	const entry = {
+		type: "message",
+		id: randomBytes(8).toString("hex"),
+		timestamp,
+		message: {
+			role: "assistant",
+			content: [{ type: "text", text: `_Error: ${message}_` }],
+			stopReason: "error",
+			errorMessage: `websitepaint_turn_interrupted:${siteSlug}`,
+			timestamp: Date.parse(timestamp),
+		},
+	};
+	await appendFile(join(workspace, "awareness", "context.jsonl"), `${JSON.stringify(entry)}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+	});
 }
 
 function requestedComputerControl(body) {
@@ -738,6 +800,7 @@ export function createWebAppServer(state, {
 	fetchImpl = fetch,
 	verifier,
 	uiDirectory = DEFAULT_WEB_APP_UI_DIRECTORY,
+	recordInterruptedTurn = recordInterruptedCanvasTurn,
 } = {}) {
 	if (!state.config.webApp) throw new Error("webApp is not configured");
 	const assertionVerifier = verifier ?? new WebAppAssertionVerifier(state.config.webApp);
@@ -796,7 +859,7 @@ export function createWebAppServer(state, {
 			}
 			if (route === "canvas-image") {
 				// Served from memory only; never wakes the runtime or touches the workspace.
-				const png = paintImages.get(`${scope.route.contextId}:${url.searchParams.get("id")}`);
+				const png = paintImages.get(scope.route.contextId)?.get(url.searchParams.get("id"));
 				if (!png) throw new WebAppRequestError(404, "image_not_available");
 				json(response, 200, { image: `data:image/png;base64,${png.toString("base64")}` });
 				return;
@@ -910,9 +973,16 @@ export function createWebAppServer(state, {
 					response.off("close", abortIfIncomplete);
 					if (upstream.ok) {
 						void (async () => {
+							const completed = await canvasTurnStreamCompleted(upstream.body);
+							if (completed) return;
 							try {
-								for await (const _ of upstream.body ?? []) { /* drain */ }
-							} catch { /* turn stream closed */ }
+								await recordInterruptedTurn(scope.target, scope.route.contextId, canvasSite.slug);
+							} catch (error) {
+								console.error(
+									"troublemaker-hostd: failed to record interrupted WebsitePaint turn:",
+									error instanceof Error ? error.message : String(error),
+								);
+							}
 						})();
 						json(response, 202, { status: "started" });
 					} else {

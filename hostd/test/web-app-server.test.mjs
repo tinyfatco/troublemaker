@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { deflateSync } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -8,7 +8,15 @@ import test from "node:test";
 import WebSocket, { WebSocketServer } from "ws";
 import { contextCapability, stablePrivateKey } from "../src/security.mjs";
 import { createWebAppAssertionHeaders } from "../src/web-app-auth.mjs";
-import { CANVAS_MAXIMUM_REQUEST_BYTES, createWebAppServer, validatedPng } from "../src/web-app-server.mjs";
+import {
+	CANVAS_MAXIMUM_REQUEST_BYTES,
+	canvasTurnStreamCompleted,
+	createWebAppServer,
+	paintImageId,
+	recordInterruptedCanvasTurn,
+	rememberPaintImage,
+	validatedPng,
+} from "../src/web-app-server.mjs";
 
 const SECRET = "example-web-app-secret-at-least-32-bytes";
 const ROUTING_KEY = Buffer.alloc(32, 7);
@@ -604,10 +612,53 @@ test("does not relay active content from a runtime onto the product origin", asy
 	}
 });
 
+test("WebsitePaint retains at most 16 accepted images independently per context", () => {
+	const images = new Map();
+	const first = Buffer.from("context-a-image-0");
+	rememberPaintImage(images, "context-a", first);
+	for (let i = 1; i <= 16; i++) rememberPaintImage(images, "context-a", Buffer.from(`context-a-image-${i}`));
+	const contextB = Buffer.from("context-b-image");
+	const contextBId = rememberPaintImage(images, "context-b", contextB);
+	assert.equal(images.get("context-a").size, 16);
+	assert.equal(images.get("context-a").has(paintImageId(first)), false, "the oldest image is evicted within its context");
+	assert.equal(images.get("context-b").size, 1);
+	assert.equal(images.get("context-b").get(contextBId), contextB);
+});
+
+test("WebsitePaint recognizes reported terminals and a clean SSE DONE boundary", async () => {
+	assert.equal(await canvasTurnStreamCompleted(new Response('data: {"type":"run_complete"}\n\n').body), true);
+	assert.equal(await canvasTurnStreamCompleted(new Response('data: {"type":"error"}\n\n').body), true);
+	assert.equal(await canvasTurnStreamCompleted(new Response('data: [DONE]\n\n').body), true);
+	assert.equal(await canvasTurnStreamCompleted(new Response(
+		'data: {"type":"text_delta","delta":"unfinished"}\n\n',
+	).body), false);
+	assert.equal(await canvasTurnStreamCompleted(null), false);
+});
+
+test("WebsitePaint records a durable assistant error when an accepted turn stream breaks", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "hostd-websitepaint-interrupted-"));
+	const target = { ...TARGET, contextsDirectory: directory };
+	const workspace = join(directory, CONTEXT_ID.replace(/[^a-z0-9_.-]/gi, "_"), "workspace");
+	try {
+		await mkdir(join(workspace, "awareness"), { recursive: true });
+		await recordInterruptedCanvasTurn(target, CONTEXT_ID, SITE.siteSlug);
+		const entry = JSON.parse((await readFile(join(workspace, "awareness", "context.jsonl"), "utf8")).trim());
+		assert.equal(entry.type, "message");
+		assert.equal(entry.message.role, "assistant");
+		assert.equal(entry.message.stopReason, "error");
+		assert.equal(entry.message.errorMessage, `websitepaint_turn_interrupted:${SITE.siteSlug}`);
+		assert.match(entry.message.content[0].text, /agent process stopped/);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("WebsitePaint canvas uploads through the scoped runtime, then steers the builder turn", async () => {
 	const received = [];
 	const uploads = [];
+	const interruptedTurns = [];
 	let busy = false;
+	let interrupt = false;
 	let uploadResult = () => ({ status: 200, body: { uploaded: [`websitepaint/${SITE.siteSlug}/latest.png`] } });
 	const capability = `Bearer ${contextCapability(TARGET.inboundToken, "web-app", CONTEXT_ID)}`;
 	const runtimeServer = createServer((request, response) => {
@@ -633,13 +684,21 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 			// A long-lived turn stream: the painter must not wait for it.
 			response.writeHead(200, { "content-type": "text/event-stream" });
 			response.write('data: {"type":"text_delta","delta":"Looking"}\n\n');
+			if (interrupt) {
+				response.end();
+				return;
+			}
 			setTimeout(() => response.end("data: [DONE]\n\n"), 300);
 		});
 	});
 	const runtimePort = await listen(runtimeServer);
 	const viewer = [{ accountEmail: EMAIL, subject: SUBJECT, principalEmail: EMAIL, role: "viewer", agent: AGENT }];
 	const servers = [
-		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true })),
+		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true }), {
+			recordInterruptedTurn: async (target, contextId, siteSlug) => {
+				interruptedTurns.push({ targetId: target.id, contextId, siteSlug });
+			},
+		}),
 		createWebAppServer(state(runtimePort, viewer, { websitePaintEnabled: true })),
 		createWebAppServer(state(runtimePort)),
 		createWebAppServer(state(runtimePort, undefined, { websitePaintEnabled: true, siteDeployments: [] })),
@@ -685,6 +744,21 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		assert.match(received[0].message, /exact site example-business/);
 		assert.match(received[0].message, /deploy the review preview/);
 		assert.match(received[0].message, /Notes from the painter: a bakery in Austin$/);
+		await new Promise((resolve) => setTimeout(resolve, 350));
+		assert.equal(interruptedTurns.length, 0, "a clean DONE stream never records a false interruption");
+
+		interrupt = true;
+		const interrupted = await post(appPort, { png_base64: png.toString("base64") });
+		assert.equal(interrupted.status, 202);
+		for (let i = 0; i < 50 && interruptedTurns.length === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.deepEqual(interruptedTurns, [{
+			targetId: TARGET.id,
+			contextId: CONTEXT_ID,
+			siteSlug: SITE.siteSlug,
+		}]);
+		interrupt = false;
 
 		busy = true;
 		const queued = await post(appPort, { png_base64: png.toString("base64") });
