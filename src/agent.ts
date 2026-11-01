@@ -19,6 +19,7 @@ import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
 import { MomSettingsManager } from "./context.js";
 import { playCompactionCue } from "./compaction-cue.js";
+import { stampRunId } from "./session-run-id.js";
 import { formatDeliveryContext } from "./delivery-context.js";
 import { formatHostRelationshipSystemContext } from "./host-relationship-scope.js";
 import { formatTrustedOperatorIntentSystemContext } from "./tinyfat-operator-intent.js";
@@ -123,6 +124,8 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 		formatInstructions?: string,
 		liveEventSink?: RuntimeEventSink,
+		/** Live-feed run id; stamped on every message entry this run persists. */
+		runId?: string,
 	): Promise<RunResult>;
 	abort(): void;
 	/** Abort only an in-progress manual or automatic context compaction. */
@@ -468,10 +471,14 @@ async function createRunner(
 
 	// Defer context loading to run()
 	let sessionManager: SessionManager | null = null;
+	/** Live-feed id of the run in progress; stamped on the message entries it persists. */
+	let activeRunId: string | null = null;
+	/** Last durable entry the active run persisted; reported on run_complete. */
+	let lastRunEntryId: string | null = null;
 	const getSessionManager = () => {
 		if (!sessionManager) {
 			const t = performance.now();
-			sessionManager = SessionManager.open(contextFile, awarenessDir);
+			sessionManager = stampRunId(SessionManager.open(contextFile, awarenessDir), () => activeRunId, (entryId) => { lastRunEntryId = entryId; });
 			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
 		}
 		return sessionManager;
@@ -996,6 +1003,7 @@ async function createRunner(
 			_pendingMessages?: PendingMessage[],
 			runFormatInstructions = formatInstructions,
 			liveEventSink?: RuntimeEventSink,
+			runId?: string,
 		): Promise<RunResult> {
 			const tRun = performance.now();
 
@@ -1109,6 +1117,8 @@ async function createRunner(
 			runState.initialPromptSent = false;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = liveEventSink ?? null;
+			activeRunId = runId ?? null;
+			lastRunEntryId = null;
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
@@ -1393,11 +1403,15 @@ async function createRunner(
 			runState.queue = null;
 			runState.liveSnapshot.reset();
 			runState.liveEventSink = null;
+			const runLastEntryId = activeRunId ? lastRunEntryId : null;
+			activeRunId = null;
+			lastRunEntryId = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return {
 				stopReason: runState.stopReason,
 				errorMessage: runState.errorMessage,
+				...(runLastEntryId ? { lastEntryId: runLastEntryId } : {}),
 				...(runState.modelCredentialUnavailable
 					? { failureKind: "model_credential_unavailable" as const }
 					: {}),

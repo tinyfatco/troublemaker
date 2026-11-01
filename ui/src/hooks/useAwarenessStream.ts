@@ -11,7 +11,7 @@ import { awarenessStreamUrl, fetchAwarenessBacklog, runtimeLiveStreamUrl } from 
 import { applyRuntimeSteeringEnvelope, mergeAwarenessEntries, parseRuntimeSteeringEnvelope } from '../steeringProjection';
 import { parseContextLine, type AwarenessEntry } from '../types';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
-import { parseLiveRunEnvelope, reduceLiveRuns, type LiveRun } from '../liveRuns';
+import { dropUnsettledLiveRuns, expireLiveRuns, nextLiveRunExpiry, parseLiveRunEnvelope, reduceLiveRuns, type LiveRun } from '../liveRuns';
 
 export interface UseAwarenessStreamReturn {
   entries: AwarenessEntry[];
@@ -137,10 +137,20 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
       setEntries((prev) => applyRuntimeSteeringEnvelope(prev, steering));
     };
     // A dropped live connection replays only active runs on reconnect, so
-    // clear anything that may have completed while disconnected.
-    es.onerror = () => { setLiveRuns((prev) => (prev.length ? [] : prev)); };
+    // drop in-flight runs that may have completed while disconnected. Runs
+    // that already completed keep their settled reply until their durable
+    // successor lands or the bounded expiry below clears them.
+    es.onerror = () => { setLiveRuns(dropUnsettledLiveRuns); };
     return () => { es.close(); setLiveRuns([]); };
   }, []);
+
+  // One timer for the earliest completed-run expiry (no polling).
+  useEffect(() => {
+    const at = nextLiveRunExpiry(liveRuns);
+    if (at === null) return;
+    const timer = setTimeout(() => setLiveRuns((prev) => expireLiveRuns(prev)), Math.max(0, at - Date.now()));
+    return () => clearTimeout(timer);
+  }, [liveRuns]);
 
   useEffect(() => {
     const refreshIfVisible = () => {

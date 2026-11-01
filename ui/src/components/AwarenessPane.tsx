@@ -12,7 +12,7 @@ import { useVoiceChat } from '../hooks/useVoiceChat';
 import { buildContextWindowStatus } from '../contextWindowStatus';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import { liveFollowBehavior, nextPinnedToBottom, shouldFollowExpandingContent } from '../toolExpansion';
-import { claimOwnWebRuns, mergeLiveRuns } from '../liveRuns';
+import { hasStreamingForeignRun, mergeLiveRuns } from '../liveRuns';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
@@ -60,6 +60,7 @@ export function AwarenessPane({
     streamingEntry,
     isStreaming,
     error: chatError,
+    ownRunIds,
     sendMessage,
     abortStream,
     clearError,
@@ -103,28 +104,19 @@ export function AwarenessPane({
     [localEntries, voice.localEntries],
   );
 
-  // Runs this view started itself stream through useWebChat; only foreign
-  // runs (other channels, Paint, other tabs) come from the shared live feed.
-  const ownWebRunsRef = useRef(new Set<string>());
-  const ownWebRuns = useMemo(
-    () => claimOwnWebRuns(liveRuns, ownWebRunsRef.current, isStreaming),
-    [liveRuns, isStreaming],
-  );
-  useEffect(() => {
-    const active = new Set(liveRuns.map((run) => run.runId));
-    for (const runId of ownWebRunsRef.current) {
-      if (!active.has(runId)) ownWebRunsRef.current.delete(runId);
-    }
-  }, [liveRuns]);
-  const hasForeignLiveRun = liveRuns.some((run) => run.entry && !ownWebRuns.has(run.runId));
+  // Runs this view started itself stream through useWebChat and are matched by
+  // the exact run id their POST stream announced; every other run (other
+  // channels, Paint, other tabs, or a send whose handshake never arrived)
+  // renders from the shared live feed.
+  const hasForeignLiveRun = hasStreamingForeignRun(liveRuns, ownRunIds);
 
   const visibleEntries = useMemo(
     () => normalizeToolResults(mergeLiveRuns(
       mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries),
       liveRuns,
-      ownWebRuns,
+      ownRunIds,
     )),
-    [entries, userEntry, streamingEntry, localVisibleEntries, liveRuns, ownWebRuns],
+    [entries, userEntry, streamingEntry, localVisibleEntries, liveRuns, ownRunIds],
   );
 
   const contextWindow = useMemo(

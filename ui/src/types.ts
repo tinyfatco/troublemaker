@@ -83,6 +83,8 @@ export interface AwarenessEntry {
   isSystemAction?: boolean;
   /** Server-confirmed steering input that has not yet reached durable history. */
   steeringProjection?: SteeringProjection;
+  /** Live-feed run that persisted this durable entry (absent on older history). */
+  runId?: string;
 }
 
 /** Parse the [timestamp] [channel] [user]: text prefix from user messages */
@@ -132,6 +134,7 @@ export function parseContextLine(line: string): AwarenessEntry | null {
         content: normalizeContentBlocks(msg.content),
         model: raw.model,
         stopReason: raw.stopReason,
+        ...(typeof raw.runId === 'string' && raw.runId ? { runId: raw.runId } : {}),
       };
 
       if (msg.role === 'user' && Array.isArray(entry.content)) {

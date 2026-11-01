@@ -835,6 +835,10 @@ Keep responses concise and helpful.`;
 			emitContentBlock: (block: { type: string; [key: string]: unknown }) => {
 				if (writer) writer.send(block);
 			},
+
+			announceRun: (runId: string) => {
+				if (writer) writer.send({ type: "run", runId });
+			},
 		};
 	}
 }

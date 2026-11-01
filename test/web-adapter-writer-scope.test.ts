@@ -55,11 +55,16 @@ internals.writerScope.run({ channelId: 'web', writer: scopedWriter }, () => {
 	}, {} as any);
 
 	ctx.emitContentBlock?.({ type: 'toolCall', id: 'tool-1', name: 'read_file', arguments: { path: 'README.md' } });
+	ctx.announceRun?.('run-123');
 });
 
-assert(scopedWriter.events.length === 1, 'request-scoped writer receives structured tool events');
+assert(scopedWriter.events.length === 2, 'request-scoped writer receives structured tool events and the run handshake');
 assert(staleWriter.events.length === 0, 'stale channel writer does not receive scoped tool events');
 assert(scopedWriter.events[0]?.type === 'toolCall', 'structured tool event is forwarded unchanged');
+assert(
+	scopedWriter.events[1]?.type === 'run' && scopedWriter.events[1]?.runId === 'run-123',
+	'run handshake carries the exact live run id on the request\'s own stream',
+);
 
 const errorAdapter = new WebAdapter({ workingDir: process.cwd() });
 const errorWriter = fakeWriter();
