@@ -520,15 +520,19 @@ only a project that already belongs to that principal.
 `webApp.websitePaintEnabled` (default `false`) turns on WebsitePaint. When it is
 on, the session reports `capabilities.paint` for non-viewer accounts whose
 project has a preview site, and `POST /v1/app/canvas?project=` accepts
-`{png_base64, site_slug, prompt?}`: canonical base64 of a structurally valid PNG
-(IHDR first, at most 4096 px per side and 4 Mi pixels, valid CRCs, IDAT,
-terminal IEND) up to 4 MiB, an exact site slug from the authorized session,
-and an optional 4 KiB prompt. Hostd uploads it through the scoped runtime's
-own `/api/v2/agents/current/upload` as
-`websitepaint/<site-slug>/latest.png` (replaced each time), then steers the
-project's web-app turn to build and deploy that exact review preview. It returns `202`
-without holding the turn stream; a busy runtime returns `409`. Otherwise the
-route returns `404 paint_not_available`.
+`{png_base64, site_slug, prompt?, markup?}`: canonical base64 of a structurally
+valid PNG (IHDR first, at most 4096 px per side and 4 Mi pixels, valid CRCs,
+IDAT, terminal IEND) up to 4 MiB, an exact site slug from the authorized
+session, and an optional 4 KiB prompt. Without `markup`, Hostd uploads through
+the scoped runtime's own `/api/v2/agents/current/upload` as
+`websitepaint/<site-slug>/latest.png` (replaced each time). Optional draw-on-site
+`markup` is a strictly bounded page URL, viewport, scroll/origin and element
+summary. Its HTTPS origin must exactly equal that authorized site's review
+preview; Hostd uploads the transparent marks as
+`websitepaint/<site-slug>/markup.png` and labels page text as untrusted content
+in the turn. Both modes then steer the project to change and deploy only that
+exact review preview. The route returns `202` without holding the turn stream;
+a busy runtime returns `409`. Otherwise it returns `404 paint_not_available`.
 
 Every `accountBindings` entry names one durable agent for one verified product
 account. The mailbox local part must match `agent.slug`; production can use the
