@@ -101,3 +101,30 @@ console.log('web UI steering order tests passed');
 	assert.equal(offsets.get('steer-1'), 2, 'the first view keeps its own offset');
 }
 console.log('web-ui-steering-order: isolation ok');
+
+// Two mounted views: clearing/reconnecting one never moves or erases the other.
+{
+	const viewA = new Map<string, number>();
+	const viewB = new Map<string, number>();
+	const projected = applyRuntimeSteeringEnvelope([turnUser], accepted);
+	const shortStream: AwarenessEntry = { ...streaming, content: streaming.content!.slice(0, 1) };
+
+	const aBefore = mergeOptimisticEntries(projected, optimisticUser, streaming, [], viewA).map((e) => e.id);
+	const bBefore = mergeOptimisticEntries(projected, optimisticUser, shortStream, [], viewB).map((e) => e.id);
+	assert.equal(viewA.get('steer-1'), 2);
+	assert.equal(viewB.get('steer-1'), 1);
+
+	// View A reconnects: its backlog no longer carries the projection, so its map prunes.
+	mergeOptimisticEntries([turnUser], null, null, [], viewA);
+	assert.equal(viewA.size, 0, 'cleared view drops its own offsets');
+
+	// View B is untouched and renders exactly as before.
+	assert.equal(viewB.get('steer-1'), 1, 'other view keeps its offset');
+	assert.deepEqual(
+		mergeOptimisticEntries(projected, optimisticUser, shortStream, [], viewB).map((e) => e.id),
+		bBefore,
+		'other view order unchanged after the first view clears',
+	);
+	assert.notDeepEqual(aBefore, bBefore, 'views position steering independently');
+}
+console.log('web-ui-steering-order: two-view isolation ok');
