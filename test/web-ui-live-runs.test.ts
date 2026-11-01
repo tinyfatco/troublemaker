@@ -2,16 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
 	dropUnsettledLiveRuns,
-	expireLiveRuns,
 	hasStreamingForeignRun,
 	LIVE_RUN_SETTLE_TIMEOUT_MS,
 	mergeLiveRuns,
-	nextLiveRunExpiry,
+	LIVE_RUN_MAX_SUCCESSOR_REFETCHES,
+	nextLiveRunSettleAt,
 	parseLiveRunEnvelope,
 	pauseLiveRunSettleClocks,
 	pruneSettledLiveRuns,
 	reduceLiveRuns,
 	resumeLiveRunSettleClocks,
+	settleLiveRuns,
 	type LiveRun,
 } from '../ui/src/liveRuns.ts';
 import { parseContextLine, type AwarenessEntry } from '../ui/src/types.ts';
@@ -123,21 +124,45 @@ test('completion before the durable write keeps the settled reply until its exac
 	assert.deepEqual(ids(view), ['u1', 'a-tool', 'a-final']);
 });
 
-test('settled replies are bounded: expiry, reset and disconnect', () => {
+test('a settled reply with a known successor is never dropped for being slow; lapses refetch instead', () => {
 	let runs = step([], live('done', 'zulip', snapshot('settled')));
-	runs = step(runs, live('done', 'zulip', complete('never-lands')), T0);
+	runs = step(runs, live('done', 'zulip', complete('a-final')), T0);
 	runs = step(runs, live('running', 'slack', snapshot('in flight')));
-	assert.equal(nextLiveRunExpiry(runs), T0 + LIVE_RUN_SETTLE_TIMEOUT_MS);
-	assert.deepEqual(expireLiveRuns(runs, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS - 1).map((r) => r.runId), ['done', 'running']);
-	assert.deepEqual(expireLiveRuns(runs, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS).map((r) => r.runId), ['running'], 'a successor that never lands cannot pin a ghost reply');
+	assert.equal(nextLiveRunSettleAt(runs), T0 + LIVE_RUN_SETTLE_TIMEOUT_MS);
 
-	// run_complete without a successor id (nothing persisted / older server) also expires.
-	const noId = step(step([], live('x', 'zulip', snapshot('x'))), live('x', 'zulip', complete()), T0);
-	assert.equal(expireLiveRuns(noId, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS).length, 0);
+	let settled = settleLiveRuns(runs, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS - 1);
+	assert.equal(settled.refetch, false);
+	assert.equal(settled.runs, runs, 'nothing due yet');
 
-	assert.deepEqual(dropUnsettledLiveRuns(runs).map((r) => r.runId), ['done'], 'disconnect drops in-flight runs (replayed on reconnect), keeps settled');
-	assert.deepEqual(reduceLiveRuns(runs, { kind: 'reset' }), [], 'server reset clears everything');
-	assert.equal(nextLiveRunExpiry(dropUnsettledLiveRuns([])), null);
+	// Each lapse refetches durable history and keeps the reply, up to the budget.
+	let now = T0;
+	for (let lapse = 1; lapse <= LIVE_RUN_MAX_SUCCESSOR_REFETCHES; lapse++) {
+		now += LIVE_RUN_SETTLE_TIMEOUT_MS;
+		settled = settleLiveRuns(runs, now);
+		assert.equal(settled.refetch, true, `lapse ${lapse} asks for a history refetch`);
+		runs = settled.runs;
+		assert.deepEqual(runs.map((r) => r.runId), ['done', 'running'], `lapse ${lapse} keeps the settled reply`);
+	}
+	assert.equal(nextLiveRunSettleAt(runs), null, 'refetch budget spent: no further timer, no polling');
+	settled = settleLiveRuns(runs, now + 100 * LIVE_RUN_SETTLE_TIMEOUT_MS);
+	assert.equal(settled.refetch, false);
+	assert.deepEqual(ids(mergeLiveRuns([durable('u1', 'user', 'hi')], settled.runs, NONE)), ['u1', 'live-run:done', 'live-run:running'], 'a stalled awareness stream never reopens the gap');
+
+	// Only the exact successor or a server reset releases it.
+	assert.deepEqual(pruneSettledLiveRuns(settled.runs, [durable('other', 'assistant', 'unrelated', 'zzz')]).map((r) => r.runId), ['done', 'running'], 'an unrelated row does not count');
+	assert.deepEqual(pruneSettledLiveRuns(settled.runs, [durable('a-final', 'assistant', 'full', 'done')]).map((r) => r.runId), ['running']);
+	assert.deepEqual(reduceLiveRuns(settled.runs, { kind: 'reset' }), [], 'server reset invalidates it');
+});
+
+test('a completion with no durable successor expires after its settle window', () => {
+	let runs = step(step([], live('x', 'zulip', snapshot('x'))), live('x', 'zulip', complete()), T0);
+	assert.equal(settleLiveRuns(runs, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS - 1).runs.length, 1);
+	const settled = settleLiveRuns(runs, T0 + LIVE_RUN_SETTLE_TIMEOUT_MS);
+	assert.equal(settled.runs.length, 0);
+	assert.equal(settled.refetch, false, 'nothing durable to fetch');
+	runs = step(step([], live('y', 'zulip', snapshot('y'))), live('y', 'zulip', snapshot('y')));
+	assert.deepEqual(dropUnsettledLiveRuns(runs), [], 'disconnect drops in-flight runs (replayed on reconnect)');
+	assert.equal(nextLiveRunSettleAt([]), null);
 });
 
 test('completion of an unknown run is ignored', () => {
@@ -161,8 +186,8 @@ test('reconnect before the durable reply arrives: settled reply survives, then t
 	// Both feeds drop before the durable reply is visible.
 	runs = dropUnsettledLiveRuns(runs); // /live onerror
 	runs = pauseLiveRunSettleClocks(runs); // awareness onerror
-	assert.equal(nextLiveRunExpiry(runs), null, 'no expiry is scheduled while the successor is demonstrably pending');
-	runs = expireLiveRuns(runs, T0 + 10 * TIMEOUT);
+	assert.equal(nextLiveRunSettleAt(runs), null, 'no timer is scheduled while the successor is demonstrably pending');
+	runs = settleLiveRuns(runs, T0 + 10 * TIMEOUT).runs;
 	assert.deepEqual(ids(mergeLiveRuns(history, runs, NONE)), ['u1', 'live-run:r1'], 'a long outage cannot expire the settled reply');
 
 	// /live reconnects first: replay carries only active runs, so nothing new; settled reply kept.
@@ -172,8 +197,8 @@ test('reconnect before the durable reply arrives: settled reply survives, then t
 	// Awareness reconnects and its refetch is settled: the bounded window restarts from now.
 	const reopenedAt = T0 + 12 * TIMEOUT;
 	runs = resumeLiveRunSettleClocks(runs, reopenedAt);
-	assert.equal(nextLiveRunExpiry(runs), reopenedAt + TIMEOUT);
-	assert.ok(expireLiveRuns(runs, reopenedAt + TIMEOUT - 1).some((run) => run.runId === 'r1'));
+	assert.equal(nextLiveRunSettleAt(runs), reopenedAt + TIMEOUT);
+	assert.ok(settleLiveRuns(runs, reopenedAt + TIMEOUT).runs.some((run) => run.runId === 'r1'), 'a lapse after catch-up refetches, never drops');
 
 	// The refetch delivers the successor: settled reply pruned, durable rows take over once.
 	const refetched = [...history, durable('a-final', 'assistant', 'Final answer, full details', 'r1')];
@@ -186,9 +211,12 @@ test('a run completing while the durable feed is down starts no clock until it c
 	let runs = step([], live('r1', 'zulip', snapshot('x')));
 	runs = step(runs, live('r1', 'zulip', complete('a-final')), T0, false);
 	assert.equal(runs[0].settleClockAt, undefined);
-	assert.equal(expireLiveRuns(runs, T0 + 10 * TIMEOUT).length, 1);
+	assert.equal(nextLiveRunSettleAt(runs), null);
+	assert.equal(settleLiveRuns(runs, T0 + 10 * TIMEOUT).refetch, false, 'nothing fires while the feed is down');
 	runs = resumeLiveRunSettleClocks(runs, T0 + 10 * TIMEOUT);
-	assert.equal(expireLiveRuns(runs, T0 + 11 * TIMEOUT).length, 0, 'bounded once the feed is caught up and the successor still has not landed');
+	const lapse = settleLiveRuns(runs, T0 + 11 * TIMEOUT);
+	assert.equal(lapse.refetch, true, 'the first lapse after catch-up refetches durable history');
+	assert.equal(lapse.runs.length, 1, 'and keeps the settled reply');
 });
 
 test('reconnect after the durable reply arrived: nothing resurfaces or duplicates', () => {

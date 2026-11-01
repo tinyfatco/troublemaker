@@ -13,13 +13,13 @@ import { parseContextLine, type AwarenessEntry } from '../types';
 import { WEB_CHAT_TURN_COMPLETE_EVENT } from '../webChatTurnEvents';
 import {
   dropUnsettledLiveRuns,
-  expireLiveRuns,
-  nextLiveRunExpiry,
+  nextLiveRunSettleAt,
   parseLiveRunEnvelope,
   pauseLiveRunSettleClocks,
   pruneSettledLiveRuns,
   reduceLiveRuns,
   resumeLiveRunSettleClocks,
+  settleLiveRuns,
   type LiveRun,
 } from '../liveRuns';
 
@@ -188,13 +188,20 @@ export function useAwarenessStream(): UseAwarenessStreamReturn {
     setLiveRuns((prev) => pruneSettledLiveRuns(prev, entries));
   }, [entries]);
 
-  // One timer for the earliest completed-run expiry (no polling).
+  // One timer for the earliest lapsed settle window (no polling). A settled
+  // reply with a known durable successor is never dropped here; the lapse
+  // refetches durable history instead.
   useEffect(() => {
-    const at = nextLiveRunExpiry(liveRuns);
+    const at = nextLiveRunSettleAt(liveRuns);
     if (at === null) return;
-    const timer = setTimeout(() => setLiveRuns((prev) => expireLiveRuns(prev)), Math.max(0, at - Date.now()));
+    const timer = setTimeout(() => {
+      // Any liveRuns change clears this timer, so the closure is current here.
+      const now = Date.now();
+      if (settleLiveRuns(liveRuns, now).refetch) refreshRecentBacklog(false).catch(() => {});
+      setLiveRuns((prev) => settleLiveRuns(prev, now).runs);
+    }, Math.max(0, at - Date.now()));
     return () => clearTimeout(timer);
-  }, [liveRuns]);
+  }, [liveRuns, refreshRecentBacklog]);
 
   useEffect(() => {
     const refreshIfVisible = () => {

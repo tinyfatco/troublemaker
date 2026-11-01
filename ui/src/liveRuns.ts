@@ -14,10 +14,13 @@ import type { AwarenessEntry, ContentBlock } from './types';
  * - a live run hides only durable rows stamped with its own `runId`;
  * - a completed run keeps its settled snapshot until the durable entry named by
  *   `run_complete.lastEntryId` is in history, so the reply never blinks out
- *   between the two streams. A bounded expiry and reset/disconnect clear it.
- *   The expiry clock only runs while the durable feed is connected and caught
- *   up: while it is down or refetching, the successor is demonstrably still
- *   pending, so the settled reply is kept.
+ *   between the two streams. `lastEntryId` proves that row was written, so the
+ *   settled reply is never dropped for being slow: when its settle window
+ *   lapses the durable history is refetched (a bounded number of times) and the
+ *   reply stays until that exact id is observed or a server reset invalidates
+ *   it. Only a completion with no durable successor at all (nothing persisted,
+ *   or an older server) expires. Settle windows only run while the durable feed
+ *   is connected and caught up.
  */
 
 export interface LiveRun {
@@ -34,6 +37,8 @@ export interface LiveRun {
    * the durable feed caught up again. Unset while the durable feed is down.
    */
   settleClockAt?: number;
+  /** History refetches already triggered while waiting for `lastEntryId`. */
+  successorRefetches?: number;
   /** Durable successor announced by run_complete. */
   lastEntryId?: string;
 }
@@ -55,11 +60,13 @@ export type LiveRunEnvelope =
 const SELF_STREAMED_SOURCES = new Set(['web-voice']);
 
 /**
- * How long a completed run may wait for its durable successor before the
- * transient entry is dropped anyway (successor id unknown, or history lagging
- * beyond reason). Bounded so a lost write can never pin a ghost reply.
+ * Settle window for a completed run, counted only while the durable feed is
+ * caught up. On lapse: a run with a known durable successor triggers a history
+ * refetch and keeps its reply; a run without one (nothing to wait for) expires.
  */
 export const LIVE_RUN_SETTLE_TIMEOUT_MS = 30_000;
+/** Refetches per run before waiting passively for the stream / a reset. */
+export const LIVE_RUN_MAX_SUCCESSOR_REFETCHES = 3;
 
 export function parseLiveRunEnvelope(data: string): LiveRunEnvelope | null {
   try {
@@ -145,10 +152,34 @@ export function reduceLiveRuns(
   return next;
 }
 
-/** Drop completed runs whose bounded wait for a durable successor has expired. */
-export function expireLiveRuns(runs: LiveRun[], now: number = Date.now(), timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS): LiveRun[] {
-  const kept = runs.filter((run) => run.settleClockAt === undefined || now - run.settleClockAt < timeoutMs);
-  return kept.length === runs.length ? runs : kept;
+/**
+ * Apply lapsed settle windows. Runs with no durable successor expire. Runs
+ * with a known `lastEntryId` are kept: each lapse (up to the refetch budget)
+ * asks the caller to refetch durable history and restarts the window; after
+ * the budget the reply simply stays until the id streams in or a reset.
+ */
+export function settleLiveRuns(
+  runs: LiveRun[],
+  now: number = Date.now(),
+  timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS,
+  maxRefetches = LIVE_RUN_MAX_SUCCESSOR_REFETCHES,
+): { runs: LiveRun[]; refetch: boolean } {
+  let refetch = false;
+  let changed = false;
+  const next: LiveRun[] = [];
+  for (const run of runs) {
+    if (!isSettleDue(run, now, timeoutMs, maxRefetches)) { next.push(run); continue; }
+    changed = true;
+    if (!run.lastEntryId) continue; // nothing durable to wait for
+    refetch = true;
+    next.push({ ...run, settleClockAt: now, successorRefetches: (run.successorRefetches ?? 0) + 1 });
+  }
+  return { runs: changed ? next : runs, refetch };
+}
+
+function isSettleDue(run: LiveRun, now: number, timeoutMs: number, maxRefetches: number): boolean {
+  if (run.settleClockAt === undefined || now - run.settleClockAt < timeoutMs) return false;
+  return !run.lastEntryId || (run.successorRefetches ?? 0) < maxRefetches;
 }
 
 /** Durable feed dropped: the successor may be in flight, so stop every settle clock. */
@@ -157,7 +188,7 @@ export function pauseLiveRunSettleClocks(runs: LiveRun[]): LiveRun[] {
   return runs.map((run) => (run.settleClockAt === undefined ? run : { ...run, settleClockAt: undefined }));
 }
 
-/** Durable feed connected and refetched: give each waiting run a fresh bounded window. */
+/** Durable feed connected and refetched: give each waiting run a fresh settle window. */
 export function resumeLiveRunSettleClocks(runs: LiveRun[], now: number = Date.now()): LiveRun[] {
   if (!runs.some((run) => run.completedAt !== undefined && run.settleClockAt === undefined)) return runs;
   return runs.map((run) => (run.completedAt !== undefined && run.settleClockAt === undefined ? { ...run, settleClockAt: now } : run));
@@ -183,9 +214,15 @@ export function dropUnsettledLiveRuns(runs: LiveRun[]): LiveRun[] {
   return kept.length === runs.length ? runs : kept;
 }
 
-/** Earliest pending expiry, for scheduling one timer instead of polling. */
-export function nextLiveRunExpiry(runs: LiveRun[], timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS): number | null {
-  const times = runs.filter((run) => run.settleClockAt !== undefined).map((run) => (run.settleClockAt as number) + timeoutMs);
+/** Earliest settle-window lapse that still has work to do, for one timer instead of polling. */
+export function nextLiveRunSettleAt(
+  runs: LiveRun[],
+  timeoutMs = LIVE_RUN_SETTLE_TIMEOUT_MS,
+  maxRefetches = LIVE_RUN_MAX_SUCCESSOR_REFETCHES,
+): number | null {
+  const times = runs
+    .filter((run) => run.settleClockAt !== undefined && (!run.lastEntryId || (run.successorRefetches ?? 0) < maxRefetches))
+    .map((run) => (run.settleClockAt as number) + timeoutMs);
   return times.length ? Math.min(...times) : null;
 }
 
