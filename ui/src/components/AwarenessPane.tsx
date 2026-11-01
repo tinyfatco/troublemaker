@@ -60,6 +60,7 @@ export function AwarenessPane({
     clearError,
   } = useWebChat();
 
+  const steeringOffsetsRef = useRef(new Map<string, number>());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsVersion, setSettingsVersion] = useState(0);
   const [settingsSection, setSettingsSection] = useState<'turn' | 'voice'>('turn');
@@ -70,7 +71,7 @@ export function AwarenessPane({
   const [initialDraft] = useState(initialDraftFromUrl);
 
   const contextEntriesForVoice = useMemo(
-    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries)),
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localEntries, steeringOffsetsRef.current)),
     [entries, userEntry, streamingEntry, localEntries],
   );
 
@@ -99,7 +100,7 @@ export function AwarenessPane({
   );
 
   const visibleEntries = useMemo(
-    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries)),
+    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries, steeringOffsetsRef.current)),
     [entries, userEntry, streamingEntry, localVisibleEntries],
   );
 

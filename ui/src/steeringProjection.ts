@@ -20,12 +20,6 @@ interface RuntimeSteeringEnvelope {
   event: LiveSteeringInputEvent;
 }
 
-let activeStreamingContentBlockCount = 0;
-
-export function recordActiveStreamingContentBlockCount(count: number): void {
-  activeStreamingContentBlockCount = Math.max(0, count);
-}
-
 export function parseRuntimeSteeringEnvelope(data: string): RuntimeSteeringEnvelope | null {
   try {
     const parsed = JSON.parse(data) as Record<string, unknown>;
@@ -124,7 +118,6 @@ export function applyRuntimeSteeringEnvelope(
         id: event.id,
         state: 'accepted',
         deliveryMode: event.deliveryMode,
-        contentBlockOffset: activeStreamingContentBlockCount,
       },
     }];
   });
@@ -139,7 +132,7 @@ export function mergeAwarenessEntries(
   const seen = new Set(existing.map((entry) => entry.id));
   for (const entry of incoming) {
     let replacementIndex = -1;
-    let replacementOffset: number | undefined;
+    let replacedSteeringId: string | undefined;
     if (entry.role === 'user') {
       for (const input of canonicalUserInputs(entry)) {
         const projectionIndex = merged.findIndex((candidate) => (
@@ -150,7 +143,7 @@ export function mergeAwarenessEntries(
         if (projectionIndex !== -1) {
           if (replacementIndex === -1) {
             replacementIndex = projectionIndex;
-            replacementOffset = merged[projectionIndex].steeringProjection?.contentBlockOffset;
+            replacedSteeringId = merged[projectionIndex].steeringProjection?.id;
           }
           seen.delete(merged[projectionIndex].id);
           merged.splice(projectionIndex, 1);
@@ -162,9 +155,9 @@ export function mergeAwarenessEntries(
     if (seen.has(entry.id)) continue;
     seen.add(entry.id);
     if (replacementIndex !== -1) {
-      merged.splice(replacementIndex, 0, replacementOffset === undefined
+      merged.splice(replacementIndex, 0, replacedSteeringId === undefined
         ? entry
-        : { ...entry, streamContentBlockOffset: replacementOffset });
+        : { ...entry, replacesSteeringId: replacedSteeringId });
     } else {
       merged.push(entry);
     }
