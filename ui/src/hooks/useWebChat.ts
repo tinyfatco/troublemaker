@@ -111,7 +111,7 @@ export function useWebChat(): UseWebChatReturn {
       ? (next as (prev: AwarenessEntry | null) => AwarenessEntry | null)(activeStreamingEntryRef.current)
       : next;
     activeStreamingEntryRef.current = value;
-    if (value?.content?.length) recordActiveStreamingContentBlockCount(value.content.length);
+    recordActiveStreamingContentBlockCount(value?.content?.length ?? 0);
     debugStream('active-entry:set', { next: summarizeEntry(value) });
     setStreamingEntry(value);
   }, []);
