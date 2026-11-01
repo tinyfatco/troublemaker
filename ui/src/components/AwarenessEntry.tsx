@@ -31,7 +31,7 @@ function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; 
   const chips = request.elements.filter((element) => element.text || element.tag).slice(0, 6);
 
   return (
-    <div className={`websitepaint-card ${isMarkup ? 'is-markup' : 'is-canvas'}`}>
+    <div className={`websitepaint-card ${isMarkup ? 'is-markup' : 'is-canvas'}${request.composite ? ' is-composite' : ''}`}>
       <div className="websitepaint-card-bar">
         <span className="websitepaint-card-dots" aria-hidden="true"><i /><i /><i /></span>
         <span className="websitepaint-card-address">
@@ -44,7 +44,7 @@ function WebsitePaintCard({ request, rawText }: { request: WebsitePaintRequest; 
         <div className="websitepaint-card-stage">
           <ChatImage
             source={{ kind: 'paint', id: request.imageId }}
-            alt={isMarkup ? 'Marks drawn on the page' : 'Painted canvas'}
+            alt={request.composite ? 'The page with the marks drawn on top' : isMarkup ? 'Marks drawn on the page' : 'Painted canvas'}
             caption=""
             className="websitepaint-card-image"
             onMissing={() => setImageMissing(true)}

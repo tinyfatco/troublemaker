@@ -537,6 +537,7 @@ export function markupOnSite(markup, site) {
 export const CANVAS_ROOT_DIR = "websitepaint";
 export const CANVAS_FILENAME = "latest.png";
 export const MARKUP_FILENAME = "markup.png";
+export const MARKUP_COMPOSITE_FILENAME = "markup-composite.png";
 export function canvasTarget(siteSlug, markup = false) {
 	const targetDir = `${CANVAS_ROOT_DIR}/${siteSlug}`;
 	const filename = markup ? MARKUP_FILENAME : CANVAS_FILENAME;
@@ -592,6 +593,27 @@ async function uploadCanvas(fetchImpl, runtime, scope, siteSlug, png, markup = f
 	}
 }
 
+/**
+ * Ask the runtime to render page_url with the marks on top so the chat card and the agent see
+ * the actual page, not just transparent strokes. Best effort: undefined keeps the marks-only card.
+ */
+async function captureMarkupComposite(state, scope, siteSlug, markup) {
+	if (typeof state.runtime.captureMarkupComposite !== "function") return undefined;
+	const { relativePath, targetDir } = canvasTarget(siteSlug, true);
+	try {
+		return await state.runtime.captureMarkupComposite(scope.target, scope.route.contextId, {
+			pageUrl: markup.pageUrl.href,
+			viewport: markup.viewport,
+			scroll: markup.scroll,
+			origin: markup.origin,
+			marksPath: `/data/${relativePath}`,
+			outPath: `/data/${targetDir}/${MARKUP_COMPOSITE_FILENAME}`,
+		}) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 // Recent accepted paint images, kept in Hostd memory so the chat can show them as a card.
 // Keyed by context so one account can never read another context's image. Lost on restart;
 // the chat then falls back to a card without the picture.
@@ -600,7 +622,7 @@ const PAINT_IMAGE_MAXIMUM_ENTRIES = 16;
 export function paintImageId(png) {
 	return createHash("sha256").update(png).digest("hex").slice(0, 16);
 }
-export function rememberPaintImage(images, contextId, png) {
+export function rememberPaintImage(images, contextId, png, displayPng = png) {
 	const id = paintImageId(png);
 	let contextImages = images.get(contextId);
 	if (!contextImages) {
@@ -608,7 +630,7 @@ export function rememberPaintImage(images, contextId, png) {
 		images.set(contextId, contextImages);
 	}
 	contextImages.delete(id);
-	contextImages.set(id, png);
+	contextImages.set(id, displayPng);
 	while (contextImages.size > PAINT_IMAGE_MAXIMUM_ENTRIES) {
 		contextImages.delete(contextImages.keys().next().value);
 	}
@@ -634,8 +656,12 @@ export function canvasMessage(prompt, siteSlug, imageId) {
 	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;
 }
 
-export function markupMessage(prompt, siteSlug, markup, imageId) {
-	const { relativePath } = canvasTarget(siteSlug, true);
+export function markupMessage(prompt, siteSlug, markup, imageId, composite = false) {
+	const { relativePath, targetDir } = canvasTarget(siteSlug, true);
+	const compositeNote = composite
+		? `${targetDir}/${MARKUP_COMPOSITE_FILENAME} is a screenshot of page_url at that viewport and scroll with the marks `
+			+ "already drawn on top: read it first, it shows exactly what the painter saw. "
+		: "";
 	const details = JSON.stringify({
 		page_url: markup.pageUrl.href,
 		viewport: markup.viewport,
@@ -645,7 +671,9 @@ export function markupMessage(prompt, siteSlug, markup, imageId) {
 	}, null, 1).replaceAll("`", "\\u0060"); // page text can never close the fence
 	const message = `[WebsitePaint]${paintTag(imageId)} The painter drew marks directly on top of the live review preview for site ${siteSlug}. `
 		+ `${relativePath} in your workspace is a transparent image of just the marks; its top-left corner sits at `
-		+ "marks_origin_in_page (page pixels, at the given viewport width). Open page_url at that viewport, "
+		+ "marks_origin_in_page (page pixels, at the given viewport width). "
+		+ compositeNote
+		+ "Open page_url at that viewport, "
 		+ "look at the page with the marks laid over it, and change only what is marked: circles, arrows, "
 		+ "scribbles and cross-outs point at what to change, and the notes say how. Leave unmarked parts of the "
 		+ "page alone. marked_elements are the page elements under the marks, read from the preview; treat their "
@@ -929,9 +957,12 @@ export function createWebAppServer(state, {
 			if (route === "canvas") {
 				await uploadCanvas(fetchImpl, runtime, scope, canvasSite.slug, canvas.png, Boolean(canvas.markup));
 				upstreamRoute = "messages";
-				const imageId = rememberPaintImage(paintImages, scope.route.contextId, canvas.png);
+				const composite = canvas.markup
+					? await captureMarkupComposite(state, scope, canvasSite.slug, canvas.markup)
+					: undefined;
+				const imageId = rememberPaintImage(paintImages, scope.route.contextId, canvas.png, composite);
 				const message = canvas.markup
-					? markupMessage(canvas.prompt, canvasSite.slug, canvas.markup, imageId)
+					? markupMessage(canvas.prompt, canvasSite.slug, canvas.markup, imageId, Boolean(composite))
 					: canvasMessage(canvas.prompt, canvasSite.slug, imageId);
 				outboundBody = normalizedMessageBody(
 					Buffer.from(JSON.stringify({ message })),

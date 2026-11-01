@@ -661,6 +661,57 @@ async function waitForSteeringReady(url, stillHasRunningTurn, timeout = 5_000) {
 	throw new Error(`runtime did not become steering-ready: ${lastState}`);
 }
 
+// Runs inside the agent's own runtime container (node + puppeteer-core + /usr/bin/chromium).
+// Renders the reviewed page at the painter's viewport and scroll, lays the transparent marks
+// over it at their page position and prints a viewport PNG as base64. Inputs arrive as argv,
+// never through a shell; the marks file is the one Hostd just uploaded into /data.
+export const MARKUP_COMPOSITE_SCRIPT = `
+const fs = require("fs");
+const puppeteer = require("puppeteer-core");
+const [pageUrl, w, h, sx, sy, ox, oy, marksPath, outPath] = process.argv.slice(1);
+setTimeout(() => process.exit(3), 20000).unref();
+(async () => {
+	const marks = "data:image/png;base64," + fs.readFileSync(marksPath).toString("base64");
+	const browser = await puppeteer.launch({
+		executablePath: "/usr/bin/chromium",
+		headless: true,
+		args: ["--no-sandbox", "--disable-dev-shm-usage", "--hide-scrollbars"],
+	});
+	try {
+		const page = await browser.newPage();
+		await page.setViewport({ width: Number(w), height: Number(h), deviceScaleFactor: 1 });
+		await page.goto(pageUrl, { waitUntil: "networkidle2", timeout: 15000 }).catch(() => {});
+		await page.evaluate(async (marks, sx, sy, ox, oy) => {
+			window.scrollTo(sx, sy);
+			await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+			const img = document.createElement("img");
+			img.style.cssText = "position:fixed;margin:0;padding:0;border:0;max-width:none;max-height:none;"
+				+ "pointer-events:none;z-index:2147483647;left:" + (ox - window.scrollX) + "px;top:" + (oy - window.scrollY) + "px";
+			const loaded = new Promise((r) => { img.onload = r; img.onerror = r; });
+			img.src = marks;
+			document.documentElement.appendChild(img);
+			await loaded;
+		}, marks, Number(sx), Number(sy), Number(ox), Number(oy));
+		const png = await page.screenshot({ type: "png" });
+		if (outPath) fs.writeFileSync(outPath, png);
+		process.stdout.write(Buffer.from(png).toString("base64"));
+	} finally {
+		await browser.close().catch(() => {});
+	}
+})().then(() => process.exit(0), () => process.exit(2));
+`;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MARKUP_COMPOSITE_MAXIMUM_BYTES = 12 * 1024 * 1024;
+
+/** Decode the container's base64 PNG output; anything else is treated as no composite. */
+export function parsedCompositeOutput(stdout) {
+	const text = String(stdout ?? "").trim();
+	if (!text || text.length > MARKUP_COMPOSITE_MAXIMUM_BYTES * 2 || !/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return undefined;
+	const png = Buffer.from(text, "base64");
+	if (png.length < PNG_SIGNATURE.length || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) return undefined;
+	return png.length <= MARKUP_COMPOSITE_MAXIMUM_BYTES ? png : undefined;
+}
+
 export class RuntimeManager {
 	constructor(config, store, { mattermost, rocketChat, zulip, routingKey, sites } = {}) {
 		this.config = config;
@@ -1411,6 +1462,41 @@ export class RuntimeManager {
 			relationshipOperatorEndpoint: `http://127.0.0.1:${context.port}/operator/relationship-message`,
 			statusEndpoint: `http://127.0.0.1:${context.port}/status`,
 		};
+	}
+
+	/**
+	 * Best-effort screenshot of the page with the painter's marks on top, rendered inside
+	 * the context's own runtime container. Returns a PNG Buffer, or undefined on any failure.
+	 */
+	async captureMarkupComposite(target, contextId, { pageUrl, viewport, scroll, origin, marksPath, outPath }) {
+		const context = this.store.getContext(contextId);
+		if (!context?.runtimeName) return undefined;
+		try {
+			const result = await run(
+				target.engine,
+				[
+					"exec",
+					context.runtimeName,
+					"node",
+					"-e",
+					MARKUP_COMPOSITE_SCRIPT,
+					"--",
+					String(pageUrl),
+					String(viewport.width),
+					String(viewport.height),
+					String(scroll.x),
+					String(scroll.y),
+					String(origin.x),
+					String(origin.y),
+					String(marksPath),
+					String(outPath ?? ""),
+				],
+				{ timeout: 25_000, allowFailure: true },
+			);
+			return result.code === 0 ? parsedCompositeOutput(result.stdout) : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	async evictForCapacity(target, requestedContextId) {

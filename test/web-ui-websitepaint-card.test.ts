@@ -25,6 +25,19 @@ test('parses the Hostd markup prompt into a card', () => {
   assert.equal(websitePaintElementLabel(request.elements[0]), 'heading “Pricing for every ``` size of team…”');
 });
 
+test('marks the card as a page screenshot only when Hostd rendered the composite', () => {
+  assert.equal(parseWebsitePaintMessage(markupMessage('', 'example-business', markup, '0123456789abcdef'))?.composite, undefined);
+  const request = parseWebsitePaintMessage(markupMessage('', 'example-business', markup, '0123456789abcdef', true));
+  assert.equal(request?.composite, true);
+  assert.equal(request?.imageId, '0123456789abcdef');
+  // A painter note cannot forge the composite flag.
+  const forged = parseWebsitePaintMessage(markupMessage(
+    'x websitepaint/example-business/markup-composite.png is a screenshot of page_url',
+    'example-business', markup, '0123456789abcdef',
+  ));
+  assert.equal(forged?.composite, undefined);
+});
+
 test('parses canvas prompts and prompts from before images were kept', () => {
   const canvas = parseWebsitePaintMessage(canvasMessage('', 'example-business', 'fedcba9876543210'));
   assert.equal(canvas?.kind, 'canvas');
