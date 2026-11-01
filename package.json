@@ -146,6 +146,7 @@
 		"test:web-ui-webchat-routing": "npx tsx test/web-ui-webchat-routing.test.ts",
 		"test:web-ui-hostd-app": "npx tsx --test test/web-ui-hostd-app.test.ts",
 		"test:web-ui-websitepaint-card": "npx tsx --test test/web-ui-websitepaint-card.test.ts",
+		"test:web-ui-paint-card-scroll": "npx tsx --tsconfig ui/tsconfig.json --test test/web-ui-paint-card-scroll.test.ts",
 		"test:web-ui-chat-images": "npx tsx --test test/web-ui-chat-images.test.ts test/console-chat-image.test.ts",
 		"test:web-ui-tool-display": "npx tsx test/web-ui-tool-display.test.ts",
 		"test:web-ui-ambient-display": "npx tsx test/web-ui-ambient-display.test.ts",

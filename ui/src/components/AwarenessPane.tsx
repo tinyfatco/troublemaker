@@ -11,6 +11,7 @@ import { useWebChat } from '../hooks/useWebChat';
 import { useVoiceChat } from '../hooks/useVoiceChat';
 import { buildContextWindowStatus } from '../contextWindowStatus';
 import { mergeOptimisticEntries } from '../optimisticEntries';
+import { liveFollowBehavior, nextPinnedToBottom, shouldFollowExpandingContent } from '../toolExpansion';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
@@ -177,9 +178,12 @@ export function AwarenessPane({
   }, [backlogDone, isNearBottom, scrollToBottom]);
 
   const handleExpandingContent = useCallback(() => {
-    if (!backlogDone || isLoadingMore) return;
-    const shouldFollowBottom = pinnedToBottomRef.current || isNearBottom();
-    if (!shouldFollowBottom) return;
+    if (!shouldFollowExpandingContent({
+      backlogDone,
+      isLoadingMore,
+      pinnedToBottom: pinnedToBottomRef.current,
+      nearBottom: isNearBottom(),
+    })) return;
 
     pendingExpansionFollowRef.current = true;
     requestAnimationFrame(() => {
@@ -248,7 +252,7 @@ export function AwarenessPane({
     lastLiveEntryIdRef.current = lastId;
 
     if (pinnedToBottomRef.current || isNearBottom()) {
-      scrollToBottom(isStreaming || isNewEntry ? 'instant' : 'smooth');
+      scrollToBottom(liveFollowBehavior(isStreaming, isNewEntry));
     }
   }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
 
@@ -266,11 +270,7 @@ export function AwarenessPane({
       return;
     }
 
-    if (scrollingUp && !atBottom) {
-      pinnedToBottomRef.current = false;
-    } else if (atBottom) {
-      pinnedToBottomRef.current = true;
-    }
+    pinnedToBottomRef.current = nextPinnedToBottom(pinnedToBottomRef.current, scrollingUp, atBottom);
 
     if (!pinnedToBottomRef.current && !atBottom) {
       userScrolledRef.current = true;
