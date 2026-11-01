@@ -649,8 +649,12 @@ function paintTag(imageId) {
 export function canvasMessage(prompt, siteSlug, imageId) {
 	const { relativePath } = canvasTarget(siteSlug);
 	const message = `[WebsitePaint]${paintTag(imageId)} The canvas settled for site ${siteSlug}. Look at ${relativePath} in your workspace `
-		+ "(read the image) and keep building that exact site's website to match it: "
-		+ "layout, colors and blocks as painted. When the page is coherent, update the project and deploy "
+		+ "(read the image). It is a rough hand-drawn sketch, like a napkin wireframe: read it for intent "
+		+ "(what sections or objects the painter wants, roughly where, and any colors they chose) and design "
+		+ "a real, polished page from that intent together with the notes. Never put the painting itself, "
+		+ "its wobbly strokes or a traced copy of them onto the site; a drawn box is a section or a thing to "
+		+ "show, not an outline to reproduce. Keep the site's existing content unless the notes or sketch ask "
+		+ "to replace it. When the page is coherent, update the project and deploy "
 		+ `the review preview for exact site ${siteSlug} with the existing site deployment so the painter sees it.`
 		+ afterImageRequest(siteSlug, imageId);
 	return prompt ? `${message}\n\nNotes from the painter: ${prompt}` : message;

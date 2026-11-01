@@ -744,6 +744,9 @@ test("WebsitePaint canvas uploads through the scoped runtime, then steers the bu
 		assert.match(received[0].message, /websitepaint\/example-business\/latest\.png/);
 		assert.match(received[0].message, /exact site example-business/);
 		assert.match(received[0].message, /deploy the review preview/);
+		assert.match(received[0].message, /rough hand-drawn sketch/);
+		assert.match(received[0].message, /Never put the painting itself/);
+		assert.doesNotMatch(received[0].message, /as painted/, "the sketch is intent, not a literal layout");
 		assert.match(received[0].message, /Notes from the painter: a bakery in Austin$/);
 		await new Promise((resolve) => setTimeout(resolve, 350));
 		assert.equal(interruptedTurns.length, 0, "a clean DONE stream never records a false interruption");
