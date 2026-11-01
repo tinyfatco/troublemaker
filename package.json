@@ -139,6 +139,7 @@
 		"test:web-ui-voice-settings": "npx tsx test/web-ui-voice-settings.test.ts",
 		"test:web-ui-operator-control-events": "npx tsx test/web-ui-operator-control-events.test.ts",
 		"test:web-ui-optimistic-dedupe": "npx tsx test/web-ui-optimistic-dedupe.test.ts",
+		"test:web-ui-live-runs": "npx tsx test/web-ui-live-runs.test.ts",
 		"test:web-ui-streaming-cursor": "npx tsx test/web-ui-streaming-cursor.test.ts",
 		"test:web-ui-tool-expansion": "npx tsx test/web-ui-tool-expansion.test.ts",
 		"test:web-ui-thinking-display": "npx tsx test/web-ui-thinking-display.test.ts",

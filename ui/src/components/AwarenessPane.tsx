@@ -12,6 +12,7 @@ import { useVoiceChat } from '../hooks/useVoiceChat';
 import { buildContextWindowStatus } from '../contextWindowStatus';
 import { mergeOptimisticEntries } from '../optimisticEntries';
 import { liveFollowBehavior, nextPinnedToBottom, shouldFollowExpandingContent } from '../toolExpansion';
+import { claimOwnWebRuns, mergeLiveRuns } from '../liveRuns';
 import type { AwarenessEntry, ContentBlock, ToolCallContent, ToolResultContent } from '../types';
 import { isSettingsCommand, isVoiceCommand } from '../slashCommands';
 import { compactModelLabel, formatThinkingLevel } from '../agentSettingsDisplay';
@@ -51,6 +52,7 @@ export function AwarenessPane({
     isLoadingMore,
     allLoaded,
     error: streamError,
+    liveRuns = [],
   } = stream;
   const {
     localEntries,
@@ -101,9 +103,28 @@ export function AwarenessPane({
     [localEntries, voice.localEntries],
   );
 
+  // Runs this view started itself stream through useWebChat; only foreign
+  // runs (other channels, Paint, other tabs) come from the shared live feed.
+  const ownWebRunsRef = useRef(new Set<string>());
+  const ownWebRuns = useMemo(
+    () => claimOwnWebRuns(liveRuns, ownWebRunsRef.current, isStreaming),
+    [liveRuns, isStreaming],
+  );
+  useEffect(() => {
+    const active = new Set(liveRuns.map((run) => run.runId));
+    for (const runId of ownWebRunsRef.current) {
+      if (!active.has(runId)) ownWebRunsRef.current.delete(runId);
+    }
+  }, [liveRuns]);
+  const hasForeignLiveRun = liveRuns.some((run) => run.entry && !ownWebRuns.has(run.runId));
+
   const visibleEntries = useMemo(
-    () => normalizeToolResults(mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries)),
-    [entries, userEntry, streamingEntry, localVisibleEntries],
+    () => normalizeToolResults(mergeLiveRuns(
+      mergeOptimisticEntries(entries, userEntry, streamingEntry, localVisibleEntries),
+      liveRuns,
+      ownWebRuns,
+    )),
+    [entries, userEntry, streamingEntry, localVisibleEntries, liveRuns, ownWebRuns],
   );
 
   const contextWindow = useMemo(
@@ -252,9 +273,9 @@ export function AwarenessPane({
     lastLiveEntryIdRef.current = lastId;
 
     if (pinnedToBottomRef.current || isNearBottom()) {
-      scrollToBottom(liveFollowBehavior(isStreaming, isNewEntry));
+      scrollToBottom(liveFollowBehavior(isStreaming || hasForeignLiveRun, isNewEntry));
     }
-  }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming]);
+  }, [liveScrollSignal, composerHeight, scrollToBottom, backlogDone, isLoadingMore, isNearBottom, isStreaming, hasForeignLiveRun]);
 
   // Detect user scroll — scroll-up triggers loadMore, scroll-down hides button
   const handleScroll = useCallback(() => {
