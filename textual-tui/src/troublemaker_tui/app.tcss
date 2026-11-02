@@ -66,6 +66,7 @@ Screen {
     color: $text-muted;
     padding: 0 0 0 0;
 }
+.thinking { pointer: pointer; }
 .thinking:hover { color: $foreground 70%; }
 
 /* ---------------------------------------------------------------- tools */
@@ -77,6 +78,7 @@ Screen {
 .tool-header {
     height: 1;
     color: $text-muted;
+    pointer: pointer;
 }
 .tool.-pending .tool-header { color: $warning; }
 .tool.-success .tool-header { color: $foreground 75%; }
@@ -106,6 +108,7 @@ Screen {
     border-left: outer $panel;
     color: $foreground 70%;
 }
+.ambient { pointer: pointer; }
 .ambient:hover { border-left: outer $secondary 50%; }
 
 /* ---------------------------------------------------------------- notices */
