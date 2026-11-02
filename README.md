@@ -167,8 +167,25 @@ batch thread.
 | Variable | Required For | Description |
 |----------|-------------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API models | Anthropic API key; not used by the Claude CLI backend |
+| `MOM_MODEL_PROVIDER` | model selection | Provider for the active model; overrides `settings.json` (for example `anthropic`, `claude-cli`, `codex-cli`) |
+| `MOM_MODEL_ID` | model selection | Model ID for that provider (for example `opus`, `default`) |
 | `MOM_CLAUDE_CLI_PATH` | claude-cli models | Claude executable path (default: `claude`) |
 | `MOM_CLAUDE_CLI_PERMISSION_MODE` | claude-cli host tools | Optional explicit Claude permission mode |
+| `MOM_CLAUDE_CLI_TIMEOUT_MS` | claude-cli models | Hard turn timeout (default 30 min) |
+| `MOM_CLAUDE_CLI_IDLE_TIMEOUT_MS` | claude-cli models | Timeout with no CLI output (default 5 min) |
+| `MOM_CLAUDE_CLI_MAX_OUTPUT_CHARS` / `_LINES` | claude-cli models | Output caps per turn (default 8 MiB / 20,000 lines) |
+| `MOM_CLAUDE_CLI_RESEED_CHARS` | claude-cli models | Transcript budget used to reseed a fresh CLI session (default 120,000) |
+| `MOM_CLAUDE_CLI_AUTH_CACHE_MS` | claude-cli models | How long a successful auth check is cached (default 30 s, max 5 min) |
+| `MOM_CODEX_CLI_PATH` | codex-cli models | Codex executable path (default: `codex`) |
+| `MOM_CODEX_CLI_TIMEOUT_MS`, `_IDLE_TIMEOUT_MS`, `_MAX_OUTPUT_CHARS`, `_MAX_OUTPUT_LINES`, `_RESEED_CHARS`, `_AUTH_CACHE_MS` | codex-cli models | Same meanings and defaults as the Claude CLI vars above |
+| `MOM_COMPACTION_TIMEOUT_MS` | compaction | Context compaction timeout (default 6 min; clamped to 30 s–30 min) |
+| `MOM_COMPACTION_SOUND` | compaction (macOS) | Sound cue when compaction runs: unset/`true` uses Purr, a file path uses that sound, `off` disables |
+| `MOM_COMPACTION_SOUND_PLAYER` / `_VOLUME` | compaction (macOS) | Player binary (default `/usr/bin/afplay`) and volume (default 0.12) |
+| `MOM_VOICE_ADAPTER` | auto-detection | Set to `true` to start the `voice` adapter (WebSocket on port 8765) |
+| `MOM_OPENAI_API_KEY` | realtime voice | OpenAI key for `/voice/realtime` when no cloud broker is configured (`OPENAI_API_KEY` also accepted) |
+| `MOM_DEEPGRAM_API_KEY` | console transcription | Deepgram key; or `MOM_DEEPGRAM_API_KEY_FILE`, or `MOM_DEEPGRAM_API_KEY_PLIST_FILE` + `_PLIST_KEY` |
+| `MOM_ELEVENLABS_API_KEY` | web voice, `speak` | ElevenLabs key; also enables the web voice bridge on port 8766. Voice sessions can read `MOM_ELEVENLABS_API_KEY_FILE` (default `~/.config/sag/elevenlabs-api-key`) |
+| `MOM_ELEVENLABS_VOICE_ID` / `_MODEL_ID` | web voice, `speak` | ElevenLabs voice and model; `MOM_ELEVENLABS_VOICE_ID_FILE` defaults to `~/.config/sag/voice-id` |
 | `MOM_SLACK_APP_TOKEN` | slack:socket | Slack app-level token (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
@@ -296,6 +313,25 @@ service user runs `claude auth login`, `/model` exposes
 `claude-cli/{haiku,sonnet,opus,fable}` and honors that user's Claude JSON
 settings. See [docs/claude-cli-backend.md](docs/claude-cli-backend.md) for the
 session, permission, delivery, and security contract.
+
+### Codex CLI Models
+
+An existing Codex CLI login works the same way. After the service user runs `codex login`, select `/model codex-cli/default` (the CLI's built-in default model) or `/model codex-cli/<model-id>`. For a service, set `MOM_MODEL_PROVIDER=codex-cli` and `MOM_MODEL_ID=default`. Codex owns the inference loop and its native compaction, and Troublemaker exposes its live tools to Codex through an authenticated per-turn MCP bridge. See [docs/codex-cli-backend.md](docs/codex-cli-backend.md).
+
+### Speech (`speak` tool)
+
+The `speak` tool reads `settings.json` → `speak`, and any `MOM_SPEAK_*` env var overrides it:
+
+| Variable | Description |
+|----------|-------------|
+| `MOM_SPEAK_ENABLED` | `false` disables the tool |
+| `MOM_SPEAK_BACKEND` | `macos-say` (`say`), `command`, `http`, `elevenlabs`, `sag`, `noop`, or `disabled` |
+| `MOM_SPEAK_VOICE`, `MOM_SPEAK_RATE`, `MOM_SPEAK_MAX_CHARS` | Voice, rate, and per-call text cap |
+| `MOM_SPEAK_COMMAND` | Command for the `command` backend |
+| `MOM_SPEAK_URL`, `MOM_SPEAK_TOKEN`, `MOM_SPEAK_TOKEN_HEADER`, `MOM_SPEAK_TOKEN_PREFIX` | Endpoint and auth for the `http` backend |
+| `MOM_SPEAK_ELEVENLABS_API_KEY`, `_VOICE_ID`, `_MODEL_ID`, `_OUTPUT_FORMAT` | `elevenlabs` backend (falls back to `MOM_ELEVENLABS_*`) |
+| `MOM_SPEAK_PLAYER_COMMAND` | Audio player for `elevenlabs` output |
+| `MOM_SPEAK_SAG_COMMAND`, `MOM_SPEAK_SAG_MODEL_ID`, `MOM_SPEAK_SAG_SHELL` | `sag` backend |
 
 ## Data Directory
 
