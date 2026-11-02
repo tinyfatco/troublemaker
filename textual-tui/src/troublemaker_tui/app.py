@@ -90,6 +90,10 @@ Agent: /model /context /compact /clear /voice /login /cancel"""
 # --------------------------------------------------------------------------- composer
 
 
+def idle_placeholder(name: str) -> str:
+    return f"Message {name}  ·  / commands  ·  ctrl+t tools"
+
+
 class Composer(TextArea):
     """Multi-line input: enter sends, shift+enter / ctrl+j insert a newline."""
 
@@ -218,6 +222,8 @@ class StatusLine(Horizontal):
         yield self._right
 
     def show(self, activity: Text | None, hints: Text) -> None:
+        # Idle tips live in the input placeholder; this line only appears while working.
+        self.display = activity is not None
         self.set_class(activity is not None, "-busy")
         self._left.update(activity or Text(""))
         self._right.update(hints)
@@ -269,7 +275,7 @@ class TroublemakerApp(App[None]):
         yield VerticalScroll(id="transcript")
         yield Static(id="suggest")
         yield StatusLine()
-        yield Composer(id="composer", placeholder=f"Message {self.profile.name}  ·  / for commands")
+        yield Composer(id="composer", placeholder=idle_placeholder(self.profile.name))
 
     async def on_mount(self) -> None:
         self.register_theme(THEME)
@@ -368,13 +374,11 @@ class TroublemakerApp(App[None]):
             if status and status.queued:
                 busy_text.append(f" · {status.queued} queued", style="dim")
             hints.append("esc stop · type to steer")
-        else:
-            hints.append("enter send · ctrl+t tools · /help")
         line.show(busy_text, hints)
         composer = self.query_one(Composer)
         steering = activity is not None and (self.sending or self.transcript.activity() is not None)
         composer.set_class(steering, "-steering")
-        composer.placeholder = f"Steer {self.agent_name}…" if steering else f"Message {self.agent_name}  ·  / for commands"
+        composer.placeholder = f"Steer {self.agent_name}…" if steering else idle_placeholder(self.agent_name)
 
     @property
     def agent_name(self) -> str:
