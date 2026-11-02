@@ -191,3 +191,18 @@ async def test_header_hidden_unless_connection_lost():
         bar.connection = "live"
         bar.sync()
         assert not bar.display
+
+
+async def test_clickable_rows_use_pointer_cursor():
+    agent = FakeAgent()
+    app = make_app(agent)
+    live = Live()
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        await agent.push(live.snapshot("r1", [text("Checking."), tool("t1", "bash", "List files")], streaming=False), live.complete("r1"))
+        await settle(pilot)
+        header = app.query_one(ToolRow).query_one(".tool-header")
+        assert header.styles.pointer == "pointer"
+        await pilot.hover(header)
+        await settle(pilot)
+        assert app.screen._pointer_shape == "pointer"
