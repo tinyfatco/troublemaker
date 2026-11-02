@@ -17,12 +17,16 @@ export class LiveAssistantSnapshot {
 	private entry: RuntimeAssistantSnapshotEntry | null = null;
 	private activeStart = 0;
 	private activeLength = 0;
+	// Leading blocks of the active message already committed ahead of a tool
+	// call that arrived mid-message (Claude CLI streams one message per turn).
+	private activeCommitted = 0;
 
 	beginAssistantMessage(message: AgentMessage): RuntimeAssistantSnapshotEntry | null {
 		if (!isAssistantMessage(message)) return this.entry;
 		this.ensureEntry(message);
 		this.activeStart = this.entry?.content.length ?? 0;
 		this.activeLength = 0;
+		this.activeCommitted = 0;
 		return this.replaceActiveMessage(message);
 	}
 
@@ -37,6 +41,7 @@ export class LiveAssistantSnapshot {
 		if (next) {
 			this.activeStart = next.content.length;
 			this.activeLength = 0;
+			this.activeCommitted = 0;
 			next.isStreaming = false;
 		}
 		return next;
@@ -57,6 +62,11 @@ export class LiveAssistantSnapshot {
 		};
 		if (existingIndex === -1) {
 			content.push(patch);
+			if (this.activeLength > 0) {
+				this.activeCommitted += this.activeLength;
+				this.activeLength = 0;
+			}
+			this.activeStart = content.length;
 		} else {
 			const existing = content[existingIndex];
 			content[existingIndex] = existing.type === "toolCall"
@@ -82,6 +92,7 @@ export class LiveAssistantSnapshot {
 		);
 		if (existingIndex === -1) {
 			const insertAt = findToolInsertIndex(content, output.toolCallId);
+			if (insertAt <= this.activeStart) this.activeStart += 1;
 			content.splice(insertAt, 0, {
 				type: "toolOutput",
 				toolCallId: output.toolCallId,
@@ -123,6 +134,7 @@ export class LiveAssistantSnapshot {
 		};
 		if (existingIndex === -1) {
 			const insertAt = findToolInsertIndex(content, toolCallId);
+			if (insertAt <= this.activeStart) this.activeStart += 1;
 			content.splice(insertAt, 0, patch);
 		} else {
 			content[existingIndex] = patch;
@@ -140,6 +152,7 @@ export class LiveAssistantSnapshot {
 		this.entry = null;
 		this.activeStart = 0;
 		this.activeLength = 0;
+		this.activeCommitted = 0;
 	}
 
 	private ensureEntry(message?: AgentMessage): void {
@@ -157,7 +170,7 @@ export class LiveAssistantSnapshot {
 	private replaceActiveMessage(message: AgentMessage): RuntimeAssistantSnapshotEntry | null {
 		if (!isAssistantMessage(message) || !this.entry) return this.entry;
 		const content = [...this.entry.content];
-		const normalized = normalizeAssistantContent(message);
+		const normalized = normalizeAssistantContent(message).slice(this.activeCommitted);
 		content.splice(this.activeStart, this.activeLength, ...normalized);
 		this.activeLength = normalized.length;
 		this.entry = {

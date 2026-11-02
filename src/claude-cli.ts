@@ -112,6 +112,7 @@ interface ClaudeCliInvocationResult {
 interface ClaudeCliEmitter {
 	readonly hasText: boolean;
 	append(delta: string): void;
+	endTextBlock(): void;
 	finish(result: ClaudeCliInvocationResult, model: Model<Api>): void;
 }
 
@@ -427,6 +428,8 @@ async function invokeClaudeCli(params: {
 					if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
 						params.emitter.append(delta.text);
 					}
+				} else if (event.type === "content_block_stop" || event.type === "message_stop") {
+					params.emitter.endTextBlock();
 				}
 				return;
 			}
@@ -533,8 +536,10 @@ export function buildClaudeCliArgs(params: {
 
 function createEmitter(stream: AssistantMessageEventStream, model: Model<Api>): ClaudeCliEmitter {
 	let started = false;
-	let textStarted = false;
 	let text = "";
+	// Index of the open text block; each Claude content block gets its own so
+	// tool calls inserted between them keep their chronological position.
+	let openIndex = -1;
 	let finished = false;
 	const partial: AssistantMessage = {
 		role: "assistant",
@@ -555,6 +560,20 @@ function createEmitter(stream: AssistantMessageEventStream, model: Model<Api>): 
 		started = true;
 		stream.push({ type: "start", partial: snapshot() });
 	};
+	const openBlock = (): { type: "text"; text: string } => {
+		if (openIndex === -1) {
+			openIndex = partial.content.length;
+			partial.content.push({ type: "text", text: "" });
+			stream.push({ type: "text_start", contentIndex: openIndex, partial: snapshot() });
+		}
+		return partial.content[openIndex] as { type: "text"; text: string };
+	};
+	const closeBlock = () => {
+		if (openIndex === -1) return;
+		const block = partial.content[openIndex] as { type: "text"; text: string };
+		stream.push({ type: "text_end", contentIndex: openIndex, content: block.text, partial: snapshot() });
+		openIndex = -1;
+	};
 	return {
 		get hasText() {
 			return text.length > 0;
@@ -562,29 +581,25 @@ function createEmitter(stream: AssistantMessageEventStream, model: Model<Api>): 
 		append(delta: string) {
 			if (finished || !delta) return;
 			ensureStarted();
-			if (!textStarted) {
-				textStarted = true;
-				partial.content.push({ type: "text", text: "" });
-				stream.push({ type: "text_start", contentIndex: 0, partial: snapshot() });
-			}
+			const block = openBlock();
 			text += delta;
-			(partial.content[0] as { type: "text"; text: string }).text = text;
-			stream.push({ type: "text_delta", contentIndex: 0, delta, partial: snapshot() });
+			block.text += delta;
+			stream.push({ type: "text_delta", contentIndex: openIndex, delta, partial: snapshot() });
+		},
+		endTextBlock() {
+			if (finished) return;
+			closeBlock();
 		},
 		finish(result: ClaudeCliInvocationResult, streamModel: Model<Api>) {
 			if (finished) return;
-			finished = true;
 			if (!text && result.resultText && !result.errorText) {
 				ensureStarted();
-				textStarted = true;
 				text = result.resultText;
-				partial.content.push({ type: "text", text });
-				stream.push({ type: "text_start", contentIndex: 0, partial: snapshot() });
-				stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial: snapshot() });
+				openBlock().text = text;
+				stream.push({ type: "text_delta", contentIndex: openIndex, delta: text, partial: snapshot() });
 			}
-			if (textStarted) {
-				stream.push({ type: "text_end", contentIndex: 0, content: text, partial: snapshot() });
-			}
+			closeBlock();
+			finished = true;
 			partial.usage = result.usage;
 			partial.responseModel = result.responseModel;
 			partial.timestamp = Date.now();

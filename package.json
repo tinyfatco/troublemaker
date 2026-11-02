@@ -103,7 +103,7 @@
 		"test:model-catalog-refresh": "pnpm exec tsx test/model-catalog-refresh.test.ts",
 		"test:model-auth-gate": "pnpm exec tsx test/model-auth-gate.test.ts",
 		"test:model-thinking": "pnpm exec tsx test/model-thinking.test.ts",
-		"test:claude-cli": "pnpm exec tsx test/claude-cli.test.ts",
+		"test:claude-cli": "pnpm exec tsx test/claude-cli.test.ts && pnpm exec tsx test/live-turn-snapshot.test.ts",
 		"test:claude-cli-mcp": "pnpm exec tsx test/claude-cli-mcp.test.ts",
 		"test:operator-configure-no-run": "pnpm exec tsx test/operator-configure-no-run.test.ts",
 		"test:system-prompt": "pnpm exec tsx test/system-prompt.test.ts",
