@@ -295,7 +295,6 @@ class ToolRow(Vertical, can_focus=True):
             meta.append(f"exit {detail['exitStatus']}")
         if meta:
             text.append("  " + " · ".join(meta), style="dim")
-        text.append(f"  #{tool.number}", style="dim")
         if tool.has_detail:
             text.append("  ▾" if self.expanded else "  ▸", style="dim")
         return text
@@ -370,8 +369,7 @@ class ToolRow(Vertical, can_focus=True):
         self.post_message(self.Leave())
 
     def on_click(self, event: events.Click) -> None:
-        event.stop()
-        self.focus(scroll_visible=False)
+        # Toggle in place; the click then bubbles up and returns focus to the input.
         self.action_toggle()
 
 

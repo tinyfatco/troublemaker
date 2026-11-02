@@ -596,6 +596,12 @@ class TroublemakerApp(App[None]):
 
     # ------------------------------------------------------------------ actions
 
+    def on_click(self, event: events.Click) -> None:
+        """Clicking anywhere puts the cursor back in the input."""
+        composer = self.query_one(Composer)
+        if self.screen is self.screen_stack[0] and not composer.has_focus:
+            composer.focus(scroll_visible=False)
+
     def action_scroll_page(self, direction: int) -> None:
         transcript = self.query_one("#transcript", VerticalScroll)
         if direction < 0:

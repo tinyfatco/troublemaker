@@ -133,3 +133,22 @@ async def test_slash_commands_complete_and_run_locally():
         await settle(pilot)
         assert agent.sent[-1]["message"] == "/compact"  # agent-side commands go to the agent
         shot(app, "4-help")
+
+
+async def test_clicking_anywhere_focuses_input_and_still_toggles_tools():
+    agent = FakeAgent()
+    app = make_app(agent)
+    live = Live()
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        await agent.push(live.snapshot("r1", [text("Checking."), tool("t1", "bash", "List files")], streaming=False), live.complete("r1"))
+        await settle(pilot)
+        row = app.query_one(ToolRow)
+        await pilot.press("ctrl+t")
+        assert app.focused is row
+        await pilot.click("#header")
+        await settle(pilot, 2)
+        assert isinstance(app.focused, Composer)
+        await pilot.click(row)
+        await settle(pilot, 2)
+        assert row.expanded and isinstance(app.focused, Composer)
