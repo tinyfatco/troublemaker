@@ -1,0 +1,150 @@
+/* Compact by design: one-line chrome, no boxes, rules instead of borders. */
+
+Screen {
+    background: $background;
+    layers: base;
+}
+
+/* ---------------------------------------------------------------- header */
+
+#header {
+    height: 1;
+    padding: 0 1;
+    background: $surface;
+}
+#header-left { width: 1fr; }
+#header-right { width: auto; }
+
+/* ---------------------------------------------------------------- transcript */
+
+#transcript {
+    height: 1fr;
+    padding: 0 1 0 1;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: $panel;
+    scrollbar-color-hover: $primary 60%;
+    scrollbar-background: $background;
+}
+
+.user {
+    margin-top: 1;
+    padding: 0 1;
+    border-left: outer $secondary;
+    background: $surface;
+    color: $foreground;
+}
+.user.-local { border-left: outer $accent; }
+.user.-ambient {
+    border-left: outer $panel;
+    background: $background;
+    color: $text-muted;
+}
+.user.-generated {
+    margin-top: 1;
+    border-left: none;
+    background: $background;
+    color: $text-muted;
+    padding: 0 0;
+}
+
+.assistant {
+    height: auto;
+    margin-top: 1;
+    padding: 0 0 0 2;
+}
+
+.assistant Markdown {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+}
+.assistant Markdown > MarkdownBlock { margin: 0 0 1 0; }
+.assistant Markdown > MarkdownBlock:last-child { margin: 0; }
+.assistant Markdown MarkdownFence { margin: 0 0 1 0; max-height: 30; }
+.assistant Markdown MarkdownH1,
+.assistant Markdown MarkdownH2,
+.assistant Markdown MarkdownH3 { margin: 0 0 1 0; padding: 0; }
+
+.assistant > .-gap { margin-top: 1; }
+
+.thinking {
+    color: $text-muted;
+    padding: 0 0 0 0;
+}
+.thinking:hover { color: $foreground 70%; }
+
+/* ---------------------------------------------------------------- tools */
+
+.tool {
+    height: auto;
+    padding: 0;
+}
+.tool-header {
+    height: 1;
+    color: $text-muted;
+}
+.tool.-pending .tool-header { color: $warning; }
+.tool.-success .tool-header { color: $foreground 75%; }
+.tool.-error .tool-header { color: $error; }
+.tool:hover .tool-header { background: $surface; }
+.tool:focus .tool-header {
+    background: $primary 25%;
+    color: $foreground;
+}
+.tool.-expanded .tool-header { color: $foreground; }
+.tool-detail {
+    margin: 0 0 1 2;
+    padding: 0 1;
+    border-left: outer $panel;
+    background: $surface;
+    color: $foreground 85%;
+}
+.tool:focus .tool-detail { border-left: outer $primary; }
+
+/* ---------------------------------------------------------------- notices */
+
+.notice {
+    margin-top: 1;
+    padding: 0 0 0 2;
+    color: $text-muted;
+}
+.notice.-error { color: $error; }
+.notice.-success { color: $success; }
+.notice.-warning { color: $warning; }
+
+.transition {
+    margin-top: 1;
+    padding: 0 0 0 2;
+    color: $text-muted;
+}
+.transition.-active { color: $warning; }
+.transition.-done { color: $success 80%; }
+.transition.-failed { color: $error; }
+
+/* ---------------------------------------------------------------- bottom */
+
+#suggest {
+    height: auto;
+    max-height: 6;
+    padding: 0 1 0 3;
+    background: $surface;
+}
+
+#status {
+    height: 1;
+    padding: 0 1;
+}
+#status-left { width: 1fr; }
+#status-right { width: auto; }
+
+#composer {
+    height: auto;
+    min-height: 1;
+    max-height: 10;
+    padding: 0 1;
+    border: none;
+    border-left: outer $accent;
+    background: $surface;
+}
+#composer:focus { border-left: outer $accent; background: $panel 60%; }
+#composer.-steering { border-left: outer $warning; }
