@@ -8,11 +8,11 @@ Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://m
 
 When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
 
-**For each conversation** (Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, or Discord channel, Telegram chat, email thread, phone conversation), the agent maintains:
-- **Persistent memory** — `MEMORY.md` files (global + per-channel) loaded into every prompt
-- **Full history** — `log.jsonl` with searchable message archive, `context.jsonl` for the LLM window
-- **Custom tools** — Skills the agent writes and reuses across sessions
-- **Scheduled events** — Cron jobs, reminders, and webhook triggers via event files
+**One unified workspace** spans every channel (Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, Discord, Telegram, email, phone):
+- **Persistent memory** — a single `MEMORY.md` loaded into every prompt
+- **Full history** — one `log.jsonl` archive across all channels, plus `awareness/context.jsonl` for the LLM window
+- **Custom tools** — one set of skills the agent writes and reuses across sessions
+- **Scheduled events** — one attention queue for reminders, cron prompts, and webhook triggers
 
 The agent has full bash access (in a Docker sandbox or on host), reads/writes files, and creates whatever tools it needs. You provide a working directory — the agent does the rest.
 
@@ -102,16 +102,16 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 | `rocket-chat:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ROCKETCHAT_URL`, `MOM_ROCKETCHAT_BOT_TOKEN`, `MOM_ROCKETCHAT_INBOUND_TOKEN`, `MOM_ROCKETCHAT_ALLOWED_ROOMS` | TinyFat customer relationship rooms |
 | `zulip:webhook` | Host-managed HTTP + scoped REST proxy | `MOM_ZULIP_URL`, `MOM_ZULIP_BOT_TOKEN`, `MOM_ZULIP_INBOUND_TOKEN` | Subscribed channels, topics, ambient messages, and direct messages |
 | `telegram` / `telegram:polling` | Outbound polling | `MOM_TELEGRAM_BOT_TOKEN` | Always-on |
-| `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_SECRET` | Webhook-based |
+| `telegram:webhook` | Inbound HTTP | `MOM_TELEGRAM_BOT_TOKEN`, `MOM_TELEGRAM_WEBHOOK_URL` (unless `MOM_SKIP_WEBHOOK_REGISTRATION=true`), and `MOM_TELEGRAM_WEBHOOK_SECRET` or a strong `MOM_TELEGRAM_INBOUND_TOKEN` | Webhook-based |
 | `discord` / `discord:gateway` | Outbound Gateway WebSocket + REST | `MOM_DISCORD_BOT_TOKEN`, `MOM_DISCORD_APPLICATION_ID` | Always-on; no public ingress or relay |
 | `discord:webhook` | Signed inbound Interactions HTTP | Discord bot token, application ID, and public key | Slash commands and compatible relay deployments |
-| `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN` | Webhook-based |
+| `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN`, `MOM_EMAIL_INBOUND_TOKEN` (≥32 bytes) | Webhook-based |
 | `mattermost:webhook` | Host-managed HTTP + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN`, `MOM_MATTERMOST_INBOUND_TOKEN` | Hosted Mattermost behind a relay |
 | `phone-messaging:webhook` | Inbound HTTP + provider REST | `MOM_PHONE_MESSAGING=true` or Loop/Twilio credentials, `MOM_PHONE_INBOUND_TOKEN` | Two-way SMS and iMessage conversations |
 | `form:webhook` | Inbound HTTP | `MOM_FORM_INGRESS=true`, `MOM_FORM_INBOUND_TOKEN` | Website form submissions |
 | `web` | Inbound HTTP | `MOM_WEB_CHAT=true` | Browser chat UI and generic input webhook |
-| `mcp` | MCP Streamable HTTP | `MOM_MCP=true` | Expose agent tools to MCP clients; auth is handled by the fronting host |
-| `voice` | WebSocket (port 8765) | `MOM_VOICE_ADAPTER=true` | Voice sessions |
+| `mcp` | MCP Streamable HTTP | `MOM_MCP=true`, `MOM_MCP_AUTH_TOKEN` (≥32 bytes) | Expose agent tools to MCP clients; `/mcp` always checks the token in `x-tools-token`, even behind an authenticating proxy |
+| `voice` | WebSocket (port 8765) | `MOM_VOICE_ADAPTER=true`, `MOM_ELEVENLABS_API_KEY` | Voice sessions |
 
 **Auto-detection:** If no `--adapter` flag is given, troublemaker detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
 
@@ -373,7 +373,7 @@ The agent updates these on its own as it learns. You can also edit them directly
 
 The agent can write custom CLI tools (skills) for your specific workflows. Each skill has a `SKILL.md` with frontmatter describing its name and purpose, plus any scripts or programs needed.
 
-Skills live in `data/skills/` (global) or `data/<channel>/skills/` (channel-specific). The agent sees all available skills in its prompt and reads the full `SKILL.md` when it decides to use one.
+Skills live in the workspace `skills/` directory, plus any extra directories passed with `--skills`. The agent sees all available skills in its prompt and reads the full `SKILL.md` when it decides to use one.
 
 See [pi-skills](https://github.com/badlogic/pi-skills) for example skills.
 
@@ -395,7 +395,7 @@ Every channel feeds one resident agent with one workspace, so these features beh
 
 ### Persistent goals
 
-`set_goal` stores an explicit objective in `goal.json`. While a goal is active, the runtime keeps going with automatic continuation turns: ending one turn does not end the goal. The agent closes it with `complete_goal` once the work is achieved and verified, with `abandon_goal` when the user cancels or redirects, or with `block_goal` when the same blocker repeats and only user input or an outside change can unblock it. A terminal run error also blocks continuation, so a failing goal cannot loop forever.
+`set_goal` stores an explicit objective in `goal.json`. While a goal is active, the runtime keeps going with automatic continuation turns: ending one turn does not end the goal. The agent closes it with `complete_goal` once the work is achieved and verified, with `abandon_goal` when the user cancels or redirects, or with `block_goal` when the same blocker has repeated for at least three consecutive goal turns and only user input or an outside change can unblock it. A terminal run error also blocks continuation, so a failing goal cannot loop forever.
 
 ### Heartbeat
 
@@ -417,7 +417,7 @@ Operator entries reach the agent tagged `operator:control`. The channel has no o
 
 ### Attention queue and calendar
 
-Scheduled prompts (immediate, one-shot, and cron) live in `attention/queue/` and move to `attention/history/` once they fire. Calendar items in `calendar/events/` and display projects in `display/projects/` appear in workspace clients. The runtime seeds a `README.md` authoring guide in `calendar/` and `display/`. See [docs/events.md](docs/events.md).
+Scheduled prompts live in `attention/queue/`. Immediate and one-shot prompts move to `attention/history/` once they fire; periodic (cron) prompts stay in the queue and reschedule after each fire. Calendar items in `calendar/events/` and display projects in `display/projects/` appear in workspace clients. The runtime seeds a `README.md` authoring guide in `calendar/` and `display/`. See [docs/events.md](docs/events.md).
 
 ### Context handoff and compaction
 
@@ -532,7 +532,7 @@ Tests are focused `pnpm test:<area>` scripts; see `package.json` for the full li
 - `src/mcp-client/` — Bridge for external MCP servers' tools
 - `src/cua-driver/` — Computer-use bridge (`@trycua/cua-driver`)
 - `src/storage/`, `src/store.ts` — Workspace, awareness, events, settings and channel persistence
-- `src/context.ts` — Session manager, log-to-context sync
+- `src/context.ts` — Runtime settings (compaction, retry, model preferences); the runner is the sole writer of `context.jsonl`
 - `src/sandbox.ts` — Docker/host sandbox execution
 - `src/events.ts` — Scheduled events watcher
 - `src/templates/` — Bootstrap workspace files (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `BOOTSTRAP.md`)
