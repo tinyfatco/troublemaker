@@ -389,6 +389,46 @@ The agent can schedule events that wake it up:
 
 Event files go in `data/attention/queue/`; fired and expired events move to `data/attention/history/`. External systems can also write events there to wake the agent without going through a platform. A legacy `data/events/` directory is still watched if it exists. When a host owns delayed schedules, it delivers them through `POST /scheduled-prompt/inbound` instead.
 
+## Runtime Features
+
+Every channel feeds one resident agent with one workspace, so these features behave the same on Slack, Teams, email, the terminal, or voice.
+
+### Persistent goals
+
+`set_goal` stores an explicit objective in `goal.json`. While a goal is active, the runtime keeps going with automatic continuation turns: ending one turn does not end the goal. The agent closes it with `complete_goal` once the work is achieved and verified, with `abandon_goal` when the user cancels or redirects, or with `block_goal` when the same blocker repeats and only user input or an outside change can unblock it. A terminal run error also blocks continuation, so a failing goal cannot loop forever.
+
+### Heartbeat
+
+A periodic `heartbeat` wake gives the agent a private moment to review context, read its `HEARTBEAT.md` checklist, and decide whether to act. The cadence comes from `settings.json` → `spontaneity` and is written as a periodic event in `attention/queue/`. The agent can reach out on a real channel with `send_message` or record a deliberate quiet with `yield_no_action`. That tool also ends ambient, duplicate, or agent-authored turns that need no reply.
+
+### Operator control
+
+`/operator/*` is a headless control channel for whoever runs the fleet. It needs `MOM_OPERATOR_INBOUND_TOKEN`.
+
+| Route | Effect |
+|-------|--------|
+| `GET /operator/read` | Recent awareness backlog |
+| `GET /operator/describe` | Settings snapshot and `HEARTBEAT.md` |
+| `POST /operator/message` | Principal instruction; triggers a run |
+| `POST /operator/assign` | Writes `BRIEF.md` and starts work on it |
+| `POST /operator/configure` | Edits allowlisted settings: spontaneity, verbosity, model, thinking level, heartbeat checklist |
+
+Operator entries reach the agent tagged `operator:control`. The channel has no outbound path, so the agent replies on a real channel. The agent can change many of the same settings itself with `self_configure` when a user asks.
+
+### Attention queue and calendar
+
+Scheduled prompts (immediate, one-shot, and cron) live in `attention/queue/` and move to `attention/history/` once they fire. Calendar items in `calendar/events/` and display projects in `display/projects/` appear in workspace clients. The runtime seeds a `README.md` authoring guide in `calendar/` and `display/`. See [docs/events.md](docs/events.md).
+
+### Context handoff and compaction
+
+When context grows long, the runtime either compacts it natively or rotates it through `handoff_context`. The agent writes a bounded continuity summary, and a fresh context resumes from a completion receipt without redoing finished work. Rotations are journaled and replayed safely after a restart. See [docs/context-handoff.md](docs/context-handoff.md) and [docs/handoff-compaction.md](docs/handoff-compaction.md).
+
+### Voice
+
+- **`/voice/realtime`**: a WebSocket for realtime speech sessions.
+- **Voice adapter** (port 8765) and **web voice bridge** (port 8766): browser mic → STT → agent → TTS.
+- **`speak` tool**: local or hosted text-to-speech (see [Speech](#speech-speak-tool)).
+
 ## Natural follow-ups
 
 Follow-up mode keeps one agent-global sequence of idle checkpoints after the latest eligible completed canonical wake. A later completed wake replaces the prior sequence, regardless of which durable conversation caused it. Each checkpoint is an internal headless wake with no inherited channel, conversation, or reply target: the agent reviews open loops across its channels, sends at most one concise follow-up to an explicitly chosen target with `send_message`, or stays quiet with `yield_no_action`. Ordinary assistant text and working output are discarded, and generated checkpoints never schedule another sequence.
