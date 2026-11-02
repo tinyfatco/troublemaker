@@ -73,3 +73,11 @@ def test_tool_labels():
 def test_assistant_line_parses_tool_calls():
     entry = parse_context_line(assistant_line([text("hi"), tool("t1", "bash", "Run")]))
     assert entry and [b["type"] for b in entry.content] == ["text", "toolCall"]
+
+
+def test_ambient_card_groups_speakers_and_unescapes():
+    from troublemaker_tui.widgets import ambient_messages, speaker_color
+
+    messages = ambient_messages("Casey: ship the \\`skip\\` link\nhttps://example.com/preview\nOperator: Thursday")
+    assert messages == [("Casey", "ship the `skip` link\nhttps://example.com/preview"), ("Operator", "Thursday")]
+    assert speaker_color("Casey") == speaker_color(" casey ")

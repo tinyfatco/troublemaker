@@ -34,11 +34,6 @@ Screen {
     color: $foreground;
 }
 .user.-local { border-left: outer $accent; }
-.user.-ambient {
-    border-left: outer $panel;
-    background: $background;
-    color: $text-muted;
-}
 .user.-generated {
     margin-top: 1;
     border-left: none;
@@ -100,6 +95,14 @@ Screen {
     color: $foreground 85%;
 }
 .tool:focus .tool-detail { border-left: outer $primary; }
+
+.ambient {
+    margin-top: 1;
+    padding: 0 1;
+    border-left: outer $panel;
+    color: $foreground 70%;
+}
+.ambient:hover { border-left: outer $secondary 50%; }
 
 /* ---------------------------------------------------------------- notices */
 

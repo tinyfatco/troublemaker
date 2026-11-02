@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import zlib
 from datetime import datetime
 
 from rich.console import Group, RenderableType
@@ -111,6 +113,78 @@ class UserMessage(Static):
         text.append(sanitize(item.text), style="italic" if item.ambient else "")
         text.append(f"  {stamp}", style="dim")
         return text
+
+    def sync(self) -> None:
+        self.refresh(layout=True)
+
+
+SPEAKER_COLORS = ("#7AA2F7", "#9ECE6A", "#E0AF68", "#BB9AF7", "#7DCFFF", "#FF9E64", "#F7768E", "#73DACA")
+AMBIENT_VISIBLE = 4
+_SPEAKER_RE = re.compile(r"^([^:\n]{1,40}):\s+(.*)$")
+
+
+def speaker_color(name: str) -> str:
+    """Stable per-speaker color, so the same person reads the same everywhere."""
+    return SPEAKER_COLORS[zlib.crc32(name.strip().lower().encode()) % len(SPEAKER_COLORS)]
+
+
+def ambient_messages(text: str) -> list[tuple[str | None, str]]:
+    """Split an ambient block into ``(speaker, text)``; unattributed lines continue the previous message."""
+    messages: list[tuple[str | None, str]] = []
+    for raw in sanitize(text).replace("\\`", "`").split("\n"):
+        line = raw.strip()
+        if not line:
+            continue
+        match = _SPEAKER_RE.match(line)
+        if match and not match[1].startswith(("http", "-", "*")):
+            messages.append((match[1].strip(), match[2]))
+        elif messages:
+            speaker, body = messages[-1]
+            messages[-1] = (speaker, f"{body}\n{line}")
+        else:
+            messages.append((None, line))
+    return messages
+
+
+class AmbientMessage(Static):
+    """Conversation the agent overheard: a quiet channel card, newest messages first in view."""
+
+    def __init__(self, item: UserItem) -> None:
+        super().__init__(classes="ambient")
+        self.item = item
+        self.expanded = False
+
+    def render(self) -> RenderableType:
+        item = self.item
+        messages = ambient_messages(item.text)
+        hidden = 0 if self.expanded else max(0, len(messages) - AMBIENT_VISIBLE)
+        stamp = datetime.fromtimestamp(item.timestamp).strftime("%H:%M")
+        header = Text(no_wrap=True, overflow="ellipsis")
+        header.append("◌ ", style="dim")
+        header.append(item.channel, style="bold dim")
+        count = len(messages)
+        header.append(f"  {count} message{'s' if count != 1 else ''} · {stamp}", style="dim")
+        if hidden:
+            header.append(f"  +{hidden} earlier ▸", style="dim italic")
+        elif self.expanded and count > AMBIENT_VISIBLE:
+            header.append("  ▾", style="dim")
+        lines: list[RenderableType] = [header]
+        for speaker, body in messages[hidden:]:
+            line = Text()
+            if speaker:
+                line.append(speaker, style=f"bold {speaker_color(speaker)}")
+                line.append("  ")
+            first, *rest = body.split("\n")
+            line.append(first)
+            for continuation in rest:
+                line.append("\n  " + continuation, style="dim")
+            lines.append(line)
+        return Group(*lines)
+
+    def on_click(self) -> None:
+        if len(ambient_messages(self.item.text)) > AMBIENT_VISIBLE:
+            self.expanded = not self.expanded
+            self.refresh(layout=True)
 
     def sync(self) -> None:
         self.refresh(layout=True)
@@ -399,7 +473,7 @@ class AssistantMessage(Vertical):
 
 def widget_for(item: Item) -> Widget:
     if isinstance(item, UserItem):
-        return UserMessage(item)
+        return AmbientMessage(item) if item.ambient else UserMessage(item)
     if isinstance(item, AssistantItem):
         return AssistantMessage(item)
     if isinstance(item, TransitionItem):
