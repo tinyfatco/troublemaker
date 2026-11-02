@@ -173,6 +173,7 @@ batch thread.
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
 | `MOM_SLACK_INBOUND_TOKEN` | slack:webhook | Scoped bearer capability when a trusted host proxy verifies Slack instead |
+| `MOM_SLACK_ALLOWED_DM_USERS` | slack:* | Optional comma-separated Slack user IDs allowed to invoke the agent by DM |
 | `MOM_TEAMS_CLIENT_ID` | teams:webhook | Microsoft Entra application and bot ID |
 | `MOM_TEAMS_CLIENT_SECRET` | teams:webhook | Bot client credential; omit when using managed identity |
 | `MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID` | teams:webhook | Managed identity client ID, or `system` |
@@ -189,6 +190,7 @@ batch thread.
 | `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |
 | `MOM_MATTERMOST_ALLOWED_CHANNELS` | mattermost:* | Optional comma-separated channel IDs; inbound, outbound, files, and thread reads fail closed outside them |
 | `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT` | mattermost:* | When `true`, every non-self post in an allowed channel directly wakes the agent |
+| `MOM_MATTERMOST_INBOUND_TOKEN` | mattermost:webhook | Required scoped bearer capability for host-delivered events (minimum 32 bytes) |
 | `MOM_ROCKETCHAT_URL` | rocket-chat:webhook | Host-owned, context-scoped Rocket.Chat REST proxy URL |
 | `MOM_ROCKETCHAT_BOT_TOKEN` | rocket-chat:webhook | Per-context host capability, never the native Rocket.Chat token |
 | `MOM_ROCKETCHAT_INBOUND_TOKEN` | rocket-chat:webhook | Per-context bearer token for host-delivered room events |
@@ -206,6 +208,7 @@ batch thread.
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |
 | `MOM_TELEGRAM_INBOUND_TOKEN` | telegram:webhook | Scoped bearer capability when a trusted host proxy verifies Telegram instead |
 | `MOM_SKIP_WEBHOOK_REGISTRATION` | telegram:webhook | Skip Telegram webhook registration (for external management) |
+| `MOM_TELEGRAM_TAKEOVER` | telegram:polling | When `true`, delete any registered webhook at startup so polling can take over |
 | `MOM_DISCORD_BOT_TOKEN` | discord:* | Discord bot token; never put it in source or logs |
 | `MOM_DISCORD_APPLICATION_ID` | discord:* | Discord application snowflake |
 | `MOM_DISCORD_PUBLIC_KEY` | discord:webhook | Ed25519 public key for signed Interactions |
@@ -222,8 +225,33 @@ batch thread.
 | `MOM_EMAIL_TOOLS_TOKEN` | email:webhook | Token for email send API |
 | `MOM_EMAIL_SEND_URL` | email:webhook | Email send endpoint (default: `https://tinyfat.com/api/email/send`) |
 | `MOM_EMAIL_INBOUND_TOKEN` | email:webhook | Required scoped bearer capability for inbound email delivery (minimum 32 bytes) |
+| `MOM_EMAIL_TOOLS_ONLY` | email:webhook | When `true`, disable generic email replies; the agent must use `gmail_draft` then `gmail_send` |
+| `MOM_EMAIL_LOG_MODE` | email:webhook | Tool work log on email replies: `none` (default), `inline`, or `attachment` |
 | `MOM_PHONE_INBOUND_TOKEN` | phone:webhook | Required scoped bearer capability for inbound phone delivery (minimum 32 bytes) |
+| `MOM_PHONE_MESSAGING` | auto-detection | Set to `true` to start `phone-messaging:webhook`; also auto-selected by Loop or Twilio credentials |
+| `MOM_PHONE_DEFAULT_PROVIDER` | phone:webhook | Preferred provider when several are configured (`loop`, `twilio`, or `managed`) |
+| `MOM_PHONE_PREFERRED_TRANSPORT` | phone:webhook | `auto` (default), `imessage`, `sms`, `mms`, `rcs`, or `whatsapp` |
+| `MOM_PHONE_HOST_MANAGED` | phone:webhook | When `true`, send through the host's scoped endpoint instead of a provider; requires the two vars below and `TROUBLEMAKER_CONTEXT_ID` |
+| `MOM_PHONE_SEND_URL` | phone:webhook (host-managed) | Host-owned phone send endpoint |
+| `MOM_PHONE_SEND_TOKEN` | phone:webhook (host-managed) | Scoped send capability (falls back to `FAT_TOOLS_TOKEN`) |
+| `MOM_LOOPMESSAGE_API_KEY` | phone:webhook (Loop) | Loop iMessage API key (`LOOPMESSAGE_API_KEY` also accepted) |
+| `MOM_LOOPMESSAGE_SENDER_ID` | phone:webhook (Loop) | Loop sender ID |
+| `MOM_LOOPMESSAGE_BASE_URL` | phone:webhook (Loop) | Optional Loop API base URL override |
+| `MOM_TWILIO_ACCOUNT_SID` | phone:webhook (Twilio) | Twilio account SID (`TWILIO_ACCOUNT_SID` also accepted) |
+| `MOM_TWILIO_AUTH_TOKEN` | phone:webhook (Twilio) | Twilio auth token |
+| `MOM_TWILIO_PHONE_NUMBER` | phone:webhook (Twilio) | Sending number; or use a messaging service SID |
+| `MOM_TWILIO_MESSAGING_SERVICE_SID` | phone:webhook (Twilio) | Twilio messaging service SID |
 | `MOM_FORM_INBOUND_TOKEN` | form:webhook | Required scoped bearer capability for inbound form delivery (minimum 32 bytes) |
+| `MOM_FORM_INGRESS` | auto-detection | Set to `true` to start `form:webhook` |
+| `MOM_WEB_CHAT` | auto-detection | Set to `true` to start the `web` adapter (`/web/chat`, `/web/stop`, `/input/webhook`) |
+| `MOM_WEB_INPUT_TOKEN` | web | Bearer capability for web chat input (minimum 32 bytes; required inside a Hostd container) |
+| `MOM_WEBHOOK_INPUT_TOKEN` | web | Bearer capability for `/input/webhook` (minimum 32 bytes); `MOM_WEBHOOK_INPUT_TOKEN_FILE` reads it from a protected file |
+| `MOM_WEBHOOK_INPUT_ALLOW_UNAUTHENTICATED` | web | Set to `true` to accept unauthenticated `/input/webhook` posts (local only; refused inside Hostd) |
+| `MOM_MCP` | auto-detection | Set to `true` to start the `mcp` adapter |
+| `MOM_MCP_AUTH_TOKEN` | mcp | Required capability for `/mcp` (minimum 32 bytes) |
+| `MOM_SCHEDULED_PROMPT_INBOUND_TOKEN` | scheduled prompts | Bearer capability for `/scheduled-prompt/inbound` (minimum 32 bytes); must be set together with `MOM_HOSTD_SCHEDULE_OWNER=host` and `TROUBLEMAKER_CONTEXT_ID` |
+| `MOM_HOSTD_SCHEDULE_OWNER` | scheduled prompts | Set to `host` when Hostd owns delayed schedules; local delayed events then defer to the host |
+| `MOM_SITE_DEPLOY_TOKEN` | site deploy tool | Capability used by the `site_deploy` tool |
 | `MOM_OPERATOR_INBOUND_TOKEN` | operator routes | Enables `/operator/*` with a scoped bearer capability (minimum 32 bytes); routes are disabled when omitted |
 | `MOM_HTTP_PORT` | — | Gateway port override (same as `--port`) |
 
