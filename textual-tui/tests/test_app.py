@@ -146,7 +146,7 @@ async def test_clicking_anywhere_focuses_input_and_still_toggles_tools():
         row = app.query_one(ToolRow)
         await pilot.press("ctrl+t")
         assert app.focused is row
-        await pilot.click("#header")
+        await pilot.click("#transcript")
         await settle(pilot, 2)
         assert isinstance(app.focused, Composer)
         await pilot.click(row)
@@ -176,3 +176,18 @@ async def test_arrow_keys_choose_a_command():
         await settle(pilot)
         assert agent.sent[-1]["message"] == "/cancel"
         assert not app.query_one("#suggest").display
+
+
+async def test_header_hidden_unless_connection_lost():
+    agent = FakeAgent()
+    app = make_app(agent)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        bar = app.header_bar
+        assert not bar.display
+        bar.connection = "offline"
+        bar.sync()
+        assert bar.display
+        bar.connection = "live"
+        bar.sync()
+        assert not bar.display

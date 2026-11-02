@@ -209,6 +209,8 @@ class HeaderBar(Horizontal):
         # Healthy is just the dot; only a problem earns words.
         label = "" if self.connection == "live" else f" {self.connection}"
         self._right.update(Text.assemble((glyph, color), (label, "dim")))
+        # No top bar in normal use; it only appears to flag a lost connection.
+        self.display = self.connection in ("offline", "reconnecting")
 
 
 class StatusLine(Horizontal):
