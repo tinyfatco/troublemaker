@@ -271,31 +271,39 @@ session, permission, delivery, and security contract.
 
 ## Data Directory
 
-Each platform channel gets its own subdirectory:
+The working directory is one unified workspace shared by every channel. Memory and history are not split per channel.
 
 ```
 ./data/
-├── MEMORY.md              # Global memory (all conversations)
-├── settings.json          # Settings (compaction, retry, etc.)
-├── events/                # Scheduled events (cron, one-shot, immediate)
-├── skills/                # Global CLI tools the agent creates
-├── C123ABC/               # Slack channel
-│   ├── MEMORY.md          # Channel-specific memory
-│   ├── log.jsonl          # Full message history
+├── MEMORY.md              # Persistent memory (all channels)
+├── memory/                # Daily notes (YYYY-MM-DD.md)
+├── SOUL.md, IDENTITY.md,  # Workspace persona files, seeded from src/templates/
+│   USER.md, AGENTS.md
+├── HEARTBEAT.md           # Heartbeat checklist read on periodic wakes
+├── BRIEF.md               # Current operator-assigned brief (if any)
+├── goal.json              # Active persistent goal and its lifecycle state
+├── settings.json          # Model, compaction, retry, and runtime preferences
+├── log.jsonl              # Unified activity log across all channels
+├── awareness/
 │   ├── context.jsonl      # LLM context window
-│   └── skills/            # Channel-specific tools
-└── tg-456789/             # Telegram chat
-    └── ...
+│   └── scratch/           # Agent working directory
+├── attention/
+│   ├── queue/             # Scheduled prompts that wake the agent
+│   └── history/           # Fired/expired prompts with metadata
+├── calendar/events/       # Calendar items shown in workspace clients
+├── display/projects/      # Canvas/display projects shown in workspace clients
+├── skills/                # CLI tools the agent creates (each has SKILL.md)
+└── attachments/           # Files shared by users
 ```
 
 ## Memory
 
-The agent uses `MEMORY.md` files to persist context across sessions:
+The agent persists context in workspace files:
 
-- **Global memory** (`data/MEMORY.md`) — Shared across all channels. Project context, preferences, conventions.
-- **Channel memory** (`data/<channel>/MEMORY.md`) — Per-conversation context, decisions, ongoing work.
+- **`MEMORY.md`**: curated long-term memory, loaded into the system prompt on every turn.
+- **`memory/YYYY-MM-DD.md`**: raw daily notes the agent writes and periodically distills into `MEMORY.md`.
 
-These are loaded into the system prompt on every message. The agent updates them autonomously as it learns, or you can edit them directly.
+The agent updates these on its own as it learns. You can also edit them directly.
 
 ## Skills
 
@@ -315,7 +323,7 @@ The agent can schedule events that wake it up:
 | **One-shot** | At a specific time, once | Reminders, scheduled tasks |
 | **Periodic** | Cron schedule | Daily summaries, inbox checks |
 
-Event files go in `data/events/`. External systems can also write events here to trigger the agent without going through a platform.
+Event files go in `data/attention/queue/`; fired and expired events move to `data/attention/history/`. External systems can also write events there to wake the agent without going through a platform. A legacy `data/events/` directory is still watched if it exists. When a host owns delayed schedules, it delivers them through `POST /scheduled-prompt/inbound` instead.
 
 ## Natural follow-ups
 
@@ -363,6 +371,17 @@ docker run -d --name sandbox -v $(pwd)/data:/workspace alpine:latest tail -f /de
 troublemaker --sandbox=docker:sandbox ./data
 ```
 
+### Docker Compose (VPS)
+
+The repo ships a `Dockerfile` and a `docker-compose.yml`. The image builds Troublemaker from source on `node:22-bookworm` and adds Chromium plus Puppeteer browser tools:
+
+```bash
+# create agent.env with your model key and adapter tokens (see the compose file header)
+docker compose up -d
+```
+
+The compose service mounts `/data/agent` as `/data` and runs `--adapter=telegram:polling --sandbox=host --port=3002`. Edit `command:` for other adapters. Uncomment `ports:` only when a webhook adapter needs inbound HTTP behind a trusted proxy.
+
 ### VPS / Bare Metal
 
 ```bash
@@ -376,7 +395,10 @@ corepack enable
 pnpm install --frozen-lockfile
 pnpm dev        # Watch mode
 pnpm build      # Production build
+pnpm typecheck  # tsc --noEmit
 ```
+
+Tests are focused `pnpm test:<area>` scripts; see `package.json` for the full list. Run `pnpm test:security-boundaries` before changing any gateway, webhook, MCP, operator, or host-tool ingress. Run the adapter suite (`test:slack-*`, `test:teams-*`, `test:discord-*`, `test:email-*`, and so on) for any adapter you touch.
 
 ### Code Structure
 
