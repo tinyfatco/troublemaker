@@ -57,6 +57,7 @@ class HistoryEntry:
     stop_reason: str | None = None
     inputs: list[UserInput] = field(default_factory=list)
     is_ambient: bool = False
+    message_timestamp: int | None = None
 
 
 # --------------------------------------------------------------------------- user input envelopes
@@ -247,6 +248,37 @@ def _normalize_content(value: Any) -> list[Block]:
     return content
 
 
+TOOL_PRESENTATION_TYPE = "troublemaker.tool-presentation"
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def parse_tool_presentation(line: str) -> tuple[int, list[Block]] | None:
+    """Display-only record of a turn's tool calls, keyed by its assistant message timestamp.
+
+    Runtimes that run tools outside the agent loop (Claude CLI) persist text-only
+    assistant messages; this custom entry restores their tool rows on reload.
+    """
+    try:
+        raw = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(raw, dict) or raw.get("type") != "custom" or raw.get("customType") != TOOL_PRESENTATION_TYPE:
+        return None
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        return None
+    timestamp = _int_or_none(data.get("messageTimestamp"))
+    content = _normalize_content(data.get("content"))
+    if timestamp is None or not any(block["type"] == "toolCall" for block in content):
+        return None
+    return timestamp, content
+
+
 def parse_context_line(line: str) -> HistoryEntry | None:
     try:
         raw = json.loads(line)
@@ -268,6 +300,7 @@ def parse_context_line(line: str) -> HistoryEntry | None:
         parent_id=str(raw.get("parentId") or "") or None,
         model=str(message.get("model") or raw.get("model") or "") or None,
         stop_reason=str(message.get("stopReason") or raw.get("stopReason") or "") or None,
+        message_timestamp=_int_or_none(message.get("timestamp")),
     )
     if role != "user":
         return entry

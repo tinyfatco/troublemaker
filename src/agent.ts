@@ -56,6 +56,7 @@ import {
 import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
 import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
 import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
+import { buildToolPresentation, TOOL_PRESENTATION_CUSTOM_TYPE } from "./streaming/tool-presentation.js";
 import { AssistantTextProjection } from "./streaming/assistant-text-projection.js";
 import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
 import { UserInputProvenance } from "./streaming/user-input-provenance.js";
@@ -1115,6 +1116,22 @@ async function createRunner(
 
 	// Event handler
 	let _eventSeq = 0;
+	// Claude CLI runs tools over MCP, outside the agent loop, so its persisted
+	// assistant message holds only text. Save a display-only record of the
+	// turn's interleaved tool calls so reloaded transcripts keep them. Deferred
+	// one tick so it lands after AgentSession persists the message itself.
+	const persistToolPresentation = (message: any) => {
+		if (runState.handoffRequested || !isClaudeCliProvider(message?.provider)) return;
+		const presentation = buildToolPresentation(runState.liveSnapshot.current(false), Number(message?.timestamp));
+		if (!presentation) return;
+		setImmediate(() => {
+			try {
+				getSessionManager().appendCustomEntry(TOOL_PRESENTATION_CUSTOM_TYPE, presentation);
+			} catch (error) {
+				log.logWarning("Could not persist tool presentation", error instanceof Error ? error.message : String(error));
+			}
+		});
+	};
 	const eventHandler = async (event: any) => {
 		if (event.type === "compaction_start") { beginCompaction(event.reason); beginTransition("compaction", "context_limit"); }
 		else if (event.type === "compaction_end") { finishCompaction(); const e = event as any; finishTransition(e.result ? "completed" : e.aborted ? "aborted" : e.errorMessage ? "failed" : "skipped", e.result ? {tokensBefore: e.result.tokensBefore} : {}); }
@@ -1306,6 +1323,7 @@ async function createRunner(
 					emitAssistantTextEvent(assistantText);
 				}
 				emitSnapshot(false);
+				persistToolPresentation(agentEvent.message);
 				const assistantMsg = agentEvent.message as any;
 
 				if (assistantMsg.stopReason) {

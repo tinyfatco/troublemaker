@@ -159,3 +159,46 @@ def test_thinking_only_when_enabled():
         t.apply_live(live.snapshot("r1", [{"type": "thinking", "thinking": "hmm"}, text("ok")]))
     assert visible(hidden) == ["assistant:ok"]
     assert visible(shown) == ["assistant:think:hmm|ok"]
+
+
+def test_history_restores_claude_cli_tool_calls_from_presentation_record():
+    import json
+
+    answer = json.loads(assistant_line([text("Checking."), text("All good.")], parent="u1", entry_id="a1"))
+    answer["message"]["timestamp"] = 1762120800000
+    presentation = {
+        "type": "custom",
+        "customType": "troublemaker.tool-presentation",
+        "id": "p1",
+        "parentId": "a1",
+        "data": {
+            "messageTimestamp": 1762120800000,
+            "content": [
+                text("Checking."),
+                {"type": "toolCall", "id": "t1", "name": "bash", "label": "Run tests", "arguments": {"command": "pytest"}},
+                {"type": "toolResult", "toolCallId": "t1", "isError": False},
+                {"type": "toolCall", "id": "t2", "name": "read", "label": "Read log", "arguments": {}},
+                {"type": "toolResult", "toolCallId": "t2", "isError": True},
+                text("All good."),
+            ],
+        },
+    }
+    t = Transcript(CHANNEL)
+    t.load_history([user_line("check it", entry_id="u1"), json.dumps(answer), json.dumps(presentation)])
+    assert visible(t) == [
+        "user:user:check it",
+        "assistant:Checking.|tool:Run tests:success|tool:Read log:error|All good.",
+    ]
+
+
+def test_presentation_without_matching_message_is_ignored():
+    import json
+
+    presentation = {
+        "type": "custom",
+        "customType": "troublemaker.tool-presentation",
+        "data": {"messageTimestamp": 1, "content": [{"type": "toolCall", "id": "t9", "name": "bash", "arguments": {}}]},
+    }
+    t = Transcript(CHANNEL)
+    t.load_history([user_line("hi", entry_id="u1"), assistant_line([text("hello")], parent="u1"), json.dumps(presentation)])
+    assert visible(t) == ["user:user:hi", "assistant:hello"]
