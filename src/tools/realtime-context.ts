@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import { enforceRequiredToolLabels } from "./tool-label.js";
+import { TOOL_PRESENTATION_CUSTOM_TYPE } from "../streaming/tool-presentation.js";
 
 const DEFAULT_BRIEFING_RECENT_LIMIT = 10;
 const DEFAULT_BRIEFING_MAX_CHARS = 4_000;
@@ -185,6 +186,8 @@ function searchFile(file: SearchFile, query: string, limit: number): ContextSear
 function renderContextLine(line: string): string {
 	const object = parseJson(line);
 	if (!object) return line;
+	// Display-only tool rows duplicate the assistant message they decorate.
+	if (object.type === "custom" && object.customType === TOOL_PRESENTATION_CUSTOM_TYPE) return "";
 
 	const logText = stringValue(object.text);
 	if (logText) {

@@ -32,6 +32,7 @@ from .protocol import (
     normalize_channel,
     normalize_input,
     parse_context_line,
+    parse_tool_presentation,
     tool_label,
 )
 
@@ -531,6 +532,14 @@ class Transcript:
     def load_history(self, lines: list[str]) -> None:
         """Paint the tail of the durable backlog (connect and ``/reload``)."""
         entries = [entry for entry in map(parse_context_line, lines) if entry is not None]
+        presentations = dict(item for item in map(parse_tool_presentation, lines) if item is not None)
+        for entry in entries:
+            if (
+                entry.role == "assistant"
+                and entry.message_timestamp in presentations
+                and not any(block["type"] == "toolCall" for block in entry.content)
+            ):
+                entry.content = presentations[entry.message_timestamp]
         fresh = [entry for entry in entries if entry.id not in self._seen]
         for entry in entries:
             if entry.id not in self._seen:
@@ -640,6 +649,11 @@ class Transcript:
                 tool.state = "success"  # durable history: the call completed; a toolResult may refine this.
                 tool.finished_at = tool.started_at
             tools[id(block)] = tool
+        for block in entry.content:
+            if block["type"] == "toolResult" and block.get("isError"):
+                failed = self._tools.get(f"tool:{block.get('toolCallId')}")
+                if failed is not None:
+                    failed.state = "error"
         item = AssistantItem(
             self._key("assistant"),
             self._parts(entry.content, tools),
