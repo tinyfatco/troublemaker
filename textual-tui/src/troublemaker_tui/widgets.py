@@ -9,6 +9,7 @@ import zlib
 from datetime import datetime
 
 from rich.console import Group, RenderableType
+from rich.padding import Padding
 from rich.syntax import Syntax
 from rich.text import Text
 from textual import events
@@ -24,6 +25,9 @@ from .transcript import AssistantItem, Item, NoticeItem, ToolCall, TransitionIte
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 MAX_DETAIL = 24_000
 DETAIL_BACKGROUND = "#1A1B24"  # matches $surface in the troublemaker theme
+INSET = "#101118"  # code wells inside a tool card, a step darker than the card
+CARD_INK = "#14151C"  # pill text, the theme background
+DETAIL_LINES = 14
 TOOL_GLYPHS = {"pending": "", "success": "✓", "error": "✗", "cancelled": "−", "unknown": "·"}
 TOOL_STYLES = {"pending": "$warning", "success": "$success", "error": "$error", "cancelled": "$text-muted", "unknown": "$text-muted"}
 
@@ -254,6 +258,7 @@ class ToolRow(Vertical, can_focus=True):
         super().__init__(classes="tool")
         self.tool = tool
         self.expanded = False
+        self.full = False
         self._header = Static(classes="tool-header")
         self._detail = Static(classes="tool-detail")
 
@@ -272,6 +277,10 @@ class ToolRow(Vertical, can_focus=True):
         self._header.update(self._header_text())
         self._detail.display = self.expanded
         if self.expanded:
+            details = tool.details or {}
+            name = one_line(str(details.get("toolName") or tool.name))
+            self._detail.border_title = f"[bold]{name}[/]"
+            self._detail.border_subtitle = self._badge()
             self._detail.update(self._detail_renderable())
 
     def tick(self) -> None:
@@ -299,53 +308,83 @@ class ToolRow(Vertical, can_focus=True):
             text.append("  ▾" if self.expanded else "  ▸", style="dim")
         return text
 
+    def _badge(self) -> str:
+        """Status badge for the card's corner, as Textual markup."""
+        tool = self.tool
+        details = tool.details or {}
+        color = {"success": "#9ECE6A", "error": "#F7768E", "pending": "#E0AF68"}.get(tool.state, "#565F89")
+        status = {"success": "✓ done", "error": "✗ failed", "pending": "running", "cancelled": "− stopped"}.get(tool.state, "· unknown")
+        if isinstance(details.get("exitStatus"), int):
+            code = details["exitStatus"]
+            if code != 0 and tool.state == "success":
+                color = "#E0AF68"  # the call worked, but the command it ran did not
+            glyph = "✗" if tool.state == "error" else "!" if code != 0 else TOOL_GLYPHS.get(tool.state) or "·"
+            status = f"{glyph} exit {code}"
+        parts = [f"[bold {color}]{status}[/]"]
+        if isinstance(details.get("durationMilliseconds"), (int, float)):
+            parts.append(f"[#565F89]{format_duration(details['durationMilliseconds'] / 1000)}[/]")
+        return " [#3B4261]·[/] ".join(parts)
+
     def _detail_renderable(self) -> RenderableType:
         tool = self.tool
         details = tool.details or {}
-        sections: list[RenderableType] = []
+        blocks: list[RenderableType] = []
 
-        def heading(label: str, style: str = "dim") -> None:
-            sections.append(Text(label, style=f"{style} bold"))
-
-        def body(content: dict | None, fallback: str = "") -> RenderableType:
-            text = bound(str((content or {}).get("text") or fallback)).rstrip("\n")
+        def section(label: str, color: str, content: dict | None, meta: str = "", prompt: str = "") -> None:
+            raw = bound(str((content or {}).get("text") or "")).rstrip("\n")
+            lines = raw.split("\n")
+            hidden = 0 if self.full else max(0, len(lines) - DETAIL_LINES)
+            shown = "\n".join(lines[:len(lines) - hidden] if hidden else lines)
+            pill = Text.assemble((f" {label} ", f"bold {CARD_INK} on {color}"))
+            info = [meta] if meta else []
+            if len(lines) > 1:
+                info.append(f"{len(lines)} lines")
+            if (content or {}).get("isTruncated"):
+                info.append("truncated by agent")
+            if info:
+                pill.append("  " + " · ".join(info), style="#565F89")
+            if blocks:
+                blocks.append(Text(""))
+            blocks.append(pill)
             fmt = (content or {}).get("format")
             lexer = {"json": "json", "shell": "bash", "diff": "diff"}.get(fmt or "", (content or {}).get("language") or "")
-            if fmt == "code" and not lexer:
-                lexer = "text"
             if lexer:
-                return Syntax(text, lexer, theme="ansi_dark", word_wrap=True, background_color=DETAIL_BACKGROUND)
-            return Text(text, style="red" if fmt == "error" else "")
+                code: RenderableType = Syntax(prompt + shown, lexer, theme="ansi_dark", word_wrap=True, background_color=INSET)
+            else:
+                code = Text(prompt + shown, style=f"{'#F7768E' if fmt == 'error' else '#C8D0F0'} on {INSET}")
+            blocks.append(Padding(code, (0, 1), style=f"on {INSET}"))
+            if hidden:
+                blocks.append(Padding(
+                    Text(f"⋯ {hidden} more line{'s' if hidden != 1 else ''} · click to show all", style=f"italic #565F89 on {INSET}"),
+                    (0, 1), style=f"on {INSET}",
+                ))
 
-        name = one_line(str(details.get("toolName") or tool.name))
-        if name.lower() != tool.label.lower():
-            sections.append(Text(name, style="dim"))
         invocation = details.get("invocation")
         if invocation and invocation.get("text"):
-            heading("input")
-            sections.append(body(invocation))
+            prompt = "$ " if invocation.get("format") == "shell" else ""
+            section("INPUT", "#7AA2F7", invocation, prompt=prompt)
         streamed = ""
         for output in tool.outputs:
             result = (output.get("displayDetails") or {}).get("result")
             if not result or not result.get("text"):
                 continue
-            pid = f" · pid {output['pid']}" if isinstance(output.get("pid"), int) else ""
-            heading(f"{output.get('stream', 'stdout')}{pid}")
-            sections.append(body(result))
+            stream = str(output.get("stream") or "stdout")
+            pid = f"pid {output['pid']}" if isinstance(output.get("pid"), int) else ""
+            color = {"stderr": "#E0AF68", "system": "#BB9AF7"}.get(stream, "#7DCFFF")
+            section(stream.upper(), color, result, meta=pid)
             streamed += sanitize(result["text"])
         final = ((tool.result or {}).get("displayDetails") or {}).get("result") or (details.get("result") if not tool.outputs else None)
         if final and final.get("text") and sanitize(final["text"]) != streamed:
-            heading("error" if tool.state == "error" else "output", "red" if tool.state == "error" else "dim")
-            sections.append(body(final))
+            if tool.state == "error":
+                section("ERROR", "#F7768E", {**final, "format": final.get("format") or "error"})
+            else:
+                section("OUTPUT", "#9ECE6A", final)
         for artifact in details.get("artifacts") or []:
-            heading(f"artifact · {one_line(str(artifact.get('label') or ''))}")
-            sections.append(Text(bound(str(artifact.get("reference") or ""))))
-        if not sections:
-            sections.append(Text(
-                "No detail retained for this call." if tool.state != "pending" else "Waiting for output…",
-                style="dim italic",
-            ))
-        return Group(*sections)
+            section("ARTIFACT", "#BB9AF7", {"text": str(artifact.get("reference") or "")}, meta=one_line(str(artifact.get("label") or "")))
+        if not blocks:
+            message = "Waiting for output…" if tool.state == "pending" else "No detail was retained for this call."
+            blocks.append(Text(message, style="italic #565F89"))
+        return Group(*blocks)
 
     def action_toggle(self) -> None:
         self.expanded = not self.expanded
@@ -369,7 +408,13 @@ class ToolRow(Vertical, can_focus=True):
         self.post_message(self.Leave())
 
     def on_click(self, event: events.Click) -> None:
-        # Toggle in place; the click then bubbles up and returns focus to the input.
+        # Header toggles the card; inside the card, toggles long output. The
+        # click then bubbles up and returns focus to the input.
+        target = getattr(event, "widget", None)
+        if self.expanded and target is not None and target is not self._header and self._detail in (target, *target.ancestors):
+            self.full = not self.full
+            self.sync()
+            return
         self.action_toggle()
 
 

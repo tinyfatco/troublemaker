@@ -90,11 +90,15 @@ Screen {
 .tool-detail {
     margin: 0 0 1 2;
     padding: 0 1;
-    border-left: outer $panel;
+    border: round $panel;
+    border-title-align: left;
+    border-subtitle-align: right;
+    border-title-color: $foreground 80%;
     background: $surface;
-    color: $foreground 85%;
 }
-.tool:focus .tool-detail { border-left: outer $primary; }
+.tool:focus .tool-detail { border: round $primary 70%; }
+.tool.-error .tool-detail { border: round $error 45%; }
+.tool.-error:focus .tool-detail { border: round $error 80%; }
 
 .ambient {
     margin-top: 1;
