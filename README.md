@@ -124,10 +124,16 @@ Options:
   --sandbox=host              Run tools on host (default)
   --sandbox=docker:<name>     Run tools in Docker container (recommended)
   --adapter=<name>[,<name>]   Platform adapters (default: auto-detect)
-  --port=<number>             Gateway HTTP port (default: 3000)
+  --port=<number>             Gateway HTTP port (default: 3000, or MOM_HTTP_PORT)
+  --host=<addr>               Gateway bind address (default: 127.0.0.1; loopback only
+                              unless a Hostd container owns the boundary)
+  --skills=<dir>              Extra skills directory (repeatable)
+  --ui=<dir>                  Serve a static web UI from the gateway
 
   --download <channel-id>     Download Slack channel history and exit
 ```
+
+The package installs three binaries: `troublemaker` (the runtime), `crawdad` (an alias for the same entry point), and `troublemaker-tui` (the terminal client below).
 
 ### Terminal UI
 
@@ -374,19 +380,36 @@ pnpm build      # Production build
 
 ### Code Structure
 
-- `src/main.ts` — Entry point, CLI args, adapter creation, gateway startup
-- `src/gateway.ts` — Unified HTTP server with path-based routing
+- `src/main.ts` — Thin bin shim; imports the Node host entry point
+- `src/host/node/cli.ts` — Real entry point: CLI args, adapter auto-detection and creation, gateway route registration, startup
+- `src/host/node/` — Node host services: adapter route table (`adapter-route-identity.ts`), terminal upgrade, Deepgram/ElevenLabs voice sessions, owner push, device grants
+- `src/gateway.ts` — Unified HTTP server: path-based routing, readiness gating, loopback-only bind, file/awareness/session APIs
 - `src/agent.ts` — Agent runner, tool execution, session management
-- `src/adapters/` — Platform adapters (Slack, Telegram, Email)
-  - `types.ts` — PlatformAdapter interface
-  - `slack-socket.ts` / `slack-webhook.ts` — Slack adapters
-  - `telegram-polling.ts` / `telegram-webhook.ts` — Telegram adapters
-  - `email-webhook.ts` — Email adapter
+- `src/adapters/` — Platform adapters, one or more files per platform
+  - `types.ts` — `PlatformAdapter` interface
+  - `slack-*.ts` — Socket Mode, webhook, reactions, native/batched tool progress
+  - `teams-*.ts` — Bot Connector webhook, targets, formatting
+  - `discord-*.ts` — Gateway WebSocket and Interactions webhook
+  - `telegram-*.ts` — Polling and webhook
+  - `mattermost-socket.ts`, `rocket-chat-webhook.ts`, `zulip-webhook.ts` — Team chat
+  - `email-webhook.ts`, `email/` — Email
+  - `phone-messaging-webhook.ts`, `phone-messaging/` — SMS/iMessage providers (Loop, Twilio, host-managed)
+  - `form-webhook.ts`, `web.ts`, `mcp.ts` — Website forms, web chat, MCP Streamable HTTP
+  - `voice*.ts`, `web-voice.ts`, `realtime-voice.ts` — Voice adapters and bridges
+  - `operator.ts`, `heartbeat.ts`, `scheduled-prompt-webhook.ts` — Fleet control, periodic wakes, host-owned delayed prompts
+- `src/tools/` — Agent tools: `bash`, `read`, `write`, `edit`, `attach`, `send_message`, `react_to_message`, `list_channels`, `read_thread`, `self_configure`, goals (`set_goal`, `complete_goal`, `block_goal`, `abandon_goal`), `yield_no_action`, `handoff_context`, `speak`, `imagegen`, `search_tools`, Gmail, domains, and site deploy
+- `src/core/` — Prompt assembly, routing, runtime contract, tool definitions, input budget
+- `src/streaming/` — Live turn snapshots, working output, steering and tool-delivery projections
+- `src/console/` — Portable-client console service: conversation projection, voice sessions, transcription, owner review
+- `src/tui/` — `troublemaker-tui` terminal client
+- `src/modes/` — Edge and host execution modes
+- `src/mcp-client/` — Bridge for external MCP servers' tools
+- `src/cua-driver/` — Computer-use bridge (`@trycua/cua-driver`)
+- `src/storage/`, `src/store.ts` — Workspace, awareness, events, settings and channel persistence
 - `src/context.ts` — Session manager, log-to-context sync
-- `src/store.ts` — Channel data persistence
 - `src/sandbox.ts` — Docker/host sandbox execution
-- `src/tools/` — Tool implementations (bash, read, write, edit, attach)
 - `src/events.ts` — Scheduled events watcher
+- `src/templates/` — Bootstrap workspace files (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `BOOTSTRAP.md`)
 
 ## Acknowledgments
 
