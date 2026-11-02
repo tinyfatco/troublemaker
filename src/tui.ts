@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "child_process";
+import { existsSync } from "fs";
+import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { installTuiProfile, loadTuiProfiles, resolveInvokedAgent, type TuiPresentation } from "./tui/config.js";
 import { runTroublemakerTui } from "./tui/app.js";
@@ -14,8 +17,14 @@ interface ParsedInstallArgs {
 	binDir?: string;
 }
 
+let useClassic = process.env.TROUBLEMAKER_TUI === "classic";
+
 async function main(): Promise<void> {
-	const args = process.argv.slice(2);
+	const args = process.argv.slice(2).filter((arg) => {
+		if (arg !== "--classic") return true;
+		useClassic = true;
+		return false;
+	});
 	const invokedAgent = resolveInvokedAgent(process.argv[1]);
 	if (invokedAgent && args.length === 0) {
 		await openAgent(invokedAgent);
@@ -72,7 +81,18 @@ async function openAgent(command: string): Promise<void> {
 	if (!profile) {
 		throw new Error(`No TUI profile is installed for "${command}". Run troublemaker-tui install ${command.toLowerCase()} --url <agent-url>`);
 	}
+	if (!useClassic && runTextualClient(profile.command)) return;
 	await runTroublemakerTui(profile);
+}
+
+/** Opens the Textual client (textual-tui/) when it and `uv` are available. Returns false to fall back. */
+function runTextualClient(command: string): boolean {
+	const project = join(dirname(fileURLToPath(import.meta.url)), "..", "textual-tui");
+	if (!existsSync(join(project, "pyproject.toml"))) return false;
+	const result = spawnSync("uv", ["run", "--quiet", "--project", project, "troublemaker-textual", command], { stdio: "inherit" });
+	if (result.error) return false; // uv missing: use the classic client.
+	process.exitCode = result.status ?? 1;
+	return true;
 }
 
 function parseInstallArgs(args: string[]): ParsedInstallArgs {
@@ -112,9 +132,11 @@ Usage:
   troublemaker-tui install <command> --url <agent-url> [--name <name>] [--channel <id>] [--presentation compact|pi|pi-thinking] [--token-file <absolute-path>]
   troublemaker-tui open <agent>
   troublemaker-tui list
-  <agent-command>
+  <agent-command> [--classic]
 
-Installed agent commands open a Pi-styled terminal client against that agent's
+Installed agent commands open the Textual client (textual-tui/, run through uv)
+when uv is installed. Pass --classic or set TROUBLEMAKER_TUI=classic for the
+TypeScript client. The classic client is a Pi-styled terminal client against that agent's
 canonical Troublemaker console session. Compact presentation is the default;
 use --presentation pi for bounded, redacted live tool detail, or pi-thinking to
 also stream local model thinking through the authenticated terminal connection.`);
