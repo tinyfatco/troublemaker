@@ -186,7 +186,9 @@ class HeaderBar(Horizontal):
         self._left.update(left)
         styles = {"live": ("●", "#9ECE6A"), "connecting": ("◌", "#E0AF68"), "reconnecting": ("◌", "#E0AF68"), "offline": ("○", "#F7768E")}
         glyph, color = styles.get(self.connection, ("○", "#F7768E"))
-        self._right.update(Text.assemble((f"{glyph} ", color), (self.connection, "dim")))
+        # Healthy is just the dot; only a problem earns words.
+        label = "" if self.connection == "live" else f" {self.connection}"
+        self._right.update(Text.assemble((glyph, color), (label, "dim")))
 
 
 class StatusLine(Horizontal):
