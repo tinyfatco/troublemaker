@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { getModel } from "@earendil-works/pi-ai/compat";
 import {
 	boundCompactionStreamOptions,
 	COMPACTION_MAX_OUTPUT_TOKENS,
@@ -10,7 +9,7 @@ import {
 } from "../src/model-thinking.js";
 import { getFireworksModel } from "../src/fireworks-models.js";
 
-const minimax = getModel("fireworks" as any, "accounts/fireworks/models/minimax-m2p7" as any);
+const minimax = getFireworksModel("accounts/fireworks/models/minimax-m2p7");
 const glm = getFireworksModel("accounts/fireworks/models/glm-5p1");
 
 assert(minimax, "MiniMax M2.7 model exists");

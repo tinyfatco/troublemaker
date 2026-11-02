@@ -32,8 +32,10 @@ const agent = createEdgeAgentSession({
 	emit: () => {},
 });
 
-assert.equal(agent.state.messages.length, 1);
-assert.equal((agent.state.messages[0] as { role?: string }).role, "user");
+// Pi 1.x prepends a system message carrying the prompt and tool declarations.
+const historyMessages = agent.state.messages.filter((message) => message.role !== "system");
+assert.equal(historyMessages.length, 1);
+assert.equal((historyMessages[0] as { role?: string }).role, "user");
 
 const edgeFiles = [
 	"src/modes/edge/index.ts",

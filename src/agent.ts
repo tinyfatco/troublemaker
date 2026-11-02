@@ -5,6 +5,8 @@ import { createHandoffContextTool, parseHandoffContextArguments } from "./tools/
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import { toLegacyContext } from "./core/legacy-context.js";
+import { restoreAgentHooks, snapshotAgentHooks } from "./core/agent-hooks.js";
 import {
 	AgentSession,
 	convertToLlm,
@@ -558,7 +560,8 @@ async function createRunner(
 		onToolEvent: (event) => claudeCliToolEventHandler(event),
 		onToolOutput: (event) => claudeCliToolOutputHandler(event),
 	});
-	const streamFn: StreamFn = (streamModel, context, options) => {
+	const streamFn: StreamFn = (streamModel, transcript, options) => {
+		const context = toLegacyContext(transcript);
 		const boundedOptions = boundCompactionStreamOptions(context, options);
 		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
 		if (runState.handoffRequested) {
@@ -648,6 +651,7 @@ async function createRunner(
 		steeringMode: "all",
 		getApiKey: async (provider: string) => getCodexCliRuntimeAuth(provider) ?? getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
 	});
+	const agentHookBaseline = snapshotAgentHooks(agent);
 
 	// Defer context loading to run()
 	let sessionManager: SessionManager | null = null;
@@ -696,7 +700,11 @@ async function createRunner(
 			return runState.handoffRequested ? ctx : undefined;
 		};
 		pi.on("before_agent_start", (event) => {
-			requestHandoff([...agent.state.messages, { role: "user", content: event.prompt, timestamp: 0 }]);
+			// Pi 1.2+ also fires this for idle custom-message runs (`triggerTurn`); those carry `message`, not `prompt`.
+			const startMessage = event.messageType === "user"
+				? { role: "user" as const, content: event.prompt, timestamp: 0 }
+				: event.message;
+			requestHandoff([...agent.state.messages, startMessage]);
 		});
 		pi.on("context", (event) => {
 			// A tool checkpoint already contains its summary. Another model call
@@ -796,6 +804,9 @@ async function createRunner(
 				}
 				log.logInfo(`[perf] resourceLoader.reload (${extensions.extensions.length} extensions): ${(performance.now() - t).toFixed(0)}ms`);
 			}
+			// Each AgentSession wraps the Agent's hooks; start every session from the
+			// pre-session baseline so disposed sessions' hooks never stack.
+			restoreAgentHooks(agent, agentHookBaseline);
 			session = new AgentSession({
 				agent,
 				sessionManager: getSessionManager(),
@@ -810,9 +821,9 @@ async function createRunner(
 				getActiveToolNames: () => session?.getActiveToolNames() ?? [],
 				setActiveToolsByName: (toolNames) => {
 					if (!session) return;
-					const currentSystemPrompt = session.agent.state.systemPrompt;
+					// The runtime prompt is forced per request by the before_agent_start
+					// extension, so rebuilding the loadout prompt here cannot replace it.
 					session.setActiveToolsByName(toolNames);
-					session.agent.state.systemPrompt = currentSystemPrompt;
 				},
 			};
 			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS, ...(inputBudget ? ["input_detail"] : [])] : tools.map((tool) => tool.name));
@@ -923,6 +934,7 @@ async function createRunner(
 		unsubscribeSession = null;
 		session?.dispose();
 		session = null;
+		restoreAgentHooks(agent, agentHookBaseline);
 		toolSearchRegistry.current = null;
 		sessionManager = null;
 		resourceLoaderReady = false;
@@ -1539,8 +1551,10 @@ async function createRunner(
 					STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
 					agent.state.model,
 				);
+			// Pi 1.x keeps the prompt in transcript system messages (state.systemPrompt is
+			// read-only). The dynamic runtime context extension forces activeSystemPrompt
+			// onto each request via before_agent_start.
 			activeSystemPrompt = systemPrompt;
-			currentSession.agent.state.systemPrompt = systemPrompt;
 
 			// Keep the system prefix and existing history stable across channels.
 			// The extension appends workspace snapshots only when changed or lost
@@ -1703,7 +1717,7 @@ async function createRunner(
 
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
-				systemPrompt: currentSession.agent.state.systemPrompt,
+				systemPrompt: activeSystemPrompt,
 				runtimeContext: activeRuntimeContext,
 				runtimeContextPlacement: "append-only-message",
 				sessionPreamble,
@@ -2071,7 +2085,7 @@ async function createRunner(
 					prompt: text,
 					enqueue: () => {
 						forgetSender = userInputProvenance.track(text, options.senderIdentity);
-						return activeSession.steer(text);
+						return activeSession.steer(text).then(() => undefined);
 					},
 					onAccepted: options.onAccepted,
 					waitForIdle: () => activeSession.waitForIdle(),
