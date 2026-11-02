@@ -151,6 +151,7 @@ Screen {
     height: auto;
     min-height: 1;
     max-height: 10;
+    margin-top: 1;
     padding: 0 1;
     border: none;
     border-left: outer $accent;
