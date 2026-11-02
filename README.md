@@ -47,7 +47,7 @@ The agent has full bash access (in a Docker sandbox or on host), reads/writes fi
                                              │                                  │
   STATUS                                     │  GET  /health · /status          │
                                              │  GET  /schedule                  │
-                                             │  (single HTTP server, default     │
+                                             │  (single HTTP server, default    │
                                              │   port 3000: --port or           │
                                              │   MOM_HTTP_PORT)                 │
                                              └────────────────┬─────────────────┘
