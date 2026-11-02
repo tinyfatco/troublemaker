@@ -1,6 +1,6 @@
 # Troublemaker
 
-An AI agent runtime with multi-platform adapters. Connects to Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, Telegram, and Email — runs tools, manages files, and maintains persistent memory across sessions.
+An AI agent runtime with multi-platform adapters. Connects to Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, Telegram, Discord, Email, SMS/iMessage, website forms, web chat, MCP clients, and voice — runs tools, manages files, and maintains persistent memory across sessions.
 
 Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://mariozechner.at/). Troublemaker extracts mom's agent core into a standalone runtime with multi-platform adapters. Mom does the thinking — troublemaker gets it to more places.
 
@@ -8,7 +8,7 @@ Built on [mom](https://github.com/badlogic/pi-mono) by [Mario Zechner](https://m
 
 When a message arrives from any platform, troublemaker hands it to the mom agent. Mom is **self-managing**: she installs her own tools, writes [CLI tools ("skills")](https://mariozechner.at/posts/2025-11-02-what-if-you-dont-need-mcp/), configures credentials, and maintains her workspace autonomously.
 
-**For each conversation** (Microsoft Teams, Slack, Zulip, Rocket.Chat, or Mattermost channel, Telegram chat, email thread), the agent maintains:
+**For each conversation** (Microsoft Teams, Slack, Zulip, Rocket.Chat, Mattermost, or Discord channel, Telegram chat, email thread, phone conversation), the agent maintains:
 - **Persistent memory** — `MEMORY.md` files (global + per-channel) loaded into every prompt
 - **Full history** — `log.jsonl` with searchable message archive, `context.jsonl` for the LLM window
 - **Custom tools** — Skills the agent writes and reuses across sessions
@@ -19,24 +19,54 @@ The agent has full bash access (in a Docker sandbox or on host), reads/writes fi
 ## Architecture
 
 ```
-                    ┌─────────────────────────┐
-                    │    Unified Gateway       │
-                    │    (single HTTP server)  │
-                    │    port 3002             │
-                    ├─────────────────────────┤
-Slack webhook ────► │  POST /slack/events      │
-Teams webhook ────► │  POST /teams/messages    │
-Rocket.Chat host ─► │  POST /rocketchat/inbound│
-Zulip host ───────► │  POST /zulip/inbound     │
-Telegram webhook ─► │  POST /telegram/webhook  │
-Email webhook ────► │  POST /email/inbound     │
-Health check ─────► │  GET  /health            │
-                    └─────────────────────────┘
+  INBOUND HTTP (webhooks, host relays)       ┌──────────────────────────────────┐
+                                             │         Unified Gateway          │
+  Slack Events API ────────────────────────► │  POST /slack/events              │
+  Microsoft Teams Bot Connector ───────────► │  POST /teams/messages            │
+  Mattermost host relay ───────────────────► │  POST /mattermost/inbound        │
+  Rocket.Chat host relay ──────────────────► │  POST /rocketchat/inbound        │
+  Zulip host relay ────────────────────────► │  POST /zulip/inbound             │
+  Telegram webhook ────────────────────────► │  POST /telegram/webhook          │
+  Discord Interactions ────────────────────► │  POST /discord/interactions      │
+  Discord gateway relay ───────────────────► │  POST /discord/messages          │
+  Email webhook ───────────────────────────► │  POST /email/inbound             │
+  SMS / iMessage (Loop, Twilio, host) ─────► │  POST /phone-messaging/webhook   │
+  Website form submissions ────────────────► │  POST /form/webhook              │
+  Web chat UI ─────────────────────────────► │  POST /web/chat · /web/stop      │
+  Generic input webhook (web) ─────────────► │  POST /input/webhook             │
+  MCP clients (agent tools) ───────────────► │  POST /mcp                       │
+  Host scheduler (delayed prompts) ────────► │  POST /scheduled-prompt/inbound  │
+  Operator / fleet control ────────────────► │  POST /operator/{message,        │
+                                             │        assign,configure}         │
+                                             │  GET  /operator/{read,describe}  │
+  Host tool bridge ────────────────────────► │  POST /host/tools/{bash,execute} │
+                                             │                                  │
+  WEBSOCKET UPGRADES                         │                                  │
+  Terminal UI / remote shell ──────────────► │  WS   /terminal                  │
+  Realtime voice ──────────────────────────► │  WS   /voice/realtime            │
+                                             │                                  │
+  STATUS                                     │  GET  /health · /status          │
+                                             │  GET  /schedule                  │
+                                             │  (single HTTP server, default     │
+                                             │   port 3000: --port or           │
+                                             │   MOM_HTTP_PORT)                 │
+                                             └────────────────┬─────────────────┘
+                                                              │
+  OUTBOUND CONNECTIONS (no public ingress)                    ▼
+  Slack Socket Mode ───────────────────────────────►  ┌──────────────────┐
+  Mattermost WebSocket ────────────────────────────►  │   Agent core     │
+  Telegram long polling ───────────────────────────►  │  (mom: tools,    │
+  Discord Gateway WebSocket ───────────────────────►  │   memory, skills)│
+                                                      └──────────────────┘
+  INTERNAL / LOCAL                                             ▲
+  Heartbeat (periodic self check-ins) ─────────────────────────┤
+  Scheduled events (workspace event files) ────────────────────┤
+  Voice bridges (WS :8765 voice, :8766 web voice) ─────────────┘
 ```
 
-All adapters share one HTTP server with path-based routing. The gateway starts first, then adapters initialize independently — if one adapter fails to start, the others keep working.
+Every inbound HTTP adapter shares one server with path-based routing. The gateway starts first and registers routes, then each adapter starts on its own. If one adapter fails, the others keep working; its route returns `503` until it is ready. Webhook routes use their platform's own authentication, such as Slack signing secrets, Bot Connector JWTs, Discord signatures, or scoped bearer capabilities for host relays. `/operator/*` stays disabled unless `MOM_OPERATOR_INBOUND_TOKEN` is set, and `/scheduled-prompt/inbound` exists only when a host owns delayed schedules.
 
-For always-on deployments (VPS, Docker), Slack Socket Mode, Mattermost WebSocket, and Telegram polling adapters are also available — no inbound HTTP required.
+For always-on deployments (VPS, Docker) that have no public ingress, use Slack Socket Mode, Mattermost WebSocket, Telegram polling, or the Discord Gateway adapter. Each one opens an outbound connection to the platform. The heartbeat and scheduled events wake the same agent internally, so every channel shares one workspace, memory, and log.
 
 ## Quick Start
 
@@ -76,6 +106,12 @@ troublemaker --adapter=slack:webhook,telegram:webhook --port=3002 ./data
 | `discord` / `discord:gateway` | Outbound Gateway WebSocket + REST | `MOM_DISCORD_BOT_TOKEN`, `MOM_DISCORD_APPLICATION_ID` | Always-on; no public ingress or relay |
 | `discord:webhook` | Signed inbound Interactions HTTP | Discord bot token, application ID, and public key | Slash commands and compatible relay deployments |
 | `email:webhook` | Inbound HTTP | `MOM_EMAIL_TOOLS_TOKEN` | Webhook-based |
+| `mattermost:webhook` | Host-managed HTTP + REST | `MOM_MATTERMOST_URL`, `MOM_MATTERMOST_BOT_TOKEN`, `MOM_MATTERMOST_INBOUND_TOKEN` | Hosted Mattermost behind a relay |
+| `phone-messaging:webhook` | Inbound HTTP + provider REST | `MOM_PHONE_MESSAGING=true` or Loop/Twilio credentials, `MOM_PHONE_INBOUND_TOKEN` | Two-way SMS and iMessage conversations |
+| `form:webhook` | Inbound HTTP | `MOM_FORM_INGRESS=true`, `MOM_FORM_INBOUND_TOKEN` | Website form submissions |
+| `web` | Inbound HTTP | `MOM_WEB_CHAT=true` | Browser chat UI and generic input webhook |
+| `mcp` | MCP Streamable HTTP | `MOM_MCP=true` | Expose agent tools to MCP clients; auth is handled by the fronting host |
+| `voice` | WebSocket (port 8765) | `MOM_VOICE_ADAPTER=true` | Voice sessions |
 
 **Auto-detection:** If no `--adapter` flag is given, troublemaker detects which adapters to start based on which env vars are set. Multiple adapters can run simultaneously.
 
