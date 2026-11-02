@@ -167,12 +167,30 @@ batch thread.
 | Variable | Required For | Description |
 |----------|-------------|-------------|
 | `ANTHROPIC_API_KEY` | Anthropic API models | Anthropic API key; not used by the Claude CLI backend |
+| `MOM_MODEL_PROVIDER` | model selection | Provider for the active model; overrides `settings.json` (for example `anthropic`, `claude-cli`, `codex-cli`) |
+| `MOM_MODEL_ID` | model selection | Model ID for that provider (for example `opus`, `default`) |
 | `MOM_CLAUDE_CLI_PATH` | claude-cli models | Claude executable path (default: `claude`) |
 | `MOM_CLAUDE_CLI_PERMISSION_MODE` | claude-cli host tools | Optional explicit Claude permission mode |
+| `MOM_CLAUDE_CLI_TIMEOUT_MS` | claude-cli models | Hard turn timeout (default 30 min) |
+| `MOM_CLAUDE_CLI_IDLE_TIMEOUT_MS` | claude-cli models | Timeout with no CLI output (default 5 min) |
+| `MOM_CLAUDE_CLI_MAX_OUTPUT_CHARS` / `_LINES` | claude-cli models | Output caps per turn (default 8 MiB / 20,000 lines) |
+| `MOM_CLAUDE_CLI_RESEED_CHARS` | claude-cli models | Transcript budget used to reseed a fresh CLI session (default 120,000) |
+| `MOM_CLAUDE_CLI_AUTH_CACHE_MS` | claude-cli models | How long a successful auth check is cached (default 30 s, max 5 min) |
+| `MOM_CODEX_CLI_PATH` | codex-cli models | Codex executable path (default: `codex`) |
+| `MOM_CODEX_CLI_TIMEOUT_MS`, `_IDLE_TIMEOUT_MS`, `_MAX_OUTPUT_CHARS`, `_MAX_OUTPUT_LINES`, `_RESEED_CHARS`, `_AUTH_CACHE_MS` | codex-cli models | Same meanings and defaults as the Claude CLI vars above |
+| `MOM_COMPACTION_TIMEOUT_MS` | compaction | Context compaction timeout (default 6 min; clamped to 30 s–30 min) |
+| `MOM_COMPACTION_SOUND` | compaction (macOS) | Sound cue when compaction runs: unset/`true` uses Purr, a file path uses that sound, `off` disables |
+| `MOM_COMPACTION_SOUND_PLAYER` / `_VOLUME` | compaction (macOS) | Player binary (default `/usr/bin/afplay`) and volume (default 0.12) |
+| `MOM_VOICE_ADAPTER` | auto-detection | Set to `true` to start the `voice` adapter (WebSocket on port 8765) |
+| `MOM_OPENAI_API_KEY` | realtime voice | OpenAI key for `/voice/realtime` when no cloud broker is configured (`OPENAI_API_KEY` also accepted) |
+| `MOM_DEEPGRAM_API_KEY` | console transcription | Deepgram key; or `MOM_DEEPGRAM_API_KEY_FILE`, or `MOM_DEEPGRAM_API_KEY_PLIST_FILE` + `_PLIST_KEY` |
+| `MOM_ELEVENLABS_API_KEY` | web voice, `speak` | ElevenLabs key; also enables the web voice bridge on port 8766. Voice sessions can read `MOM_ELEVENLABS_API_KEY_FILE` (default `~/.config/sag/elevenlabs-api-key`) |
+| `MOM_ELEVENLABS_VOICE_ID` / `_MODEL_ID` | web voice, `speak` | ElevenLabs voice and model; `MOM_ELEVENLABS_VOICE_ID_FILE` defaults to `~/.config/sag/voice-id` |
 | `MOM_SLACK_APP_TOKEN` | slack:socket | Slack app-level token (xapp-...) |
 | `MOM_SLACK_BOT_TOKEN` | slack:* | Slack bot token (xoxb-...) |
 | `MOM_SLACK_SIGNING_SECRET` | slack:webhook | HMAC signing secret for webhook verification |
 | `MOM_SLACK_INBOUND_TOKEN` | slack:webhook | Scoped bearer capability when a trusted host proxy verifies Slack instead |
+| `MOM_SLACK_ALLOWED_DM_USERS` | slack:* | Optional comma-separated Slack user IDs allowed to invoke the agent by DM |
 | `MOM_TEAMS_CLIENT_ID` | teams:webhook | Microsoft Entra application and bot ID |
 | `MOM_TEAMS_CLIENT_SECRET` | teams:webhook | Bot client credential; omit when using managed identity |
 | `MOM_TEAMS_MANAGED_IDENTITY_CLIENT_ID` | teams:webhook | Managed identity client ID, or `system` |
@@ -189,6 +207,7 @@ batch thread.
 | `MOM_MATTERMOST_ALLOWED_DM_USERS` | mattermost:* | Optional comma-separated user IDs or usernames allowed to invoke the agent by DM |
 | `MOM_MATTERMOST_ALLOWED_CHANNELS` | mattermost:* | Optional comma-separated channel IDs; inbound, outbound, files, and thread reads fail closed outside them |
 | `MOM_MATTERMOST_CHANNEL_MESSAGES_DIRECT` | mattermost:* | When `true`, every non-self post in an allowed channel directly wakes the agent |
+| `MOM_MATTERMOST_INBOUND_TOKEN` | mattermost:webhook | Required scoped bearer capability for host-delivered events (minimum 32 bytes) |
 | `MOM_ROCKETCHAT_URL` | rocket-chat:webhook | Host-owned, context-scoped Rocket.Chat REST proxy URL |
 | `MOM_ROCKETCHAT_BOT_TOKEN` | rocket-chat:webhook | Per-context host capability, never the native Rocket.Chat token |
 | `MOM_ROCKETCHAT_INBOUND_TOKEN` | rocket-chat:webhook | Per-context bearer token for host-delivered room events |
@@ -206,6 +225,7 @@ batch thread.
 | `MOM_TELEGRAM_WEBHOOK_SECRET` | telegram:webhook | Secret token for request verification |
 | `MOM_TELEGRAM_INBOUND_TOKEN` | telegram:webhook | Scoped bearer capability when a trusted host proxy verifies Telegram instead |
 | `MOM_SKIP_WEBHOOK_REGISTRATION` | telegram:webhook | Skip Telegram webhook registration (for external management) |
+| `MOM_TELEGRAM_TAKEOVER` | telegram:polling | When `true`, delete any registered webhook at startup so polling can take over |
 | `MOM_DISCORD_BOT_TOKEN` | discord:* | Discord bot token; never put it in source or logs |
 | `MOM_DISCORD_APPLICATION_ID` | discord:* | Discord application snowflake |
 | `MOM_DISCORD_PUBLIC_KEY` | discord:webhook | Ed25519 public key for signed Interactions |
@@ -222,8 +242,33 @@ batch thread.
 | `MOM_EMAIL_TOOLS_TOKEN` | email:webhook | Token for email send API |
 | `MOM_EMAIL_SEND_URL` | email:webhook | Email send endpoint (default: `https://tinyfat.com/api/email/send`) |
 | `MOM_EMAIL_INBOUND_TOKEN` | email:webhook | Required scoped bearer capability for inbound email delivery (minimum 32 bytes) |
+| `MOM_EMAIL_TOOLS_ONLY` | email:webhook | When `true`, disable generic email replies; the agent must use `gmail_draft` then `gmail_send` |
+| `MOM_EMAIL_LOG_MODE` | email:webhook | Tool work log on email replies: `none` (default), `inline`, or `attachment` |
 | `MOM_PHONE_INBOUND_TOKEN` | phone:webhook | Required scoped bearer capability for inbound phone delivery (minimum 32 bytes) |
+| `MOM_PHONE_MESSAGING` | auto-detection | Set to `true` to start `phone-messaging:webhook`; also auto-selected by Loop or Twilio credentials |
+| `MOM_PHONE_DEFAULT_PROVIDER` | phone:webhook | Preferred provider when several are configured (`loop`, `twilio`, or `managed`) |
+| `MOM_PHONE_PREFERRED_TRANSPORT` | phone:webhook | `auto` (default), `imessage`, `sms`, `mms`, `rcs`, or `whatsapp` |
+| `MOM_PHONE_HOST_MANAGED` | phone:webhook | When `true`, send through the host's scoped endpoint instead of a provider; requires the two vars below and `TROUBLEMAKER_CONTEXT_ID` |
+| `MOM_PHONE_SEND_URL` | phone:webhook (host-managed) | Host-owned phone send endpoint |
+| `MOM_PHONE_SEND_TOKEN` | phone:webhook (host-managed) | Scoped send capability (falls back to `FAT_TOOLS_TOKEN`) |
+| `MOM_LOOPMESSAGE_API_KEY` | phone:webhook (Loop) | Loop iMessage API key (`LOOPMESSAGE_API_KEY` also accepted) |
+| `MOM_LOOPMESSAGE_SENDER_ID` | phone:webhook (Loop) | Loop sender ID |
+| `MOM_LOOPMESSAGE_BASE_URL` | phone:webhook (Loop) | Optional Loop API base URL override |
+| `MOM_TWILIO_ACCOUNT_SID` | phone:webhook (Twilio) | Twilio account SID (`TWILIO_ACCOUNT_SID` also accepted) |
+| `MOM_TWILIO_AUTH_TOKEN` | phone:webhook (Twilio) | Twilio auth token |
+| `MOM_TWILIO_PHONE_NUMBER` | phone:webhook (Twilio) | Sending number; or use a messaging service SID |
+| `MOM_TWILIO_MESSAGING_SERVICE_SID` | phone:webhook (Twilio) | Twilio messaging service SID |
 | `MOM_FORM_INBOUND_TOKEN` | form:webhook | Required scoped bearer capability for inbound form delivery (minimum 32 bytes) |
+| `MOM_FORM_INGRESS` | auto-detection | Set to `true` to start `form:webhook` |
+| `MOM_WEB_CHAT` | auto-detection | Set to `true` to start the `web` adapter (`/web/chat`, `/web/stop`, `/input/webhook`) |
+| `MOM_WEB_INPUT_TOKEN` | web | Bearer capability for web chat input (minimum 32 bytes; required inside a Hostd container) |
+| `MOM_WEBHOOK_INPUT_TOKEN` | web | Bearer capability for `/input/webhook` (minimum 32 bytes); `MOM_WEBHOOK_INPUT_TOKEN_FILE` reads it from a protected file |
+| `MOM_WEBHOOK_INPUT_ALLOW_UNAUTHENTICATED` | web | Set to `true` to accept unauthenticated `/input/webhook` posts (local only; refused inside Hostd) |
+| `MOM_MCP` | auto-detection | Set to `true` to start the `mcp` adapter |
+| `MOM_MCP_AUTH_TOKEN` | mcp | Required capability for `/mcp` (minimum 32 bytes) |
+| `MOM_SCHEDULED_PROMPT_INBOUND_TOKEN` | scheduled prompts | Bearer capability for `/scheduled-prompt/inbound` (minimum 32 bytes); must be set together with `MOM_HOSTD_SCHEDULE_OWNER=host` and `TROUBLEMAKER_CONTEXT_ID` |
+| `MOM_HOSTD_SCHEDULE_OWNER` | scheduled prompts | Set to `host` when Hostd owns delayed schedules; local delayed events then defer to the host |
+| `MOM_SITE_DEPLOY_TOKEN` | site deploy tool | Capability used by the `site_deploy` tool |
 | `MOM_OPERATOR_INBOUND_TOKEN` | operator routes | Enables `/operator/*` with a scoped bearer capability (minimum 32 bytes); routes are disabled when omitted |
 | `MOM_HTTP_PORT` | — | Gateway port override (same as `--port`) |
 
@@ -268,6 +313,25 @@ service user runs `claude auth login`, `/model` exposes
 `claude-cli/{haiku,sonnet,opus,fable}` and honors that user's Claude JSON
 settings. See [docs/claude-cli-backend.md](docs/claude-cli-backend.md) for the
 session, permission, delivery, and security contract.
+
+### Codex CLI Models
+
+An existing Codex CLI login works the same way. After the service user runs `codex login`, select `/model codex-cli/default` (the CLI's built-in default model) or `/model codex-cli/<model-id>`. For a service, set `MOM_MODEL_PROVIDER=codex-cli` and `MOM_MODEL_ID=default`. Codex owns the inference loop and its native compaction, and Troublemaker exposes its live tools to Codex through an authenticated per-turn MCP bridge. See [docs/codex-cli-backend.md](docs/codex-cli-backend.md).
+
+### Speech (`speak` tool)
+
+The `speak` tool reads `settings.json` → `speak`, and any `MOM_SPEAK_*` env var overrides it:
+
+| Variable | Description |
+|----------|-------------|
+| `MOM_SPEAK_ENABLED` | `false` disables the tool |
+| `MOM_SPEAK_BACKEND` | `macos-say` (`say`), `command`, `http`, `elevenlabs`, `sag`, `noop`, or `disabled` |
+| `MOM_SPEAK_VOICE`, `MOM_SPEAK_RATE`, `MOM_SPEAK_MAX_CHARS` | Voice, rate, and per-call text cap |
+| `MOM_SPEAK_COMMAND` | Command for the `command` backend |
+| `MOM_SPEAK_URL`, `MOM_SPEAK_TOKEN`, `MOM_SPEAK_TOKEN_HEADER`, `MOM_SPEAK_TOKEN_PREFIX` | Endpoint and auth for the `http` backend |
+| `MOM_SPEAK_ELEVENLABS_API_KEY`, `_VOICE_ID`, `_MODEL_ID`, `_OUTPUT_FORMAT` | `elevenlabs` backend (falls back to `MOM_ELEVENLABS_*`) |
+| `MOM_SPEAK_PLAYER_COMMAND` | Audio player for `elevenlabs` output |
+| `MOM_SPEAK_SAG_COMMAND`, `MOM_SPEAK_SAG_MODEL_ID`, `MOM_SPEAK_SAG_SHELL` | `sag` backend |
 
 ## Data Directory
 
@@ -324,6 +388,46 @@ The agent can schedule events that wake it up:
 | **Periodic** | Cron schedule | Daily summaries, inbox checks |
 
 Event files go in `data/attention/queue/`; fired and expired events move to `data/attention/history/`. External systems can also write events there to wake the agent without going through a platform. A legacy `data/events/` directory is still watched if it exists. When a host owns delayed schedules, it delivers them through `POST /scheduled-prompt/inbound` instead.
+
+## Runtime Features
+
+Every channel feeds one resident agent with one workspace, so these features behave the same on Slack, Teams, email, the terminal, or voice.
+
+### Persistent goals
+
+`set_goal` stores an explicit objective in `goal.json`. While a goal is active, the runtime keeps going with automatic continuation turns: ending one turn does not end the goal. The agent closes it with `complete_goal` once the work is achieved and verified, with `abandon_goal` when the user cancels or redirects, or with `block_goal` when the same blocker repeats and only user input or an outside change can unblock it. A terminal run error also blocks continuation, so a failing goal cannot loop forever.
+
+### Heartbeat
+
+A periodic `heartbeat` wake gives the agent a private moment to review context, read its `HEARTBEAT.md` checklist, and decide whether to act. The cadence comes from `settings.json` → `spontaneity` and is written as a periodic event in `attention/queue/`. The agent can reach out on a real channel with `send_message` or record a deliberate quiet with `yield_no_action`. That tool also ends ambient, duplicate, or agent-authored turns that need no reply.
+
+### Operator control
+
+`/operator/*` is a headless control channel for whoever runs the fleet. It needs `MOM_OPERATOR_INBOUND_TOKEN`.
+
+| Route | Effect |
+|-------|--------|
+| `GET /operator/read` | Recent awareness backlog |
+| `GET /operator/describe` | Settings snapshot and `HEARTBEAT.md` |
+| `POST /operator/message` | Principal instruction; triggers a run |
+| `POST /operator/assign` | Writes `BRIEF.md` and starts work on it |
+| `POST /operator/configure` | Edits allowlisted settings: spontaneity, verbosity, model, thinking level, heartbeat checklist |
+
+Operator entries reach the agent tagged `operator:control`. The channel has no outbound path, so the agent replies on a real channel. The agent can change many of the same settings itself with `self_configure` when a user asks.
+
+### Attention queue and calendar
+
+Scheduled prompts (immediate, one-shot, and cron) live in `attention/queue/` and move to `attention/history/` once they fire. Calendar items in `calendar/events/` and display projects in `display/projects/` appear in workspace clients. The runtime seeds a `README.md` authoring guide in `calendar/` and `display/`. See [docs/events.md](docs/events.md).
+
+### Context handoff and compaction
+
+When context grows long, the runtime either compacts it natively or rotates it through `handoff_context`. The agent writes a bounded continuity summary, and a fresh context resumes from a completion receipt without redoing finished work. Rotations are journaled and replayed safely after a restart. See [docs/context-handoff.md](docs/context-handoff.md) and [docs/handoff-compaction.md](docs/handoff-compaction.md).
+
+### Voice
+
+- **`/voice/realtime`**: a WebSocket for realtime speech sessions.
+- **Voice adapter** (port 8765) and **web voice bridge** (port 8766): browser mic → STT → agent → TTS.
+- **`speak` tool**: local or hosted text-to-speech (see [Speech](#speech-speak-tool)).
 
 ## Natural follow-ups
 
