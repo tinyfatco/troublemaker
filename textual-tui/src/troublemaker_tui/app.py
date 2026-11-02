@@ -77,7 +77,8 @@ COMMANDS = [
 LOCAL = {command.name for command in COMMANDS if command.local} | {"exit"}
 
 HELP = """\
-enter send · shift+enter or ctrl+j newline · ↑↓ history · tab complete
+enter send · shift+enter or ctrl+j newline · ↑↓ history
+/ opens commands — ↑↓ choose, enter run, tab complete with arguments
 esc stop the active turn · ctrl+c stop, then quit · ctrl+d quit when empty
 ctrl+t jump to tool calls — ↑↓ move, enter expand, esc back · click any tool to expand
 ctrl+e expand/collapse all tools · ctrl+p command palette · pgup/pgdn scroll
@@ -106,6 +107,21 @@ class Composer(TextArea):
         self._draft = ""
 
     async def _on_key(self, event: events.Key) -> None:
+        app = self.app  # type: ignore[assignment]
+        if app.command_menu_open and event.key in ("up", "down", "enter", "tab"):
+            event.stop()
+            event.prevent_default()
+            if event.key in ("up", "down"):
+                app.move_command(-1 if event.key == "up" else 1)
+            else:
+                name = app.selected_command()
+                if event.key == "tab":
+                    self.text = f"/{name} "
+                    self.move_cursor(self.document.end)
+                else:
+                    self.clear()
+                    self.post_message(self.Submitted(f"/{name}"))
+            return
         if event.key == "enter":
             event.stop()
             event.prevent_default()
@@ -243,6 +259,8 @@ class TroublemakerApp(App[None]):
         self._send_worker: Worker | None = None
         self._last_error: str | None = None
         self.header_bar = HeaderBar(profile)
+        self._command_matches: list[Command] = []
+        self._command_index = 0
 
     # ------------------------------------------------------------------ layout
 
@@ -436,25 +454,50 @@ class TroublemakerApp(App[None]):
         matches = [c.name for c in COMMANDS if c.name.startswith(text[1:].lower())]
         return f"/{matches[0]} " if matches else None
 
+    @property
+    def command_menu_open(self) -> bool:
+        return bool(self._command_matches) and self.query_one("#suggest").display
+
+    def selected_command(self) -> str:
+        return self._command_matches[self._command_index].name
+
+    def move_command(self, step: int) -> None:
+        self._command_index = (self._command_index + step) % len(self._command_matches)
+        self._render_commands()
+
     @on(TextArea.Changed, "#composer")
     def _suggest(self, event: TextArea.Changed) -> None:
-        suggest = self.query_one("#suggest", Static)
         text = event.text_area.text
         if not text.startswith("/") or " " in text or "\n" in text:
-            suggest.display = False
-            return
-        matches = [c for c in COMMANDS if c.name.startswith(text[1:].lower())]
+            self._command_matches = []
+        else:
+            self._command_matches = [c for c in COMMANDS if c.name.startswith(text[1:].lower())]
+        self._command_index = 0
+        self._render_commands()
+
+    def _render_commands(self) -> None:
+        suggest = self.query_one("#suggest", Static)
+        matches = self._command_matches
         if not matches:
             suggest.display = False
             return
+        window = 6
+        start = min(max(0, self._command_index - window + 1), max(0, len(matches) - window))
         rendered = Text(no_wrap=True, overflow="ellipsis")
-        for index, command in enumerate(matches[:6]):
-            if index:
+        for offset, command in enumerate(matches[start:start + window]):
+            selected = start + offset == self._command_index
+            if offset:
                 rendered.append("\n")
-            rendered.append(f"/{command.name}", style="bold #FF9E64" if index == 0 else "bold")
-            rendered.append(f"  {command.description}", style="dim")
+            row = Text(no_wrap=True, overflow="ellipsis")
+            row.append("› " if selected else "  ", style="bold #FF9E64")
+            row.append(f"/{command.name}", style="bold #FF9E64" if selected else "bold")
+            row.append(f"  {command.description}", style="" if selected else "dim")
             if not command.local:
-                rendered.append("  agent", style="dim italic")
+                row.append("  agent", style="dim italic")
+            if selected:
+                row.stylize("on #2A2D3E")
+                row.pad_right(200)
+            rendered.append_text(row)
         suggest.update(rendered)
         suggest.display = True
 

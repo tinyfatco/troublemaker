@@ -152,3 +152,27 @@ async def test_clicking_anywhere_focuses_input_and_still_toggles_tools():
         await pilot.click(row)
         await settle(pilot, 2)
         assert row.expanded and isinstance(app.focused, Composer)
+
+
+async def test_arrow_keys_choose_a_command():
+    agent = FakeAgent()
+    app = make_app(agent)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one(Composer)
+        composer.text = "/c"
+        await settle(pilot, 2)
+        names = [c.name for c in app._command_matches]
+        assert names == ["collapse", "context", "compact", "clear", "cancel"]
+        await pilot.press("down", "down")
+        assert app.selected_command() == "compact"
+        await pilot.press("up")
+        assert app.selected_command() == "context"
+        await pilot.press("tab")
+        assert composer.text == "/context "
+        composer.text = "/c"
+        await settle(pilot, 2)
+        await pilot.press("up", "enter")  # wraps to the last match and runs it
+        await settle(pilot)
+        assert agent.sent[-1]["message"] == "/cancel"
+        assert not app.query_one("#suggest").display
