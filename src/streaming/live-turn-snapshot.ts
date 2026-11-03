@@ -17,12 +17,21 @@ export class LiveAssistantSnapshot {
 	private entry: RuntimeAssistantSnapshotEntry | null = null;
 	private activeStart = 0;
 	private activeLength = 0;
+	/**
+	 * Runtimes that execute tools outside the agent loop (Claude CLI over MCP)
+	 * stream one assistant message whose text keeps growing across tool calls.
+	 * When a tool call lands mid-message we freeze the text shown so far
+	 * (raw chars per contentIndex) and render only later text after the call.
+	 */
+	private frozenChars = new Map<number, number>();
+	private lastRawActive: RuntimeAssistantSnapshotContent[] = [];
 
 	beginAssistantMessage(message: AgentMessage): RuntimeAssistantSnapshotEntry | null {
 		if (!isAssistantMessage(message)) return this.entry;
 		this.ensureEntry(message);
 		this.activeStart = this.entry?.content.length ?? 0;
 		this.activeLength = 0;
+		this.clearFrozen();
 		return this.replaceActiveMessage(message);
 	}
 
@@ -37,6 +46,7 @@ export class LiveAssistantSnapshot {
 		if (next) {
 			this.activeStart = next.content.length;
 			this.activeLength = 0;
+			this.clearFrozen();
 			next.isStreaming = false;
 		}
 		return next;
@@ -57,6 +67,7 @@ export class LiveAssistantSnapshot {
 		};
 		if (existingIndex === -1) {
 			content.push(patch);
+			this.freezeActiveText(content.length);
 		} else {
 			const existing = content[existingIndex];
 			content[existingIndex] = existing.type === "toolCall"
@@ -82,6 +93,7 @@ export class LiveAssistantSnapshot {
 		);
 		if (existingIndex === -1) {
 			const insertAt = findToolInsertIndex(content, output.toolCallId);
+			this.shiftActiveForInsert(insertAt);
 			content.splice(insertAt, 0, {
 				type: "toolOutput",
 				toolCallId: output.toolCallId,
@@ -123,6 +135,7 @@ export class LiveAssistantSnapshot {
 		};
 		if (existingIndex === -1) {
 			const insertAt = findToolInsertIndex(content, toolCallId);
+			this.shiftActiveForInsert(insertAt);
 			content.splice(insertAt, 0, patch);
 		} else {
 			content[existingIndex] = patch;
@@ -140,6 +153,44 @@ export class LiveAssistantSnapshot {
 		this.entry = null;
 		this.activeStart = 0;
 		this.activeLength = 0;
+		this.clearFrozen();
+	}
+
+	/** Keeps the active (still-streaming) region aligned when tool rows are inserted before it. */
+	private shiftActiveForInsert(insertAt: number): void {
+		if (insertAt <= this.activeStart) this.activeStart += 1;
+	}
+
+	private clearFrozen(): void {
+		this.frozenChars.clear();
+		this.lastRawActive = [];
+	}
+
+	private freezeActiveText(nextActiveStart: number): void {
+		for (const block of this.lastRawActive) {
+			if (block.type === "text" && typeof block.contentIndex === "number") this.frozenChars.set(block.contentIndex, block.text.length);
+			else if (block.type === "thinking" && typeof block.contentIndex === "number") this.frozenChars.set(block.contentIndex, block.thinking.length);
+		}
+		this.activeStart = nextActiveStart;
+		this.activeLength = 0;
+	}
+
+	private unfrozenContent(raw: RuntimeAssistantSnapshotContent[]): RuntimeAssistantSnapshotContent[] {
+		if (this.frozenChars.size === 0) return raw;
+		return raw.flatMap((block): RuntimeAssistantSnapshotContent[] => {
+			const index = "contentIndex" in block ? block.contentIndex : undefined;
+			const frozen = typeof index === "number" ? this.frozenChars.get(index) : undefined;
+			if (!frozen) return [block];
+			if (block.type === "text") {
+				const text = block.text.slice(frozen).replace(/^\s+/, "");
+				return text ? [{ ...block, text }] : [];
+			}
+			if (block.type === "thinking") {
+				const thinking = block.thinking.slice(frozen).replace(/^\s+/, "");
+				return thinking ? [{ ...block, thinking }] : [];
+			}
+			return [];
+		});
 	}
 
 	private ensureEntry(message?: AgentMessage): void {
@@ -157,7 +208,9 @@ export class LiveAssistantSnapshot {
 	private replaceActiveMessage(message: AgentMessage): RuntimeAssistantSnapshotEntry | null {
 		if (!isAssistantMessage(message) || !this.entry) return this.entry;
 		const content = [...this.entry.content];
-		const normalized = normalizeAssistantContent(message);
+		const raw = normalizeAssistantContent(message);
+		this.lastRawActive = raw;
+		const normalized = this.unfrozenContent(raw);
 		content.splice(this.activeStart, this.activeLength, ...normalized);
 		this.activeLength = normalized.length;
 		this.entry = {

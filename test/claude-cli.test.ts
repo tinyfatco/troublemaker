@@ -34,6 +34,7 @@ const envKeys = [
 	"FAKE_CLAUDE_AUTHENTICATED",
 	"FAKE_CLAUDE_INVOCATION_LOG",
 	"FAKE_CLAUDE_REJECT_RESUME",
+	"FAKE_CLAUDE_SEGMENTS",
 	"ANTHROPIC_API_KEY",
 ];
 for (const key of envKeys) originalEnv.set(key, process.env[key]);
@@ -105,6 +106,16 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
   const sessionFlag = resumeIndex >= 0 ? resumeIndex : args.indexOf("--session-id");
   const sessionId = args[sessionFlag + 1];
   process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "fake-claude-model" }) + "\\n");
+  if (process.env.FAKE_CLAUDE_SEGMENTS === "true") {
+    const ev = (event) => process.stdout.write(JSON.stringify({ type: "stream_event", event }) + "\\n");
+    ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    ev({ type: "content_block_delta", delta: { type: "text_delta", text: "Opening Chrome." } });
+    ev({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "mcp__cua__click" } });
+    ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    ev({ type: "content_block_delta", delta: { type: "text_delta", text: "Navigated." } });
+    ev({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+    ev({ type: "content_block_delta", delta: { type: "text_delta", text: "\\nDone." } });
+  }
   process.stdout.write(JSON.stringify({ type: "stream_event", parent_tool_use_id: "toolu_nested", event: { type: "content_block_delta", delta: { type: "text_delta", text: "nested leak" } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "from claude" } } }) + "\\n");
@@ -300,6 +311,15 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	assert.ok(invocations.at(-1)?.args.includes("--session-id"), "recovery replaces it with a fresh session");
 	assert.match(invocations.at(-1)?.input || "", /conversation_reseed/, "fresh recovery reseeds bounded Troublemaker history");
 	delete process.env.FAKE_CLAUDE_REJECT_RESUME;
+
+	process.env.FAKE_CLAUDE_SEGMENTS = "true";
+	const segmented = await collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext);
+	const segmentedText = segmented.message.content[0]?.type === "text" ? segmented.message.content[0].text : "";
+	assert.ok(
+		segmentedText.startsWith("Opening Chrome.\n\nNavigated.\nDone."),
+		`text blocks split by tool calls are separated, existing whitespace is kept: ${JSON.stringify(segmentedText)}`,
+	);
+	delete process.env.FAKE_CLAUDE_SEGMENTS;
 
 	resetClaudeCliSession(workspaceDir);
 	await collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext);

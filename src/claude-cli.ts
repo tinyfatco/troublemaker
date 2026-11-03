@@ -112,6 +112,8 @@ interface ClaudeCliInvocationResult {
 interface ClaudeCliEmitter {
 	readonly hasText: boolean;
 	append(delta: string): void;
+	/** Marks a model text-block boundary; the next appended text is separated from earlier text. */
+	breakText(): void;
 	finish(result: ClaudeCliInvocationResult, model: Model<Api>): void;
 }
 
@@ -422,6 +424,12 @@ async function invokeClaudeCli(params: {
 				const event = parsed.event;
 				const parentToolUseId = readString(parsed.parent_tool_use_id) || readString(event.parent_tool_use_id);
 				if (parentToolUseId) return;
+				// Each text block (one per model turn between tool calls) starts a new
+				// segment; without this the CLI's segments run together ("it.Next").
+				if (event.type === "content_block_start" && isRecord(event.content_block) && event.content_block.type === "text") {
+					params.emitter.breakText();
+					return;
+				}
 				if (event.type === "content_block_delta" && isRecord(event.delta)) {
 					const delta = event.delta;
 					if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
@@ -535,6 +543,7 @@ function createEmitter(stream: AssistantMessageEventStream, model: Model<Api>): 
 	let started = false;
 	let textStarted = false;
 	let text = "";
+	let pendingBreak = false;
 	let finished = false;
 	const partial: AssistantMessage = {
 		role: "assistant",
@@ -559,8 +568,15 @@ function createEmitter(stream: AssistantMessageEventStream, model: Model<Api>): 
 		get hasText() {
 			return text.length > 0;
 		},
+		breakText() {
+			if (text && !/\s$/.test(text)) pendingBreak = true;
+		},
 		append(delta: string) {
 			if (finished || !delta) return;
+			if (pendingBreak) {
+				pendingBreak = false;
+				if (!/^\s/.test(delta)) delta = `\n\n${delta}`;
+			}
 			ensureStarted();
 			if (!textStarted) {
 				textStarted = true;
