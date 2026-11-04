@@ -206,3 +206,17 @@ async def test_clickable_rows_use_pointer_cursor():
         await pilot.hover(header)
         await settle(pilot)
         assert app.screen._pointer_shape == "pointer"
+
+
+async def test_heartbeat_lines_up_with_tool_calls():
+    wake = "[ATTENTION:heartbeat:periodic:30m] Check the checklist."
+    agent = FakeAgent(backlog=[
+        user_line(wake, "heartbeat", "heartbeat", entry_id="h1"),
+        assistant_line([tool("t1", "bash", "List files"), result("t1")], parent="h1", entry_id="a1"),
+    ])
+    app = make_app(agent)
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        wake_line = next(w for w in app.query(UserMessage) if w.item.generated)
+        header = app.query_one(ToolRow).query_one(".tool-header")
+        assert wake_line.content_region.x == header.content_region.x
