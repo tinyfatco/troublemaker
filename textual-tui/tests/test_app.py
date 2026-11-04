@@ -220,3 +220,21 @@ async def test_heartbeat_lines_up_with_tool_calls():
         wake_line = next(w for w in app.query(UserMessage) if w.item.generated)
         header = app.query_one(ToolRow).query_one(".tool-header")
         assert wake_line.content_region.x == header.content_region.x
+
+
+async def test_pending_indicator_has_a_blank_line_above_it():
+    agent = FakeAgent()
+    app = make_app(agent)
+    live = Live()
+    async with app.run_test(size=(90, 24)) as pilot:
+        await settle(pilot)
+        status = app.query_one("#status")
+        assert status.styles.margin.top == 0
+        await agent.push(live.user_input("r1", "Hello"))
+        await settle(pilot)
+        assert status.has_class("-busy")
+        assert status.styles.margin.top == 1
+        await agent.push(live.snapshot("r1", [text("Done.")], streaming=False), live.complete("r1"))
+        await settle(pilot)
+        assert not status.has_class("-busy")
+        assert status.styles.margin.top == 0
