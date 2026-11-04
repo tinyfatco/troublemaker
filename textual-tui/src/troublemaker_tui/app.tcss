@@ -144,6 +144,7 @@ Screen {
     height: 1;
     padding: 0 1;
 }
+#status.-busy { margin-top: 1; }
 #status-left { width: 1fr; }
 #status-right { width: auto; }
 
