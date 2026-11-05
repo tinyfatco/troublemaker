@@ -45,7 +45,7 @@ TOOL_LIMIT = 512
 SNAPSHOT_MEMORY = 64
 
 ToolState = Literal["pending", "success", "error", "cancelled", "unknown"]
-Source = Literal["local", "runtime", "awareness"]
+Source = Literal["local", "steering", "runtime", "awareness"]
 
 
 # --------------------------------------------------------------------------- items
@@ -150,6 +150,8 @@ class _Echo:
     expires: float
     seen: set[Source] = field(default_factory=set)
     adopted_run: str | None = None
+    # Accepted steer the model has not read yet; it can wait out any TTL behind a long tool call.
+    awaiting_read: bool = False
 
 
 @dataclass(eq=False)
@@ -179,6 +181,7 @@ class Transcript:
         self._listeners: list[Listener] = []
         self._ids = itertools.count(1)
         self._echoes: list[_Echo] = []
+        self._steers: OrderedDict[str, list[_Echo]] = OrderedDict()  # steering id -> its painted inputs
         self._runs: dict[str, _Run] = {}
         self._latest_run: str | None = None
         self._seen: OrderedDict[str, str | None] = OrderedDict()  # awareness id -> channel
@@ -219,6 +222,7 @@ class Transcript:
         self.items.clear()
         self._index.clear()
         self._echoes.clear()
+        self._steers.clear()
         self._seen.clear()
         self._deferred.clear()
         self._transitions.clear()
@@ -239,7 +243,7 @@ class Transcript:
 
     def _prune(self) -> None:
         now = self._clock()
-        self._echoes = [echo for echo in self._echoes if echo.expires > now][-LEDGER_LIMIT:]
+        self._echoes = [echo for echo in self._echoes if echo.expires > now or echo.awaiting_read][-LEDGER_LIMIT:]
         self._recent_snapshots = [entry for entry in self._recent_snapshots if entry[0] > now][-SNAPSHOT_MEMORY:]
         self._channel_grace = {channel: until for channel, until in self._channel_grace.items() if until > now}
 
@@ -342,6 +346,9 @@ class Transcript:
                 self._finish_segment(run, aborted=True)
             self._runs.clear()
             self._latest_run = None
+            self._steers.clear()
+            for echo in self._echoes:
+                echo.awaiting_read = False
             catch_up = True
         sequence = int(event.get("sequence") or 0)
         if event.get("kind") == "reset":
@@ -362,10 +369,10 @@ class Transcript:
         run_id = str(envelope.get("runId") or "")
         if kind != "run_complete":
             self._latest_run = run_id
-        if kind in ("user_input", "steering_input"):
-            if kind == "steering_input" and event.get("state") == "dismissed":
-                return
-            self._runtime_inputs(self._ensure_run(envelope), event.get("entries") or [])
+        if kind == "steering_input":
+            self._steering_input(envelope, event)
+        elif kind == "user_input":
+            self._runtime_inputs(self._ensure_run(envelope), event.get("entries") or [], "runtime")
         elif kind == "status":
             transition = event.get("contextTransition")
             if isinstance(transition, dict):
@@ -385,7 +392,26 @@ class Transcript:
                 self._latest_run = None
             self._flush_deferred()
 
-    def _runtime_inputs(self, run: _Run, raw_entries: list[Any]) -> None:
+    def _steering_input(self, envelope: dict[str, Any], event: dict[str, Any]) -> None:
+        """One steer reports accepted, then consumed, then a ``user_input``: all one input."""
+        steer_id = str(event.get("id") or "")
+        state = event.get("state")
+        echoes = self._steers.get(steer_id)
+        if echoes is None:
+            if state == "dismissed":
+                return
+            echoes = self._runtime_inputs(self._ensure_run(envelope), event.get("entries") or [], "steering")
+            self._steers[steer_id] = echoes
+            while len(self._steers) > LEDGER_LIMIT:
+                self._steers.popitem(last=False)
+        waiting = state == "accepted"
+        for echo in echoes:
+            echo.awaiting_read = waiting
+            if not waiting:
+                # The remaining reports follow promptly now that the model has read it.
+                echo.expires = max(echo.expires, self._clock() + ECHO_TTL)
+
+    def _runtime_inputs(self, run: _Run, raw_entries: list[Any], source: Source) -> list[_Echo]:
         visible: list[UserInput] = []
         claimed: list[_Echo] = []
         for raw in raw_entries:
@@ -396,22 +422,23 @@ class Transcript:
                 if value.text in run.generated_inputs:
                     continue
                 run.generated_inputs.add(value.text)
-            echo = self._claim(value, "runtime")
+            echo = self._claim(value, source)
             if echo:
                 claimed.append(echo)
             else:
                 visible.append(value)
         if visible:
-            last = None
+            painted = []
             for value in visible:
-                last = self._paint_input(value, "runtime")
-                last.adopted_run = run.run_id
-            self._split(run, after_key=last.item_key if last else None)
-            return
+                painted.append(self._paint_input(value, source))
+                painted[-1].adopted_run = run.run_id
+            self._split(run, after_key=painted[-1].item_key)
+            return [*claimed, *painted]
         for echo in claimed:
             if echo.adopted_run != run.run_id or run.segment is None:
                 echo.adopted_run = run.run_id
                 self._split(run, after_key=echo.item_key)
+        return claimed
 
     def _apply_snapshot(self, run: _Run, entry: dict[str, Any]) -> None:
         content = [block for block in entry.get("content") or [] if isinstance(block, dict) and isinstance(block.get("type"), str)]

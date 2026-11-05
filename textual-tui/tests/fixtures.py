@@ -78,6 +78,12 @@ class Live:
         entries = [{"channel": channel, "userName": user, "text": t} for t in texts]
         return self.runtime(run_id, {"type": "user_input", "entries": entries}, channel)
 
+    def steering(self, run_id: str, steer_id: str, state: str, *texts: str, channel: str = CHANNEL, user: str = "user") -> dict:
+        entries = [{"channel": channel, "userName": user, "text": t} for t in texts]
+        event = {"type": "steering_input", "id": steer_id, "state": state, "deliveryMode": "steered",
+                 "acceptedAt": "2026-01-01T09:00:00Z", "entries": entries}
+        return self.runtime(run_id, event, channel)
+
     def snapshot(self, run_id: str, content: list[dict], streaming: bool = True, channel: str = CHANNEL, stop: str | None = None) -> dict:
         entry = {"id": f"snap-{run_id}", "type": "message", "timestamp": "2026-01-01T09:00:00Z", "role": "assistant",
                  "content": content, "isStreaming": streaming, "stopReason": stop}

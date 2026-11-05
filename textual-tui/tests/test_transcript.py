@@ -202,3 +202,52 @@ def test_presentation_without_matching_message_is_ignored():
     t = Transcript(CHANNEL)
     t.load_history([user_line("hi", entry_id="u1"), assistant_line([text("hello")], parent="u1"), json.dumps(presentation)])
     assert visible(t) == ["user:user:hi", "assistant:hello"]
+
+
+def test_steer_paints_once_across_every_report():
+    t, live = Transcript(CHANNEL), Live()
+    t.submit_local("start")
+    t.begin_local_turn()
+    t.apply_live(live.user_input("r1", "start"))
+    t.apply_live(live.snapshot("r1", [text("Step one.")]))
+    t.submit_local("also do X")
+    t.apply_live(live.steering("r1", "s1", "accepted", "also do X"))
+    t.apply_live(live.steering("r1", "s1", "consumed", "also do X"))
+    t.apply_live(live.user_input("r1", "also do X"))
+    t.apply_live(live.awareness(user_line("also do X", entry_id="u2")))
+    t.apply_live(live.snapshot("r1", [text("Step one."), text("Doing X.")], streaming=False))
+    assert visible(t) == ["user:you:start", "assistant:Step one.", "user:you:also do X", "assistant:Doing X."]
+
+
+def test_steer_from_another_client_paints_once():
+    t, live = Transcript(CHANNEL), Live()
+    t.apply_live(live.user_input("r1", "start"))
+    t.apply_live(live.steering("r1", "s1", "accepted", "also do X"))
+    t.apply_live(live.steering("r1", "s1", "consumed", "also do X"))
+    t.apply_live(live.user_input("r1", "also do X"))
+    assert visible(t) == ["user:user:start", "user:user:also do X"]
+
+
+def test_two_identical_steers_stay_two():
+    t, live = Transcript(CHANNEL), Live()
+    t.apply_live(live.user_input("r1", "start"))
+    for steer in ("s1", "s2"):
+        t.submit_local("again")
+        t.apply_live(live.steering("r1", steer, "accepted", "again"))
+    for steer in ("s1", "s2"):
+        t.apply_live(live.steering("r1", steer, "consumed", "again"))
+        t.apply_live(live.user_input("r1", "again"))
+    assert visible(t) == ["user:user:start", "user:you:again", "user:you:again"]
+
+
+def test_steer_consumed_after_a_long_tool_still_paints_once():
+    now = [0.0]
+    t, live = Transcript(CHANNEL, clock=lambda: now[0]), Live()
+    t.apply_live(live.user_input("r1", "start"))
+    t.submit_local("also do X")
+    t.apply_live(live.steering("r1", "s1", "accepted", "also do X"))
+    now[0] += 3600  # far beyond every echo TTL
+    t.apply_live(live.steering("r1", "s1", "consumed", "also do X"))
+    t.apply_live(live.user_input("r1", "also do X"))
+    t.apply_live(live.awareness(user_line("also do X", entry_id="u2")))
+    assert visible(t) == ["user:user:start", "user:you:also do X"]
