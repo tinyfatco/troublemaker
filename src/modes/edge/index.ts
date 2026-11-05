@@ -217,10 +217,14 @@ export async function runEdgeWebChat(options: EdgeWebChatOptions): Promise<EdgeW
 		await options.emit({ type: "run_complete", channelId: options.input.channelId, mode: "edge" });
 	}
 
-	const messages = agent.state.messages.slice();
+	// Pi 1.x keeps the prompt and tool declarations in transcript system messages.
+	// Persisted edge history must not carry them: a leading system message in
+	// `initialMessages` would override the freshly built prompt on the next turn.
+	const isHistoryMessage = (message: AgentMessage) => message.role !== "system";
+	const allMessages = agent.state.messages.slice();
 	return {
-		messages,
-		newMessages: messages.slice(initialMessageCount),
+		messages: allMessages.filter(isHistoryMessage),
+		newMessages: allMessages.slice(initialMessageCount).filter(isHistoryMessage),
 	};
 }
 
