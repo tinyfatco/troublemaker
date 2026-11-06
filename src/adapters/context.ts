@@ -1,5 +1,6 @@
 import type { ToolStreamingMode, VerbosityLevel, WorkingStreamPresentation } from "../context.js";
 import type { MomContext, MomEvent, RespondOptions, UserInfo, ChannelInfo } from "./types.js";
+import { logWarning } from "../log.js";
 import { readVerifiedSenderIdentity } from "../sender-identity.js";
 
 // ============================================================================
@@ -125,7 +126,29 @@ export function createTwoMessageContext(
 		const display = buildWorkingDisplay();
 		if (!display) return;
 		if (workingMessageId) {
-			await ops.update(event.channel, workingMessageId, display);
+			// A status edit is cosmetic. Platforms can refuse it permanently (Zulip's
+			// edit time limit, a deleted message), and that must not fail a run whose
+			// work is done or still going. Mid-run, continue in a fresh message with
+			// the latest entry; a refused closing edit would only drop the spinner.
+			try {
+				await ops.update(event.channel, workingMessageId, display);
+			} catch (error) {
+				logWarning(
+					`[${event.channel}] Working message edit failed`,
+					error instanceof Error ? error.message : String(error),
+				);
+				if (!isWorking) return;
+				workingEntries.splice(0, workingEntries.length - 1);
+				try {
+					workingMessageId = await ops.post(event.channel, buildWorkingDisplay());
+				} catch (postError) {
+					logWarning(
+						`[${event.channel}] Working message fallback post failed`,
+						postError instanceof Error ? postError.message : String(postError),
+					);
+					return;
+				}
+			}
 		} else {
 			workingMessageId = await ops.post(event.channel, display);
 		}
