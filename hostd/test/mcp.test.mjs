@@ -307,6 +307,74 @@ test("MCP handoffs fail closed when a context owns more than one relationship ro
 	}
 });
 
+test("an active MCP relationship survives a second verified transport route in its context", async () => {
+	const { directory, store, mcp } = await fixture();
+	try {
+		const relationship = store.bindMcpRelationship({
+			...ROUTE,
+			contextId: CONTEXT_ID,
+			profile: "relationship-operator-v1",
+			recipientHint: "ending 0123",
+		});
+		store.bindRoute({
+			...ROUTE,
+			providerThreadId: "example-loop-thread",
+			contextId: CONTEXT_ID,
+		});
+		store.upsertPhoneConversation({
+			threadTarget: "phone-abcdef0123456789abcd",
+			provider: "example-loop",
+			providerThreadId: "example-loop-thread",
+			principalHash: ROUTE.principalHash,
+			targetId: TARGET.id,
+			contextId: CONTEXT_ID,
+			contactCiphertext: "sealed-example-loop-contact",
+			contactLastFour: "0456",
+		});
+		assert.equal(mcp.assertRelationship(relationship).id, relationship.id);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("an active MCP relationship rejects an unrelated route sharing its context", async () => {
+	const { directory, store, mcp } = await fixture();
+	try {
+		const relationship = store.bindMcpRelationship({
+			...ROUTE,
+			contextId: CONTEXT_ID,
+			profile: "relationship-operator-v1",
+			recipientHint: "ending 0123",
+		});
+		store.ensurePrincipal("unrelated-principal", undefined, "Unrelated principal");
+		store.ensureProject("unrelated-principal", "intake", "Intake");
+		store.bindRoute({
+			...ROUTE,
+			providerThreadId: "unrelated-thread",
+			principalHash: "unrelated-principal",
+			contextId: CONTEXT_ID,
+		});
+		store.upsertPhoneConversation({
+			threadTarget: "phone-fedcba9876543210fedc",
+			provider: "example-loop",
+			providerThreadId: "unrelated-thread",
+			principalHash: "unrelated-principal",
+			targetId: TARGET.id,
+			contextId: CONTEXT_ID,
+			contactCiphertext: "sealed-unrelated-contact",
+			contactLastFour: "0789",
+		});
+		assert.throws(
+			() => mcp.assertRelationship(relationship),
+			(error) => error instanceof HostMcpError && error.code === "relationship_unavailable",
+		);
+	} finally {
+		store.close();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
 test("legacy phone custody is atomically rehomed into one relationship Operator context", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "hostd-mcp-rehome-"));
 	const store = new HostStore(join(directory, "state.sqlite"));

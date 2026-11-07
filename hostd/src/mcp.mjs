@@ -382,35 +382,49 @@ export class HostMcp {
 		if (
 			!route
 			|| !context
-			|| contextRoutes.length !== 1
-			|| contextRoutes[0].source !== relationship.source
-			|| contextRoutes[0].providerThreadId !== relationship.providerThreadId
-			|| this.relationshipContextId(contextRoutes[0]) !== relationship.contextId
+			|| contextRoutes.length === 0
+			|| this.relationshipContextId(route) !== relationship.contextId
 			|| route.principalHash !== relationship.principalHash
 			|| route.projectSlug !== relationship.projectSlug
 			|| route.targetId !== relationship.targetId
 			|| route.contextId !== relationship.contextId
 			|| context.targetId !== relationship.targetId
-			|| this.store.countRouteParticipants(
-				relationship.source,
-				relationship.providerThreadId,
-			) !== 1
-			|| !this.store.hasRouteParticipant(
-				relationship.source,
-				relationship.providerThreadId,
-				relationship.principalHash,
-			)
 		) throw new HostMcpError("relationship_unavailable", 403);
+		for (const contextRoute of contextRoutes) {
+			if (
+				contextRoute.source !== relationship.source
+				|| contextRoute.principalHash !== relationship.principalHash
+				|| contextRoute.projectSlug !== relationship.projectSlug
+				|| contextRoute.targetId !== relationship.targetId
+				|| contextRoute.contextId !== relationship.contextId
+				|| this.store.countRouteParticipants(
+					contextRoute.source,
+					contextRoute.providerThreadId,
+				) !== 1
+				|| !this.store.hasRouteParticipant(
+					contextRoute.source,
+					contextRoute.providerThreadId,
+					relationship.principalHash,
+				)
+			) throw new HostMcpError("relationship_unavailable", 403);
+			if (contextRoute.source === "phone") {
+				const conversation = this.store.getPhoneConversationByProviderThread(
+					contextRoute.providerThreadId,
+				);
+				if (
+					!conversation
+					|| conversation.status !== "active"
+					|| conversation.principalHash !== relationship.principalHash
+					|| conversation.targetId !== relationship.targetId
+					|| conversation.contextId !== relationship.contextId
+				) throw new HostMcpError("relationship_unavailable", 403);
+			}
+		}
 		if (relationship.source === "phone") {
 			const conversation = this.store.getPhoneConversationByProviderThread(relationship.providerThreadId);
-			if (
-				!conversation
-				|| conversation.status !== "active"
-				|| conversation.principalHash !== relationship.principalHash
-				|| conversation.targetId !== relationship.targetId
-				|| conversation.contextId !== relationship.contextId
-				|| `ending ${conversation.contactLastFour}` !== relationship.recipientHint
-			) throw new HostMcpError("relationship_unavailable", 403);
+			if (`ending ${conversation.contactLastFour}` !== relationship.recipientHint) {
+				throw new HostMcpError("relationship_unavailable", 403);
+			}
 		}
 		return relationship;
 	}
