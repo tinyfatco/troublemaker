@@ -22,11 +22,14 @@ from textual.worker import Worker
 from .client import AgentClient, AgentStatus, RunStatus
 from .config import Profile
 from .transcript import AssistantItem, Item, Transcript
-from .widgets import AssistantMessage, ToolRow, Transition, format_duration, spinner_frame, widget_for
+from .widgets import AssistantMessage, ToolRow, Transition, format_duration, spinner_frame, text_key, widget_for
 
 HISTORY_LIMIT = 60
 STATUS_POLL = 0.5
 FRAME = 1 / 30
+# Mounted transcript items. Every layout pass walks every mounted widget, so a
+# session that runs for hours must not grow the tree without bound.
+MAX_MOUNTED = 240
 
 THEME = Theme(
     name="troublemaker",
@@ -218,6 +221,8 @@ class StatusLine(Horizontal):
         super().__init__(id="status")
         self._left = Static(id="status-left")
         self._right = Static(id="status-right")
+        self._left_key: tuple | None = None
+        self._right_key: tuple | None = None
 
     def compose(self) -> ComposeResult:
         yield self._left
@@ -225,10 +230,21 @@ class StatusLine(Horizontal):
 
     def show(self, activity: Text | None, hints: Text) -> None:
         # Idle tips live in the input placeholder; this line only appears while working.
-        self.display = activity is not None
-        self.set_class(activity is not None, "-busy")
-        self._left.update(activity or Text(""))
-        self._right.update(hints)
+        # Called at 12 Hz: repaint only what changed, and never relayout for the
+        # fixed-width left side (a layout pass walks the whole transcript).
+        busy = activity is not None
+        if self.display != busy:
+            self.display = busy
+            self.set_class(busy, "-busy")
+        left = activity or Text("")
+        left_key = text_key(left)
+        if left_key != self._left_key:
+            self._left_key = left_key
+            self._left.update(left, layout=False)
+        right_key = text_key(hints)
+        if right_key != self._right_key:
+            self._right_key = right_key
+            self._right.update(hints)  # width: auto, so this one may resize
 
 
 # --------------------------------------------------------------------------- app
@@ -256,6 +272,8 @@ class TroublemakerApp(App[None]):
         self.transcript.subscribe(self._on_item)
         self._widgets: dict[str, Widget] = {}
         self._dirty: set[str] = set()
+        self._pending_mounts: list[Widget] = []
+        self._status_dirty = False
         self._flush_scheduled = False
         self.sending = False
         self.stopping = False
@@ -301,32 +319,57 @@ class TroublemakerApp(App[None]):
     # ------------------------------------------------------------------ model → widgets
 
     def _on_item(self, op: str, item: Item | None) -> None:
-        transcript = self.query_one("#transcript", VerticalScroll)
         if op == "clear":
             self._widgets.clear()
             self._dirty.clear()
-            transcript.remove_children()
+            self._pending_mounts.clear()
+            self.query_one("#transcript", VerticalScroll).remove_children()
             return
         assert item is not None
         if op == "add":
+            # Mounts are batched per frame: a history load becomes one mount and
+            # one layout pass instead of one per item.
             widget = widget_for(item)
             self._widgets[item.key] = widget
-            transcript.mount(widget)
+            self._pending_mounts.append(widget)
         elif op == "update":
             self._dirty.add(item.key)
-            if not self._flush_scheduled:
-                self._flush_scheduled = True
-                self.set_timer(FRAME, self._flush)
-        self._render_status()
+        self._status_dirty = True
+        self._schedule_flush()
 
-    def _flush(self) -> None:
+    def _schedule_flush(self) -> None:
+        if not self._flush_scheduled:
+            self._flush_scheduled = True
+            self.set_timer(FRAME, self._flush_updates)
+
+    def _flush_updates(self) -> None:
+        # Not ``_flush``: that name belongs to App (print capture) and must not be shadowed.
         self._flush_scheduled = False
         dirty, self._dirty = self._dirty, set()
+        mounts, self._pending_mounts = self._pending_mounts, []
         with self.batch_update():
+            if mounts:
+                self.query_one("#transcript", VerticalScroll).mount_all(mounts)
+                self._prune_mounted()
             for key in dirty:
                 widget = self._widgets.get(key)
                 if widget is not None and widget.is_mounted:
                     widget.sync()  # type: ignore[attr-defined]
+            if self._status_dirty:
+                self._status_dirty = False
+                self._render_status()
+
+    def _prune_mounted(self) -> None:
+        excess = len(self._widgets) - MAX_MOUNTED
+        if excess <= 0:
+            return
+        stale = []
+        for key in list(self._widgets)[:excess]:
+            widget = self._widgets.pop(key)
+            if widget.is_mounted or widget in self.query_one("#transcript").children:
+                stale.append(widget)
+        if stale:
+            self.query_one("#transcript", VerticalScroll).remove_children(stale)
 
     def _tick(self) -> None:
         for widget in self._widgets.values():
@@ -380,7 +423,9 @@ class TroublemakerApp(App[None]):
         composer = self.query_one(Composer)
         steering = activity is not None and (self.sending or self.transcript.activity() is not None)
         composer.set_class(steering, "-steering")
-        composer.placeholder = f"Steer {self.agent_name}…" if steering else idle_placeholder(self.agent_name)
+        placeholder = f"Steer {self.agent_name}…" if steering else idle_placeholder(self.agent_name)
+        if composer.placeholder != placeholder:
+            composer.placeholder = placeholder
 
     @property
     def agent_name(self) -> str:

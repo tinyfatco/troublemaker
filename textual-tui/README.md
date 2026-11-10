@@ -48,6 +48,7 @@ client.py      async HTTP + SSE for /status, /events, /live, /messages
 protocol.py    pure port of the TS display rules (envelopes, ambient, deltas)
 transcript.py  pure reconciliation model: events in, ordered keyed items out
 widgets.py     one widget per item, refreshed in place by key
+markdown.py    assistant text as one widget, rendered and cached per block
 app.py         layout, input, loops; batches repaints to one per frame
 ```
 
@@ -56,6 +57,12 @@ The transcript model has no UI dependency. Local echoes, runtime
 an append-only list of keyed items. The view only ever mounts a widget or
 refreshes one by key, which is what keeps the screen still while the agent
 streams. `tests/test_transcript.py` pins the reconciliation behavior.
+
+Performance rule: every layout pass walks every mounted widget, so the tree
+stays small. Each assistant text part is one widget (Rich Markdown rendered to
+selectable text, cached per block so streaming re-renders only the last
+block), fixed one-line rows repaint without a layout pass, and at most
+`MAX_MOUNTED` transcript items stay mounted.
 
 Tool detail comes only from the server's sanitized `displayDetails`
 projection (the `pi` presentation). Raw tool payloads never reach the

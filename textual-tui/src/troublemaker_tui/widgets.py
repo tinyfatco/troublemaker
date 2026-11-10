@@ -17,8 +17,9 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
 from textual.widget import Widget
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
+from .markdown import MarkdownBody
 from .protocol import one_line, sanitize
 from .transcript import AssistantItem, Item, NoticeItem, ToolCall, TransitionItem, UserItem
 
@@ -45,6 +46,11 @@ def format_duration(seconds: float) -> str:
     return f"{minutes}m {rest:02d}s"
 
 
+def text_key(text: Text) -> tuple:
+    """Identity of a rendered line, styles included (``Text.__eq__`` compares plain text only)."""
+    return (text.plain, str(text.style), tuple((span.start, span.end, str(span.style)) for span in text.spans))
+
+
 def bound(text: str) -> str:
     safe = sanitize(text)
     if len(safe) <= MAX_DETAIL:
@@ -52,42 +58,6 @@ def bound(text: str) -> str:
     head = int(MAX_DETAIL * 0.65)
     tail = MAX_DETAIL - head
     return f"{safe[:head]}\n… {len(safe) - head - tail:,} characters omitted …\n{safe[-tail:]}"
-
-
-# --------------------------------------------------------------------------- markdown
-
-
-class StreamingMarkdown(Markdown):
-    """Markdown that appends streamed suffixes instead of re-rendering the whole document."""
-
-    def __init__(self, text: str = "", **kwargs) -> None:
-        super().__init__(text, **kwargs)  # Markdown renders the initial document on mount.
-        self._target = text
-        self._shown = text
-        self._syncing = False
-
-    def set_text(self, text: str) -> None:
-        if text == self._target:
-            return
-        self._target = text
-        self._kick()
-
-    def _kick(self) -> None:
-        if not self._syncing and self._shown != self._target:
-            self._syncing = True
-            self.run_worker(self._sync(), group="markdown")
-
-    async def _sync(self) -> None:
-        try:
-            while self._shown != self._target:
-                target = self._target
-                if self._shown and target.startswith(self._shown):
-                    await self.append(target[len(self._shown):])
-                else:
-                    await self.update(target)
-                self._shown = target
-        finally:
-            self._syncing = False
 
 
 # --------------------------------------------------------------------------- user and notices
@@ -260,6 +230,7 @@ class ToolRow(Vertical, can_focus=True):
         self.expanded = False
         self.full = False
         self._header = Static(classes="tool-header")
+        self._header_shown: tuple | None = None
         self._detail = Static(classes="tool-detail")
 
     def compose(self):
@@ -274,7 +245,7 @@ class ToolRow(Vertical, can_focus=True):
         for state in TOOL_GLYPHS:
             self.set_class(tool.state == state, f"-{state}")
         self.set_class(self.expanded, "-expanded")
-        self._header.update(self._header_text())
+        self._update_header()
         self._detail.display = self.expanded
         if self.expanded:
             details = tool.details or {}
@@ -285,7 +256,15 @@ class ToolRow(Vertical, can_focus=True):
 
     def tick(self) -> None:
         if self.tool.state == "pending":
-            self._header.update(self._header_text())
+            self._update_header()
+
+    def _update_header(self) -> None:
+        # The header is a fixed single line; skip identical frames and never relayout.
+        text = self._header_text()
+        key = text_key(text)
+        if key != self._header_shown:
+            self._header_shown = key
+            self._header.update(text, layout=False)
 
     def _header_text(self) -> Text:
         tool = self.tool
@@ -495,7 +474,7 @@ class AssistantMessage(Vertical):
                     widget.sync()  # type: ignore[attr-defined]
                 continue
             if kind == "text":
-                widget = StreamingMarkdown(sanitize(value))
+                widget = MarkdownBody(sanitize(value))
             elif kind == "thinking":
                 widget = Thinking(value)
                 widget.streaming = item.streaming
@@ -510,7 +489,7 @@ class AssistantMessage(Vertical):
 
     def tick(self) -> None:
         for child in self.children:
-            if isinstance(child, ToolRow):
+            if isinstance(child, ToolRow) and child.tool.state == "pending":
                 child.tick()
 
 
