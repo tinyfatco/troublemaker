@@ -22,6 +22,7 @@ _FOLLOW_UP_RE = re.compile(
     r"\s+since the latest completed wake\]"
 )
 _HEARTBEAT_RE = re.compile(r"^\[ATTENTION:[^\]\r\n]+:(?:immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$")
+_GOAL_RE = re.compile(r"^\[GOAL CONTINUATION\][\s\S]*?Automatic goal turn:\s*(\d+)\s*$")
 _BATCH_HEADER_RE = re.compile(r"^\[([^\]\n]+)\]\s+\[([^\]\n]+)\]\s+\[([^\]\n]+)\]:[ \t]*", re.MULTILINE)
 _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|([^>]+))?>")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]")
@@ -36,11 +37,13 @@ class UserInput:
 
     @property
     def is_compact_generated(self) -> bool:
-        """Follow-up and heartbeat wakes are painted as a single dim line."""
+        """Follow-up, heartbeat and goal-continuation wakes are painted as a single dim line."""
         if self.channel == "follow-up" and self.user == "follow-up":
             return bool(re.fullmatch(r"Follow-up \d+/\d+ · \d+m", self.text))
         if self.channel in ("heartbeat", "heartbeat:heartbeat") and self.user == "heartbeat":
             return self.text == "Heartbeat"
+        if self.user == "goal":
+            return bool(re.fullmatch(r"Goal · turn \d+", self.text))
         return False
 
 
@@ -99,6 +102,9 @@ def _compact_generated(channel: str, user: str, text: str) -> str:
         return f"Follow-up {match[1]}/{match[2]} · {match[3]}m" if match else text
     if channel in ("heartbeat", "heartbeat:heartbeat") and user == "heartbeat":
         return "Heartbeat" if _HEARTBEAT_RE.match(text) else text
+    if user == "goal":
+        match = _GOAL_RE.match(text)
+        return f"Goal · turn {match[1]}" if match else text
     return text
 
 
@@ -137,11 +143,9 @@ def normalize_channel(channel: str) -> str:
 
 
 def normalize_input(entry: dict[str, Any]) -> UserInput:
-    return UserInput(
-        normalize_channel(str(entry.get("channel") or "")),
-        str(entry.get("userName") or "user"),
-        str(entry.get("text") or ""),
-    )
+    channel = normalize_channel(str(entry.get("channel") or ""))
+    user = str(entry.get("userName") or "user")
+    return UserInput(channel, user, _compact_generated(channel, user, str(entry.get("text") or "")))
 
 
 # --------------------------------------------------------------------------- ambient awareness

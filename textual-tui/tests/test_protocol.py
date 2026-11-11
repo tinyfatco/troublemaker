@@ -3,6 +3,7 @@ from troublemaker_tui.protocol import (
     content_delta,
     is_covered_by_snapshot,
     normalize_channel,
+    normalize_input,
     parse_context_line,
     parse_visible_inputs,
     tool_label,
@@ -30,6 +31,27 @@ def test_heartbeat_is_compacted():
     wake = "[ATTENTION:heartbeat:periodic:30m] Check the checklist."
     [value] = parse_visible_inputs(envelope(wake, "heartbeat", "heartbeat"))
     assert value.text == "Heartbeat" and value.is_compact_generated
+
+
+GOAL_WAKE = (
+    "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\n"
+    "Continue working toward the active goal in the latest session context.\n\nAutomatic goal turn: 3"
+)
+
+
+def test_goal_continuation_is_compacted():
+    [value] = parse_visible_inputs(envelope(GOAL_WAKE, "terminal:ricky", "goal"))
+    assert value.text == "Goal · turn 3" and value.is_compact_generated
+
+
+def test_live_goal_continuation_is_compacted():
+    value = normalize_input({"channel": "terminal:ricky", "userName": "goal", "text": GOAL_WAKE})
+    assert value.text == "Goal · turn 3" and value.is_compact_generated
+
+
+def test_goal_user_prose_is_not_compacted():
+    [value] = parse_visible_inputs(envelope("set a goal for me", "terminal:ricky", "goal"))
+    assert value.text == "set a goal for me" and not value.is_compact_generated
 
 
 def test_ambient_shows_only_posted_messages():
