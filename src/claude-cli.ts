@@ -88,7 +88,7 @@ const CLAUDE_CLI_CLEAR_ENV = [
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_MAX_OUTPUT_CHARS = 8 * 1024 * 1024;
+const DEFAULT_MAX_OUTPUT_CHARS = 32 * 1024 * 1024;
 const DEFAULT_MAX_OUTPUT_LINES = 20_000;
 const DEFAULT_RESEED_CHARS = 120_000;
 const STDERR_TAIL_CHARS = 16_000;
@@ -323,6 +323,12 @@ async function runClaudeCliTurn(params: {
 
 		if (!result.errorText && result.exitCode === 0) {
 			writeClaudeCliSession(params.workspaceDir, result.sessionId || requestedSessionId);
+		} else if (result.sessionId && isInterruptedClaudeCliRun(result)) {
+			// Claude Code persists each message as it goes, so an interrupted run
+			// (user abort or a Troublemaker-side limit) still leaves a resumable
+			// transcript with its tool history. Dropping it would force a
+			// text-only reseed that loses that history.
+			writeClaudeCliSession(params.workspaceDir, result.sessionId);
 		} else {
 			resetClaudeCliSession(params.workspaceDir);
 		}
@@ -653,6 +659,14 @@ function messagesAfterLastAssistant(messages: Message[]): Message[] {
 		if (messages[index]?.role === "assistant") return messages.slice(index + 1);
 	}
 	return messages;
+}
+
+const TROUBLEMAKER_STOP_PATTERN =
+	/^Claude CLI (request was aborted|output exceeded|produced no output for|exceeded \d+ms)/;
+
+/** True when Troublemaker or the user stopped the run, not when Claude itself failed. */
+export function isInterruptedClaudeCliRun(result: { aborted: boolean; errorText?: string }): boolean {
+	return result.aborted || TROUBLEMAKER_STOP_PATTERN.test(result.errorText || "");
 }
 
 function canResumeClaudeSession(context: Context): boolean {
