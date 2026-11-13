@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { parseZulipAddressing } from "../src/adapters/zulip-webhook.js";
 
-// Operator's view of a pedicab customer channel.
+// Operator's view of a customer channel.
 const isOperator = (name: string, userId?: string) => userId === "9" || name.toLowerCase() === "operator";
 
 // @Text rider is for the relay bot, not the Operator.
 {
-	const a = parseZulipAddressing("@**Text rider** Hello, thanks for texting Pedicab Me. Ready to ride?", isOperator);
+	const a = parseZulipAddressing("@**Text rider** Hello, thanks for texting Example Rides. Ready to ride?", isOperator);
 	assert.equal(a.self, false);
 	assert.equal(a.wildcard, false);
 	assert.deepEqual(a.others, ["Text rider"]);
@@ -20,24 +20,24 @@ const isOperator = (name: string, userId?: string) => userId === "9" || name.toL
 	assert.deepEqual(a.others, []);
 }
 
-// Pedro does not treat @Operator as addressed to Pedro.
+// The dispatcher does not treat @Operator as addressed to the dispatcher.
 {
-	const isPedro = (name: string) => name.toLowerCase() === "pedro";
-	const a = parseZulipAddressing("@**Operator** please check the booking", isPedro);
+	const isDispatcher = (name: string) => name.toLowerCase() === "dispatcher";
+	const a = parseZulipAddressing("@**Operator** please check the booking", isDispatcher);
 	assert.equal(a.self, false);
 	assert.deepEqual(a.others, ["Operator"]);
 }
 
 // Addressing several participants including me still reaches me.
 {
-	const a = parseZulipAddressing("@**Operator** and @**Pedro|12** sync up", isOperator);
+	const a = parseZulipAddressing("@**Operator** and @**Dispatcher|12** sync up", isOperator);
 	assert.equal(a.self, true);
-	assert.deepEqual(a.others, ["Pedro"]);
+	assert.deepEqual(a.others, ["Dispatcher"]);
 }
 
 // Silent mentions refer to someone without addressing them.
 {
-	const a = parseZulipAddressing("as @_**Pedro** said, the rider is here", isOperator);
+	const a = parseZulipAddressing("as @_**Dispatcher** said, the rider is here", isOperator);
 	assert.equal(a.self, false);
 	assert.deepEqual(a.others, []);
 }
