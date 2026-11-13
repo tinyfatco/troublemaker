@@ -31,6 +31,7 @@ test("loads a signed Gmail contact relay with a control-plane-owned project", as
 		},
 	}]);
 	assert.equal(config.zulip.agentDisplayName, "Operator");
+	assert.equal(config.zulip.customerRelayEmail, "text-rider-bot@example.com");
 	assert.deepEqual(config.phone, {
 		provider: "sendly",
 		directOnly: true,
@@ -79,6 +80,23 @@ test("loads encrypted edge relay polling without a public Hostd listener", async
 			encryptionKey: Buffer.alloc(32, 4).toString("base64"),
 			pollIntervalSeconds: 3,
 		});
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test("requires the customer relay identity to be a scoped Zulip observer", async () => {
+	const examplePath = fileURLToPath(new URL("../config.zulip.example.json", import.meta.url));
+	const directory = await mkdtemp(join(tmpdir(), "hostd-zulip-relay-config-"));
+	const path = join(directory, "config.json");
+	try {
+		const raw = JSON.parse(await readFile(examplePath, "utf8"));
+		raw.zulip.observerEmails = [];
+		await writeFile(path, JSON.stringify(raw));
+		await assert.rejects(
+			loadConfig(path, ENVIRONMENT),
+			/zulip\.customerRelayEmail must also be listed in zulip\.observerEmails/,
+		);
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}

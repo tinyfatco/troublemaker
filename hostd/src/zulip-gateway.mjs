@@ -309,18 +309,20 @@ export class ZulipGateway {
 			else this.store.failOutbox(key, error instanceof Error ? error.message : String(error));
 			await notice(uncertain
 				? "Delivery uncertain. Check before resending; it may have gone out."
-				: `Not sent: ${error instanceof Error ? error.message : String(error)}`);
+				: "Nothing sent. Text delivery failed.");
 		}
 	}
 
 	customerConversation(contextId) {
 		const bound = this.store.getMeta(`work-phone:${contextId}`);
-		const conversation = bound
-			? this.store.getPhoneConversation(bound)
-			: this.store.getLatestPhoneConversationForContext(contextId);
-		return conversation && conversation.contextId === contextId && conversation.status === "active"
-			? conversation
-			: null;
+		if (bound) {
+			const conversation = this.store.getPhoneConversation(bound);
+			return conversation?.contextId === contextId && conversation.status === "active"
+				? conversation
+				: null;
+		}
+		const conversations = this.store.listActivePhoneConversationsForContext(contextId);
+		return conversations.length === 1 ? conversations[0] : null;
 	}
 
 	async validateMessage(binding, messageIdentifier, { requireAgent = false } = {}) {

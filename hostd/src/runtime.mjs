@@ -90,6 +90,15 @@ export async function initializeMattermostWorkingOutput(workspace, channelId) {
 	return initializeChannelWorkingOutput(workspace, "mattermost", channelId);
 }
 
+export function hostManagedZulipRuntimeEnv() {
+	return {
+		// Hostd supplies ambient channel context separately from direct addressing.
+		// The adapter must classify ordinary channel posts as ambient unless the
+		// raw Zulip message actually addresses this runtime.
+		MOM_ZULIP_CHANNEL_MESSAGES_DIRECT: "false",
+	};
+}
+
 export function runtimeEngineRunFlags(engine) {
 	const executable = basename(engine).toLowerCase();
 	if (executable === "docker" || executable.startsWith("docker-")) {
@@ -546,6 +555,7 @@ export class RuntimeManager {
 					),
 				} : {}),
 				...target.runtimeEnv,
+				...(zulip ? hostManagedZulipRuntimeEnv() : {}),
 			};
 			await writePrivateFile(
 				envPath,

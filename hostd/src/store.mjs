@@ -607,7 +607,7 @@ export class HostStore {
 		`).get(threadTarget);
 	}
 
-	getLatestPhoneConversationForContext(contextId) {
+	listActivePhoneConversationsForContext(contextId) {
 		return this.database.prepare(`
 			SELECT thread_target AS threadTarget, provider,
 				provider_thread_id AS providerThreadId,
@@ -616,8 +616,8 @@ export class HostStore {
 				contact_last_four AS contactLastFour, status,
 				created_at AS createdAt, last_seen_at AS lastSeenAt
 			FROM phone_conversations WHERE context_id = ? AND status = 'active'
-			ORDER BY last_seen_at DESC LIMIT 1
-		`).get(contextId);
+			ORDER BY last_seen_at DESC
+		`).all(contextId);
 	}
 
 	getPhoneConversationByProviderThread(providerThreadId) {

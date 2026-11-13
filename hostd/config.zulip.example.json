@@ -48,8 +48,9 @@
       "operator@example.com"
     ],
     "observerEmails": [
-      "observer-bot@example.com"
+      "text-rider-bot@example.com"
     ],
+    "customerRelayEmail": "text-rider-bot@example.com",
     "agentDisplayName": "Operator",
     "projectorDisplayName": "TINYFAT"
   },
