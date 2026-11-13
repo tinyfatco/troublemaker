@@ -123,7 +123,8 @@ export class ZulipWebhookAdapter implements PlatformAdapter {
 	readonly name = "zulip";
 	readonly maxMessageLength = 10_000;
 	readonly formatInstructions = `## Zulip Formatting (Markdown)
-Use standard Markdown. Reply to direct messages directly and preserve the inbound topic when a channel uses topics.`;
+Use standard Markdown. Reply to direct messages directly and preserve the inbound topic when a channel uses topics.
+In channels, a message is for you only when it @-mentions you (or @all), or mentions nobody. A message that @-mentions someone else is for them: do not answer it. To address another participant (person or bot), @-mention them as @**Full Name**; they will not see a request that doesn't mention them.`;
 
 	private readonly apiBase: string;
 	private readonly botToken: string;
@@ -146,6 +147,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	private handler!: MomHandler;
 	private botUserId: string | null = null;
 	private botEmail: string | null = null;
+	private botFullName: string | null = null;
 	private channelRefreshTimer?: NodeJS.Timeout;
 
 	constructor(config: ZulipWebhookConfig) {
@@ -197,6 +199,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 		const me = await this.api<ZulipUser & ZulipResponse>("/users/me");
 		this.botUserId = String(me.user_id);
 		this.botEmail = me.email;
+		this.botFullName = me.full_name || null;
 		this.rememberUser(me);
 		await this.refreshChannels(true);
 		this.restoreKnownDirectConversations();
@@ -501,12 +504,22 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			is_bot: senderIsBot,
 		});
 		const rawText = message.raw_content ?? this.renderedContentToMarkdown(message.content);
-		const text = isDirect ? rawText : stripZulipMentions(rawText);
+		const addressing = isDirect ? undefined : this.channelAddressing(rawText);
+		const text = isDirect
+			? stripZulipAgentMention(rawText, this.agentName)
+			: describeChannelAddressing(addressing!, this.agentName) + readableZulipMentions(rawText, addressing!.selfMentions);
 		const ts = String(message.id);
 		const topic = !isDirect && message.subject ? message.subject : undefined;
+		// A channel message is for this agent when it @-mentions the agent (or
+		// @all). A message that @-mentions only other participants is for them:
+		// it is recorded as context but never wakes this agent, not even through
+		// ambient evaluation. Unaddressed messages follow the channel policy, but
+		// another bot must @-mention this agent to address it directly.
+		const addressedElsewhere = !isDirect && addressing!.others.length > 0 && !addressing!.self && !addressing!.wildcard;
 		const directlyAddressed = isDirect
 			? true
-			: this.directChannelMessages || isMentioned(message);
+			: addressing!.self || addressing!.wildcard
+				|| (!addressedElsewhere && !senderIsBot && (this.directChannelMessages || isMentioned(message)));
 		const sourceEventType = isDirect
 			? "zulip_dm"
 			: directlyAddressed
@@ -557,7 +570,7 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			replyTargetDescription,
 		};
 		if (!directlyAddressed) {
-			this.onAmbientMessage?.(channel, event, this);
+			if (!addressedElsewhere) this.onAmbientMessage?.(channel, event, this);
 			return;
 		}
 		await routeWorkspaceChannelEvent({
@@ -567,6 +580,14 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 			queue: this.getQueue(channel),
 			awaitCompletion,
 		});
+	}
+
+	private channelAddressing(rawText: string): ZulipAddressing {
+		const selfNames = new Set(
+			[this.agentName, this.botFullName].filter((name): name is string => Boolean(name)).map(normalizeMentionName),
+		);
+		return parseZulipAddressing(rawText, (name, userId) =>
+			(userId !== undefined && userId === this.botUserId) || selfNames.has(normalizeMentionName(name)));
 	}
 
 	private acceptsDmFrom(userId: string): boolean {
@@ -741,14 +762,79 @@ Use standard Markdown. Reply to direct messages directly and preserve the inboun
 	}
 }
 
+const WILDCARD_MENTIONS = new Set(["all", "everyone", "channel", "stream", "topic"]);
+
+export interface ZulipAddressing {
+	self: boolean;
+	wildcard: boolean;
+	/** Display names of other participants addressed with a (non-silent) @-mention. */
+	others: string[];
+	/** Raw mention tokens that refer to this agent. */
+	selfMentions: string[];
+}
+
+/** Classify who a Zulip channel message is addressed to from its raw Markdown. */
+export function parseZulipAddressing(
+	rawText: string,
+	isSelf: (name: string, userId?: string) => boolean,
+): ZulipAddressing {
+	const result: ZulipAddressing = { self: false, wildcard: false, others: [], selfMentions: [] };
+	for (const match of rawText.matchAll(/@(_?)\*\*([^*\n]+)\*\*/g)) {
+		const silent = match[1] === "_";
+		const [name, userId] = splitMentionTarget(match[2]);
+		if (isSelf(name, userId)) {
+			if (!silent) result.self = true;
+			result.selfMentions.push(match[0]);
+			continue;
+		}
+		if (silent) continue;
+		if (WILDCARD_MENTIONS.has(name.toLowerCase())) {
+			result.wildcard = true;
+			continue;
+		}
+		if (!result.others.includes(name)) result.others.push(name);
+	}
+	return result;
+}
+
+function splitMentionTarget(target: string): [string, string | undefined] {
+	const pipe = target.lastIndexOf("|");
+	if (pipe > 0 && /^\d+$/.test(target.slice(pipe + 1))) return [target.slice(0, pipe).trim(), target.slice(pipe + 1)];
+	return [target.trim(), undefined];
+}
+
+function normalizeMentionName(name: string): string {
+	return name.trim().toLowerCase();
+}
+
+/** Keep other participants' mentions readable (@Name) and drop this agent's own mention. */
+function readableZulipMentions(rawText: string, selfMentions: string[]): string {
+	let text = rawText;
+	for (const token of selfMentions) text = text.split(token).join("");
+	return text
+		.replace(/@_?\*\*([^*\n]+)\*\*/g, (_all, target: string) => `@${splitMentionTarget(target)[0]}`)
+		.replace(/[ \t]{2,}/g, " ")
+		.trim();
+}
+
+function describeChannelAddressing(addressing: ZulipAddressing, agentName: string): string {
+	if (addressing.self || addressing.wildcard || addressing.others.length === 0) return "";
+	const names = addressing.others.map((name) => `@${name}`).join(", ");
+	return `[Addressed to ${names}, not to you (${agentName}). Context only; do not reply or act on it.]\n`;
+}
+
 function isMentioned(message: ZulipMessage): boolean {
 	return message.is_mentioned === true
 		|| Boolean(message.flags?.includes("mentioned"))
 		|| Boolean(message.flags?.includes("wildcard_mentioned"));
 }
 
-function stripZulipMentions(text: string): string {
-	return text.replace(/@\*\*[^*\n]+\*\*/g, "").replace(/[ \t]{2,}/g, " ").trim();
+function stripZulipAgentMention(text: string, agentName: string): string {
+	const escapedAgentName = agentName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return text
+		.replace(new RegExp(`@\\*\\*${escapedAgentName}\\*\\*`, "gi"), "")
+		.replace(/[ \t]{2,}/g, " ")
+		.trim();
 }
 
 function matchesBearer(header: string | undefined, expected: string): boolean {
