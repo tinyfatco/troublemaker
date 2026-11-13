@@ -46,7 +46,7 @@
 		"test:mattermost-adapter": "npx tsx test/mattermost-adapter.test.ts",
 		"test:mattermost-host-managed": "npx tsx test/mattermost-host-managed.test.ts",
 		"test:rocket-chat-host-managed": "npx tsx test/rocket-chat-host-managed.test.ts",
-		"test:zulip-host-managed": "npx tsx test/zulip-host-managed.test.ts",
+		"test:zulip-host-managed": "npx tsx test/zulip-host-managed.test.ts && npx tsx test/zulip-addressing.test.ts && npx tsx test/zulip-addressing-routing.test.ts",
 		"test:zulip-resident-bridge": "node hostd/test/zulip-resident-bridge.test.mjs",
 		"test:sandbox-workspace-cwd": "npx tsx test/sandbox-workspace-cwd.test.ts",
 		"test:workspace-channel-parity": "npx tsx test/workspace-channel-parity.test.ts",
