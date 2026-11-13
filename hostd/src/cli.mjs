@@ -112,6 +112,7 @@ async function components(configPath) {
 			controlNotifier,
 		})
 		: undefined;
+	if (zulipGateway) zulipGateway.phoneGateway = phoneGateway;
 	const workQueue = config.workQueue ? new WorkQueue({ config, store, routingKey, runtime, zulip, scheduler, phoneGateway }) : undefined;
 	return {
 		workQueue,

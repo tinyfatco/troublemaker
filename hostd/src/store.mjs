@@ -607,6 +607,19 @@ export class HostStore {
 		`).get(threadTarget);
 	}
 
+	getLatestPhoneConversationForContext(contextId) {
+		return this.database.prepare(`
+			SELECT thread_target AS threadTarget, provider,
+				provider_thread_id AS providerThreadId,
+				principal_hash AS principalHash, target_id AS targetId,
+				context_id AS contextId, contact_ciphertext AS contactCiphertext,
+				contact_last_four AS contactLastFour, status,
+				created_at AS createdAt, last_seen_at AS lastSeenAt
+			FROM phone_conversations WHERE context_id = ? AND status = 'active'
+			ORDER BY last_seen_at DESC LIMIT 1
+		`).get(contextId);
+	}
+
 	getPhoneConversationByProviderThread(providerThreadId) {
 		return this.database.prepare(`
 			SELECT thread_target AS threadTarget, provider,

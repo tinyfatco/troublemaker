@@ -218,6 +218,9 @@ function zulipConfig(raw, environment) {
 		projectorApiKey: envSecret(zulip.projectorApiKeyEnv, "zulip.projectorApiKeyEnv", environment),
 		memberEmails: emailArray(zulip.memberEmails, "zulip.memberEmails"),
 		observerEmails: emailArray(zulip.observerEmails, "zulip.observerEmails"),
+		customerRelayEmail: zulip.customerRelayEmail === undefined
+			? undefined
+			: normalizeAddress(zulip.customerRelayEmail, "zulip.customerRelayEmail"),
 		agentDisplayName: zulip.agentDisplayName === undefined
 			? "Operator"
 			: text(zulip.agentDisplayName, "zulip.agentDisplayName"),
