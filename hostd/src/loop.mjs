@@ -1,5 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer } from "node:http";
+import { isIP } from "node:net";
 import {
 	PhoneDeliveryUncertainError,
 	PhoneProviderRejectedError,
@@ -21,6 +22,9 @@ import {
 export const LOOP_PROVIDER = "loop";
 const LOOP_SEEN_SOURCE = "loop-webhook";
 const MAXIMUM_BODY_BYTES = 256 * 1024;
+const RATE_WINDOW_MS = 60_000;
+const RATE_PER_CLIENT = 30;
+const RATE_GLOBAL = 180;
 const OPT_OUT_WORDS = new Set(["stop", "stopall", "unsubscribe", "cancel", "end", "quit"]);
 const OPT_IN_WORDS = new Set(["start", "unstop", "yes"]);
 const STATUS_BY_EVENT = new Map([
@@ -49,6 +53,53 @@ function equal(left, right) {
 	return actual.length > 0
 		&& actual.length === expected.length
 		&& timingSafeEqual(actual, expected);
+}
+
+export class LoopIngressRateLimiter {
+	constructor({
+		windowMs = RATE_WINDOW_MS,
+		perClient = RATE_PER_CLIENT,
+		global = RATE_GLOBAL,
+	} = {}) {
+		this.windowMs = windowMs;
+		this.perClient = perClient;
+		this.globalLimit = global;
+		this.windowStartedAt = 0;
+		this.globalCount = 0;
+		this.clientCounts = new Map();
+	}
+
+	allow(client, now = Date.now()) {
+		if (
+			this.windowStartedAt === 0
+			|| now < this.windowStartedAt
+			|| now - this.windowStartedAt >= this.windowMs
+		) {
+			this.windowStartedAt = now;
+			this.globalCount = 0;
+			this.clientCounts.clear();
+		}
+		this.globalCount += 1;
+		if (this.globalCount > this.globalLimit) return false;
+		const count = (this.clientCounts.get(client) || 0) + 1;
+		this.clientCounts.set(client, count);
+		return count <= this.perClient;
+	}
+}
+
+function loopIngressClient(request) {
+	const remote = request.socket?.remoteAddress || "";
+	const local = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
+	const forwarded = String(request.headers?.["cf-connecting-ip"] || "").trim();
+	if (local && isIP(forwarded)) return forwarded;
+	return isIP(remote) ? remote : "unknown";
+}
+
+class LoopIngressHttpError extends Error {
+	constructor(status) {
+		super(`loop ingress rejected request with HTTP ${status}`);
+		this.status = status;
+	}
 }
 
 /**
@@ -157,6 +208,7 @@ export class LoopGateway {
 		// Direct-neuron replies for Loop edges are sent by the phone flusher.
 		phoneGateway?.registerReplyTransport(LOOP_PROVIDER, this);
 		this.provider = new LoopDirectProvider(config.loop, { fetchImpl });
+		this.rateLimiter = new LoopIngressRateLimiter();
 		this.server = null;
 		this.stopped = true;
 	}
@@ -185,7 +237,14 @@ export class LoopGateway {
 
 	async handle(request, response) {
 		try {
-			if (request.method !== "POST" || request.url?.split("?", 1)[0] !== this.config.loop.ingress.path) {
+			if (!this.rateLimiter.allow(loopIngressClient(request))) {
+				request.resume();
+				response.writeHead(429, { "cache-control": "no-store", "retry-after": "60" });
+				response.end();
+				return;
+			}
+			if (request.method !== "POST" || request.url !== this.config.loop.ingress.path) {
+				request.resume();
 				response.writeHead(404, { "cache-control": "no-store" });
 				response.end();
 				return;
@@ -196,30 +255,50 @@ export class LoopGateway {
 				response.end();
 				return;
 			}
+			const contentType = String(request.headers["content-type"] || "")
+				.split(";", 1)[0]
+				.trim()
+				.toLowerCase();
+			if (contentType !== "application/json") {
+				request.resume();
+				throw new LoopIngressHttpError(415);
+			}
+			const declaredLength = Number(request.headers["content-length"]);
+			if (Number.isFinite(declaredLength) && declaredLength > MAXIMUM_BODY_BYTES) {
+				request.resume();
+				throw new LoopIngressHttpError(413);
+			}
 			const chunks = [];
 			let length = 0;
 			for await (const chunk of request) {
 				length += chunk.length;
-				if (length > MAXIMUM_BODY_BYTES) throw new Error("webhook body exceeds limit");
+				if (length > MAXIMUM_BODY_BYTES) {
+					request.resume();
+					throw new LoopIngressHttpError(413);
+				}
 				chunks.push(chunk);
 			}
 			let payload;
 			try {
 				payload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 			} catch {
-				response.writeHead(400, { "cache-control": "no-store" });
-				response.end();
-				return;
+				throw new LoopIngressHttpError(400);
 			}
-			const disposition = this.acceptWebhook(object(payload));
+			if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+				throw new LoopIngressHttpError(400);
+			}
+			const disposition = this.acceptWebhook(payload);
 			response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
 			response.end(JSON.stringify({ ok: true, disposition }));
 		} catch (error) {
-			console.error(
-				"troublemaker-hostd: loop webhook failed:",
-				error instanceof Error ? error.message : String(error),
-			);
-			response.writeHead(500, { "cache-control": "no-store" });
+			const status = error instanceof LoopIngressHttpError ? error.status : 500;
+			if (status === 500) {
+				console.error(
+					"troublemaker-hostd: loop webhook failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
+			if (!response.headersSent) response.writeHead(status, { "cache-control": "no-store" });
 			response.end();
 		}
 	}
