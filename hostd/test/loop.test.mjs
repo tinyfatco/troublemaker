@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { loadConfig } from "../src/config.mjs";
-import { LoopGateway, verifyLoopWebhook } from "../src/loop.mjs";
+import { LoopGateway, LoopIngressRateLimiter, verifyLoopWebhook } from "../src/loop.mjs";
 import { PhoneDeliveryUncertainError, PhoneGateway, PhoneProviderRejectedError } from "../src/phone.mjs";
 import { ContextRouter } from "../src/router.mjs";
 import { createHostServer } from "../src/server.mjs";
@@ -102,6 +102,76 @@ test("Loop webhook authorization accepts the exact configured header, raw or Bea
 	assert.equal(verifyLoopWebhook({ authorization: `${SECRET}x` }, SECRET), false);
 	assert.equal(verifyLoopWebhook({}, SECRET), false);
 	assert.equal(verifyLoopWebhook({ authorization: "short" }, "short"), false);
+});
+
+test("Loop ingress rate limits each client and the whole listener in a fixed window", () => {
+	const limiter = new LoopIngressRateLimiter({ windowMs: 100, perClient: 2, global: 3 });
+	assert.equal(limiter.allow("192.0.2.1", 1_000), true);
+	assert.equal(limiter.allow("192.0.2.1", 1_001), true);
+	assert.equal(limiter.allow("192.0.2.1", 1_002), false);
+	assert.equal(limiter.allow("192.0.2.2", 1_003), false);
+	assert.equal(limiter.allow("192.0.2.2", 1_100), true);
+	assert.equal(limiter.allow("192.0.2.3", 1_101), true);
+	assert.equal(limiter.allow("192.0.2.4", 1_102), true);
+	assert.equal(limiter.allow("192.0.2.5", 1_103), false);
+});
+
+test("Loop ingress enforces exact route, bearer, JSON body and size boundaries", async () => {
+	const loop = subject();
+	loop.config.loop.ingress.port = 0;
+	await loop.gateway.start();
+	const port = loop.gateway.server.address().port;
+	const url = (path = loop.config.loop.ingress.path) => `http://127.0.0.1:${port}${path}`;
+	try {
+		const get = await fetch(url());
+		assert.equal(get.status, 404);
+		assert.equal(get.headers.get("cache-control"), "no-store");
+		const query = await fetch(url(`${loop.config.loop.ingress.path}?probe=1`), { method: "POST" });
+		assert.equal(query.status, 404);
+		const unauthorized = await fetch(url(), { method: "POST" });
+		assert.equal(unauthorized.status, 401);
+		const wrongType = await fetch(url(), {
+			method: "POST",
+			headers: { authorization: `Bearer ${SECRET}`, "content-type": "text/plain" },
+			body: "{}",
+		});
+		assert.equal(wrongType.status, 415);
+		const array = await fetch(url(), {
+			method: "POST",
+			headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json; charset=utf-8" },
+			body: "[]",
+		});
+		assert.equal(array.status, 400);
+		const oversized = await fetch(url(), {
+			method: "POST",
+			headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+			body: `{"padding":"${"x".repeat(256 * 1024)}"}`,
+		});
+		assert.equal(oversized.status, 413);
+		const accepted = await fetch(url(), {
+			method: "POST",
+			headers: { authorization: `Bearer ${SECRET}`, "content-type": "application/json" },
+			body: JSON.stringify(inbound()),
+		});
+		assert.equal(accepted.status, 200);
+		assert.deepEqual(await accepted.json(), { ok: true, disposition: "queued" });
+		for (let attempt = 0; attempt < 30; attempt += 1) {
+			const probe = await fetch(url(), {
+				method: "POST",
+				headers: { "cf-connecting-ip": "192.0.2.99" },
+			});
+			assert.equal(probe.status, 401);
+		}
+		const limited = await fetch(url(), {
+			method: "POST",
+			headers: { "cf-connecting-ip": "192.0.2.99" },
+		});
+		assert.equal(limited.status, 429);
+		assert.equal(limited.headers.get("retry-after"), "60");
+	} finally {
+		await loop.gateway.stop();
+		loop.close();
+	}
 });
 
 test("allowlisted Loop inbound joins the shared phone pipeline exactly once", () => {
