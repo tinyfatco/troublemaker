@@ -93,15 +93,6 @@ async function components(configPath) {
 			controlNotifier,
 		})
 		: { polling: false, controlNotifier };
-	const mattermostGateway = mattermost
-		? new MattermostGateway({ config, store, provisioner: mattermost, scheduler })
-		: undefined;
-	const rocketChatGateway = rocketChat
-		? new RocketChatGateway({ config, store, provisioner: rocketChat, scheduler })
-		: undefined;
-	const zulipGateway = zulip
-		? new ZulipGateway({ config, store, provisioner: zulip, scheduler })
-		: undefined;
 	const phoneGateway = config.phone
 		? new PhoneGateway({
 			config,
@@ -111,6 +102,15 @@ async function components(configPath) {
 			scheduler,
 			controlNotifier,
 		})
+		: undefined;
+	const mattermostGateway = mattermost
+		? new MattermostGateway({ config, store, provisioner: mattermost, scheduler })
+		: undefined;
+	const rocketChatGateway = rocketChat
+		? new RocketChatGateway({ config, store, provisioner: rocketChat, scheduler })
+		: undefined;
+	const zulipGateway = zulip
+		? new ZulipGateway({ config, store, provisioner: zulip, scheduler, phoneGateway })
 		: undefined;
 	const workQueue = config.workQueue ? new WorkQueue({ config, store, routingKey, runtime, zulip, scheduler, phoneGateway }) : undefined;
 	return {

@@ -204,6 +204,13 @@ function contactRelayConfig(raw, index, environment) {
 function zulipConfig(raw, environment) {
 	if (raw === undefined) return undefined;
 	const zulip = object(raw, "zulip");
+	const observerEmails = emailArray(zulip.observerEmails, "zulip.observerEmails");
+	const customerRelayEmail = zulip.customerRelayEmail === undefined
+		? undefined
+		: normalizeAddress(zulip.customerRelayEmail, "zulip.customerRelayEmail");
+	if (customerRelayEmail && !observerEmails.includes(customerRelayEmail)) {
+		throw new Error("zulip.customerRelayEmail must also be listed in zulip.observerEmails");
+	}
 	return {
 		url: httpUrl(zulip.url, "zulip.url"),
 		administratorEmail: normalizeAddress(zulip.administratorEmail, "zulip.administratorEmail"),
@@ -217,7 +224,8 @@ function zulipConfig(raw, environment) {
 		projectorEmail: normalizeAddress(zulip.projectorEmail, "zulip.projectorEmail"),
 		projectorApiKey: envSecret(zulip.projectorApiKeyEnv, "zulip.projectorApiKeyEnv", environment),
 		memberEmails: emailArray(zulip.memberEmails, "zulip.memberEmails"),
-		observerEmails: emailArray(zulip.observerEmails, "zulip.observerEmails"),
+		observerEmails,
+		customerRelayEmail,
 		agentDisplayName: zulip.agentDisplayName === undefined
 			? "Operator"
 			: text(zulip.agentDisplayName, "zulip.agentDisplayName"),

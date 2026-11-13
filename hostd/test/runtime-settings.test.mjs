@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+	hostManagedZulipRuntimeEnv,
 	initializeChannelWorkingOutput,
 	initializeMattermostWorkingOutput,
 	runtimeEngineRunFlags,
@@ -114,6 +115,12 @@ test("Zulip cutover migrates only old fixed customer-channel working output", as
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test("Hostd-managed Zulip runtimes classify ordinary channel posts as ambient", () => {
+	assert.deepEqual(hostManagedZulipRuntimeEnv(), {
+		MOM_ZULIP_CHANNEL_MESSAGES_DIRECT: "false",
+	});
 });
 
 test("runtime engine flags keep Docker and rootless Podman launchers distinct", () => {

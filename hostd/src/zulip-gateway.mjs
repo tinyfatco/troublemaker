@@ -1,4 +1,5 @@
 import { bearerMatches } from "./security.mjs";
+import { bodyDigest, PhoneDeliveryUncertainError } from "./phone.mjs";
 
 function json(response, status, value) {
 	response.writeHead(status, {
@@ -35,12 +36,24 @@ export function isExpiredZulipEventQueueError(error) {
 	return /bad event queue id|bad_event_queue_id|event queue.*(?:expired|invalid|not found)/i.test(message);
 }
 
+function stripRelayMentions(raw, relayUser) {
+	const name = String(relayUser.full_name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return raw
+		.replace(new RegExp(`@_?\\*\\*${name}(?:\\|${relayUser.user_id})?\\*\\*`, "gi"), "")
+		.replace(new RegExp(`@_?\\*\\*[^*\\n|]*\\|${relayUser.user_id}\\*\\*`, "g"), "")
+		.replace(/[ \t]{2,}/g, " ");
+}
+
 export class ZulipGateway {
-	constructor({ config, store, provisioner, scheduler }) {
+	constructor({ config, store, provisioner, scheduler, phoneGateway }) {
 		this.config = config;
 		this.store = store;
 		this.provisioner = provisioner;
 		this.scheduler = scheduler;
+		this.phoneGateway = phoneGateway;
+		this.relayUser = null;
+		this.botUserIds = new Set();
+		this.userIsBot = new Map();
 		this.stopped = true;
 		this.pollPromise = null;
 		this.queueId = null;
@@ -83,6 +96,17 @@ export class ZulipGateway {
 			identities.projector.user_id,
 			...identities.observers.map((user) => user.user_id),
 		]);
+		this.agentUserId = identities.agent.user_id;
+		for (const user of [identities.agent, identities.projector, ...identities.members, ...identities.observers]) {
+			if (user.is_bot) this.botUserIds.add(user.user_id);
+		}
+		const relayEmail = this.config.zulip.customerRelayEmail;
+		this.relayUser = relayEmail
+			? identities.observers.find((user) => String(user.email).toLowerCase() === relayEmail) ?? null
+			: null;
+		if (relayEmail && !this.relayUser) {
+			throw new Error("zulip.customerRelayEmail must also be listed in zulip.observerEmails");
+		}
 		await this.registerQueue();
 		this.stopped = false;
 		console.log("troublemaker-hostd: host Zulip ingress connected");
@@ -141,16 +165,22 @@ export class ZulipGateway {
 		const channelId = positiveId(message?.stream_id);
 		const senderId = positiveId(message?.sender_id);
 		if (!messageId || !channelId || !senderId || message?.type !== "stream") return;
-		if (this.ignoredUserIds.has(senderId)) return;
 		const binding = this.store.getZulipBindingByChannel(channelId);
 		if (!binding) return;
+		const relayRequested = this.mentionsRelay(message.content);
+		if (this.ignoredUserIds.has(senderId) && !relayRequested) return;
 		if (this.store.getEventByProviderMessage("zulip", String(messageId))) return;
-		if (binding.attentionMode === "mentions-only" && message.is_mentioned !== true) return;
 
 		const detail = await this.provisioner.request(`messages/${messageId}`);
 		const rawContent = typeof detail?.message?.raw_content === "string"
 			? detail.message.raw_content
 			: undefined;
+		const senderIsBot = await this.isBot(senderId);
+		if (relayRequested && !senderIsBot) {
+			await this.relayToCustomer(binding, message, rawContent ?? "");
+		}
+		if (this.ignoredUserIds.has(senderId)) return;
+		if (binding.attentionMode === "mentions-only" && !this.mentionsAgent(message.content)) return;
 		const { targetId, principalHash } = contextParts(binding.contextId);
 		const event = this.store.upsertEvent({
 			id: `zulip:${messageId}`,
@@ -163,6 +193,7 @@ export class ZulipGateway {
 			payload: {
 				message: {
 					...message,
+					sender_is_bot: senderIsBot,
 					...(rawContent === undefined ? {} : { raw_content: rawContent }),
 				},
 			},
@@ -171,6 +202,127 @@ export class ZulipGateway {
 		console.log(
 			`troublemaker-hostd: queued Zulip message ${messageId} as awareness sequence ${event.awarenessSequence} for ${binding.contextId}`,
 		);
+	}
+
+	async isBot(userId) {
+		if (this.botUserIds.has(userId)) return true;
+		if (this.userIsBot.has(userId)) return this.userIsBot.get(userId);
+		let bot = false;
+		try {
+			const result = await this.provisioner.request(`users/${userId}`);
+			bot = result?.user?.is_bot === true;
+		} catch {
+			bot = true; // unknown senders never drive customer texts
+		}
+		this.userIsBot.set(userId, bot);
+		return bot;
+	}
+
+	/**
+	 * Hostd reads the administrator's event queue, so Zulip's is_mentioned flag
+	 * describes the administrator, not the agent. Read the rendered mentions.
+	 */
+	mentionsAgent(content) {
+		if (typeof content !== "string") return false;
+		if (/class="user-mention"[^>]*data-user-id="\*"/.test(content)) return true;
+		if (/class="topic-mention"/.test(content)) return true;
+		return Boolean(this.agentUserId)
+			&& new RegExp(`class="user-mention"[^>]*data-user-id="${this.agentUserId}"`).test(content);
+	}
+
+	/** True when rendered message HTML @-mentions the configured customer relay bot. */
+	mentionsRelay(content) {
+		if (!this.relayUser || typeof content !== "string") return false;
+		return new RegExp(`class="user-mention"[^>]*data-user-id="${this.relayUser.user_id}"`).test(content);
+	}
+
+	/**
+	 * A staff member @-mentioned the customer relay bot (e.g. "@Text rider See
+	 * you at 7!") in a customer channel. Send the rest of the message to that
+	 * context's customer through the same host SMS path the Operator uses, so it
+	 * is idempotent, ledgered and projected as "SMS sent" in the channel.
+	 */
+	async relayToCustomer(binding, message, rawContent) {
+		const messageId = positiveId(message.id);
+		const relayName = this.relayUser.full_name;
+		const notice = (content) => this.provisioner.request("messages", {
+			method: "POST",
+			auth: "projector",
+			form: new URLSearchParams({ type: "channel", to: String(binding.channelId), topic: "", content }),
+		}).catch((error) => console.error(
+			"troublemaker-hostd: customer relay notice failed:",
+			error instanceof Error ? error.message : String(error),
+		));
+		const text = stripRelayMentions(rawContent, this.relayUser).trim();
+		if (!text) {
+			await notice(`Nothing sent. Put the message after the mention, like: @**${relayName}** See you at 7!`);
+			return;
+		}
+		if (text.length > 1600) {
+			await notice("Nothing sent. Keep texts under 1600 characters.");
+			return;
+		}
+		if (!this.phoneGateway) {
+			await notice("Nothing sent. Texting is not configured on this host.");
+			return;
+		}
+		const conversation = this.customerConversation(binding.contextId);
+		if (!conversation) {
+			await notice("Nothing sent. This channel has no rider phone conversation yet.");
+			return;
+		}
+		const { targetId } = contextParts(binding.contextId);
+		const key = `zulip-relay:${messageId}`;
+		const outbox = this.store.startOutbox({
+			idempotencyKey: key,
+			targetId,
+			contextId: binding.contextId,
+			providerThreadId: conversation.providerThreadId,
+			bodySha256: bodyDigest(text),
+		});
+		if (!outbox.claimed) return;
+		let accepted = false;
+		try {
+			const receipt = await this.phoneGateway.sendDirect(conversation, text);
+			accepted = true;
+			this.store.completePhoneOutboxWithLedger(key, receipt.providerMessageId, {
+				id: `phone_outbound:${receipt.providerMessageId}`,
+				source: "phone_outbound",
+				providerMessageId: receipt.providerMessageId,
+				providerThreadId: conversation.providerThreadId,
+				principalHash: conversation.principalHash,
+				targetId,
+				contextId: binding.contextId,
+				payload: {
+					direction: "outbound",
+					sender: `${String(message.sender_full_name || "Staff").replace(/[\r\n]+/g, " ")} via ${relayName}`,
+					recipient: `Phone ending ${conversation.contactLastFour}`,
+					message: { id: receipt.providerMessageId, body: text },
+					phone: { threadTarget: conversation.threadTarget, displayName: `SMS •••• ${conversation.contactLastFour}` },
+					route: { projectSlug: "relay" },
+				},
+			});
+			this.phoneGateway.controlNotifier?.wake();
+		} catch (error) {
+			const uncertain = accepted || error instanceof PhoneDeliveryUncertainError;
+			if (uncertain) this.store.markOutboxUncertain(key, "Provider delivery requires review");
+			else this.store.failOutbox(key, error instanceof Error ? error.message : String(error));
+			await notice(uncertain
+				? "Delivery uncertain. Check before resending; it may have gone out."
+				: "Nothing sent. Text delivery failed.");
+		}
+	}
+
+	customerConversation(contextId) {
+		const bound = this.store.getMeta(`work-phone:${contextId}`);
+		if (bound) {
+			const conversation = this.store.getPhoneConversation(bound);
+			return conversation?.contextId === contextId && conversation.status === "active"
+				? conversation
+				: null;
+		}
+		const conversations = this.store.listActivePhoneConversationsForContext(contextId);
+		return conversations.length === 1 ? conversations[0] : null;
 	}
 
 	async validateMessage(binding, messageIdentifier, { requireAgent = false } = {}) {
