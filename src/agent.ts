@@ -61,7 +61,7 @@ import { createRunnerOperationQueue, handoffContinuationMessage, runHandoffSegme
 import { inferenceProgressURL } from "./inference-progress.js";
 import * as log from "./log.js";
 import { startLiveModelCatalogRefresh } from "./model-catalog-refresh.js";
-import { runWithModelCredentialGate } from "./model-auth-gate.js";
+import { isModelUsageLimitError, runWithModelCredentialGate } from "./model-auth-gate.js";
 import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
 import { normalizeThinkingLevelForModel } from "./model-thinking.js";
 import { archiveAndTruncateContextFile, archiveContext, translateToHostPath } from "./runner/context-files.js";
@@ -974,7 +974,9 @@ async function createRunner(
 				errorMessage: runState.errorMessage,
 				...(runState.modelCredentialUnavailable
 					? { failureKind: "model_credential_unavailable" as const }
-					: {}),
+					: runState.stopReason === "error" && isModelUsageLimitError(runState.errorMessage)
+						? { failureKind: "model_usage_limit" as const }
+						: {}),
 			};
 		},
 
