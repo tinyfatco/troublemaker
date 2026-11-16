@@ -516,7 +516,8 @@ The focused `pnpm test:<area>` scripts still work; see `package.json` for the fu
 - `src/host/node/cli.ts` — Real entry point: CLI args, adapter auto-detection and creation, gateway route registration, startup
 - `src/host/node/` — Node host services: adapter route table (`adapter-route-identity.ts`), terminal upgrade, Deepgram/ElevenLabs voice sessions, owner push, device grants
 - `src/gateway.ts` — Unified HTTP server: path-based routing, readiness gating, loopback-only bind, file/awareness/session APIs
-- `src/agent.ts` — Agent runner, tool execution, session management
+- `src/agent.ts` — Agent runner: `createRunner` wires the Pi Agent/AgentSession and implements `run`, `steer`, `abort`, `compact`, `clear`
+- `src/runner/` — Runner building blocks: per-run state and output queue (`run-state.ts`), session event handling and tool progress (`session-events.ts`), provider stream boundary (`stream-fn.ts`), handoff tool/extension and private checkpoints (`handoff.ts`, `private-checkpoint.ts`), compaction tracking (`compaction.ts`), context transitions, live presentation, user-turn assembly, outcome delivery, skills loading, and context-file archiving
 - `src/adapters/` — Platform adapters, one or more files per platform
   - `types.ts` — `PlatformAdapter` interface
   - `slack-*.ts` — Socket Mode, webhook, reactions, native/batched tool progress

@@ -12,6 +12,7 @@ import {
 	resolveCompactionCue,
 } from "../src/compaction-cue.js";
 import { DEFAULT_COMPACTION } from "../src/context.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 assert.equal(DEFAULT_COMPACTION.reserveTokens, 16_384, "compaction uses Pi's native fixed response headroom");
 assert.equal(DEFAULT_COMPACTION.keepRecentTokens, 20_000, "compaction uses Pi's native recent-context retention");
@@ -59,7 +60,7 @@ assert.deepEqual(spawned, {
 	unref: true,
 }, "cue playback uses direct, low-volume afplay arguments and detaches");
 
-const agentSource = await readFile(new URL("../src/agent.ts", import.meta.url), "utf8");
+const agentSource = readRunnerSource();
 assert.match(agentSource, /compactionTimer = setTimeout[\s\S]*?requestCompactionAbort\(\)/, "compaction owns an exact cancellation timer");
 assert.match(agentSource, /boundCompactionStreamOptions\(context, options\)/, "compaction request shaping is applied at the shared stream boundary");
 assert.match(agentSource, /abort\(\): void[\s\S]*?requestCompactionAbort\(\)[\s\S]*?session\.abort\(\)/, "normal abort also reaches Pi's separate compaction controller");

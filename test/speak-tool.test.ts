@@ -6,6 +6,7 @@ import {
 	createSpeakTool,
 	resolveSpeakConfig,
 } from "../src/tools/speak.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 function shellEscape(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
@@ -81,7 +82,7 @@ try {
 	assert.equal(sagConfig.sag.modelId, "fake-fast-model");
 	await assert.rejects(readFile(sagSpokenPath, "utf-8"), /ENOENT/, "legacy auto=true does not start speech while loading settings");
 
-	const agentSource = await readFile(new URL("../src/agent.ts", import.meta.url), "utf-8");
+	const agentSource = readRunnerSource();
 	assert.doesNotMatch(agentSource, /autoSpeakFinalResponse/, "final-response delivery has no automatic speech hook");
 
 	const sagTool = createSpeakTool(tempDir, { env: {}, platform: "darwin" });

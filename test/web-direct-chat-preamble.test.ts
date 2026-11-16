@@ -1,5 +1,5 @@
 import { buildSessionPreamble } from "../src/core/prompt.js";
-import { readFileSync } from "fs";
+import { readRunnerSource } from "./support/runner-source.js";
 
 let passed = 0;
 let failed = 0;
@@ -30,7 +30,7 @@ assert(webPreamble.includes("Attending: web"), "web preamble still identifies th
 assert(!webPreamble.includes("send_message with an explicit target for ALL communication"), "web direct chat does not instruct the agent to use send_message");
 assert(!webPreamble.includes("your text output will NOT be delivered"), "web direct chat does not claim direct text output is undeliverable");
 
-const agentSource = readFileSync(new URL("../src/agent.ts", import.meta.url), "utf-8");
+const agentSource = readRunnerSource();
 assert(!agentSource.includes("<project_context>"), "agent prompt assembly does not inject project_context");
 assert(!agentSource.includes("Project-room rules:"), "agent prompt assembly does not inject project-room rules");
 

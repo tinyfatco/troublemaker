@@ -7,6 +7,7 @@ import { RealtimeVoiceCanonicalAdapter, RealtimeVoiceSession } from "../src/adap
 import type { MomEvent, MomHandler } from "../src/adapters/types.js";
 import { VoiceAdapter } from "../src/adapters/voice.js";
 import { WebVoiceBridgeAdapter } from "../src/adapters/web-voice.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 const SESSION_ID = "12345678-1234-4234-8234-123456789abc";
 const committed: MomEvent = {
@@ -98,7 +99,7 @@ try {
 	assert.match(repositoryGuidance, /initial `hey <agent name>` wake phrase/);
 	assert.match(repositoryGuidance, /Queue voice follow-ups FIFO/);
 	assert.match(repositoryGuidance, /never spoken automatically/);
-	const agentRunner = readFileSync("src/agent.ts", "utf8");
+	const agentRunner = readRunnerSource();
 	assert.doesNotMatch(agentRunner, /speakConfiguredText|speak\.auto|automatic.*SAG/i, "ordinary final responses do not restore automatic speech");
 
 	console.log("voice adapter interruption hooks ok");

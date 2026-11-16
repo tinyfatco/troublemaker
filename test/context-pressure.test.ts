@@ -19,6 +19,7 @@ import {
 	STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
 	withDeliveryInstructions,
 } from "../src/extensions/dynamic-runtime-context.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 const largeWorkspaceMarker = "workspace-memory-marker-".repeat(10_000);
 const options = {
@@ -147,7 +148,7 @@ try {
 	await rm(root, { recursive: true, force: true });
 }
 
-const agentSource = await readFile(new URL("../src/agent.ts", import.meta.url), "utf8");
+const agentSource = readRunnerSource();
 assert.match(
 	agentSource,
 	/const workspaceRuntimeContext =[\s\S]*buildWorkspaceRuntimeContext\(sessionContextOptions\)/,

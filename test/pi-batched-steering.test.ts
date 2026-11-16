@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MomSettingsManager } from "../src/context.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 const workingDir = mkdtempSync(join(tmpdir(), "troublemaker-pi-batched-steering-"));
 try {
@@ -13,7 +14,7 @@ try {
 		"every resident session asks Pi to drain all pending steering messages together",
 	);
 
-	const agent = readFileSync("src/agent.ts", "utf8");
+	const agent = readRunnerSource();
 	assert.match(
 		agent,
 		/steeringMode:\s*"all"/,

@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { WebAdapter } from "../src/adapters/web.js";
 import { runWithModelCredentialGate } from "../src/model-auth-gate.js";
 import { ModelCredentialUnavailableError } from "../src/model-config.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 let prompts = 0;
 const unavailableBeforePrompt = await runWithModelCredentialGate({
@@ -64,7 +64,7 @@ assert.deepEqual(streamEvents, [], "web streams must fail quiet on model credent
 }, streamWriter);
 assert.deepEqual(streamEvents, [{ type: "error", message: "ordinary model failure" }]);
 
-const runnerSource = readFileSync("src/agent.ts", "utf8");
+const runnerSource = readRunnerSource();
 assert.match(
 	runnerSource,
 	/runState\.modelCredentialUnavailable[\s\S]+no user-visible runtime error posted/,
