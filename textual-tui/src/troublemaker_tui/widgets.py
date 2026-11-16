@@ -290,6 +290,9 @@ class ToolRow(Vertical, can_focus=True):
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(f"{glyph} ", style="bold")
         text.append(tool.label, style="bold" if tool.state == "pending" else "")
+        if tool.summary and tool.summary != tool.label:
+            text.append("  ")
+            text.append(tool.summary, style="dim")
         side = Text(no_wrap=True)
         end = tool.finished_at if tool.finished_at is not None else (time.monotonic() if tool.state == "pending" else None)
         meta: list[str] = []

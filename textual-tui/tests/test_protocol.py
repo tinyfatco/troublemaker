@@ -103,3 +103,13 @@ def test_ambient_card_groups_speakers_and_unescapes():
     messages = ambient_messages("Casey: ship the \\`skip\\` link\nhttps://example.com/preview\nOperator: Thursday")
     assert messages == [("Casey", "ship the `skip` link\nhttps://example.com/preview"), ("Operator", "Thursday")]
     assert speaker_color("Casey") == speaker_color(" casey ")
+
+
+def test_tool_summary_shows_the_real_call():
+    from troublemaker_tui.protocol import tool_summary
+    bash = {"name": "mcp__troublemaker__bash", "arguments": {"command": "git status\n  --short", "label": "Check"}}
+    assert tool_summary(bash) == "$ git status --short"
+    assert tool_summary({"name": "read", "arguments": {"path": "/tmp/a.txt"}}) == "/tmp/a.txt"
+    assert tool_summary({"name": "send_message", "arguments": {"target": "C1", "text": "hi"}}) == "→ C1 hi"
+    assert tool_summary({"name": "search", "arguments": {"label": "x", "limit": 3}}) == "limit=3"
+    assert tool_summary({"name": "bash", "arguments": {}}) == ""
