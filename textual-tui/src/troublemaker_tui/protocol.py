@@ -21,7 +21,7 @@ _FOLLOW_UP_RE = re.compile(
     r"^\[ATTENTION:follow-up-[^\]\n]+:one-shot:[^\]\n]+\]\s+\[FOLLOW_UP\s+(\d+)/(\d+)\s+after\s+(\d+)\s+minutes?"
     r"\s+since the latest completed wake\]"
 )
-_HEARTBEAT_RE = re.compile(r"^\[ATTENTION:[^\]\r\n]+:(?:immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$")
+_HEARTBEAT_RE = re.compile(r"^\[ATTENTION:([^\]\r\n]+?):(immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$")
 _GOAL_RE = re.compile(r"^\[GOAL CONTINUATION\][\s\S]*?Automatic goal turn:\s*(\d+)\s*$")
 _BATCH_HEADER_RE = re.compile(r"^\[([^\]\n]+)\]\s+\[([^\]\n]+)\]\s+\[([^\]\n]+)\]:[ \t]*", re.MULTILINE)
 _SLACK_MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|([^>]+))?>")
@@ -41,7 +41,7 @@ class UserInput:
         if self.channel == "follow-up" and self.user == "follow-up":
             return bool(re.fullmatch(r"Follow-up \d+/\d+ · \d+m", self.text))
         if self.channel in ("heartbeat", "heartbeat:heartbeat") and self.user == "heartbeat":
-            return self.text == "Heartbeat"
+            return self.text == "Heartbeat" or bool(re.fullmatch(r"Scheduled · \S+", self.text))
         if self.user == "goal":
             return bool(re.fullmatch(r"Goal · turn \d+", self.text))
         return False
@@ -101,7 +101,13 @@ def _compact_generated(channel: str, user: str, text: str) -> str:
         match = _FOLLOW_UP_RE.match(text)
         return f"Follow-up {match[1]}/{match[2]} · {match[3]}m" if match else text
     if channel in ("heartbeat", "heartbeat:heartbeat") and user == "heartbeat":
-        return "Heartbeat" if _HEARTBEAT_RE.match(text) else text
+        match = _HEARTBEAT_RE.match(text)
+        if not match:
+            return text
+        name = re.sub(r"\.json$", "", match[1])
+        if name == "heartbeat" or not re.fullmatch(r"[\w.-]+", name):
+            return "Heartbeat"
+        return f"Scheduled · {name}"
     if user == "goal":
         match = _GOAL_RE.match(text)
         return f"Goal · turn {match[1]}" if match else text
