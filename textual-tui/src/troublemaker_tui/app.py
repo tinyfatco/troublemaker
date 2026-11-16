@@ -35,7 +35,7 @@ THEME = Theme(
     name="troublemaker",
     primary="#9D7CD8",
     secondary="#7AA2F7",
-    accent="#FF9E64",
+    accent="#6A4BB0",
     foreground="#C8D0F0",
     background="#14151C",
     surface="#1A1B24",
@@ -47,7 +47,7 @@ THEME = Theme(
     variables={
         "block-cursor-background": "#9D7CD8",
         "block-cursor-foreground": "#14151C",
-        "footer-key-foreground": "#FF9E64",
+        "footer-key-foreground": "#6A4BB0",
         "input-selection-background": "#9D7CD8 35%",
     },
 )
