@@ -80,7 +80,7 @@ Screen {
     color: $text-muted;
     pointer: pointer;
 }
-.tool.-pending .tool-header { color: $warning; }
+.tool.-pending .tool-header { color: $primary; }
 .tool.-success .tool-header { color: $foreground 75%; }
 .tool.-error .tool-header { color: $error; }
 .tool:hover .tool-header { background: $surface; }
@@ -127,7 +127,7 @@ Screen {
     padding: 0 0 0 2;
     color: $text-muted;
 }
-.transition.-active { color: $warning; }
+.transition.-active { color: $primary; }
 .transition.-done { color: $success 80%; }
 .transition.-failed { color: $error; }
 
@@ -159,4 +159,4 @@ Screen {
     background: $surface;
 }
 #composer:focus { border-left: outer $accent; background: $panel 60%; }
-#composer.-steering { border-left: outer $warning; }
+#composer.-steering { border-left: outer $primary; }
