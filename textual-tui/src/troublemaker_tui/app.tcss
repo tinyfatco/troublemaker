@@ -88,7 +88,7 @@ Screen {
     background: $primary 25%;
     color: $foreground;
 }
-.tool.-expanded .tool-header { color: $foreground; }
+.tool.-expanded .tool-header { color: $foreground; background: $surface; }
 .tool-detail {
     margin: 0 0 1 2;
     padding: 0 1;
