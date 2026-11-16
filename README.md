@@ -506,7 +506,9 @@ pnpm build      # Production build
 pnpm typecheck  # tsc --noEmit
 ```
 
-Tests are focused `pnpm test:<area>` scripts; see `package.json` for the full list. Run `pnpm test:security-boundaries` before changing any gateway, webhook, MCP, operator, or host-tool ingress. Run the adapter suite (`test:slack-*`, `test:teams-*`, `test:discord-*`, `test:email-*`, and so on) for any adapter you touch.
+`pnpm test` runs every test file under `test/`, `hostd/test/`, and `ui/test/` in parallel and lists all failures at the end (nonzero exit if any failed). Pass substrings to select files (`pnpm test slack voice`), `--exclude <substring>` to skip, `-j <n>` for concurrency, `--list` to print the files, or `--help` for all options.
+
+The focused `pnpm test:<area>` scripts still work; see `package.json` for the full list. Run `pnpm test:security-boundaries` before changing any gateway, webhook, MCP, operator, or host-tool ingress. Run the adapter suite (`test:slack-*`, `test:teams-*`, `test:discord-*`, `test:email-*`, and so on) for any adapter you touch.
 
 ### Code Structure
 
