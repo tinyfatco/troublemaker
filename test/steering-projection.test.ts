@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { RuntimeSteeringInputEvent } from "../src/core/runtime-contract.js";
 import { RuntimeLiveEventHub } from "../src/live-events.js";
 import { SteeringProjectionTracker } from "../src/streaming/steering-projection.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 interface Deferred {
 	promise: Promise<void>;
@@ -159,7 +160,7 @@ const voiceSteeringSource = cliSource.slice(
 );
 assert.doesNotMatch(voiceSteeringSource, /projectionId/, "voice-webhook behavior remains outside the non-voice steering projection path");
 
-const agentSource = readFileSync("src/agent.ts", "utf8");
+const agentSource = readRunnerSource();
 assert(
 	agentSource.indexOf("steeringProjections.consume(promptText)") < agentSource.indexOf('emitLiveEvent({ type: "user_input", entries })'),
 	"consumption reconciles the projection before the canonical live user input",

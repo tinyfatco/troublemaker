@@ -32,6 +32,7 @@ import {
 	writeHandoffJournal,
 } from "../src/handoff-compaction.js";
 import { DEFAULT_COMPACTION, MomSettingsManager } from "../src/context.js";
+import { readRunnerSource } from "./support/runner-source.js";
 
 const captures = JSON.parse(readFileSync(new URL("fixtures/handoff-captured-sessions.json", import.meta.url), "utf8"));
 for (const capture of captures) {
@@ -212,7 +213,7 @@ for (let length = 1; length < HANDOFF_OPEN.length; length++) {
 	assert.match(malformedPublicLine, /private-handoff-redacted/, `malformed candidate prefix length ${length} becomes a safe redaction record`);
 }
 
-const agentSource = readFileSync(new URL("../src/agent.ts", import.meta.url), "utf8");
+const agentSource = readRunnerSource();
 assert.match(agentSource, /base\.mode === "handoff"/, "only handoff mode disables Pi compaction");
 assert.match(agentSource, /writeHandoffJournal[\s\S]*resetSessionState\(\)[\s\S]*recoverRotation/, "handoff persists before archive and rotation");
 assert.match(agentSource, /sanitizeStreamingMessage\(agentEvent\.message, false\)/, "streaming projection uses private boundary buffering");

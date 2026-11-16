@@ -1,85 +1,19 @@
-import { createCodexCliStream, getCodexCliRuntimeAuth, isCodexCliProvider, registerCodexCliRuntimeAuth, resetCodexCliSession } from "./codex-cli.js";
-import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
-import { readContextTransitions, saveContextTransition, type ContextTransition } from "./context-transition.js";
-import { createHandoffContextTool, parseHandoffContextArguments } from "./tools/handoff-context.js";
-import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
-import type { ImageContent } from "@earendil-works/pi-ai";
-import { streamSimple } from "@earendil-works/pi-ai/compat";
-import { toLegacyContext } from "./core/legacy-context.js";
-import { restoreAgentHooks, snapshotAgentHooks } from "./core/agent-hooks.js";
-import { countPreRunHistoryMessages, projectProviderHistory, type ProviderHistoryRunConfig } from "./core/provider-history.js";
+import { Agent, type AgentMessage, type AgentTool } from "@earendil-works/pi-agent-core";
 import {
 	AgentSession,
 	convertToLlm,
 	DefaultResourceLoader,
 	getAgentDir,
-	loadSkillsFromDir,
 	ModelRuntime,
 	ModelRegistry,
 	SessionManager,
 	type ExtensionAPI,
-	type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
-import { existsSync, readFileSync, renameSync, statSync, writeFileSync } from "fs";
-import { copyFile, mkdir, writeFile } from "fs/promises";
+import { existsSync, writeFileSync } from "fs";
+import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 import type { MomContext, RunResult } from "./adapters/types.js";
-import { MomSettingsManager } from "./context.js";
-import { cancelInferenceRequest, exceedsLocalPrefillLimit, inferenceProgressURL, uncachedPrefillTokens, watchInferenceProgress } from "./inference-progress.js";
-import { compactToolContext, restoreCompactToolStream } from "./core/compact-tool-surface.js";
-import { InputBudget } from "./core/input-budget.js";
-import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
-import { playCompactionCue } from "./compaction-cue.js";
-import {
-	projectToolInvocationDetails,
-	projectToolResultDetails,
-} from "./console/tool-detail-projection.js";
-import { formatDeliveryContext } from "./delivery-context.js";
-import {
-	buildWorkspaceRuntimeContext,
-	buildSessionRoutingPreamble,
-	buildSystemPrompt,
-	getWorkspaceContext,
-	getWorkspaceSkillsMtime,
-	resolveClaudeCliDeliveryRetry,
-	resolveThinkingLevel,
-} from "./core/prompt.js";
-import type { RuntimeEventSink, RuntimeStreamEvent } from "./core/runtime-contract.js";
-import * as log from "./log.js";
-import { startLiveModelCatalogRefresh } from "./model-catalog-refresh.js";
-import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
-import { runWithModelCredentialGate } from "./model-auth-gate.js";
-import {
-	boundCompactionStreamOptions,
-	normalizeSimpleStreamOptionsForModel,
-	normalizeThinkingLevelForModel,
-} from "./model-thinking.js";
-import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
-import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
-import { LiveAssistantSnapshot } from "./streaming/live-turn-snapshot.js";
-import { buildToolPresentation, TOOL_PRESENTATION_CUSTOM_TYPE } from "./streaming/tool-presentation.js";
-import { AssistantTextProjection } from "./streaming/assistant-text-projection.js";
-import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
-import { UserInputProvenance } from "./streaming/user-input-provenance.js";
-import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sender-identity.js";
-import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
-import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
-import { ChannelStore } from "./store.js";
-import { createMomTools, setUploadFunction } from "./tools/index.js";
-import { enforceRequiredToolLabel, enforceRequiredToolLabels, readableToolName } from "./tools/tool-label.js";
-import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
-import { withToolOutputStream, type ToolOutputEvent } from "./tools/tool-output-stream.js";
-import { isYieldNoActionToolName, wasYielded, resetYield } from "./tools/yield-no-action.js";
-import { detectPlanningOnlyTurn, resolveAckFastPath } from "./gpt-steering.js";
-import hostGmailExtension from "./extensions/host-gmail.js";
-import hostSitesExtension from "./extensions/host-sites.js";
-import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
-import {
-	createDynamicRuntimeContextExtension,
-	STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
-	withDeliveryInstructions,
-} from "./extensions/dynamic-runtime-context.js";
 import {
 	createClaudeCliStream,
 	getClaudeCliRuntimeAuth,
@@ -87,24 +21,81 @@ import {
 	registerClaudeCliRuntimeAuth,
 	resetClaudeCliSession,
 } from "./claude-cli.js";
-import type { ClaudeCliRuntimeToolEvent } from "./claude-cli-mcp.js";
+import { createCodexCliStream, getCodexCliRuntimeAuth, isCodexCliProvider, registerCodexCliRuntimeAuth, resetCodexCliSession } from "./codex-cli.js";
+import { readContextTransitions, saveContextTransition } from "./context-transition.js";
+import { MomSettingsManager } from "./context.js";
+import { restoreAgentHooks, snapshotAgentHooks } from "./core/agent-hooks.js";
+import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
+import { InputBudget } from "./core/input-budget.js";
 import {
-	extractStructuredHandoff,
-	appendHandoffInstruction,
+	buildWorkspaceRuntimeContext,
+	buildSessionRoutingPreamble,
+	buildSystemPrompt,
+	getWorkspaceContext,
+	resolveClaudeCliDeliveryRetry,
+	resolveThinkingLevel,
+} from "./core/prompt.js";
+import { countPreRunHistoryMessages, projectProviderHistory } from "./core/provider-history.js";
+import type { RuntimeEventSink } from "./core/runtime-contract.js";
+import {
+	createDynamicRuntimeContextExtension,
+	STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
+	withDeliveryInstructions,
+} from "./extensions/dynamic-runtime-context.js";
+import hostGmailExtension from "./extensions/host-gmail.js";
+import hostSitesExtension from "./extensions/host-sites.js";
+import tinyfatDomainsExtension from "./extensions/tinyfat-domains.js";
+import { detectPlanningOnlyTurn } from "./gpt-steering.js";
+import {
 	estimateHandoffContextTokens,
-	handoffToolInstruction,
 	handoffJournalPath,
 	localPrefillLimitTokens,
-	privateHandoffInputTokens,
 	readHandoffJournal,
 	replayHandoffRotation,
-	selectBoundedCheckpointTranscript,
 	selectBoundedRecentDialogue,
 	shouldRequestBoundedHandoff,
 	writeHandoffJournal,
 	type HandoffRotationJournal,
 } from "./handoff-compaction.js";
 import { createRunnerOperationQueue, handoffContinuationMessage, runHandoffSegments } from "./handoff-continuation.js";
+import { inferenceProgressURL } from "./inference-progress.js";
+import * as log from "./log.js";
+import { startLiveModelCatalogRefresh } from "./model-catalog-refresh.js";
+import { runWithModelCredentialGate } from "./model-auth-gate.js";
+import { resolveModelWithAuth, resolveApiKey } from "./model-config.js";
+import { normalizeThinkingLevelForModel } from "./model-thinking.js";
+import { archiveAndTruncateContextFile, archiveContext, translateToHostPath } from "./runner/context-files.js";
+import {
+	createCompactionSettingsProxy,
+	createCompactionTracker,
+	isCliHarnessProvider,
+	resolveCompactionTimeoutMs,
+	type CompactionStatus,
+} from "./runner/compaction.js";
+import { createContextTransitionTracker } from "./runner/context-transitions.js";
+import { createHandoffContextExtension, createRunnerHandoffTool } from "./runner/handoff.js";
+import { createRunPresentation } from "./runner/presentation.js";
+import { createPrivateCheckpointGenerator } from "./runner/private-checkpoint.js";
+import { buildUserPrompt } from "./runner/prompt-message.js";
+import { deliverRunOutcome } from "./runner/run-outcome.js";
+import { beginRunState, clearRunState, createRunQueue, createRunState } from "./runner/run-state.js";
+import { createSessionEventHandlers } from "./runner/session-events.js";
+import { loadMomSkills } from "./runner/skills.js";
+import { createRunnerStreamFn } from "./runner/stream-fn.js";
+import { createExecutor, withExecutorCwd, type SandboxConfig } from "./sandbox.js";
+import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sender-identity.js";
+import { FilesystemWorkspaceStore } from "./storage/node/filesystem-workspace.js";
+import { SteeringProjectionTracker } from "./streaming/steering-projection.js";
+import { UserInputProvenance } from "./streaming/user-input-provenance.js";
+import { ChannelStore } from "./store.js";
+import { ToolLoopGuard, TOOL_LOOP_STOP_MESSAGE } from "./tool-loop-guard.js";
+import { createMomTools, setUploadFunction } from "./tools/index.js";
+import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
+import { enforceRequiredToolLabel, enforceRequiredToolLabels } from "./tools/tool-label.js";
+import { withToolOutputStream } from "./tools/tool-output-stream.js";
+import { wasYielded, resetYield } from "./tools/yield-no-action.js";
+
+export { DEFAULT_COMPACTION_TIMEOUT_MS, resolveCompactionTimeoutMs, type CompactionStatus } from "./runner/compaction.js";
 
 export interface PendingMessage {
 	userName: string;
@@ -135,24 +126,6 @@ export interface CompactResult {
 	messagesBefore: number;
 	messagesAfter: number;
 	tokensBefore: number;
-}
-
-export interface CompactionStatus {
-	reason: string;
-	startedAt: number;
-	timeoutAt: number;
-	abortRequestedAt?: number;
-}
-
-export const DEFAULT_COMPACTION_TIMEOUT_MS = 6 * 60 * 1000;
-const MIN_COMPACTION_TIMEOUT_MS = 30 * 1000;
-const MAX_COMPACTION_TIMEOUT_MS = 30 * 60 * 1000;
-
-export function resolveCompactionTimeoutMs(value = process.env.MOM_COMPACTION_TIMEOUT_MS): number {
-	if (!value?.trim()) return DEFAULT_COMPACTION_TIMEOUT_MS;
-	const parsed = Number(value);
-	if (!Number.isFinite(parsed)) return DEFAULT_COMPACTION_TIMEOUT_MS;
-	return Math.max(MIN_COMPACTION_TIMEOUT_MS, Math.min(MAX_COMPACTION_TIMEOUT_MS, Math.floor(parsed)));
 }
 
 export interface AgentRunner {
@@ -191,150 +164,6 @@ export interface AgentRunner {
 	onActivity?: () => void;
 }
 
-
-const IMAGE_MIME_TYPES: Record<string, string> = {
-	jpg: "image/jpeg",
-	jpeg: "image/jpeg",
-	png: "image/png",
-	gif: "image/gif",
-	webp: "image/webp",
-};
-
-function getImageMimeType(filename: string): string | undefined {
-	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
-}
-
-function cleanToolCallLabel(value: unknown): string | undefined {
-	return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function hasContent(message: AgentMessage): message is AgentMessage & { content: Array<Record<string, unknown>> } {
-	return "content" in message && Array.isArray(message.content);
-}
-
-function sanitizeStreamingMessage(message: AgentMessage, _terminal: boolean): AgentMessage {
-	if (message.role !== "assistant" || !hasContent(message)) return message;
-	// A pressure-triggered checkpoint is private harness work, not an assistant
-	// response. Hide the entire generated prose/reasoning segment, including any
-	// preamble emitted before the private delimiter. The semantic transition row
-	// owns presentation until the fresh-context continuation begins.
-	return {
-		...message,
-		content: message.content.flatMap((part) => {
-			if (part.type === "text" && typeof part.text === "string") return [{ ...part, text: "" }];
-			if (part.type === "thinking") return [];
-			if (part.type === "toolCall" && part.name === "handoff_context") return [];
-			return [part];
-		}),
-	} as AgentMessage;
-}
-
-// Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message
-const skillsCache = new Map<string, { skills: Skill[]; workspaceMtime: number }>();
-
-function loadMomSkills(awarenessDir: string, workspacePath: string, extraSkillsDirs: string[] = []): Skill[] {
-	const hostWorkspacePath = join(awarenessDir, "..");
-	const workspaceSkillsDir = join(hostWorkspacePath, "skills");
-	const workspaceStore = new FilesystemWorkspaceStore(hostWorkspacePath);
-
-	// Check cache — invalidate only if workspace skills dir mtime changed
-	const cached = skillsCache.get(awarenessDir);
-	if (cached) {
-		const currentMtime = getWorkspaceSkillsMtime(workspaceStore);
-		if (currentMtime === cached.workspaceMtime) {
-			return cached.skills;
-		}
-		log.logInfo(`[skills] Workspace skills changed, reloading`);
-	}
-
-	const skillMap = new Map<string, Skill>();
-
-	// Helper to translate host paths to container paths
-	const translatePath = (hostPath: string): string => {
-		if (hostPath.startsWith(hostWorkspacePath)) {
-			return workspacePath + hostPath.slice(hostWorkspacePath.length);
-		}
-		return hostPath;
-	};
-
-	// Load extra skills dirs first (lowest priority — e.g. platform skills via --skills)
-	for (const dir of extraSkillsDirs) {
-		for (const skill of loadSkillsFromDir({ dir, source: "system" }).skills) {
-			skillMap.set(skill.name, skill);
-		}
-	}
-
-	// Load workspace-level skills (global) — overrides system skills on collision
-	for (const skill of loadSkillsFromDir({ dir: workspaceSkillsDir, source: "workspace" }).skills) {
-		skill.filePath = translatePath(skill.filePath);
-		skill.baseDir = translatePath(skill.baseDir);
-		skillMap.set(skill.name, skill);
-	}
-
-	const skills = Array.from(skillMap.values());
-	skillsCache.set(awarenessDir, { skills, workspaceMtime: getWorkspaceSkillsMtime(workspaceStore) });
-	return skills;
-}
-
-function truncate(text: string, maxLen: number): string {
-	if (text.length <= maxLen) return text;
-	return `${text.substring(0, maxLen - 3)}...`;
-}
-
-function extractToolResultText(result: unknown): string {
-	if (typeof result === "string") {
-		return result;
-	}
-
-	if (
-		result &&
-		typeof result === "object" &&
-		"content" in result &&
-		Array.isArray((result as { content: unknown }).content)
-	) {
-		const content = (result as { content: Array<{ type: string; text?: string }> }).content;
-		const textParts: string[] = [];
-		for (const part of content) {
-			if (part.type === "text" && part.text) {
-				textParts.push(part.text);
-			}
-		}
-		if (textParts.length > 0) {
-			return textParts.join("\n");
-		}
-	}
-
-	return JSON.stringify(result);
-}
-
-function formatToolArgs(_toolName: string, args: Record<string, unknown>): string {
-	const lines: string[] = [];
-
-	for (const [key, value] of Object.entries(args)) {
-		if (key === "label") continue;
-
-		if (key === "path" && typeof value === "string") {
-			const offset = args.offset as number | undefined;
-			const limit = args.limit as number | undefined;
-			if (offset !== undefined && limit !== undefined) {
-				lines.push(`${value}:${offset}-${offset + limit}`);
-			} else {
-				lines.push(value);
-			}
-			continue;
-		}
-
-		if (key === "offset" || key === "limit") continue;
-
-		if (typeof value === "string") {
-			lines.push(value);
-		} else {
-			lines.push(JSON.stringify(value));
-		}
-	}
-
-	return lines.join("\n");
-}
 
 // Cache runners per awareness dir
 const runners = new Map<string, Promise<AgentRunner>>();
@@ -400,25 +229,29 @@ async function createRunner(
 	const localProgressURL = inferenceProgressURL(process.env.TROUBLEMAKER_INFERENCE_PROGRESS_URL);
 	const localPrefillLimit = localProgressURL ? localPrefillLimitTokens() : undefined;
 
+	// Mutable per-run state, and the live presentation / context-transition
+	// publishers that read it. See runner/run-state.ts.
+	const runState = createRunState();
+	const presentation = createRunPresentation(runState, () => getSessionManager());
+	const { emitLiveEvent, assistantMessageIDsForRun, claimNewAssistantMessageIDs, emitAssistantTextEvent } = presentation;
+	const transitions = createContextTransitionTracker(workspaceDir, emitLiveEvent, () => runState.ctx);
+	const { beginTransition, finishTransition } = transitions;
+	let forceHandoff = false;
+	let completedHandoffRotations = 0;
+	let rotationsAtRunStart = 0;
+
 	// Create tools (core + extras like send_message). Extension/custom tools are
 	// loaded into the session registry and activated through search_tools.
 	const tools = enforceRequiredToolLabels([
 		...createMomTools(executor, workspaceDir),
 		...extraTools,
-        createHandoffContextTool((summary, resume) => {
-            if (agent.state.messages.filter(m => m.role === "assistant").at(-1)?.content.filter(c => c.type === "toolCall").length !== 1) throw new Error("Call handoff_context alone, after other tools finish");
-            if (runState.ctx?.message.sourceEventType === "handoff_continuation" && completedHandoffRotations > rotationsAtRunStart) return false;
-            if (!runState.ctx) throw new Error("No conversation is active");
-            const pressureCheckpoint = runState.handoffRequested && !runState.toolHandoff && !runState.capturedHandoff;
-            if (runState.handoffRequested && !pressureCheckpoint) throw new Error("A handoff is already pending");
-            if (completedHandoffRotations - rotationsAtRunStart >= 8) throw new Error("Too many handoffs in this run; return control to the user");
-            summary.routing = { channel: runState.ctx.message.channel, replyTarget: runState.ctx.message.replyTarget || null };
-            runState.handoffRequested = true;
-            runState.toolHandoff = true;
-            runState.handoffContinue = pressureCheckpoint ? true : resume;
-            runState.capturedHandoff = {publicText: "", handoff: summary};
-            if (!pressureCheckpoint) beginTransition("handoff", "agent");
-        }),
+		createRunnerHandoffTool({
+			getAgent: (): Agent => agent,
+			runState,
+			getCompletedHandoffRotations: () => completedHandoffRotations,
+			getRotationsAtRunStart: () => rotationsAtRunStart,
+			beginTransition,
+		}),
 		...(inputBudget ? [inputBudget.tool] : []),
 		createSearchToolsTool(() => toolSearchRegistry.current, compactPrompt),
 	]);
@@ -453,11 +286,11 @@ async function createRunner(
 	await registerCodexCliRuntimeAuth(modelRuntime);
 	const modelRegistry = new ModelRegistry(modelRuntime);
 
-    for (const interrupted of readContextTransitions(workspaceDir)) {
-        if (interrupted.state === "preparing") saveContextTransition(workspaceDir, {
-            ...interrupted, state: "aborted", revision: interrupted.revision + 1, updatedAt: new Date().toISOString(),
-        });
-    }
+	for (const interrupted of readContextTransitions(workspaceDir)) {
+		if (interrupted.state === "preparing") saveContextTransition(workspaceDir, {
+			...interrupted, state: "aborted", revision: interrupted.revision + 1, updatedAt: new Date().toISOString(),
+		});
+	}
 
 	// Resolve model before starting catalog refresh so discovery can never
 	// mutate the resident's active choice. Refreshed models become eligible only
@@ -472,84 +305,65 @@ async function createRunner(
 	if (initialThinkingLevel !== requestedInitialThinkingLevel) {
 		log.logInfo(`[thinking] Effective thinking ${requestedInitialThinkingLevel} -> ${initialThinkingLevel} for ${model.provider}/${model.id}`);
 	}
-	let claudeCliToolEventHandler = async (_event: ClaudeCliRuntimeToolEvent): Promise<void> => {};
-	let claudeCliToolOutputHandler = (_event: ToolOutputEvent): void => {};
+
+	// Session created lazily on first run
+	let session: AgentSession | null = null;
+	let acceptsSteering = false;
+	let privateHandoffAbortController: AbortController | null = null;
+	let unsubscribeSession: (() => void) | null = null;
+	let resourceLoaderReady = false;
+	// Defer context loading to run()
+	let sessionManager: SessionManager | null = null;
+	const getSessionManager = () => {
+		if (!sessionManager) {
+			const t = performance.now();
+			sessionManager = SessionManager.open(contextFile, awarenessDir);
+			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
+		}
+		return sessionManager;
+	};
+
+	// Activity callback for external watchdog
+	let onActivity: (() => void) | undefined;
+	const compaction = createCompactionTracker(resolveCompactionTimeoutMs(), () => session);
+	const { requestCompactionAbort } = compaction;
+	const steeringProjections = new SteeringProjectionTracker(emitLiveEvent);
+	const userInputProvenance = new UserInputProvenance();
+	// Session events drive logs, live snapshots and platform output. Claude/Codex
+	// CLI models run tools over MCP outside the agent loop and report them here too.
+	const sessionEvents = createSessionEventHandlers({
+		runState,
+		presentation,
+		beginCompaction: compaction.beginCompaction,
+		finishCompaction: compaction.finishCompaction,
+		transitions,
+		userInputProvenance,
+		steeringProjections,
+		getSessionManager,
+		getOnActivity: () => onActivity,
+	});
+	const eventHandler = sessionEvents.eventHandler;
+	const claudeCliToolOutputHandler = sessionEvents.toolOutputHandler;
+
 	const claudeCliStream = createClaudeCliStream(workspaceDir, {
 		tools: () => tools,
-		onToolEvent: (event) => claudeCliToolEventHandler(event),
-		onToolOutput: (event) => claudeCliToolOutputHandler(event),
+		onToolEvent: (event) => sessionEvents.toolEventHandler(event),
+		onToolOutput: (event) => sessionEvents.toolOutputHandler(event),
 	});
 	const codexCliStream = createCodexCliStream(workspaceDir, {
 		tools: () => tools,
-		onToolEvent: (event) => claudeCliToolEventHandler(event),
-		onToolOutput: (event) => claudeCliToolOutputHandler(event),
+		onToolEvent: (event) => sessionEvents.toolEventHandler(event),
+		onToolOutput: (event) => sessionEvents.toolOutputHandler(event),
 	});
-	const streamFn: StreamFn = (streamModel, transcript, options) => {
-		const context = toLegacyContext(transcript);
-		const boundedOptions = boundCompactionStreamOptions(context, options);
-		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
-		if (runState.handoffRequested) {
-			normalizedOptions = {
-				...normalizedOptions,
-				maxTokens: Math.min(normalizedOptions?.maxTokens ?? 1536, 1536),
-				temperature: 0,
-				samplingParams: {
-					...normalizedOptions?.samplingParams,
-					enable_thinking: false,
-					tool_choice: { type: "function", function: { name: "handoff_context" } },
-				},
-			};
-		}
-		if (isCodexCliProvider(streamModel.provider)) return codexCliStream(streamModel, context, normalizedOptions);
-		if (isClaudeCliProvider(streamModel.provider)) return claudeCliStream(streamModel, context, normalizedOptions);
-		const requestId = `chatcmpl-${randomUUID()}`;
-		const prefillAbort = localProgressURL ? new AbortController() : undefined;
-		if (prefillAbort) {
-			const upstreamSignal = normalizedOptions?.signal;
-			if (upstreamSignal) {
-				if (upstreamSignal.aborted) prefillAbort.abort(upstreamSignal.reason);
-				else upstreamSignal.addEventListener("abort", () => prefillAbort.abort(upstreamSignal.reason), { once: true });
-			}
-			normalizedOptions = {
-				...normalizedOptions,
-				signal: prefillAbort.signal,
-				maxRetries: 0,
-				headers: { ...normalizedOptions?.headers, "x-mtplx-request-id": requestId },
-			};
-			prefillAbort.signal.addEventListener("abort", () => {
-				void cancelInferenceRequest(localProgressURL!, requestId, { apiKey: normalizedOptions?.apiKey });
-			}, { once: true });
-		}
-		const boundedContext = inputBudget ? inputBudget.project(context, runState.handoffRequested) : context;
-		const result = streamSimple(
-			streamModel,
-			compactPrompt ? compactToolContext(boundedContext) : boundedContext,
-			normalizedOptions,
-		);
-		if (localProgressURL) {
-			const sink = runState.liveEventSink;
-			const responseContext = runState.ctx;
-			const stop = watchInferenceProgress(localProgressURL, requestId, (processing) => {
-				if (localPrefillLimit !== undefined && exceedsLocalPrefillLimit(processing, localPrefillLimit)) {
-					const uncached = uncachedPrefillTokens(processing);
-					runState.localPrefillRejected = true;
-					runState.localPrefillRejectionMessage = `Local prefill rejected: ${uncached} uncached tokens exceeds the ${localPrefillLimit}-token safety limit`;
-					log.logWarning(`[inference] Rejected local prefill: ${uncached} uncached tokens exceeds ${localPrefillLimit}`);
-					prefillAbort?.abort(new Error(runState.localPrefillRejectionMessage));
-					return;
-				}
-				const event = { type: "status", status: "processing", processing } as const;
-				try { void Promise.resolve(sink?.(event)).catch(() => {}); } catch { /* Best effort. */ }
-				try { responseContext?.emitContentBlock?.(event); } catch { /* Best effort. */ }
-			}, { apiKey: normalizedOptions?.apiKey });
-			void result.result().then(stop, stop);
-		}
-		return compactPrompt ? restoreCompactToolStream(result, {
-			role: "assistant", content: [], api: streamModel.api, provider: streamModel.provider, model: streamModel.id,
-			stopReason: "error", timestamp: Date.now(),
-			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-		}) : result;
-	};
+	const streamFn = createRunnerStreamFn({
+		runState,
+		compactPrompt,
+		inputBudget,
+		localProgressURL,
+		localPrefillLimit,
+		claudeCliStream,
+		codexCliStream,
+	});
 
 	// Create agent
 	const agent = new Agent({
@@ -595,24 +409,10 @@ async function createRunner(
 	});
 	const agentHookBaseline = snapshotAgentHooks(agent);
 
-	// Defer context loading to run()
-	let sessionManager: SessionManager | null = null;
-	const getSessionManager = () => {
-		if (!sessionManager) {
-			const t = performance.now();
-			sessionManager = SessionManager.open(contextFile, awarenessDir);
-			log.logInfo(`[perf] SessionManager.open: ${(performance.now() - t).toFixed(0)}ms`);
-		}
-		return sessionManager;
-	};
-
 	log.logInfo(`[perf] createRunner (no R2 reads): ${(performance.now() - t0).toFixed(0)}ms`);
 
 	let activeSystemPrompt = systemPrompt;
 	let activeRuntimeContext = "";
-	let forceHandoff = false;
-	let completedHandoffRotations = 0;
-    let rotationsAtRunStart = 0;
 	let lastRunContext: MomContext | undefined;
 	let lastRunFormatInstructions = formatInstructions;
 	const dynamicRuntimeContextExtension = createDynamicRuntimeContextExtension(
@@ -623,56 +423,14 @@ async function createRunner(
 	const deferredToolsExtension = (pi: ExtensionAPI): void => {
 		for (const tool of deferredTools) pi.registerTool(tool);
 	};
-	const handoffContextExtension = (pi: ExtensionAPI): void => {
-		const requestHandoff = (messages: readonly AgentMessage[]) => {
-			const settings = settingsManager.getCompactionSettings();
-			const ctx = runState.ctx;
-			if (!ctx || (!settings.enabled && !forceHandoff) || settings.mode !== "handoff" || (isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))) return;
-			// Telemetry-backed local models are intercepted transactionally before
-			// AgentSession.prompt. Never stage their private checkpoint in the session.
-			if (localPrefillLimit !== undefined && !forceHandoff) return;
-			if (!runState.handoffRequested && (forceHandoff || shouldRequestBoundedHandoff(
-				estimateHandoffContextTokens(messages), agent.state.model?.contextWindow || 200_000,
-				settings.reserveTokens, settings.keepRecentTokens, localPrefillLimit,
-			))) {
-				runState.handoffRequested = true;
-                beginTransition("handoff", forceHandoff ? "user" : "context_limit");
-				log.logInfo("[handoff] Pressure threshold reached before model call; requesting a warm checkpoint");
-			}
-			return runState.handoffRequested ? ctx : undefined;
-		};
-		pi.on("before_agent_start", (event) => {
-			// Pi 1.2+ also fires this for idle custom-message runs (`triggerTurn`); those carry `message`, not `prompt`.
-			const startMessage = event.messageType === "user"
-				? { role: "user" as const, content: event.prompt, timestamp: 0 }
-				: event.message;
-			requestHandoff([...agent.state.messages, startMessage]);
-		});
-		pi.on("context", (event) => {
-			// A tool checkpoint already contains its summary. Another model call
-			// means steering/follow-up continued the segment before rotation.
-			// That newer input supersedes the staged snapshot; preserve this context.
-			if (runState.toolHandoff) {
-				finishTransition("aborted");
-				runState.handoffRequested = false;
-				runState.toolHandoff = false;
-				runState.capturedHandoff = null;
-				runState.handoffContinue = false;
-				return;
-			}
-			const ctx = requestHandoff(event.messages);
-			if (!ctx) return;
-			// Append a small control message without rewriting or duplicating the
-			// runtime snapshot. The original messages remain an exact prefix.
-			return { messages: appendHandoffInstruction(event.messages, handoffToolInstruction()) };
-		});
-		pi.on("tool_call", (event) => {
-			if (runState.handoffRequested && !runState.toolHandoff && event.toolName !== "handoff_context") return {
-				block: true,
-				reason: "Continuity checkpoint required: call handoff_context now. Other tool work is paused until context rotation.",
-			};
-		});
-	};
+	const handoffContextExtension = createHandoffContextExtension({
+		settingsManager,
+		runState,
+		getAgent: (): Agent => agent,
+		isForceHandoff: () => forceHandoff,
+		localPrefillLimit,
+		transitions,
+	});
 	const toolLoopGuard = new ToolLoopGuard();
 	const resourceLoader = new DefaultResourceLoader({
 		cwd: workspaceDir,
@@ -704,36 +462,8 @@ async function createRunner(
 	});
 
 	const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+	const compactionSettingsProxy = createCompactionSettingsProxy(settingsManager, () => agent.state.model?.provider);
 
-	// Claude CLI owns its context lifecycle. Handoff mode also disables only
-	// Pi's automatic semantic compaction; native remains the safe default.
-	const compactionSettingsProxy = new Proxy(settingsManager, {
-		get(target, prop, receiver) {
-			if (prop === "getCompactionEnabled") {
-				return () => (isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))
-					|| target.getCompactionSettings().mode === "handoff"
-					? false
-					: target.getCompactionEnabled();
-			}
-			if (prop === "getCompactionSettings") {
-				return () => {
-					const base = target.getCompactionSettings();
-					if ((isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider)) || base.mode === "handoff") {
-						return { ...base, enabled: false };
-					}
-					return base;
-				};
-			}
-			return Reflect.get(target, prop, receiver);
-		},
-	});
-
-	// Session created lazily on first run
-	let session: AgentSession | null = null;
-	let acceptsSteering = false;
-	let privateHandoffAbortController: AbortController | null = null;
-	let unsubscribeSession: (() => void) | null = null;
-	let resourceLoaderReady = false;
 	const getSession = async () => {
 		if (!session) {
 			if (!resourceLoaderReady) {
@@ -774,101 +504,17 @@ async function createRunner(
 		return session;
 	};
 
-	const privateCheckpointTimeoutMs = (() => {
-		const value = Number(process.env.TROUBLEMAKER_PRIVATE_HANDOFF_TIMEOUT_MS);
-		return Number.isSafeInteger(value) && value >= 10_000 && value <= 300_000 ? value : 120_000;
-	})();
-	const generatePrivateCheckpoint = async (
-		messages: readonly AgentMessage[],
-		currentModel: typeof model,
-		routing: { channel: string; replyTarget: string | null },
-	) => {
-		const inputLimit = privateHandoffInputTokens();
-		const runtimeCharLimit = Math.max(1024, Math.floor(inputLimit * 0.35) * 4);
-		const boundedRuntimeContext = activeRuntimeContext.length <= runtimeCharLimit
-			? activeRuntimeContext
-			: `${activeRuntimeContext.slice(0, Math.floor(runtimeCharLimit * 0.6))}\n[Middle workspace snapshot omitted by private prefill budget]\n${activeRuntimeContext.slice(-Math.floor(runtimeCharLimit * 0.4))}`;
-		const currentRuntimeSnapshot: AgentMessage | null = boundedRuntimeContext.trim() ? {
-			role: "custom", customType: "runtime-context", content: boundedRuntimeContext, display: false, timestamp: 0,
-		} : null;
-		const runtimeTokens = currentRuntimeSnapshot ? estimateHandoffContextTokens([currentRuntimeSnapshot]) : 0;
-		const transcript = selectBoundedCheckpointTranscript(messages, Math.max(1024, inputLimit - runtimeTokens));
-		const checkpointMessages = currentRuntimeSnapshot ? [...transcript, currentRuntimeSnapshot] : transcript;
-		const sourceTokens = estimateHandoffContextTokens(messages);
-		const projectedTokens = estimateHandoffContextTokens(checkpointMessages);
-		if (projectedTokens > inputLimit) throw new Error(`Private checkpoint projection exceeded its ${inputLimit}-token limit`);
-		const providerMessages = (compactPrompt ? compactInitialRuntimePrefix(checkpointMessages) : checkpointMessages)
-			.flatMap((message) => convertToLlm([message]));
-		providerMessages.push(...convertToLlm([{
-			role: "user", content: [{ type: "text", text: handoffToolInstruction() }], timestamp: 0,
-		}]));
-		const handoffTool = tools.find((tool) => tool.name === "handoff_context");
-		if (!handoffTool) throw new Error("Private checkpoint tool is unavailable");
-		const privateContext = {
-			systemPrompt: activeSystemPrompt,
-			messages: providerMessages,
-			tools: [{ name: handoffTool.name, description: handoffTool.description, parameters: handoffTool.parameters }],
-		};
-		const apiKey = getCodexCliRuntimeAuth(currentModel.provider)
-			?? getClaudeCliRuntimeAuth(currentModel.provider)
-			?? await resolveApiKey(modelRegistry, currentModel.provider);
-		const requestId = `chatcmpl-private-handoff-${randomUUID()}`;
-		const controller = new AbortController();
-		privateHandoffAbortController = controller;
-		const timer = setTimeout(() => controller.abort(new Error(`Private checkpoint exceeded ${privateCheckpointTimeoutMs}ms`)), privateCheckpointTimeoutMs);
-		timer.unref?.();
-		let stopProgress = () => {};
-		try {
-			let options = normalizeSimpleStreamOptionsForModel(currentModel, {
-				apiKey,
-				signal: controller.signal,
-				timeoutMs: privateCheckpointTimeoutMs,
-				maxRetries: 0,
-				maxTokens: 1536,
-				temperature: 0,
-				reasoning: "minimal",
-				headers: localProgressURL ? {
-					"x-mtplx-request-id": requestId,
-					"x-mtplx-session-id": requestId,
-				} : undefined,
-				samplingParams: {
-					enable_thinking: false,
-					tool_choice: { type: "function", function: { name: "handoff_context" } },
-				},
-			});
-			options = boundCompactionStreamOptions(privateContext, options);
-			const stream = streamSimple(currentModel, privateContext, options);
-			if (localProgressURL) stopProgress = watchInferenceProgress(localProgressURL, requestId, (progress) => {
-				if (localPrefillLimit !== undefined && exceedsLocalPrefillLimit(progress, localPrefillLimit)) {
-					const uncached = uncachedPrefillTokens(progress);
-					void cancelInferenceRequest(localProgressURL, requestId, { apiKey });
-					controller.abort(new Error(`Private checkpoint prefill rejected: ${uncached} uncached tokens exceeds ${localPrefillLimit}`));
-				}
-			}, { apiKey });
-			const assistant = await stream.result();
-			if (assistant.stopReason === "error" || assistant.stopReason === "aborted") {
-				throw new Error(assistant.errorMessage || `Private checkpoint ${assistant.stopReason}`);
-			}
-			const calls = assistant.content.filter((part) => part.type === "toolCall");
-			const leaked = assistant.content.some((part) =>
-				(part.type === "text" && part.text.trim())
-				|| (part.type === "thinking" && part.thinking.trim()));
-			if (calls.length !== 1 || calls[0].name !== "handoff_context" || leaked) {
-				throw new Error("Private checkpoint returned an invalid structured response");
-			}
-			const parsed = parseHandoffContextArguments(calls[0].arguments, routing);
-			log.logInfo(`[handoff] Private checkpoint validated source_tokens=${sourceTokens} projected_tokens=${projectedTokens}`);
-			return { ...parsed, sourceTokens, projectedTokens };
-		} finally {
-			clearTimeout(timer);
-			stopProgress();
-			if (controller.signal.aborted && localProgressURL) {
-				const cancelled = await cancelInferenceRequest(localProgressURL, requestId, { apiKey });
-				log.logInfo(`[handoff] Server-side cancellation ${cancelled ? "accepted" : "unavailable"} for ${requestId}`);
-			}
-			if (privateHandoffAbortController === controller) privateHandoffAbortController = null;
-		}
-	};
+	const generatePrivateCheckpoint = createPrivateCheckpointGenerator({
+		tools,
+		modelRegistry,
+		compactPrompt,
+		localProgressURL,
+		localPrefillLimit,
+		getActiveSystemPrompt: () => activeSystemPrompt,
+		getActiveRuntimeContext: () => activeRuntimeContext,
+		setAbortController: (controller) => { privateHandoffAbortController = controller; },
+		getAbortController: () => privateHandoffAbortController,
+	});
 
 	const resetSessionState = () => {
 		userInputProvenance.clear();
@@ -894,524 +540,12 @@ async function createRunner(
 			log.logWarning(`[awareness] ${label}: could not read context before reset (continuing): ${err instanceof Error ? err.message : String(err)}`);
 		}
 
-		let quarantined: string | undefined;
-		try {
-			await archiveContext(contextFile);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			log.logWarning(`[awareness] ${label}: archive failed (${msg}) — quarantining broken file`);
-			try {
-				if (existsSync(contextFile)) {
-					const ts = new Date().toISOString().replace(/[:.]/g, "-");
-					const broken = `${contextFile}.broken-${ts}`;
-					renameSync(contextFile, broken);
-					quarantined = broken;
-					log.logInfo(`[awareness] ${label}: quarantined corrupt context to ${broken}`);
-				}
-			} catch (qerr) {
-				log.logWarning(`[awareness] ${label}: quarantine also failed (continuing): ${qerr instanceof Error ? qerr.message : String(qerr)}`);
-			}
-		}
-
-		try {
-			writeFileSync(contextFile, "", "utf-8");
-		} catch (err) {
-			log.logWarning(`[awareness] ${label}: truncate failed (${err instanceof Error ? err.message : String(err)})`);
-			throw err;
-		}
+		const { quarantined } = await archiveAndTruncateContextFile(contextFile, label);
 		resetClaudeCliSession(workspaceDir);
 		resetCodexCliSession(workspaceDir);
 		resetSessionState();
 		log.logInfo(`[awareness] ${label}: context reset (${messagesCleared} messages archived)`);
 		return { messagesCleared, ...(quarantined ? { quarantined } : {}) };
-	};
-
-	// Mutable per-run state
-	const runState = {
-		ctx: null as MomContext | null,
-		logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
-		queue: null as {
-			enqueue(fn: () => Promise<void>, errorContext: string): Promise<void>;
-			enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog?: boolean): void;
-		} | null,
-		pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number; label: string; show: boolean }>(),
-		toolsUsed: [] as string[],
-		totalUsage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
-		stopReason: "stop",
-		errorMessage: undefined as string | undefined,
-		modelCredentialUnavailable: false,
-		localPrefillRejected: false,
-		localPrefillRejectionMessage: undefined as string | undefined,
-		initialPromptSent: false,
-		liveSnapshot: new LiveAssistantSnapshot(),
-		assistantText: new AssistantTextProjection(),
-		liveEventSink: null as RuntimeEventSink | null,
-		completionID: "",
-		runStartLeafID: null as string | null,
-		/** Provider-history rules for the active run; see core/provider-history.ts. */
-		providerHistory: null as ProviderHistoryRunConfig | null,
-		claimedAssistantMessageIDs: new Set<string>(),
-		handoffRequested: false,
-        toolHandoff: false,
-        handoffContinue: true,
-		capturedHandoff: null as ReturnType<typeof extractStructuredHandoff>,
-	};
-
-    let activeTransition: ContextTransition | null = null;
-    const publishTransition = (value: ContextTransition) => {
-        saveContextTransition(workspaceDir, value);
-        const event = {type: "status" as const, status: value.state === "preparing" ? "compacting" as const : "streaming" as const, contextTransition: value};
-        emitLiveEvent(event);
-        runState.ctx?.emitContentBlock?.(event);
-    };
-    const beginTransition = (kind: ContextTransition["kind"], trigger: ContextTransition["trigger"]) => {
-        if (activeTransition) return;
-        const now = new Date().toISOString();
-        activeTransition = {version: 1, id: randomUUID(), kind, trigger, state: "preparing", revision: 1, startedAt: now, updatedAt: now};
-        publishTransition(activeTransition);
-    };
-    const finishTransition = (state: ContextTransition["state"], counts: Partial<Pick<ContextTransition, "tokensBefore" | "tokensAfter" | "retainedMessages">> = {}) => {
-        if (!activeTransition) return;
-        publishTransition({...activeTransition, ...counts, state, revision: 2, updatedAt: new Date().toISOString()});
-        activeTransition = null;
-    };
-
-	const emitLiveEvent = (event: RuntimeStreamEvent): void => {
-		const sink = runState.liveEventSink;
-		if (!sink) return;
-		try {
-			const pending = sink(event);
-			if (pending && typeof (pending as Promise<void>).catch === "function") {
-				void (pending as Promise<void>).catch((error) => {
-					log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
-				});
-			}
-		} catch (error) {
-			log.logWarning("[live-events] Runtime event sink failed", error instanceof Error ? error.message : String(error));
-		}
-	};
-	const assistantMessageIDsForRun = (): string[] => {
-		try {
-			const branch = getSessionManager().getBranch();
-			const startIndex = runState.runStartLeafID
-				? branch.findIndex((entry) => entry.id === runState.runStartLeafID) + 1
-				: 0;
-			const runEntries = startIndex > 0 || runState.runStartLeafID === null
-				? branch.slice(startIndex)
-				: [];
-			return runEntries.flatMap((entry): string[] =>
-				entry.type === "message" && entry.message.role === "assistant" ? [entry.id] : []);
-		} catch (error) {
-			log.logWarning(
-				"[assistant-text] Could not reconcile durable assistant identity",
-				error instanceof Error ? error.message : String(error),
-			);
-			return [];
-		}
-	};
-	const claimNewAssistantMessageIDs = (): string[] => {
-		const unclaimed = assistantMessageIDsForRun().filter(
-			(id) => !runState.claimedAssistantMessageIDs.has(id),
-		);
-		for (const id of unclaimed) runState.claimedAssistantMessageIDs.add(id);
-		return unclaimed;
-	};
-	const emitAssistantTextEvent = (event: RuntimeStreamEvent | null): void => {
-		if (!event) return;
-		emitLiveEvent(event);
-		runState.ctx?.emitContentBlock?.({ ...event });
-	};
-	const closeAssistantPresentation = (): void => {
-		emitAssistantTextEvent(runState.assistantText.boundary({
-			durableMessageIds: claimNewAssistantMessageIDs(),
-		}));
-	};
-	const steeringProjections = new SteeringProjectionTracker(emitLiveEvent);
-	const userInputProvenance = new UserInputProvenance();
-
-	// Activity callback for external watchdog
-	let onActivity: (() => void) | undefined;
-	const compactionTimeoutMs = resolveCompactionTimeoutMs();
-	let compactionStatus: CompactionStatus | null = null;
-	let compactionTimer: ReturnType<typeof setTimeout> | undefined;
-	const requestCompactionAbort = (): boolean => {
-		if (!session || !compactionStatus) return false;
-		compactionStatus.abortRequestedAt ??= Date.now();
-		session.abortCompaction();
-		return true;
-	};
-	const beginCompaction = (reason: unknown) => {
-		const alreadyCompacting = compactionStatus !== null;
-		if (compactionTimer) clearTimeout(compactionTimer);
-		const startedAt = Date.now();
-		compactionStatus = {
-			reason: typeof reason === "string" && reason ? reason : "unknown",
-			startedAt,
-			timeoutAt: startedAt + compactionTimeoutMs,
-		};
-		if (!alreadyCompacting) playCompactionCue();
-		compactionTimer = setTimeout(() => {
-			if (!compactionStatus || compactionStatus.startedAt !== startedAt) return;
-			log.logWarning(`[compaction] Timed out after ${compactionTimeoutMs}ms; requesting cancellation`);
-			requestCompactionAbort();
-		}, compactionTimeoutMs);
-		compactionTimer.unref?.();
-	};
-	const finishCompaction = () => {
-		if (compactionTimer) clearTimeout(compactionTimer);
-		compactionTimer = undefined;
-		compactionStatus = null;
-	};
-
-	// Event handler
-	let _eventSeq = 0;
-	// Claude CLI runs tools over MCP, outside the agent loop, so its persisted
-	// assistant message holds only text. Save a display-only record of the
-	// turn's interleaved tool calls so reloaded transcripts keep them. Deferred
-	// one tick so it lands after AgentSession persists the message itself.
-	const persistToolPresentation = (message: any) => {
-		if (runState.handoffRequested || !isClaudeCliProvider(message?.provider)) return;
-		const presentation = buildToolPresentation(runState.liveSnapshot.current(false), Number(message?.timestamp));
-		if (!presentation) return;
-		setImmediate(() => {
-			try {
-				getSessionManager().appendCustomEntry(TOOL_PRESENTATION_CUSTOM_TYPE, presentation);
-			} catch (error) {
-				log.logWarning("Could not persist tool presentation", error instanceof Error ? error.message : String(error));
-			}
-		});
-	};
-	const eventHandler = async (event: any) => {
-		if (event.type === "compaction_start") { beginCompaction(event.reason); beginTransition("compaction", "context_limit"); }
-		else if (event.type === "compaction_end") { finishCompaction(); const e = event as any; finishTransition(e.result ? "completed" : e.aborted ? "aborted" : e.errorMessage ? "failed" : "skipped", e.result ? {tokensBefore: e.result.tokensBefore} : {}); }
-		if (!runState.ctx || !runState.logCtx || !runState.queue) return;
-
-		_eventSeq++;
-		if (event.type === "tool_execution_start" || event.type === "message_start" || event.type === "message_end") {
-			log.logInfo(`[debug] eventHandler seq=${_eventSeq} type=${event.type} id=${event.toolCallId || event.message?.role || "?"}`);
-		}
-
-		// Signal activity on any substantive event
-		onActivity?.();
-
-		const { ctx, logCtx, queue, pendingTools } = runState;
-		const emitSnapshot = (isStreaming = true) => {
-			const entry = runState.liveSnapshot.current(isStreaming);
-			if (!entry) return;
-			const snapshot = { type: "assistant_snapshot" as const, entry };
-			emitLiveEvent(snapshot);
-			ctx.emitContentBlock?.(snapshot);
-		};
-
-		if (event.type === "tool_execution_start") {
-			const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
-			closeAssistantPresentation();
-			const privateCheckpointTool = runState.handoffRequested && agentEvent.toolName === "handoff_context";
-			if (privateCheckpointTool) {
-				runState.toolsUsed.push(agentEvent.toolName);
-				return;
-			}
-			const silentChannelTool = isYieldNoActionToolName(agentEvent.toolName);
-			const args = agentEvent.args && typeof agentEvent.args === "object"
-				? agentEvent.args as Record<string, unknown>
-				: {};
-			const label = cleanToolCallLabel(args.label) || readableToolName(agentEvent.toolName);
-			const show = args.show === true || agentEvent.toolName === "send_message";
-
-			pendingTools.set(agentEvent.toolCallId, {
-				toolName: agentEvent.toolName,
-				args: agentEvent.args,
-				startTime: Date.now(),
-				label,
-				show,
-			});
-			runState.toolsUsed.push(agentEvent.toolName);
-
-			log.logToolStart(logCtx, agentEvent.toolName, label, agentEvent.args as Record<string, unknown>);
-			runState.liveSnapshot.upsertToolCall(
-				agentEvent.toolCallId,
-				agentEvent.toolName,
-				args,
-				label,
-			);
-			emitSnapshot(true);
-			ctx.emitContentBlock?.({ type: "toolCall", id: agentEvent.toolCallId, name: agentEvent.toolName, label, arguments: args });
-			if (!silentChannelTool) {
-				const displayBarrier = queue.enqueue(
-					() => ctx.updateToolProgress
-						? ctx.updateToolProgress({
-							id: agentEvent.toolCallId,
-							label,
-							status: "in_progress",
-							show,
-							details: projectToolInvocationDetails({ name: agentEvent.toolName, arguments: args }),
-						})
-						: ctx.respond(`_→ ${label}_`, false, { show }),
-					"tool label",
-				);
-				registerToolDisplayBarrier(agentEvent.toolCallId, displayBarrier);
-			}
-		} else if (event.type === "tool_execution_end") {
-			const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
-			if (runState.handoffRequested && agentEvent.toolName === "handoff_context") return;
-			const resultStr = extractToolResultText(agentEvent.result);
-			const pending = pendingTools.get(agentEvent.toolCallId);
-			pendingTools.delete(agentEvent.toolCallId);
-
-			const durationMs = pending ? Date.now() - pending.startTime : 0;
-
-			if (agentEvent.isError) {
-				log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);
-			} else {
-				log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
-			}
-
-			const label = pending?.label;
-			const argsFormatted = pending
-				? formatToolArgs(agentEvent.toolName, pending.args as Record<string, unknown>)
-				: "(args not found)";
-			const duration = (durationMs / 1000).toFixed(1);
-			let threadMessage = `*${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
-			if (label && label !== agentEvent.toolName) threadMessage += `: ${label}`;
-			threadMessage += ` (${duration}s)\n`;
-			if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
-			threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
-
-			runState.liveSnapshot.upsertToolResult(agentEvent.toolCallId, resultStr, agentEvent.isError || false);
-			emitSnapshot(true);
-			ctx.emitContentBlock?.({ type: "toolResult", toolCallId: agentEvent.toolCallId, result: resultStr, isError: agentEvent.isError || false });
-			if (!isYieldNoActionToolName(agentEvent.toolName)) {
-				if (ctx.updateToolProgress && pending) {
-					queue.enqueue(
-						() => ctx.updateToolProgress!({
-							id: agentEvent.toolCallId,
-							label: pending.label,
-							status: agentEvent.isError ? "error" : "complete",
-							show: pending.show,
-							details: projectToolResultDetails({
-								name: agentEvent.toolName,
-								result: resultStr,
-								isError: agentEvent.isError === true,
-								durationMs,
-							}),
-						}),
-						"tool progress completion",
-					);
-				}
-				queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
-			}
-
-			if (agentEvent.isError) {
-				queue.enqueue(() => ctx.respond(`_Error: ${truncate(resultStr, 200)}_`, false), "tool error");
-			}
-
-			if (shouldRolloverWorkingAfterToolCompletion({
-				toolName: agentEvent.toolName,
-				isError: agentEvent.isError || false,
-				args: pending?.args,
-				result: agentEvent.result,
-				activeReplyTarget: ctx.workingReplyTarget === null
-					? undefined
-					: (ctx.workingReplyTarget ?? ctx.message.replyTarget),
-				workingStreamPresentation: ctx.workingStreamPresentation,
-			})) {
-				queue.enqueue(() => ctx.restartWorking(), "restart working after inline send");
-			}
-		} else if (event.type === "message_update") {
-			const agentEvent = event as AgentEvent & { type: "message_update" };
-			const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, false) : agentEvent.message;
-			runState.liveSnapshot.updateAssistantMessage(projectedMessage);
-			const assistantText = runState.assistantText.update(
-				projectedMessage,
-				agentEvent.assistantMessageEvent?.type,
-			);
-			if (assistantText) {
-				emitAssistantTextEvent(assistantText);
-			}
-			emitSnapshot(true);
-		} else if (event.type === "message_start") {
-			const agentEvent = event as AgentEvent & { type: "message_start" };
-			if (agentEvent.message.role === "assistant") {
-				const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, false) : agentEvent.message;
-				closeAssistantPresentation();
-				log.logResponseStart(logCtx);
-				runState.liveSnapshot.beginAssistantMessage(projectedMessage);
-				const assistantText = runState.assistantText.begin(projectedMessage);
-				if (assistantText) {
-					emitAssistantTextEvent(assistantText);
-				}
-				emitSnapshot(true);
-			} else if (agentEvent.message.role === "user") {
-				const messageContent = agentEvent.message.content;
-				const promptText = typeof messageContent === "string"
-					? messageContent
-					: messageContent.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
-				const entries = userInputProvenance.apply(agentEvent.message);
-				steeringProjections.consume(promptText);
-				if (entries.length > 0) {
-					closeAssistantPresentation();
-					emitLiveEvent({ type: "user_input", entries });
-				}
-
-				if (runState.initialPromptSent) {
-					log.logInfo(`[awareness] Steered message detected, restarting working message`);
-					queue.enqueue(async () => {
-						await ctx.restartWorking();
-					}, "restart working for steer");
-				} else {
-					runState.initialPromptSent = true;
-				}
-			}
-		} else if (event.type === "message_end") {
-			const agentEvent = event as AgentEvent & { type: "message_end" };
-			if (agentEvent.message.role === "assistant") {
-				const projectedMessage = runState.handoffRequested ? sanitizeStreamingMessage(agentEvent.message, true) : agentEvent.message;
-				runState.liveSnapshot.endAssistantMessage(projectedMessage);
-				const assistantText = runState.assistantText.end(projectedMessage);
-				if (assistantText) {
-					emitAssistantTextEvent(assistantText);
-				}
-				emitSnapshot(false);
-				persistToolPresentation(agentEvent.message);
-				const assistantMsg = agentEvent.message as any;
-
-				if (assistantMsg.stopReason) {
-					runState.stopReason = assistantMsg.stopReason;
-				}
-				if (assistantMsg.errorMessage) {
-					runState.errorMessage = assistantMsg.errorMessage;
-				}
-
-				if (assistantMsg.usage) {
-					runState.totalUsage.input += assistantMsg.usage.input;
-					runState.totalUsage.output += assistantMsg.usage.output;
-					runState.totalUsage.cacheRead += assistantMsg.usage.cacheRead;
-					runState.totalUsage.cacheWrite += assistantMsg.usage.cacheWrite;
-					runState.totalUsage.cost.input += assistantMsg.usage.cost.input;
-					runState.totalUsage.cost.output += assistantMsg.usage.cost.output;
-					runState.totalUsage.cost.cacheRead += assistantMsg.usage.cost.cacheRead;
-					runState.totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
-					runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
-				}
-
-				if (!hasContent(projectedMessage)) return;
-				const content = projectedMessage.content;
-				const thinkingParts: string[] = [];
-				const textParts: string[] = [];
-				for (const part of content) {
-					if (part.type === "thinking") {
-						// Only extract .thinking text — never .signature or other fields
-						const thinkingText = (part as any).thinking;
-						if (typeof thinkingText === "string" && thinkingText.trim()) {
-							thinkingParts.push(thinkingText);
-						}
-					} else if (part.type === "text") {
-						const t = (part as any).text;
-						if (typeof t === "string") {
-							textParts.push(t);
-						}
-					}
-					// Silently skip unknown content block types (e.g. signature blocks)
-				}
-
-				const text = textParts.join("\n");
-
-				for (const thinking of thinkingParts) {
-					log.logThinking(logCtx, thinking);
-					const lines = thinking.trim().split("\n").map((l: string) => l.trim()).filter(Boolean);
-					const formatted = "💭 " + lines.map((l: string) => `_${l}_`).join("\n");
-					queue.enqueueMessage(formatted, "main", "thinking main");
-					queue.enqueueMessage(formatted, "thread", "thinking thread", false);
-				}
-
-				// Guard: skip text that looks like leaked debug output or serialized objects
-				if (text.trim() && !text.trim().startsWith("(Empty response:") && !text.trim().startsWith("{'content':")) {
-					log.logResponse(logCtx, text);
-					queue.enqueueMessage(text, "main", "response main");
-					queue.enqueueMessage(text, "thread", "response thread", false);
-				} else if (text.trim()) {
-					log.logWarning("Suppressed leaked debug output from response", text.substring(0, 100));
-				}
-			}
-		} else if (event.type === "compaction_start") {
-			log.logInfo(`Compaction started (reason: ${(event as any).reason})`);
-			closeAssistantPresentation();
-			const status = { type: "status" as const, status: "compacting" as const, message: "Compacting context..." };
-			emitLiveEvent(status);
-			ctx.emitContentBlock?.(status);
-			queue.enqueue(() => ctx.respond("_Compacting context..._", false), "compaction start");
-		} else if (event.type === "compaction_end") {
-			closeAssistantPresentation();
-			const compEvent = event as any;
-			if (compEvent.result) {
-				log.logInfo(`Compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
-			} else if (compEvent.aborted) {
-				log.logInfo("Compaction aborted");
-			} else {
-				// FAT-279 — surface silent no-ops so ping-pong cases are visible.
-				// result: undefined with no abort means prepareCompaction returned null
-				// (nothing to summarize) or model/apiKey was missing.
-				log.logInfo(`Compaction no-op: ${compEvent.errorMessage || "nothing to compact or missing model/key"}`);
-			}
-			const message = compEvent.result
-				? "Context compacted; resuming..."
-				: compEvent.aborted
-					? "Compaction stopped; resuming..."
-					: "Compaction skipped; resuming...";
-			const status = { type: "status" as const, status: "streaming" as const, message };
-			emitLiveEvent(status);
-			ctx.emitContentBlock?.(status);
-		} else if (event.type === "auto_retry_start") {
-			closeAssistantPresentation();
-			const retryEvent = event as any;
-			log.logWarning(`Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`, retryEvent.errorMessage);
-			queue.enqueue(
-				() => ctx.respond(`_Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})..._`, false),
-				"retry",
-			);
-		}
-	};
-	claudeCliToolEventHandler = eventHandler;
-	claudeCliToolOutputHandler = (event) => {
-		runState.liveSnapshot.appendToolOutput(event);
-		const entry = runState.liveSnapshot.current(true);
-		if (entry) {
-			const snapshot = { type: "assistant_snapshot" as const, entry };
-			emitLiveEvent(snapshot);
-			runState.ctx?.emitContentBlock?.(snapshot);
-		}
-		onActivity?.();
-	};
-
-	// Message length limit
-	const MAX_MESSAGE_LENGTH = 40000;
-	const splitMessage = (text: string): string[] => {
-		if (text.length <= MAX_MESSAGE_LENGTH) return [text];
-		const parts: string[] = [];
-		let remaining = text;
-		let partNum = 1;
-		while (remaining.length > 0) {
-			const chunk = remaining.substring(0, MAX_MESSAGE_LENGTH - 50);
-			remaining = remaining.substring(MAX_MESSAGE_LENGTH - 50);
-			const suffix = remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
-			parts.push(chunk + suffix);
-			partNum++;
-		}
-		return parts;
-	};
-
-	const formatUserVisibleError = (message: string): string => {
-		const normalized = message.replace(/\s+/g, " ").trim();
-		const redacted = normalized
-			.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/g, "Bearer [redacted]")
-			.replace(/\b(?:sk|sess|ghp|gho|github_pat)_[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
-		return redacted.length > 1200 ? `${redacted.substring(0, 1200)}...` : redacted;
 	};
 
 	let resumeAfterHandoff = false;
@@ -1551,117 +685,18 @@ async function createRunner(
 			log.logInfo(`[perf] run() pre-prompt setup: ${(performance.now() - tRun).toFixed(0)}ms`);
 
 			// Reset per-run state
-			runState.ctx = ctx;
-			runState.logCtx = {
-				channelId: ctx.message.channel,
-				userName: ctx.message.userName,
-				channelName: ctx.channelName,
-			};
-			runState.pendingTools.clear();
-			runState.toolsUsed = [];
-			runState.totalUsage = {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			};
-			runState.stopReason = "stop";
-			runState.errorMessage = undefined;
-			runState.modelCredentialUnavailable = false;
-			runState.localPrefillRejected = false;
-			runState.localPrefillRejectionMessage = undefined;
-			runState.initialPromptSent = false;
-			runState.liveSnapshot.reset();
-			runState.liveEventSink = liveEventSink ?? null;
-			runState.claimedAssistantMessageIDs.clear();
-			runState.handoffRequested = false;
-            runState.toolHandoff = false;
-            runState.handoffContinue = true;
-            runState.capturedHandoff = null;
+			beginRunState(runState, ctx, liveEventSink);
 			resetYield(); // Clear any stale yield from previous run
 
 			// Create queue for this run
-			let queueChain = Promise.resolve();
-			runState.queue = {
-					enqueue(fn: () => Promise<void>, errorContext: string): Promise<void> {
-						queueChain = queueChain.then(async () => {
-						try {
-							await fn();
-						} catch (err) {
-							const errMsg = err instanceof Error ? err.message : String(err);
-							log.logWarning(`Platform API error (${errorContext})`, errMsg);
-							try {
-								await ctx.respondInThread(`_Error: ${errMsg}_`);
-							} catch {
-								// Ignore
-							}
-							}
-						});
-						return queueChain;
-					},
-				enqueueMessage(text: string, target: "main" | "thread", errorContext: string, doLog = true): void {
-					const parts = splitMessage(text);
-					for (const part of parts) {
-						this.enqueue(
-							() => (target === "main" ? ctx.respond(part, doLog) : ctx.respondInThread(part)),
-							errorContext,
-						);
-					}
-				},
-			};
+			const runQueue = createRunQueue(ctx);
+			runState.queue = runQueue.queue;
 
 			// Log context info
 			log.logInfo(`Context sizes - routing: ${sessionPreamble.length} chars, runtime: ${activeRuntimeContext.length} chars, workspace: ${workspaceContext.length} chars`);
 			log.logInfo(`Channels: ${ctx.channels.length}, Users: ${ctx.users.length}`);
 
-			// Build user message with timestamp, channel tag, and username
-			const now = new Date();
-			const pad = (n: number) => n.toString().padStart(2, "0");
-			const offset = -now.getTimezoneOffset();
-			const offsetSign = offset >= 0 ? "+" : "-";
-			const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-			const offsetMins = pad(Math.abs(offset) % 60);
-			const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-
-			// Always tag messages with source channel
-			const channelLabel = ctx.channelName || ctx.message.channel;
-			const deliveryContext = formatDeliveryContext(ctx.message);
-			const userMessage = `${sessionPreamble}${deliveryContext ? `\n\n${deliveryContext}` : ""}\n\n[${timestamp}] [${channelLabel}] [${ctx.message.userName || "unknown"}]: ${ctx.message.text}`;
-
-			const imageAttachments: ImageContent[] = [];
-			const nonImagePaths: string[] = [];
-
-			for (const a of ctx.message.attachments || []) {
-				const fullPath = `${workspacePath}/${a.local}`;
-				const mimeType = getImageMimeType(a.local);
-
-				if (mimeType && existsSync(fullPath)) {
-					try {
-						imageAttachments.push({
-							type: "image",
-							mimeType,
-							data: readFileSync(fullPath).toString("base64"),
-						});
-					} catch {
-						nonImagePaths.push(fullPath);
-					}
-				} else {
-					nonImagePaths.push(fullPath);
-				}
-			}
-
-			let finalUserMessage = userMessage;
-			if (nonImagePaths.length > 0) {
-				finalUserMessage += `\n\n<attachments>\n${nonImagePaths.join("\n")}\n</attachments>`;
-			}
-
-			// GPT-5 ack fast path: short approvals get "skip recap, act now" injection
-			const ackInstruction = resolveAckFastPath(ctx.message.text, currentModel);
-			if (ackInstruction) {
-				finalUserMessage += `\n\n${ackInstruction}`;
-				log.logInfo(`[gpt-steering] Ack fast path injected for "${ctx.message.text.substring(0, 40)}"`);
-			}
+			const { finalUserMessage, imageAttachments } = buildUserPrompt(ctx, sessionPreamble, workspacePath, currentModel);
 
 			const promptUserMessage: AgentMessage = {
 				role: "user",
@@ -1851,7 +886,7 @@ async function createRunner(
 			}
 
 			// Wait for queued messages
-			await queueChain;
+			await runQueue.settled();
 
 			if (toolLoopGuard.stopped) {
 				runState.stopReason = "error";
@@ -1860,73 +895,7 @@ async function createRunner(
 				resumeAfterHandoff = false;
 			}
 
-			// Handle error case. Missing model credentials are an operational
-			// condition, not assistant-authored conversation content. Failing quiet
-			// prevents one resident's auth outage from becoming another resident's
-			// inbound message and feedback-loop trigger.
-			if (runState.stopReason === "error" && runState.errorMessage) {
-				if (runState.modelCredentialUnavailable) {
-					log.logWarning("Model credential unavailable; no user-visible runtime error posted");
-				} else {
-					try {
-						const visibleError = formatUserVisibleError(runState.errorMessage);
-						const userErrorMsg = `_Sorry, something went wrong: ${visibleError}_`;
-						const errorEvent = { type: "error" as const, message: visibleError };
-						closeAssistantPresentation();
-						emitLiveEvent(errorEvent);
-						ctx.emitContentBlock?.(errorEvent);
-						await ctx.sendFinalResponse(userErrorMsg, { force: true });
-						await ctx.respondInThread(`_Error: ${visibleError}_`);
-					} catch (err) {
-						const errMsg = err instanceof Error ? err.message : String(err);
-						log.logWarning("Failed to post error message", errMsg);
-					}
-				}
-			} else {
-				// Final message update
-				const messages = currentSession.messages;
-				const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-				const rawFinalTextParts = lastAssistant?.content
-						.filter((c): c is { type: "text"; text: string } => c.type === "text")
-						.map((c) => c.text) ?? [];
-				const rawFinalText = rawFinalTextParts.join("");
-				runState.capturedHandoff = runState.capturedHandoff ?? (runState.handoffRequested
-					? extractStructuredHandoff(rawFinalText, {
-						channel: ctx.message.channel,
-						replyTarget: ctx.message.replyTarget || null,
-					})
-					: null);
-				if (runState.handoffRequested && !runState.capturedHandoff && runState.stopReason !== "aborted") {
-					runState.stopReason = "error";
-					runState.errorMessage = "Could not create a valid continuity checkpoint. The conversation was preserved and no continuation was started.";
-					const errorEvent = { type: "error" as const, message: runState.errorMessage };
-					emitLiveEvent(errorEvent);
-					ctx.emitContentBlock?.(errorEvent);
-					await ctx.sendFinalResponse(runState.errorMessage);
-				}
-				// Checkpoint generation is private harness work. Its prose must never
-				// become a platform response; the continuation supplies user-visible text.
-				const finalText = runState.handoffRequested ? "" : rawFinalTextParts.join("\n");
-
-				// Check if yield_no_action was called — skip posting final response
-				if (wasYielded()) {
-					log.logInfo("yield_no_action — no output posted");
-					resetYield();
-				} else if (runState.stopReason !== "error" && finalText.trim() && !finalText.trim().startsWith("(Empty response:") && !finalText.trim().startsWith("{'content':")) {
-					try {
-						// Hard cap: never post more than 40KB (signature blobs can be hundreds of KB)
-						const cappedText = finalText.length > 40000 ? finalText.substring(0, 40000) + "\n\n_(truncated)_" : finalText;
-						const mainText =
-							cappedText.length > MAX_MESSAGE_LENGTH
-								? `${cappedText.substring(0, MAX_MESSAGE_LENGTH - 50)}\n\n_(see thread for full response)_`
-								: cappedText;
-						await ctx.sendFinalResponse(mainText);
-					} catch (err) {
-						const errMsg = err instanceof Error ? err.message : String(err);
-						log.logWarning("Failed to replace message with final text", errMsg);
-					}
-				}
-			}
+			await deliverRunOutcome(ctx, runState, () => currentSession.messages, presentation);
 
 			const durableMessageIds = assistantMessageIDsForRun();
 			const presentationDurableMessageIds = claimNewAssistantMessageIDs();
@@ -1959,7 +928,7 @@ async function createRunner(
 
 				const summary = log.logUsageSummary(runState.logCtx, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
-				await queueChain;
+				await runQueue.settled();
 			}
 
 			if (runState.handoffRequested) {
@@ -1967,7 +936,7 @@ async function createRunner(
 					log.logWarning("[handoff] Terminal checkpoint missing or invalid; preserving the original context without rotation");
                     finishTransition(runState.stopReason === "aborted" ? "aborted" : "failed");
 				} else {
-					const id = activeTransition?.id ?? randomUUID();
+					const id = transitions.getActiveTransition()?.id ?? randomUUID();
 					const date = new Date().toISOString().slice(0, 10);
 					const archivePath = join(awarenessDir, "history", date, `handoff-${id}.jsonl`);
 					const tail = selectBoundedRecentDialogue(
@@ -1980,7 +949,7 @@ async function createRunner(
 						createdAt: new Date().toISOString(),
 						archivePath,
 						handoff: runState.capturedHandoff.handoff,
-                        transition: activeTransition ?? undefined,
+                        transition: transitions.getActiveTransition() ?? undefined,
 						tail,
 					};
 					writeHandoffJournal(rotationJournalPath, journal);
@@ -1997,14 +966,7 @@ async function createRunner(
 			// Clear run state
 			steeringProjections.dismissAll();
 			userInputProvenance.clear();
-			runState.ctx = null;
-			runState.logCtx = null;
-			runState.queue = null;
-			runState.liveSnapshot.reset();
-			runState.liveEventSink = null;
-			runState.completionID = "";
-			runState.runStartLeafID = null;
-			runState.providerHistory = null;
+			clearRunState(runState);
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return {
@@ -2074,6 +1036,7 @@ async function createRunner(
 		},
 
 		getCompactionStatus(): CompactionStatus | null {
+			const compactionStatus = compaction.getStatus();
 			return compactionStatus ? { ...compactionStatus } : null;
 		},
 
@@ -2126,7 +1089,7 @@ async function createRunner(
 		},
 
 		async compact(instructions?: string): Promise<CompactResult> {
-			if ((isClaudeCliProvider(agent.state.model?.provider) || isCodexCliProvider(agent.state.model?.provider))) {
+			if (isCliHarnessProvider(agent.state.model?.provider)) {
 				throw new Error("The CLI harness owns compaction for CLI models; use /clear to start a fresh session.");
 			}
 			const contextFile = join(awarenessDir, "context.jsonl");
@@ -2256,41 +1219,4 @@ async function createRunner(
 	runner.compact = (...args) => serializeOperation(() => compactCanonical(...args));
 	startLiveModelCatalogRefresh(workspaceDir, modelRegistry);
 	return runner;
-}
-
-/**
- * Archive context.jsonl to awareness/history/<date>/<uuid>.jsonl
- */
-async function archiveContext(contextFile: string): Promise<void> {
-	if (!existsSync(contextFile)) return;
-	const stat = statSync(contextFile);
-	if (stat.size === 0) return;
-
-	const now = new Date();
-	const dateStr = now.toISOString().slice(0, 10); // YYYY-MM-DD
-	const historyDir = join(contextFile, "..", "history", dateStr);
-	await mkdir(historyDir, { recursive: true });
-
-	const archivePath = join(historyDir, `${randomUUID()}.jsonl`);
-	await copyFile(contextFile, archivePath);
-	log.logInfo(`[awareness] Archived context to ${archivePath}`);
-}
-
-/**
- * Translate container path back to host path for file operations
- */
-function translateToHostPath(
-	containerPath: string,
-	awarenessDir: string,
-	workspacePath: string,
-): string {
-	if (workspacePath === "/data" || workspacePath === "/workspace") {
-		const prefixes = workspacePath === "/data" ? ["/data/", "/workspace/"] : ["/workspace/", "/data/"];
-		for (const prefix of prefixes) {
-			if (containerPath.startsWith(prefix)) {
-				return join(awarenessDir, "..", containerPath.slice(prefix.length));
-			}
-		}
-	}
-	return containerPath;
 }
