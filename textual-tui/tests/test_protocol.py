@@ -33,6 +33,15 @@ def test_heartbeat_is_compacted():
     assert value.text == "Heartbeat" and value.is_compact_generated
 
 
+def test_scheduled_attention_shows_its_name():
+    wake = "[ATTENTION:split-stt-check.json:one-shot:2026-11-16T14:15:00-06:00] [scheduled] Check the build."
+    [value] = parse_visible_inputs(envelope(wake, "heartbeat", "heartbeat"))
+    assert value.text == "Scheduled · split-stt-check" and value.is_compact_generated
+    periodic = "[ATTENTION:heartbeat.json:periodic:0 */4 * * *] Reflect."
+    [beat] = parse_visible_inputs(envelope(periodic, "heartbeat", "heartbeat"))
+    assert beat.text == "Heartbeat"
+
+
 GOAL_WAKE = (
     "[GOAL CONTINUATION]\nThe previous turn became idle while this goal remained active.\n\n"
     "Continue working toward the active goal in the latest session context.\n\nAutomatic goal turn: 3"
