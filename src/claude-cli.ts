@@ -631,6 +631,8 @@ async function buildClaudeCliPrompt(context: Context, resume: boolean, tempDir: 
 			rendered.push(`Assistant:\n${body.join("\n")}`);
 			continue;
 		}
+		// Prompt and tools are passed out of band; legacy contexts never carry system messages.
+		if (message.role === "system") continue;
 		for (const block of message.content) {
 			if (block.type === "text") body.push(block.text);
 		}

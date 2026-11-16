@@ -1,4 +1,4 @@
-import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type Tool, type ToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream, type Context, type JsonObject, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 
 const CALL_TOOL: Tool = {
 	name: "call_tool",
@@ -14,7 +14,7 @@ function unwrapCall(call: ToolCall): ToolCall {
 	if (call.name !== "call_tool") return call;
 	const args = call.arguments;
 	if (typeof args.name !== "string" || args.name === "call_tool" || !args.arguments || typeof args.arguments !== "object" || Array.isArray(args.arguments)) return call;
-	return { ...call, name: args.name, arguments: args.arguments as Record<string, unknown> };
+	return { ...call, name: args.name, arguments: args.arguments as JsonObject };
 }
 
 export function restoreCompactToolCalls(message: AssistantMessage): AssistantMessage {

@@ -5,6 +5,9 @@ import { createHandoffContextTool, parseHandoffContextArguments } from "./tools/
 import { Agent, type AgentEvent, type AgentMessage, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/compat";
+import { toLegacyContext } from "./core/legacy-context.js";
+import { restoreAgentHooks, snapshotAgentHooks } from "./core/agent-hooks.js";
+import { countPreRunHistoryMessages, projectProviderHistory, type ProviderHistoryRunConfig } from "./core/provider-history.js";
 import {
 	AgentSession,
 	convertToLlm,
@@ -28,7 +31,6 @@ import { compactToolContext, restoreCompactToolStream } from "./core/compact-too
 import { InputBudget } from "./core/input-budget.js";
 import { buildCompactSystemPrompt, existingCompactRuntimeContext, compactInitialRuntimePrefix, compactPromptEnabled, COMPACT_INITIAL_TOOLS, getCompactWorkspaceContext } from "./core/compact-prompt.js";
 import { playCompactionCue } from "./compaction-cue.js";
-import { projectConciseWatchHistory } from "./console/concise-watch-context.js";
 import {
 	projectToolInvocationDetails,
 	projectToolResultDetails,
@@ -64,7 +66,6 @@ import { readVerifiedSenderIdentity, type VerifiedSenderIdentity } from "./sende
 import { shouldRolloverWorkingAfterToolCompletion } from "./streaming/working-rollover.js";
 import { registerToolDisplayBarrier } from "./streaming/tool-delivery-barrier.js";
 import { ChannelStore } from "./store.js";
-import { sanitizeMessages } from "./sanitize.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import { enforceRequiredToolLabel, enforceRequiredToolLabels, readableToolName } from "./tools/tool-label.js";
 import { createSearchToolsTool, type ToolSearchRegistry } from "./tools/search-tools.js";
@@ -559,7 +560,8 @@ async function createRunner(
 		onToolEvent: (event) => claudeCliToolEventHandler(event),
 		onToolOutput: (event) => claudeCliToolOutputHandler(event),
 	});
-	const streamFn: StreamFn = (streamModel, context, options) => {
+	const streamFn: StreamFn = (streamModel, transcript, options) => {
+		const context = toLegacyContext(transcript);
 		const boundedOptions = boundCompactionStreamOptions(context, options);
 		let normalizedOptions = normalizeSimpleStreamOptionsForModel(streamModel, boundedOptions);
 		if (runState.handoffRequested) {
@@ -645,10 +647,29 @@ async function createRunner(
 		transformContext: async (messages) => session?.extensionRunner
 			? session.extensionRunner.emitContext(messages)
 			: messages,
+		// Pi 1.x AgentSession rebuilds each request from the SessionManager projection
+		// and then calls this baseline hook with that canonical context, so history
+		// sanitizing and the concise_watch projection must happen here: assigning
+		// agent.state.messages no longer reaches the provider.
+		prepareRequest: (request) => {
+			const config = runState.providerHistory;
+			if (!config || !sessionManager) return undefined;
+			const projection = sessionManager.buildSessionProjection();
+			let historyMessageCount = countPreRunHistoryMessages(projection, config.runStartLeafId);
+			if (historyMessageCount !== undefined && historyMessageCount > request.context.messages.length) {
+				historyMessageCount = undefined;
+			}
+			if (historyMessageCount === undefined && config.conciseWatch) {
+				log.logWarning("[voice-context] run-start history boundary not in request context; concise projection skipped");
+			}
+			const projected = projectProviderHistory(request.context.messages, historyMessageCount, config.conciseWatch);
+			return { context: { ...request.context, messages: projected.messages } };
+		},
 		streamFn,
 		steeringMode: "all",
 		getApiKey: async (provider: string) => getCodexCliRuntimeAuth(provider) ?? getClaudeCliRuntimeAuth(provider) ?? resolveApiKey(modelRegistry, provider),
 	});
+	const agentHookBaseline = snapshotAgentHooks(agent);
 
 	// Defer context loading to run()
 	let sessionManager: SessionManager | null = null;
@@ -697,7 +718,11 @@ async function createRunner(
 			return runState.handoffRequested ? ctx : undefined;
 		};
 		pi.on("before_agent_start", (event) => {
-			requestHandoff([...agent.state.messages, { role: "user", content: event.prompt, timestamp: 0 }]);
+			// Pi 1.2+ also fires this for idle custom-message runs (`triggerTurn`); those carry `message`, not `prompt`.
+			const startMessage = event.messageType === "user"
+				? { role: "user" as const, content: event.prompt, timestamp: 0 }
+				: event.message;
+			requestHandoff([...agent.state.messages, startMessage]);
 		});
 		pi.on("context", (event) => {
 			// A tool checkpoint already contains its summary. Another model call
@@ -797,6 +822,9 @@ async function createRunner(
 				}
 				log.logInfo(`[perf] resourceLoader.reload (${extensions.extensions.length} extensions): ${(performance.now() - t).toFixed(0)}ms`);
 			}
+			// Each AgentSession wraps the Agent's hooks; start every session from the
+			// pre-session baseline so disposed sessions' hooks never stack.
+			restoreAgentHooks(agent, agentHookBaseline);
 			session = new AgentSession({
 				agent,
 				sessionManager: getSessionManager(),
@@ -811,9 +839,9 @@ async function createRunner(
 				getActiveToolNames: () => session?.getActiveToolNames() ?? [],
 				setActiveToolsByName: (toolNames) => {
 					if (!session) return;
-					const currentSystemPrompt = session.agent.state.systemPrompt;
+					// The runtime prompt is forced per request by the before_agent_start
+					// extension, so rebuilding the loadout prompt here cannot replace it.
 					session.setActiveToolsByName(toolNames);
-					session.agent.state.systemPrompt = currentSystemPrompt;
 				},
 			};
 			session.setActiveToolsByName(compactPrompt ? [...COMPACT_INITIAL_TOOLS, ...(inputBudget ? ["input_detail"] : [])] : tools.map((tool) => tool.name));
@@ -924,6 +952,7 @@ async function createRunner(
 		unsubscribeSession = null;
 		session?.dispose();
 		session = null;
+		restoreAgentHooks(agent, agentHookBaseline);
 		toolSearchRegistry.current = null;
 		sessionManager = null;
 		resourceLoaderReady = false;
@@ -1001,6 +1030,8 @@ async function createRunner(
 		liveEventSink: null as RuntimeEventSink | null,
 		completionID: "",
 		runStartLeafID: null as string | null,
+		/** Provider-history rules for the active run; see core/provider-history.ts. */
+		providerHistory: null as ProviderHistoryRunConfig | null,
 		claimedAssistantMessageIDs: new Set<string>(),
 		handoffRequested: false,
         toolHandoff: false,
@@ -1494,6 +1525,10 @@ async function createRunner(
 			}
 			const sm = getSessionManager();
 			runState.runStartLeafID = sm.getLeafId();
+			runState.providerHistory = {
+				runStartLeafId: runState.runStartLeafID,
+				conciseWatch: ctx.message.contextProjection === "concise_watch",
+			};
 
 			// No sync step — the runner is the sole writer to context.jsonl
 			const tCtx = performance.now();
@@ -1501,14 +1536,14 @@ async function createRunner(
 			log.logInfo(`[perf] buildSessionContext: ${(performance.now() - tCtx).toFixed(0)}ms`);
 
 			const tSan = performance.now();
-			const sanitized = sanitizeMessages(
-				reloadedSession.messages as unknown as Parameters<typeof sanitizeMessages>[0],
+			// Provider requests get the same projection from the prepareRequest hook;
+			// this in-memory copy feeds handoff pressure and private checkpoints.
+			const { messages: promptMessages, conciseWatch } = projectProviderHistory(
+				reloadedSession.messages,
+				reloadedSession.messages.length,
+				runState.providerHistory.conciseWatch,
 			);
-			const conciseWatch = ctx.message.contextProjection === "concise_watch"
-				? projectConciseWatchHistory(sanitized)
-				: undefined;
-			const promptMessages = conciseWatch?.messages ?? sanitized;
-			agent.state.messages = promptMessages as unknown as typeof reloadedSession.messages;
+			agent.state.messages = promptMessages;
 			log.logInfo(`[perf] sanitize+replace (${promptMessages.length} msgs): ${(performance.now() - tSan).toFixed(0)}ms`);
 			if (conciseWatch) {
 				log.logInfo(
@@ -1557,8 +1592,10 @@ async function createRunner(
 					STABLE_DELIVERY_FORMAT_INSTRUCTIONS,
 					agent.state.model,
 				);
+			// Pi 1.x keeps the prompt in transcript system messages (state.systemPrompt is
+			// read-only). The dynamic runtime context extension forces activeSystemPrompt
+			// onto each request via before_agent_start.
 			activeSystemPrompt = systemPrompt;
-			currentSession.agent.state.systemPrompt = systemPrompt;
 
 			// Keep the system prefix and existing history stable across channels.
 			// The extension appends workspace snapshots only when changed or lost
@@ -1721,7 +1758,7 @@ async function createRunner(
 
 			// Debug: write context to last_prompt.jsonl
 			const debugContext = {
-				systemPrompt: currentSession.agent.state.systemPrompt,
+				systemPrompt: activeSystemPrompt,
 				runtimeContext: activeRuntimeContext,
 				runtimeContextPlacement: "append-only-message",
 				sessionPreamble,
@@ -2043,6 +2080,7 @@ async function createRunner(
 			runState.liveEventSink = null;
 			runState.completionID = "";
 			runState.runStartLeafID = null;
+			runState.providerHistory = null;
 
 			log.logInfo(`[perf] TOTAL run(): ${(performance.now() - tRun).toFixed(0)}ms`);
 			return {
@@ -2089,7 +2127,7 @@ async function createRunner(
 					prompt: text,
 					enqueue: () => {
 						forgetSender = userInputProvenance.track(text, options.senderIdentity);
-						return activeSession.steer(text);
+						return activeSession.steer(text).then(() => undefined);
 					},
 					onAccepted: options.onAccepted,
 					waitForIdle: () => activeSession.waitForIdle(),

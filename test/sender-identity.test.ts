@@ -162,7 +162,8 @@ test("Pi persists initial and batched steering attribution for disk backlog and 
 		assert.equal(persisted.length, 3);
 		assert.deepEqual((persisted[0] as any).message.senderIdentity, sender, "Pi writes structured provenance on the user record");
 		assert.deepEqual((persisted[1] as any).message.senderIdentity, nextSender);
-		assert.deepEqual((reopened.buildSessionContext().messages[0] as any).senderIdentity, sender, "canonical session replay retains provenance after reopening");
+		// Pi 1.x records the system prompt as a leading system message; check the first user record.
+		assert.deepEqual((reopened.buildSessionContext().messages.find((message) => message.role === "user") as any).senderIdentity, sender, "canonical session replay retains provenance after reopening");
 		const store = new FilesystemAwarenessStore(root);
 		const backlog = projectConversationBacklog(store.readBacklog(50));
 		const users = backlog.messages.filter((message) => message.role === "user");

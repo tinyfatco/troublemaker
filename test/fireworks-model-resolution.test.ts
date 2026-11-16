@@ -75,6 +75,21 @@ withFireworksEnv(() => {
 });
 
 withFireworksEnv(() => {
+	// Pi 1.x's catalog dropped these; they stay pinned in fireworks-models.ts.
+	const registry = createRegistry();
+	for (const [alias, id] of [
+		["minimax", "accounts/fireworks/models/minimax-m2p7"],
+		["kimi", "accounts/fireworks/models/kimi-k2p6"],
+		["kimi-turbo", "accounts/fireworks/routers/kimi-k2p6-turbo"],
+	] as const) {
+		const model = findModel(alias, undefined, registry);
+		assert(model, `${alias} alias resolves`);
+		assert.equal(model.id, id);
+		assert.equal(model.api, "anthropic-messages");
+	}
+});
+
+withFireworksEnv(() => {
 	const registry = createRegistry();
 	assert.equal(findModel("deepseek-v3", undefined, registry), undefined);
 });

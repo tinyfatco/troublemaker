@@ -51,7 +51,93 @@ const GLM_5P1_MODEL = {
 	maxTokens: 131_072,
 } satisfies Model<"anthropic-messages">;
 
-const BUILTIN_FIREWORKS_MODELS = [GLM_5P2_MODEL, GLM_5P1_MODEL] satisfies Model<Api>[];
+// Pi 1.x's generated catalog dropped these; the `minimax`, `deepseek`, `kimi`
+// and `kimi-turbo` aliases (model-config.ts) still select them. Definitions copied verbatim
+// from the pi-ai 0.84.2 catalog.
+const MINIMAX_M2P7_MODEL = {
+	id: "accounts/fireworks/models/minimax-m2p7",
+	name: "MiniMax-M2.7",
+	api: "anthropic-messages",
+	provider: "fireworks",
+	baseUrl: "https://api.fireworks.ai/inference",
+	compat: FIREWORKS_ANTHROPIC_COMPAT,
+	reasoning: true,
+	input: ["text"],
+	cost: {
+		input: 0.3,
+		output: 1.2,
+		cacheRead: 0.06,
+		cacheWrite: 0,
+	},
+	contextWindow: 196_608,
+	maxTokens: 196_608,
+} satisfies Model<"anthropic-messages">;
+
+const DEEPSEEK_V4_PRO_MODEL = {
+	id: "accounts/fireworks/models/deepseek-v4-pro",
+	name: "DeepSeek V4 Pro",
+	api: "anthropic-messages",
+	provider: "fireworks",
+	baseUrl: "https://api.fireworks.ai/inference",
+	compat: FIREWORKS_ANTHROPIC_COMPAT,
+	reasoning: true,
+	input: ["text"],
+	cost: {
+		input: 1.74,
+		output: 3.48,
+		cacheRead: 0.145,
+		cacheWrite: 0,
+	},
+	contextWindow: 1_000_000,
+	maxTokens: 384_000,
+} satisfies Model<"anthropic-messages">;
+
+const KIMI_K2P6_MODEL = {
+	id: "accounts/fireworks/models/kimi-k2p6",
+	name: "Kimi K2.6",
+	api: "anthropic-messages",
+	provider: "fireworks",
+	baseUrl: "https://api.fireworks.ai/inference",
+	compat: FIREWORKS_ANTHROPIC_COMPAT,
+	reasoning: true,
+	input: ["text", "image"],
+	cost: {
+		input: 0.95,
+		output: 4,
+		cacheRead: 0.16,
+		cacheWrite: 0,
+	},
+	contextWindow: 262_000,
+	maxTokens: 262_000,
+} satisfies Model<"anthropic-messages">;
+
+const KIMI_K2P6_TURBO_MODEL = {
+	id: "accounts/fireworks/routers/kimi-k2p6-turbo",
+	name: "Kimi K2.6 Turbo",
+	api: "anthropic-messages",
+	provider: "fireworks",
+	baseUrl: "https://api.fireworks.ai/inference",
+	compat: FIREWORKS_ANTHROPIC_COMPAT,
+	reasoning: true,
+	input: ["text", "image"],
+	cost: {
+		input: 2,
+		output: 8,
+		cacheRead: 0.3,
+		cacheWrite: 0,
+	},
+	contextWindow: 262_000,
+	maxTokens: 262_000,
+} satisfies Model<"anthropic-messages">;
+
+const BUILTIN_FIREWORKS_MODELS = [
+	GLM_5P2_MODEL,
+	GLM_5P1_MODEL,
+	MINIMAX_M2P7_MODEL,
+	DEEPSEEK_V4_PRO_MODEL,
+	KIMI_K2P6_MODEL,
+	KIMI_K2P6_TURBO_MODEL,
+] satisfies Model<Api>[];
 
 export function listBuiltinFireworksModels(): Model<Api>[] {
 	return [...BUILTIN_FIREWORKS_MODELS];
