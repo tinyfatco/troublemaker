@@ -31,9 +31,8 @@
 	"scripts": {
 		"check:public-safety": "node scripts/check-public-safety.mjs",
 		"clean": "rm -rf dist",
-		"patch": "node scripts/patch-agent-loop.js",
 		"typecheck": "tsc --noEmit",
-		"build": "pnpm run patch && tsc && chmod +x dist/main.js dist/tui.js",
+		"build": "tsc && chmod +x dist/main.js dist/tui.js",
 		"dev": "tsc --watch --preserveWatchOutput",
 		"local:mac": "scripts/run-local-mac.sh",
 		"build:mac-app": "scripts/build-mac-app.sh",
