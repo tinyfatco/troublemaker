@@ -251,3 +251,12 @@ def test_steer_consumed_after_a_long_tool_still_paints_once():
     t.apply_live(live.user_input("r1", "also do X"))
     t.apply_live(live.awareness(user_line("also do X", entry_id="u2")))
     assert visible(t) == ["user:user:start", "user:you:also do X"]
+
+
+def test_owner_voice_header_hidden():
+    from troublemaker_tui.transcript import UserItem
+    from troublemaker_tui.widgets import is_owner_voice
+
+    assert is_owner_voice(UserItem("k", "computer-mac", "computer-mac-user", "hi"))
+    assert is_owner_voice(UserItem("k", "computer-mac", "user", "hi"))
+    assert not is_owner_voice(UserItem("k", "slack:C1", "casey", "hi"))

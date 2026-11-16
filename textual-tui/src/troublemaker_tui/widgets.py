@@ -81,7 +81,7 @@ class UserMessage(Static):
         if item.generated:
             return Text.assemble(("↻ ", "bold"), (sanitize(item.text), "italic"), (f"  {stamp}", "dim"))
         text = Text()
-        if not item.local:
+        if not item.local and not is_owner_voice(item):
             text.append(item.user, style="bold")
             text.append(f" {item.channel}  ", style="dim")
         text.append(sanitize(item.text), style="italic" if item.ambient else "")
@@ -90,6 +90,12 @@ class UserMessage(Static):
 
     def sync(self) -> None:
         self.refresh(layout=True)
+
+
+def is_owner_voice(item: UserItem) -> bool:
+    """The owner talking through Computer: the "computer-mac-user computer-mac" header is noise, show just the text."""
+    channel = item.channel.split(":", 1)[0]
+    return channel == "computer-mac" and item.user in ("user", "computer-mac-user")
 
 
 SPEAKER_COLORS = ("#7AA2F7", "#9ECE6A", "#E0AF68", "#BB9AF7", "#7DCFFF", "#FF9E64", "#F7768E", "#73DACA")
