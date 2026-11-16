@@ -4,6 +4,7 @@
 		"module": "Node16",
 		"lib": ["ES2022"],
 		"strict": true,
+		"noUnusedLocals": true,
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"forceConsistentCasingInFileNames": true,

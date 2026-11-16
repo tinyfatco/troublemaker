@@ -676,10 +676,6 @@ function readCodexCliUsage(parsed: Record<string, unknown>): Usage {
 	};
 }
 
-function readCodexCliError(parsed: Record<string, unknown>): string | undefined {
-	return readString(parsed.error) || readString(parsed.result) || readString(parsed.message);
-}
-
 function isMissingSessionError(error: string | undefined): boolean {
 	return Boolean(error && /(thread|session|conversation).*(not found|missing|does not exist|cannot resume)|no conversation found/i.test(error));
 }

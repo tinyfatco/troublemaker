@@ -1512,7 +1512,6 @@ interface MultipartFile {
 function parseMultipart(body: Buffer, boundary: string): MultipartFile[] {
 	const files: MultipartFile[] = [];
 	const delimBuf = Buffer.from(`--${boundary}`);
-	const endBuf = Buffer.from(`--${boundary}--`);
 	const crlfcrlf = Buffer.from("\r\n\r\n");
 
 	let pos = 0;

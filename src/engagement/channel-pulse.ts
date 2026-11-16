@@ -38,17 +38,14 @@ const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 
 export class ChannelPulse {
 	private buffers = new Map<string, PulseEntry[]>();
-	private selfId: string;
 	private selfIds = new Set<string>();
 
 	constructor(selfId: string) {
-		this.selfId = selfId;
 		this.selfIds.add(selfId);
 	}
 
 	/** Update selfId after auth resolves the bot user ID. */
 	setSelfId(id: string): void {
-		this.selfId = id;
 		this.selfIds.add(id);
 	}
 

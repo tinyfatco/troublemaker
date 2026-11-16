@@ -5,7 +5,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
-	VOICE_REPLAY_CACHE_TTL_MILLISECONDS, VOICE_REPLAY_VERSION, VoiceInputLedger,
+	VOICE_REPLAY_CACHE_TTL_MILLISECONDS, VoiceInputLedger,
 	isSafeVoiceIdentifier, isVoiceIdentity, sameVoiceIdentity, validateVoiceOpen,
 	voiceReplayRecordingDigest,
 	type VoiceCanonicalCustody, type VoiceConfiguration, type VoiceIdentity,

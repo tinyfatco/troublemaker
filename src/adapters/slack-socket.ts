@@ -1,6 +1,5 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import * as log from "../log.js";
-import type { ChannelStore } from "../store.js";
 import { hasSlackBroadcastMention, stripSlackBroadcastMentions } from "./slack-addressing.js";
 import { SlackBase, type SlackBaseConfig, type SlackReactionAddedEvent } from "./slack-base.js";
 import type { MomEvent } from "./types.js";
