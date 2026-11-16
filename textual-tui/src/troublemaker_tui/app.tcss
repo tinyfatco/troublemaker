@@ -29,7 +29,7 @@ Screen {
 .user {
     margin-top: 1;
     padding: 0 1;
-    border-left: outer $secondary;
+    border-left: outer $success;
     background: $surface;
     color: $foreground;
 }
