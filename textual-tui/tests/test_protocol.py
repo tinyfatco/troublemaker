@@ -113,3 +113,13 @@ def test_tool_summary_shows_the_real_call():
     assert tool_summary({"name": "send_message", "arguments": {"target": "C1", "text": "hi"}}) == "→ C1 hi"
     assert tool_summary({"name": "search", "arguments": {"label": "x", "limit": 3}}) == "limit=3"
     assert tool_summary({"name": "bash", "arguments": {}}) == ""
+
+
+def test_tool_summary_reads_live_invocation_details():
+    import json as _json
+    from troublemaker_tui.protocol import tool_summary
+    invocation = _json.dumps({"label": "Check", "command": "ls -la"}, indent=2)
+    live = {"name": "bash", "arguments": {"label": "Check"}, "displayDetails": {"invocation": {"text": invocation, "format": "json"}}}
+    assert tool_summary(live) == "$ ls -la"
+    cut = {"name": "bash", "arguments": {}, "displayDetails": {"invocation": {"text": '{\n  "command": "echo \\"hi\\" && sleep 1', "isTruncated": True}}}
+    assert tool_summary(cut) == '$ echo "hi" && sleep 1'
