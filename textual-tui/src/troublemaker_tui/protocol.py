@@ -439,9 +439,32 @@ _PATH_TOOLS = {"read", "write", "edit", "attach", "view", "ls", "glob"}
 _SHELL_TOOLS = {"bash", "shell", "exec", "exec_command", "run", "terminal"}
 
 
+def _invocation_arguments(block: Block) -> dict:
+    """Live snapshots drop raw arguments but carry a sanitized JSON invocation in displayDetails."""
+    details = block.get("displayDetails")
+    invocation = details.get("invocation") if isinstance(details, dict) else None
+    text = invocation.get("text") if isinstance(invocation, dict) else None
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        pass
+    # Truncated JSON: recover leading string fields ("command": "...") best-effort.
+    found: dict = {}
+    for match in re.finditer(r'"([A-Za-z_]+)"\s*:\s*"((?:[^"\\]|\\.)*)', text):
+        try:
+            found.setdefault(match.group(1), json.loads(f'"{match.group(2)}"'))
+        except ValueError:
+            found.setdefault(match.group(1), match.group(2))
+    return found
+
 def tool_summary(block: Block) -> str:
     """The real call in one line: the shell command, file path, target, etc."""
     args = block.get("arguments") if isinstance(block.get("arguments"), dict) else {}
+    if not any(k not in _SUMMARY_SKIP for k in args):
+        args = _invocation_arguments(block) or args
     if not args:
         return ""
     leaf = str(block.get("name") or "").split("__")[-1].lower()
