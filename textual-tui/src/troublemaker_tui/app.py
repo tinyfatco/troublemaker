@@ -408,12 +408,11 @@ class TroublemakerApp(App[None]):
             status = self._run_status
             elapsed = (status.phase_elapsed_ms / 1000) if status and status.phase == "compacting" else time.monotonic() - self._activity_since
             busy_text = Text(no_wrap=True, overflow="ellipsis")
-            busy_text.append(f"{spinner_frame()} ", style="bold #FF9E64")
+            busy_text.append(f"{spinner_frame()} ", style="bold #7AA2F7")
             busy_text.append(activity)
             busy_text.append(f"  {format_duration(elapsed) if elapsed >= 1 else ''}", style="dim")
             if status and status.queued:
                 busy_text.append(f" · {status.queued} queued", style="dim")
-            hints.append("esc stop · type to steer")
         line.show(busy_text, hints)
         composer = self.query_one(Composer)
         steering = activity is not None and (self.sending or self.transcript.activity() is not None)
