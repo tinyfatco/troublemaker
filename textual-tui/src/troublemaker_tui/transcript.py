@@ -34,6 +34,7 @@ from .protocol import (
     parse_context_line,
     parse_tool_presentation,
     tool_label,
+    tool_summary,
 )
 
 HISTORY_RENDER_LIMIT = 30
@@ -60,6 +61,7 @@ class ToolCall:
     name: str
     label: str
     state: ToolState = "pending"
+    summary: str = ""
     details: dict | None = None
     outputs: list[Block] = field(default_factory=list)
     result: Block | None = None
@@ -486,6 +488,9 @@ class Transcript:
         else:
             tool.name = str(block.get("name") or tool.name)
             tool.label = tool_label(block)
+        summary = tool_summary(block)
+        if summary:
+            tool.summary = summary
         return tool
 
     def _update_tools(self, entry: dict[str, Any], content: list[Block]) -> dict[int, ToolCall]:

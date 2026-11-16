@@ -433,6 +433,45 @@ def tool_label(block: Block) -> str:
     return one_line(explicit if explicit and explicit != name else readable_tool_name(name)) or "Tool"
 
 
+_SUMMARY_SKIP = {"label", "show", "timeout", "reason"}
+_SUMMARY_KEYS = ("command", "cmd", "path", "file_path", "filePath", "url", "query", "q", "target", "pattern", "name", "text", "prompt")
+_PATH_TOOLS = {"read", "write", "edit", "attach", "view", "ls", "glob"}
+_SHELL_TOOLS = {"bash", "shell", "exec", "exec_command", "run", "terminal"}
+
+
+def tool_summary(block: Block) -> str:
+    """The real call in one line: the shell command, file path, target, etc."""
+    args = block.get("arguments") if isinstance(block.get("arguments"), dict) else {}
+    if not args:
+        return ""
+    leaf = str(block.get("name") or "").split("__")[-1].lower()
+    def pick(*keys: str) -> str:
+        for key in keys:
+            value = args.get(key)
+            if isinstance(value, str) and value.strip():
+                return one_line(value)
+        return ""
+    if leaf in _SHELL_TOOLS:
+        command = pick("command", "cmd", "script")
+        return f"$ {command}" if command else ""
+    if leaf in _PATH_TOOLS:
+        return pick("path", "file_path", "filePath", "pattern")
+    if leaf == "send_message":
+        target = pick("target")
+        text = pick("text", "message")
+        return " ".join(part for part in (f"→ {target}" if target else "", text) if part)
+    found = pick(*_SUMMARY_KEYS)
+    if found:
+        return found
+    for key, value in args.items():
+        if key in _SUMMARY_SKIP:
+            continue
+        if isinstance(value, str) and value.strip():
+            return one_line(value)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return f"{key}={value}"
+    return ""
+
 def merge_details(current: dict | None, newer: dict | None) -> dict | None:
     if not current:
         return newer
