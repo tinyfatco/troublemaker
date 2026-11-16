@@ -85,6 +85,21 @@ async function post(raw: string, sender = { id: 8, name: "Example Customer", bot
 	return String(id);
 }
 
+// Handling continues after the 202; wait for the expected effect instead of racing a fixed delay.
+async function waitUntil(done: () => boolean): Promise<void> {
+	for (let waited = 0; !done() && waited < 2_000; waited += 10) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+}
+const waitForHandled = (count: number) => waitUntil(() => handled.length >= count);
+const readLog = (): any[] => {
+	try {
+		return readFileSync(join(workingDir, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+	} catch {
+		return [];
+	}
+};
+
 try {
 	await adapter.start();
 
@@ -92,14 +107,15 @@ try {
 	const textRider = await post("@**Text rider** Hello, thanks for texting Example Rides. Ready to ride?");
 	assert.equal(handled.length, 0, "the Operator does not take a turn for @Text rider");
 	assert.equal(ambient.length, 0, "@Text rider does not trigger ambient evaluation");
-	const logged = readFileSync(join(workingDir, "log.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-	const row = logged.find((entry) => entry.ts === textRider);
+	await waitUntil(() => readLog().some((entry) => entry.ts === textRider));
+	const row = readLog().find((entry) => entry.ts === textRider);
 	assert.equal(row.directlyAddressed, false);
 	assert.match(row.text, /^\[Addressed to @Text rider, not to you \(Operator\)\./);
 	assert.match(row.text, /@Text rider Hello, thanks for texting/);
 
 	// 2. "@Operator ..." is for the Operator, and only its own mention is removed.
 	await post("@**Operator|9** what do you see? cc @**Dispatcher**");
+	await waitForHandled(1);
 	assert.equal(handled.length, 1);
 	assert.equal(handled[0].directlyAddressed, true);
 	assert.equal(handled[0].text, "what do you see? cc @Dispatcher");
@@ -111,6 +127,7 @@ try {
 
 	// 4. Unmentioned human messages still follow the channel policy.
 	await post("Rider is running 5 min late");
+	await waitForHandled(2);
 	assert.equal(handled.length, 2);
 	assert.equal(handled[1].text, "Rider is running 5 min late");
 
@@ -120,6 +137,7 @@ try {
 
 	// 6. @all reaches everyone.
 	await post("@**all** tour moved to 8pm");
+	await waitForHandled(3);
 	assert.equal(handled.length, 3);
 
 	console.log("zulip addressing routing tests passed");
