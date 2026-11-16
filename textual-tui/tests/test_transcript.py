@@ -260,3 +260,11 @@ def test_owner_voice_header_hidden():
     assert is_owner_voice(UserItem("k", "computer-mac", "computer-mac-user", "hi"))
     assert is_owner_voice(UserItem("k", "computer-mac", "user", "hi"))
     assert not is_owner_voice(UserItem("k", "slack:C1", "casey", "hi"))
+
+
+def test_adjacent_text_blocks_are_separate_paragraphs():
+    t = Transcript(CHANNEL)
+    parts = t._parts([text("feel good to live with."), text("Yeah, mostly not.")], {})
+    assert parts == [("text", "feel good to live with.\n\nYeah, mostly not.")]
+    # Already-spaced blocks are left alone.
+    assert t._parts([text("a "), text("b")], {}) == [("text", "a b")]
