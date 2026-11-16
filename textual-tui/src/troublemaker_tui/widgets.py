@@ -11,6 +11,7 @@ from datetime import datetime
 from rich.console import Group, RenderableType
 from rich.padding import Padding
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 from textual import events
 from textual.binding import Binding
@@ -266,18 +267,30 @@ class ToolRow(Vertical, can_focus=True):
 
     def _update_header(self) -> None:
         # The header is a fixed single line; skip identical frames and never relayout.
-        text = self._header_text()
-        key = text_key(text)
+        left, right = self._header_parts()
+        key = (text_key(left), text_key(right))
         if key != self._header_shown:
             self._header_shown = key
-            self._header.update(text, layout=False)
+            self._header.update(self._header_row(left, right), layout=False)
 
-    def _header_text(self) -> Text:
+    @staticmethod
+    def _header_row(left: Text, right: Text) -> Table:
+        # Full-width row: the label takes the remaining space (ellipsized), and
+        # duration + chevron sit in a right-anchored column so every row shares
+        # one right edge regardless of label length.
+        row = Table.grid(expand=True, padding=0)
+        row.add_column(ratio=1, no_wrap=True, overflow="ellipsis")
+        row.add_column(no_wrap=True, justify="right")
+        row.add_row(left, right)
+        return row
+
+    def _header_parts(self) -> tuple[Text, Text]:
         tool = self.tool
         glyph = spinner_frame() if tool.state == "pending" else TOOL_GLYPHS[tool.state]
         text = Text(no_wrap=True, overflow="ellipsis")
         text.append(f"{glyph} ", style="bold")
         text.append(tool.label, style="bold" if tool.state == "pending" else "")
+        side = Text(no_wrap=True)
         end = tool.finished_at if tool.finished_at is not None else (time.monotonic() if tool.state == "pending" else None)
         meta: list[str] = []
         detail = tool.details or {}
@@ -288,10 +301,16 @@ class ToolRow(Vertical, can_focus=True):
         if isinstance(detail.get("exitStatus"), int) and detail["exitStatus"] != 0:
             meta.append(f"exit {detail['exitStatus']}")
         if meta:
-            text.append("  " + " · ".join(meta), style="dim")
+            side.append("  " + " · ".join(meta), style="dim")
+        # Disclosure chevron, anchored to the right edge: down = can open, up = open.
+        # Rows without detail keep the same column width so edges stay aligned.
+        side.append("  ")
         if tool.has_detail:
-            text.append("  ▾" if self.expanded else "  ▸", style="dim")
-        return text
+            side.append("▴" if self.expanded else "▾", style="bold" if self.expanded else "dim")
+        else:
+            side.append(" ")
+        side.append(" ")
+        return text, side
 
     def _badge(self) -> str:
         """Status badge for the card's corner, as Textual markup."""
