@@ -962,10 +962,6 @@ export class TroublemakerTuiApp {
 		return echo;
 	}
 
-	private consumeLocalEcho(channel: string, text: string): boolean {
-		return this.consumeLocalEchoEntry(channel, text) !== null;
-	}
-
 	private consumeLocalEchoEntry(channel: string, text: string): PendingInputEcho | null {
 		this.prunePendingEchoes();
 		const index = this.pendingLocalEchoes.findIndex((entry) => entry.channel === channel && entry.text === text);

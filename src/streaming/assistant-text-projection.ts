@@ -27,7 +27,6 @@ export class AssistantTextProjection {
 	private revision = 0;
 	private segments: string[] = [];
 	private activeSegment = -1;
-	private lastEmittedText = "";
 	private forceNextPatch = false;
 	private nextPresentationIndex = 0;
 	private activePresentation: ActivePresentationSegment | null = null;
@@ -40,7 +39,6 @@ export class AssistantTextProjection {
 		this.revision = 0;
 		this.segments = [];
 		this.activeSegment = -1;
-		this.lastEmittedText = "";
 		this.forceNextPatch = false;
 		this.nextPresentationIndex = 0;
 		this.activePresentation = null;
@@ -91,7 +89,6 @@ export class AssistantTextProjection {
 		const presentation = this.activePresentation;
 		this.activePresentation = null;
 		if (!presentation || !presentation.text) return null;
-		this.lastEmittedText = this.text;
 		return this.event({
 			isFinal: false,
 			speechEligible: false,
@@ -105,7 +102,6 @@ export class AssistantTextProjection {
 		presentationDurableMessageIds?: string[];
 	}): RuntimeAssistantTextEvent {
 		const text = this.text;
-		this.lastEmittedText = text;
 		const presentation = this.activePresentation;
 		this.activePresentation = null;
 		return this.event({
@@ -158,7 +154,6 @@ export class AssistantTextProjection {
 			&& growth < AssistantTextProjection.MINIMUM_PATCH_GROWTH
 		) return null;
 		presentation.lastEmittedText = presentation.text;
-		this.lastEmittedText = this.text;
 		return this.event({
 			isFinal: false,
 			speechEligible: false,

@@ -151,21 +151,6 @@ function getChannelLabel(channelId: string, adaptersList: PlatformAdapter[]): st
 	return channelId;
 }
 
-/**
- * Get a short display name for a channel (used in attention pointer).
- */
-function getChannelDisplayName(channelId: string, adaptersList: PlatformAdapter[]): string {
-	for (const adapter of adaptersList) {
-		const ch = adapter.getChannel(channelId);
-		if (ch) {
-			if (/^[CDG]/.test(channelId)) return `#${ch.name}`;
-			if (isDiscordSnowflake(channelId)) return `discord:#${ch.name}`;
-			return `${adapter.name}:${ch.name}`;
-		}
-	}
-	return channelId;
-}
-
 // ============================================================================
 // Config
 // ============================================================================

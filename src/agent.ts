@@ -204,64 +204,6 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-type StreamingToolCall = {
-	type: "toolCall";
-	id: string;
-	name: string;
-	label?: string;
-	arguments: Record<string, unknown>;
-	contentIndex?: number;
-};
-
-function normalizeStreamingToolCall(raw: unknown, contentIndex?: number): StreamingToolCall | null {
-	if (!raw || typeof raw !== "object") return null;
-	const toolCall = raw as Record<string, unknown>;
-	if (toolCall.type !== "toolCall") return null;
-	const args = toolCall.arguments;
-	const normalizedArgs = args && typeof args === "object" && !Array.isArray(args)
-		? args as Record<string, unknown>
-		: {};
-	const name = typeof toolCall.name === "string" ? toolCall.name : "tool";
-	const label = cleanToolCallLabel(toolCall.label)
-		|| cleanToolCallLabel(normalizedArgs.label)
-		|| readableToolName(name);
-	return {
-		type: "toolCall",
-		id: typeof toolCall.id === "string" ? toolCall.id : "",
-		name,
-		label,
-		arguments: normalizedArgs,
-		...(typeof contentIndex === "number" ? { contentIndex } : {}),
-	};
-}
-
-function normalizeStreamingToolCalls(event: Record<string, unknown>): StreamingToolCall[] {
-	const calls: StreamingToolCall[] = [];
-	const seen = new Set<string>();
-	const add = (raw: unknown, contentIndex?: number) => {
-		const call = normalizeStreamingToolCall(raw, contentIndex);
-		if (!call) return;
-		const key = call.id ? `id:${call.id}` : `index:${call.contentIndex ?? calls.length}`;
-		if (seen.has(key)) return;
-		seen.add(key);
-		calls.push(call);
-	};
-
-	if (Array.isArray(event.toolCalls)) {
-		event.toolCalls.forEach((raw, index) => add(raw, typeof (raw as { contentIndex?: unknown })?.contentIndex === "number"
-			? (raw as { contentIndex: number }).contentIndex
-			: index));
-	}
-	add(event.toolCall, typeof event.contentIndex === "number" ? event.contentIndex : undefined);
-
-	const partial = event.partial as { content?: unknown } | undefined;
-	if (Array.isArray(partial?.content)) {
-		partial.content.forEach((raw, index) => add(raw, index));
-	}
-
-	return calls;
-}
-
 function cleanToolCallLabel(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -285,24 +227,6 @@ function sanitizeStreamingMessage(message: AgentMessage, _terminal: boolean): Ag
 			return [part];
 		}),
 	} as AgentMessage;
-}
-
-function partialText(event: Record<string, unknown>): string | undefined {
-	if (typeof event.content === "string") return event.content;
-	const partial = event.partial as { content?: unknown } | undefined;
-	const contentIndex = event.contentIndex;
-	if (!Array.isArray(partial?.content) || typeof contentIndex !== "number") return undefined;
-	const block = partial.content[contentIndex] as Record<string, unknown> | undefined;
-	return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
-}
-
-function partialThinking(event: Record<string, unknown>): string | undefined {
-	if (typeof event.content === "string") return event.content;
-	const partial = event.partial as { content?: unknown } | undefined;
-	const contentIndex = event.contentIndex;
-	if (!Array.isArray(partial?.content) || typeof contentIndex !== "number") return undefined;
-	const block = partial.content[contentIndex] as Record<string, unknown> | undefined;
-	return block?.type === "thinking" && typeof block.thinking === "string" ? block.thinking : undefined;
 }
 
 // Skills cache — skills rarely change, no need to re-scan R2/FUSE on every message

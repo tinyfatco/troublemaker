@@ -1019,7 +1019,6 @@ Keep responses concise and helpful.`;
 	createContext(event: MomEvent, _store: ChannelStore, _isEvent?: boolean): MomContext {
 		const scoped = this.writerScope.getStore();
 		const writer = scoped?.channelId === event.channel ? scoped.writer : this.pendingWriters.get(event.channel);
-		let lastToolId: string | undefined;
 
 		return {
 			message: {

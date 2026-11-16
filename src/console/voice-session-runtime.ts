@@ -11,10 +11,10 @@ import {
 	type VoiceRecordingUploadRequest, type VoiceReplayAuthorization, type VoiceReplayFrameCommitment,
 	type VoiceReplayInputProjection, type VoiceReplayReconciliation,
 	type VoiceReplayReconciliationRequest,
-	type VoiceServerEvent, type VoiceSpeechControlEvent,
+	type VoiceServerEvent,
 } from "./voice-session-contract.js";
 import {
-	canonicalCustody, type VoiceReplayAuthorizationRecord, type VoiceReplayTombstone,
+	type VoiceReplayAuthorizationRecord, type VoiceReplayTombstone,
 } from "./voice-session-replay.js";
 import { VOICE_SESSION_PERSISTED_TEXT_BYTES, VoiceSessionDurabilityUncertainError, VoiceSessionStore, type StoredVoiceSession } from "./voice-session-store.js";
 import {
