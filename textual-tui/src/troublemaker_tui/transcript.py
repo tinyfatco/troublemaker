@@ -525,7 +525,11 @@ class Transcript:
             kind = block["type"]
             if kind == "text" and block.get("text"):
                 if parts and parts[-1][0] == "text":
-                    parts[-1] = ("text", parts[-1][1] + block["text"])  # type: ignore[operator]
+                    # Separate text blocks are separate paragraphs (e.g. a reply,
+                    # then another after a mid-turn message); never glue them.
+                    prior = parts[-1][1]  # type: ignore[assignment]
+                    gap = "" if not prior.strip() or prior[-1:].isspace() or block["text"][:1].isspace() else "\n\n"
+                    parts[-1] = ("text", prior + gap + block["text"])  # type: ignore[operator]
                 else:
                     parts.append(("text", block["text"]))
             elif kind == "thinking" and self.show_thinking and block.get("thinking"):
