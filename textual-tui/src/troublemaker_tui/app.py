@@ -93,10 +93,6 @@ Agent: /model /context /compact /clear /voice /login /cancel"""
 # --------------------------------------------------------------------------- composer
 
 
-def idle_placeholder(name: str) -> str:
-    return f"Message {name}  ·  / commands  ·  ctrl+t tools"
-
-
 class Composer(TextArea):
     """Multi-line input: enter sends, shift+enter / ctrl+j insert a newline."""
 
@@ -229,7 +225,6 @@ class StatusLine(Horizontal):
         yield self._right
 
     def show(self, activity: Text | None, hints: Text) -> None:
-        # Idle tips live in the input placeholder; this line only appears while working.
         # Called at 12 Hz: repaint only what changed, and never relayout for the
         # fixed-width left side (a layout pass walks the whole transcript).
         busy = activity is not None
@@ -295,7 +290,7 @@ class TroublemakerApp(App[None]):
         yield VerticalScroll(id="transcript")
         yield Static(id="suggest")
         yield StatusLine()
-        yield Composer(id="composer", placeholder=idle_placeholder(self.profile.name))
+        yield Composer(id="composer")
 
     async def on_mount(self) -> None:
         self.register_theme(THEME)
@@ -423,9 +418,6 @@ class TroublemakerApp(App[None]):
         composer = self.query_one(Composer)
         steering = activity is not None and (self.sending or self.transcript.activity() is not None)
         composer.set_class(steering, "-steering")
-        placeholder = f"Steer {self.agent_name}…" if steering else idle_placeholder(self.agent_name)
-        if composer.placeholder != placeholder:
-            composer.placeholder = placeholder
 
     @property
     def agent_name(self) -> str:
