@@ -70,7 +70,7 @@ async function run() {
   assert(Boolean(redactedBacklogFollowUp), "backlog redacts malformed valid-JSON internal follow-ups");
   assert(!backlog.lines.some((line) => line.includes("PRIVATE MALFORMED HARNESS")), "backlog never returns a malformed internal follow-up harness");
   const projectedBacklogHeartbeat = backlog.lines.find((line) => line.includes('"heartbeat-1"')) || "";
-  assert(projectedBacklogHeartbeat.includes("[heartbeat] [heartbeat]: Heartbeat"), "backlog compacts a generated heartbeat for stale terminal clients");
+  assert(projectedBacklogHeartbeat.includes("[heartbeat] [heartbeat]: Scheduled · example-daily-check"), "backlog names a generated heartbeat for stale terminal clients");
   assert(!projectedBacklogHeartbeat.includes("INTERNAL HEARTBEAT HARNESS"), "backlog never exposes the generated heartbeat harness");
   assert(!projectedBacklogHeartbeat.includes("private heartbeat state"), "backlog removes generated heartbeat context scaffolding");
   const redactedBacklogHeartbeat = backlog.lines.find((line) => line.includes("troublemaker.generated-heartbeat-redacted")) || "";
@@ -102,7 +102,7 @@ async function run() {
   appendFileSync(CONTEXT_FILE, heartbeatLiveLine + "\n");
   const heartbeatLiveEvents = await heartbeatLivePromise;
   const projectedLiveHeartbeat = heartbeatLiveEvents.find((event) => event.includes('"heartbeat-2"')) || "";
-  assert(projectedLiveHeartbeat.includes("[heartbeat:heartbeat] [heartbeat]: Heartbeat"), "live awareness compacts a generated heartbeat for stale terminal clients");
+  assert(projectedLiveHeartbeat.includes("[heartbeat:heartbeat] [heartbeat]: Scheduled · example-daily-check"), "live awareness names a generated heartbeat for stale terminal clients");
   assert(!projectedLiveHeartbeat.includes("INTERNAL HEARTBEAT HARNESS"), "live awareness never exposes the generated heartbeat harness");
 
   console.log("\nTest 3: Unified runtime event delivery is sanitized");

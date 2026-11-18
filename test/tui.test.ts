@@ -254,15 +254,18 @@ try {
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}`), [{
 		channel: "heartbeat",
 		userName: "heartbeat",
-		text: "Heartbeat",
-	}], "generated heartbeat prompts collapse to one terminal line");
+		text: "Scheduled · example-daily-check",
+	}], "scheduled attention prompts collapse to one named terminal line");
 	assert.deepEqual(parseVisibleUserInputs(`[2026-01-02 03:04:05+00:00] [heartbeat:heartbeat] [heartbeat]: ${heartbeatPrompt}`), [{
 		channel: "heartbeat:heartbeat",
 		userName: "heartbeat",
-		text: "Heartbeat",
+		text: "Scheduled · example-daily-check",
 	}], "legacy heartbeat channel labels use the same compact terminal line");
-	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:immediate:immediate] Run once."), "Heartbeat");
-	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:one-shot:2040-01-01T00:00:00Z] Run later."), "Heartbeat");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:immediate:immediate] Run once."), "Scheduled · example");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:example.json:one-shot:2040-01-01T00:00:00Z] Run later."), "Scheduled · example");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:heartbeat.json:periodic:0 * * * *] Routine."), "Heartbeat", "the routine heartbeat keeps its plain line");
+	assert.equal(compactHeartbeatCheckpoint("[ATTENTION:odd name.json:one-shot:2040-01-01T00:00:00Z] Run."), "Heartbeat", "unsafe names fall back to Heartbeat");
+	assert.ok(isCompactGeneratedInput({ channel: "heartbeat", userName: "heartbeat", text: "Scheduled · example" }), "named scheduled wakes render as compact lines");
 	assert.equal(
 		compactHeartbeatCheckpoint("[ATTENTION:example.json:periodic] user-authored text"),
 		"[ATTENTION:example.json:periodic] user-authored text",
@@ -279,7 +282,7 @@ try {
 		timestamp: "2026-01-02T03:04:05Z",
 		message: { role: "user", content: [{ type: "text", text: `[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: ${heartbeatPrompt}` }] },
 	}));
-	assert.equal(parsedHeartbeatHistory?.text, "Heartbeat", "durable heartbeat history uses the same compact display");
+	assert.equal(parsedHeartbeatHistory?.text, "Scheduled · example-daily-check", "durable heartbeat history uses the same compact display");
 	const persistedHeartbeatLine = JSON.stringify({
 		type: "message",
 		id: "heartbeat-history",
@@ -295,7 +298,7 @@ try {
 	const projectedHeartbeatLine = sanitizeGeneratedTerminalSessionLine(persistedHeartbeatLine);
 	assert.equal(
 		JSON.parse(projectedHeartbeatLine).message.content[0].text,
-		"[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: Heartbeat",
+		"[2026-01-02 03:04:05+00:00] [heartbeat] [heartbeat]: Scheduled · example-daily-check",
 		"server-side awareness projection protects stale terminal clients from the full heartbeat prompt",
 	);
 	const redactedHeartbeatLine = JSON.stringify({
