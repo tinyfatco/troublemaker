@@ -1,7 +1,8 @@
 const MODEL_CONTEXT_BLOCK_RE = /\s*<(session_context|delivery_context)>[\s\S]*?<\/\1>\s*/g;
 const USER_PREFIX_RE = /^\[([^\]]+)\]\s*\[([^\]]+)\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/;
 const FOLLOW_UP_CHECKPOINT_RE = /^\[ATTENTION:follow-up-[^\]\n]+:one-shot:[^\]\n]+\]\s+\[FOLLOW_UP\s+(\d+)\/(\d+)\s+after\s+(\d+)\s+minutes?\s+since the latest completed wake\]/;
-const HEARTBEAT_CHECKPOINT_RE = /^\[ATTENTION:[^\]\r\n]+:(?:immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$/;
+const HEARTBEAT_CHECKPOINT_RE = /^\[ATTENTION:([^\]\r\n]+?):(?:immediate|one-shot|periodic):[^\]\r\n]+\]\s+[\s\S]*\S$/;
+const SCHEDULED_CHECKPOINT_TEXT_RE = /^Scheduled · [\w.-]+$/;
 
 export interface VisibleUserInput {
 	channel: string;
@@ -67,13 +68,17 @@ export function isCompactFollowUpInput(input: VisibleUserInput): boolean {
 
 /** Keep a generated heartbeat visible without painting its schedule or checklist. */
 export function compactHeartbeatCheckpoint(text: string): string {
-	return HEARTBEAT_CHECKPOINT_RE.test(text) ? "Heartbeat" : text;
+	const match = HEARTBEAT_CHECKPOINT_RE.exec(text);
+	if (!match) return text;
+	// Name scheduled attention wakes so the operator can tell them from routine heartbeats.
+	const name = match[1].replace(/\.json$/, "");
+	return name === "heartbeat" || !/^[\w.-]+$/.test(name) ? "Heartbeat" : `Scheduled · ${name}`;
 }
 
 /** Exact terminal-only shape produced for an internal heartbeat wake. */
 export function isCompactHeartbeatInput(input: VisibleUserInput): boolean {
 	return generatedInputLane(input.channel, input.userName) === "heartbeat"
-		&& input.text === "Heartbeat";
+		&& (input.text === "Heartbeat" || SCHEDULED_CHECKPOINT_TEXT_RE.test(input.text));
 }
 
 export function isCompactGeneratedInput(input: VisibleUserInput): boolean {
