@@ -82,7 +82,7 @@ LOCAL = {command.name for command in COMMANDS if command.local} | {"exit"}
 HELP = """\
 enter send · shift+enter or ctrl+j newline · ↑↓ history
 / opens commands — ↑↓ choose, enter run, tab complete with arguments
-esc stop the active turn · ctrl+c stop, then quit · ctrl+d quit when empty
+drag to select, ctrl+c copies · esc stop the active turn · ctrl+c stop, twice to quit · ctrl+d quit when empty
 ctrl+t jump to tool calls — ↑↓ move, enter expand, esc back · click any tool to expand
 ctrl+e expand/collapse all tools · ctrl+p command palette · pgup/pgdn scroll
 Typing while the agent works steers the running turn.
@@ -727,6 +727,13 @@ class TroublemakerApp(App[None]):
             self._render_status()
 
     def action_interrupt(self) -> None:
+        selected = self.screen.get_selected_text()
+        if selected:
+            # Ctrl+C with a mouse selection copies it (OSC 52), like any terminal.
+            self.copy_to_clipboard(selected)
+            self.screen.clear_selection()
+            self.notify("Copied", timeout=1.5)
+            return
         now = time.monotonic()
         if now - self._last_interrupt < 1.5:
             # Ctrl+C twice always quits, even if the connection is wedged.
