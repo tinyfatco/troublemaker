@@ -640,7 +640,7 @@ class TroublemakerApp(App[None]):
         self.transcript.show_thinking = thinking
         self.header_bar.profile = self.profile
         self.header_bar.sync()
-        self.transcript.notice("Thinking will stream live." if thinking else "Thinking hidden.")
+        # The header's "· thinking" marker is the only indicator; no transcript notice.
         self._live_worker = self._live_loop()  # exclusive: replaces the running stream
 
     # ------------------------------------------------------------------ tools
