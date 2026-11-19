@@ -272,6 +272,7 @@ class TroublemakerApp(App[None]):
         self._flush_scheduled = False
         self.sending = False
         self.stopping = False
+        self._last_interrupt = 0.0
         self._local_status: str | None = None
         self._run_status: RunStatus | None = None
         self._activity_key: str | None = None
@@ -640,7 +641,7 @@ class TroublemakerApp(App[None]):
         self.transcript.show_thinking = thinking
         self.header_bar.profile = self.profile
         self.header_bar.sync()
-        self.transcript.notice("Thinking will stream live." if thinking else "Thinking hidden.")
+        # The header's "· thinking" marker is the only indicator; no transcript notice.
         self._live_worker = self._live_loop()  # exclusive: replaces the running stream
 
     # ------------------------------------------------------------------ tools
@@ -716,6 +717,8 @@ class TroublemakerApp(App[None]):
             await self.client.stop()
             if self._send_worker is not None:
                 self._send_worker.cancel()
+            # Runs cut off by a server restart never send their end; settle them.
+            self.transcript.abandon_runs()
             self.transcript.notice("Stopped.", "warning")
         except Exception as error:  # noqa: BLE001
             self.transcript.error(str(error))
@@ -724,6 +727,12 @@ class TroublemakerApp(App[None]):
             self._render_status()
 
     def action_interrupt(self) -> None:
+        now = time.monotonic()
+        if now - self._last_interrupt < 1.5:
+            # Ctrl+C twice always quits, even if the connection is wedged.
+            self.exit()
+            return
+        self._last_interrupt = now
         if self.sending or self.transcript.activity():
             if self.stopping:
                 self.exit()

@@ -510,10 +510,11 @@ class AssistantMessage(Vertical):
                 widget = ToolRow(value)  # type: ignore[arg-type]
             self.mount(widget)
             self._rendered.append((kind, value))
-        # Consecutive tool rows read as one block; space them from prose only.
+        # Consecutive tool rows read as one block; any change of kind (thinking,
+        # text, tools) gets one blank line so reasoning never crowds the answer.
         for index, child in enumerate(self.children):
             previous = self._rendered[index - 1][0] if index > 0 else None
-            child.set_class(previous is not None and (previous == "tool") != (self._rendered[index][0] == "tool"), "-gap")
+            child.set_class(previous is not None and previous != self._rendered[index][0], "-gap")
 
     def tick(self) -> None:
         for child in self.children:
