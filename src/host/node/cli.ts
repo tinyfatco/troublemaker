@@ -81,7 +81,7 @@ import { routeWorkingOutputContext } from "../../streaming/working-output.js";
 import { createLocalEventboxClientFromEnv } from "../../local/eventbox-client.js";
 import { readLocalTenantProfile } from "../../local/tenant-profile.js";
 import { FilesystemWorkspaceStore } from "../../storage/node/filesystem-workspace.js";
-import { tryTerminalTuiSoftSteer } from "../../terminal-steering.js";
+import { tryTerminalTuiSoftSteer, formatInstructionsForEvent } from "../../terminal-steering.js";
 import { formatBusyMessageSteer, formatLocalTimestamp, routeBusyMessageWithoutInterrupt } from "../../noninterrupting-steering.js";
 import { readVerifiedSenderIdentity } from "../../sender-identity.js";
 import { admitRelationshipBoundMessage } from "../../relationship-bound-admission.js";
@@ -1348,7 +1348,7 @@ async function runEventInSlot(event: MomEvent, platform: PlatformAdapter, isEven
 					ctx,
 					state.store,
 					undefined,
-					platform.formatInstructions,
+					formatInstructionsForEvent(turnEvent, platform.formatInstructions),
 					(runtimeEvent) => { gateway.publishRuntimeEvent(liveMetadata, runtimeEvent); },
 					liveMetadata.runId,
 				);

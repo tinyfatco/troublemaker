@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { MomEvent } from "../src/adapters/types.js";
-import { formatTerminalTuiSteer, tryTerminalTuiSoftSteer } from "../src/terminal-steering.js";
+import { formatInstructionsForEvent, formatTerminalTuiSteer, TERMINAL_TUI_FORMAT_INSTRUCTIONS, tryTerminalTuiSoftSteer } from "../src/terminal-steering.js";
 
 const event: MomEvent = {
 	type: "dm",
@@ -36,3 +36,13 @@ assert.equal(tryTerminalTuiSoftSteer({ ...event, sourceEventType: "web_message" 
 assert.equal(tryTerminalTuiSoftSteer(event, { steer: () => false }, now), false);
 
 console.log("terminal TUI steering tests passed");
+
+// Terminal TUI turns arrive through the web adapter but must not be told they are in web chat.
+{
+	const web = "## Web Chat Formatting (Markdown)";
+	assert.equal(formatInstructionsForEvent({ sourceEventType: "terminal_tui" }, web), TERMINAL_TUI_FORMAT_INSTRUCTIONS);
+	assert.match(TERMINAL_TUI_FORMAT_INSTRUCTIONS, /terminal/i);
+	assert.doesNotMatch(TERMINAL_TUI_FORMAT_INSTRUCTIONS, /web chat/i);
+	assert.equal(formatInstructionsForEvent({ sourceEventType: "web_voice" }, web), web);
+	assert.equal(formatInstructionsForEvent({}, web), web);
+}
