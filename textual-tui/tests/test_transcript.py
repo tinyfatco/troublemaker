@@ -268,3 +268,18 @@ def test_adjacent_text_blocks_are_separate_paragraphs():
     assert parts == [("text", "feel good to live with.\n\nYeah, mostly not.")]
     # Already-spaced blocks are left alone.
     assert t._parts([text("a "), text("b")], {}) == [("text", "a b")]
+
+
+def test_own_channel_history_renders_like_local_input():
+    t = Transcript(CHANNEL)
+    t.load_history([user_line("mine", channel=f"web:{CHANNEL}"), user_line("theirs", channel="slack:#ops", user="sam")])
+    users = [item for item in t.items if isinstance(item, UserItem)]
+    assert [(u.text, u.local) for u in users] == [("mine", True), ("theirs", False)]
+
+
+def test_abandon_runs_clears_stale_activity():
+    t, live = Transcript(CHANNEL), Live()
+    t.apply_live(live.snapshot("r1", [text("partial")]))
+    assert t.activity() is not None
+    t.abandon_runs()
+    assert t.activity() is None

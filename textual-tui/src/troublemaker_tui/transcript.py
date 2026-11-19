@@ -264,7 +264,7 @@ class Transcript:
             value.channel,
             "you" if source == "local" else value.user,
             value.text,
-            local=source == "local",
+            local=source == "local" or self._is_own_channel(value.channel),
             ambient=ambient or value.user == "ambient",
             generated=value.is_compact_generated,
         ))
@@ -285,6 +285,18 @@ class Transcript:
             self._split(run, after_key=echo.item_key)
             echo.adopted_run = run.run_id
         return self.items[self._position(echo.item_key)]  # type: ignore[return-value]
+
+    def _is_own_channel(self, channel: str) -> bool:
+        """This terminal's own channel, however the server spells it (``web:terminal:tm``)."""
+        bare = channel.removeprefix("web:")
+        return bare == self.local_channel or normalize_channel(bare) == normalize_channel(self.local_channel)
+
+    def abandon_runs(self) -> None:
+        """Settle every in-flight run (the server says nothing is running)."""
+        for run in self._runs.values():
+            self._finish_segment(run, aborted=True)
+        self._runs.clear()
+        self._latest_run = None
 
     def begin_local_turn(self) -> None:
         self.local_turn_active = True
