@@ -1,12 +1,13 @@
 /**
  * Deliver the outcome of a run to the platform: a redacted runtime error, the
- * final assistant text, or nothing (yield_no_action, private checkpoints, or
- * unavailable model credentials). Also captures a text-form handoff checkpoint.
+ * final assistant text, or nothing (yield_no_action, private checkpoints,
+ * unavailable model credentials, or provider usage limits). Also captures a text-form handoff checkpoint.
  */
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { MomContext } from "../adapters/types.js";
 import { extractStructuredHandoff } from "../handoff-compaction.js";
 import * as log from "../log.js";
+import { isModelUsageLimitError } from "../model-auth-gate.js";
 import { resetYield, wasYielded } from "../tools/yield-no-action.js";
 import type { RunPresentation } from "./presentation.js";
 import { formatUserVisibleError } from "./prompt-message.js";
@@ -21,11 +22,13 @@ export async function deliverRunOutcome(
 	const { emitLiveEvent, closeAssistantPresentation } = presentation;
 	// Handle error case. Missing model credentials are an operational
 	// condition, not assistant-authored conversation content. Failing quiet
-	// prevents one resident's auth outage from becoming another resident's
+	// prevents one resident's auth or usage-limit outage from becoming another resident's
 	// inbound message and feedback-loop trigger.
 	if (runState.stopReason === "error" && runState.errorMessage) {
 		if (runState.modelCredentialUnavailable) {
 			log.logWarning("Model credential unavailable; no user-visible runtime error posted");
+		} else if (isModelUsageLimitError(runState.errorMessage)) {
+			log.logWarning("Model usage limit reached; no user-visible runtime error posted", runState.errorMessage);
 		} else {
 			try {
 				const visibleError = formatUserVisibleError(runState.errorMessage);
