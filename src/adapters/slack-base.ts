@@ -138,6 +138,17 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 			: new Set(Array.from(config.allowedDmUserIds, (id) => id.trim()).filter(Boolean));
 	}
 
+	/**
+	 * Route a non-addressed channel post to ambient evaluation unless the
+	 * channel is in mentions-only attention. The post is already logged and
+	 * pulse-recorded, so it stays readable; direct mentions still wake us.
+	 */
+	protected dispatchAmbient(channelId: string, event: MomEvent): void {
+		const attention = new MomSettingsManager(this.workingDir).getSlackChannelAttention(channelId);
+		if (attention !== "ambient") return;
+		this.onAmbientMessage?.(channelId, event, this);
+	}
+
 	/** Whether this Slack identity may start or steer the agent through a DM. */
 	protected acceptsDmFrom(userId: string): boolean {
 		return this.allowedDmUserIds === undefined || this.allowedDmUserIds.has(userId);
