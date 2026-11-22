@@ -316,7 +316,7 @@ export class SlackWebhookAdapter extends SlackBase {
 			}
 		} else {
 			// Ambient engagement: non-DM, non-addressed message — let the engagement system decide
-			this.onAmbientMessage?.(event.channel, momEvent, this);
+			this.dispatchAmbient(event.channel, momEvent);
 		}
 	}
 }

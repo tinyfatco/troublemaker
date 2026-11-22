@@ -33,6 +33,7 @@ import {
 	type VoiceWebhookInputMode,
 	type WorkingOutputMode,
 	type WorkingOutputTarget,
+	isSlackChannelId,
 } from "../context.js";
 import { syncHeartbeatFromSpontaneity, type HeartbeatScheduleResult } from "../heartbeat-schedule.js";
 import { cancelFollowUpSchedules, clearAllFollowUpSchedules, getFollowUpRuntimeStatus } from "../follow-ups.js";
@@ -55,6 +56,7 @@ const SELF_CONFIGURE_SETTINGS = new Set([
 	"working_output",
 	"mattermost.channel_attention",
 	"teams.channel_attention",
+	"slack.channel_attention",
 	"teams.verbosity",
 	"teams.response_placement",
 	"teams.tool_streaming",
@@ -115,6 +117,10 @@ const SELF_CONFIGURE_ALIASES: Record<string, string> = {
 	"mattermost.attention": "mattermost.channel_attention",
 	"teams.channelAttention": "teams.channel_attention",
 	"teams.attention": "teams.channel_attention",
+	"slack.channelAttention": "slack.channel_attention",
+	"slack.attention": "slack.channel_attention",
+	"slack.mentions_only": "slack.channel_attention",
+	"slack.mentionsOnly": "slack.channel_attention",
 	"teams.verbose": "teams.verbosity",
 	"teams.responsePlacement": "teams.response_placement",
 	"teams.toolStreaming": "teams.tool_streaming",
@@ -675,6 +681,73 @@ function configureTeamsChannelAttention(
 	};
 }
 
+function configureSlackChannelAttention(
+	workingDir: string,
+	value: unknown,
+	options: SelfConfigureOptions,
+): SelfConfigureResult {
+	const request = value && typeof value === "object" && !Array.isArray(value)
+		? value as Record<string, unknown>
+		: { mode: value, channel: "here" };
+	const normalized = parseString(request.mode, "slack.channel_attention.mode").trim().toLowerCase().replace(/_/g, "-");
+	const mode = ["ambient", "watch", "observe", "on", "enabled"].includes(normalized)
+		? "ambient" as const
+		: ["mentions-only", "mention-only", "ignore", "ignored", "off", "muted", "mute"].includes(normalized)
+			? "mentions-only" as const
+			: null;
+	if (!mode) throw new Error('slack.channel_attention mode must be "ambient" or "mentions-only".');
+	const manager = new MomSettingsManager(workingDir);
+	const channelRequest = typeof request.channel === "string" ? request.channel.trim() : request.channel;
+	const note = mode === "mentions-only"
+		? "Ordinary Slack posts remain logged and readable but no longer schedule ambient evaluation; @mentions, @here/@channel, and DMs still wake the agent."
+		: "Ordinary Slack posts will again participate in ambient evaluation; @mentions and DMs continue to wake the agent.";
+	if (typeof channelRequest === "string" && ["all", "*", "everywhere", "workspace"].includes(channelRequest.toLowerCase())) {
+		const previousValue = {
+			channel: "all",
+			mode: manager.getSlackMentionsOnlyAllChannels() ? "mentions-only" : "ambient",
+			mentionsOnlyChannelIds: manager.getSlackMentionsOnlyChannelIds(),
+		};
+		manager.setSlackAllChannelsAttention(mode);
+		return {
+			changed: true,
+			setting: "slack.channel_attention",
+			previousValue,
+			newValue: { channel: "all", mode },
+			note: mode === "ambient"
+				? `${note} Per-channel mentions-only entries were cleared.`
+				: note,
+		};
+	}
+	let channelId: string;
+	if (channelRequest === undefined || (typeof channelRequest === "string" && channelRequest.toLowerCase() === "here")) {
+		const current = options.resolveWorkingOutputTarget?.();
+		if (!current || current.platform !== "slack") {
+			throw new Error('slack.channel_attention channel "here" requires an active Slack channel turn; otherwise pass a C/G channel ID or "all".');
+		}
+		channelId = current.channelId;
+	} else {
+		channelId = parseString(channelRequest, "slack.channel_attention.channel").trim();
+	}
+	if (channelId.startsWith("D")) {
+		throw new Error("slack.channel_attention does not apply to DMs; DMs are always directly addressed.");
+	}
+	if (!isSlackChannelId(channelId)) {
+		throw new Error("slack.channel_attention channel must be 'here', 'all', or a valid Slack C/G channel ID.");
+	}
+	const previousValue = { channelId, mode: manager.getSlackChannelAttention(channelId) };
+	manager.setSlackChannelAttention(channelId, mode);
+	const effective = manager.getSlackChannelAttention(channelId);
+	return {
+		changed: true,
+		setting: "slack.channel_attention",
+		previousValue,
+		newValue: { channelId, mode: effective },
+		note: mode === "ambient" && effective === "mentions-only"
+			? "This channel left the per-channel mentions-only list, but workspace-wide Slack mentions-only is still on; set channel 'all' to ambient to resume ambient evaluation."
+			: note,
+	};
+}
+
 function configureDiscordToolStreaming(workingDir: string, value: unknown): SelfConfigureResult {
 	const manager = new MomSettingsManager(workingDir);
 	const previousValue = manager.getDiscordToolStreaming();
@@ -1064,6 +1137,7 @@ export function applySelfConfiguration(
 	if (target === "working_output") return configureWorkingOutput(workingDir, value, options);
 	if (target === "mattermost.channel_attention") return configureMattermostChannelAttention(workingDir, value, options);
 	if (target === "teams.channel_attention") return configureTeamsChannelAttention(workingDir, value, options);
+	if (target === "slack.channel_attention") return configureSlackChannelAttention(workingDir, value, options);
 	if (target === "teams.verbosity") return configureTeamsVerbosity(workingDir, value);
 	if (target === "teams.response_placement") return configureTeamsResponsePlacement(workingDir, value);
 	if (target === "teams.tool_streaming") return configureTeamsToolStreaming(workingDir, value);
@@ -1108,7 +1182,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		show: Type.Optional(Type.Boolean({ description: "Surface this safe label only when it is a meaningful progress milestone. Default false." })),
 		setting: Type.String({
 			description:
-				"Setting to change. Supported: model, thinking_level, verbosity, working_output, teams.channel_attention, teams.verbosity, teams.response_placement, teams.tool_streaming, teams.tool_stream_presentation, teams.tool_stream_window_minutes, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
+				"Setting to change. Supported: model, thinking_level, verbosity, working_output, teams.channel_attention, slack.channel_attention, teams.verbosity, teams.response_placement, teams.tool_streaming, teams.tool_stream_presentation, teams.tool_stream_window_minutes, mattermost.channel_attention, slack.verbosity, slack.response_placement, slack.tool_streaming, slack.tool_stream_presentation, slack.tool_stream_window_minutes, slack.native_progress, " +
 				"discord.tool_streaming, discord.tool_stream_presentation, discord.tool_stream_window_minutes, " +
 				"follow_ups, follow_ups.enabled, follow_ups.preset, follow_ups.intervals_minutes, follow_ups.cancel, " +
 				"spontaneity.enabled, spontaneity.level, spontaneity.intervalMinutes, spontaneity.spontaneity, " +
@@ -1123,7 +1197,7 @@ export function createSelfConfigureTool(workingDir: string, options: SelfConfigu
 		label: "self_configure",
 		description:
 			"Use computer.mode with exactly cua, codex-mcp, or off to select one exclusive computer tool surface. It persists the sole selector and requires a runtime restart; an administrator environment override remains authoritative. " +
-			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Microsoft Teams or Mattermost channel attention, coherent Teams or Slack turn placement, selective Teams, Slack, or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, the macOS Computer client’s automatic-speech preference, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use computer.macos_auto_speech only for an explicit request to enable or disable automatic assistant speech in macOS Computer; this client preference never invokes the runtime speak tool or changes iPhone, Watch, CallMe, Realtime voice, manual speech, or another channel. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Microsoft Teams, Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'teams', channelId:'<conversation ID>'}, {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use teams.channel_attention or mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation while keeping direct mentions and read_thread access. Use teams.response_placement or slack.response_placement to choose inbound threads (the default) or top-level channel delivery; use the platform tool_streaming, tool_stream_presentation, and tool_stream_window_minutes settings to control progress. Slack native_progress controls native task cards. voice.webhook_input_mode chooses interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
+			"Change your own durable configuration when the user explicitly asks you to adjust model, thinking, verbosity, working-output routing, Microsoft Teams, Slack, or Mattermost channel attention, coherent Teams or Slack turn placement, selective Teams, Slack, or Discord tool streaming, tool-stream grouping, native Slack progress cards, natural follow-up checkpoints, the macOS Computer client’s automatic-speech preference, voice webhook routing, voice wake aliases, Realtime voice, heartbeat/spontaneity, or heartbeat checklist settings. Use computer.macos_auto_speech only for an explicit request to enable or disable automatic assistant speech in macOS Computer; this client preference never invokes the runtime speak tool or changes iPhone, Watch, CallMe, Realtime voice, manual speech, or another channel. Use working_output with {mode:'off'} to hide external working labels, {mode:'follow'} to show them wherever you are contacted, or {mode:'fixed', target:'here'} to send labels from every turn to the current stable Microsoft Teams, Slack, Rocket.Chat, Mattermost, or Zulip channel/DM. A fixed explicit target may instead be {platform:'teams', channelId:'<conversation ID>'}, {platform:'slack', channelId:'C/G/D...'}, {platform:'rocket-chat', channelId:'<room ID>'}, {platform:'mattermost', channelId:'<26-character ID>'}, or {platform:'zulip', channelId:'<channel ID or dm:user IDs>'}. Include windowMinutes:1-60 to select split presentation and its rolling window. Working-output routing never changes messages-only user delivery. Use teams.channel_attention, slack.channel_attention, or mattermost.channel_attention with {mode:'mentions-only', channel:'here'} to stop ambient evaluation while keeping direct mentions and read_thread access; slack.channel_attention also accepts channel:'all' for every Slack channel. Use teams.response_placement or slack.response_placement to choose inbound threads (the default) or top-level channel delivery; use the platform tool_streaming, tool_stream_presentation, and tool_stream_window_minutes settings to control progress. Slack native_progress controls native task cards. voice.webhook_input_mode chooses interrupt (the default) or steer for busy webhook transcripts. Use follow_ups with preset 'default' for enabled 1/3/5/10-minute natural checks, set follow_ups.intervals_minutes to a custom list, or set follow_ups.cancel to true to cancel current sequences without disabling the preset. " +
 			"This writes settings.json or HEARTBEAT.md and is not for arbitrary file edits, secrets, or user-visible messaging. " +
 			"After using it, briefly tell the user what changed if the current channel expects a reply.",
 		parameters: schema,

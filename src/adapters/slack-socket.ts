@@ -275,7 +275,7 @@ export class SlackSocketAdapter extends SlackBase {
 				}
 			} else {
 				// Ambient engagement: non-DM, non-addressed message
-				this.onAmbientMessage?.(e.channel, momEvent, this);
+				this.dispatchAmbient(e.channel, momEvent);
 			}
 
 			safelyAcknowledge(ack);

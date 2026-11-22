@@ -94,6 +94,13 @@ export interface MomSlackSettings {
 	toolStreamWindowMinutes?: number;
 	/** Render selected tool lifecycle with Slack's native streaming task UI. */
 	nativeProgress?: boolean;
+	/**
+	 * Channels that remain readable and mention-addressable without scheduling
+	 * ambient evaluation for every ordinary post.
+	 */
+	mentionsOnlyChannelIds?: string[];
+	/** Apply mentions-only attention to every Slack channel (DMs are unaffected). */
+	mentionsOnlyAllChannels?: boolean;
 }
 
 export interface MomDiscordSettings {
@@ -689,6 +696,55 @@ export class MomSettingsManager {
 		return this.getMattermostChannelAttention(channelId);
 	}
 
+	getSlackMentionsOnlyChannelIds(): string[] {
+		const configured = this.settings.slack?.mentionsOnlyChannelIds;
+		if (!Array.isArray(configured)) return [];
+		return [...new Set(configured.filter((channelId): channelId is string =>
+			typeof channelId === "string" && isSlackChannelId(channelId),
+		))];
+	}
+
+	getSlackMentionsOnlyAllChannels(): boolean {
+		return this.settings.slack?.mentionsOnlyAllChannels === true;
+	}
+
+	getSlackChannelAttention(channelId: string): "ambient" | "mentions-only" {
+		return this.getSlackMentionsOnlyAllChannels() || this.getSlackMentionsOnlyChannelIds().includes(channelId)
+			? "mentions-only"
+			: "ambient";
+	}
+
+	setSlackChannelAttention(
+		channelId: string,
+		mode: "ambient" | "mentions-only",
+	): "ambient" | "mentions-only" {
+		if (!isSlackChannelId(channelId)) {
+			throw new Error("Slack channel attention requires a valid C/G channel ID.");
+		}
+		const mentionsOnly = new Set(this.getSlackMentionsOnlyChannelIds());
+		if (mode === "mentions-only") mentionsOnly.add(channelId);
+		else mentionsOnly.delete(channelId);
+		this.settings.slack = {
+			...this.settings.slack,
+			mentionsOnlyChannelIds: [...mentionsOnly].sort(),
+		};
+		this.save();
+		return this.getSlackChannelAttention(channelId);
+	}
+
+	setSlackAllChannelsAttention(mode: "ambient" | "mentions-only"): "ambient" | "mentions-only" {
+		const next = { ...this.settings.slack };
+		if (mode === "mentions-only") next.mentionsOnlyAllChannels = true;
+		else {
+			delete next.mentionsOnlyAllChannels;
+			// Resuming ambient everywhere also clears per-channel mentions-only entries.
+			delete next.mentionsOnlyChannelIds;
+		}
+		this.settings.slack = next;
+		this.save();
+		return mode;
+	}
+
 	getSlackResponsePlacement(): SlackResponsePlacement {
 		return this.settings.slack?.responsePlacement ?? "thread";
 	}
@@ -905,4 +961,9 @@ export class MomSettingsManager {
 	reload(): void {
 		this.settings = this.load();
 	}
+}
+
+/** Slack public (C) and private (G) channel IDs; DMs (D) are always directly addressed. */
+export function isSlackChannelId(channelId: string): boolean {
+	return /^[CG][A-Z0-9]{6,}$/.test(channelId);
 }
