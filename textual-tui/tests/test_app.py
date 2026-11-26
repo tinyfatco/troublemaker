@@ -238,3 +238,15 @@ async def test_pending_indicator_has_a_blank_line_above_it():
         await settle(pilot)
         assert not status.has_class("-busy")
         assert status.styles.margin.top == 0
+
+
+async def test_zulip_inbound_renders_clean():
+    raw = ("[2026-01-01 01:51:14-06:00] [zulip:Example crew] [casey-bot@example.com]: @\\*\\*Casey\\*\\* fyi the error is now "
+           "\\`Not logged in\\`, see #**ops>alerts** cc @_**Operator**")
+    app = make_app(FakeAgent(backlog=[user_line(raw, channel="zulip-example", user="casey-bot", entry_id="z1")]))
+    async with app.run_test(size=(100, 16)) as pilot:
+        await settle(pilot)
+        rendered = app.query_one(UserMessage).render().plain
+        assert "Example crew · casey-bot  @Casey fyi the error is now `Not logged in`, see #ops › alerts cc @Operator" in rendered
+        assert "\\" not in rendered and "**" not in rendered
+        shot(app, "zulip-inbound")
