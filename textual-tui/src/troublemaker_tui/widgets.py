@@ -22,6 +22,7 @@ from textual.widgets import Static
 
 from .markdown import MarkdownBody
 from .protocol import one_line, sanitize
+from .zulip import render_inbound
 from .transcript import AssistantItem, Item, NoticeItem, ToolCall, TransitionItem, UserItem
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
@@ -85,7 +86,12 @@ class UserMessage(Static):
         if not item.local and not is_owner_voice(item):
             text.append(item.user, style="bold")
             text.append(f" {item.channel}  ", style="dim")
-        text.append(sanitize(item.text), style="italic" if item.ambient else "")
+        body_style = "italic" if item.ambient else ""
+        zulip = None if item.local else render_inbound(sanitize(item.text), body_style)
+        if zulip is not None:
+            text.append_text(zulip)
+        else:
+            text.append(sanitize(item.text), style=body_style)
         text.append(f"  {stamp}", style="dim")
         return text
 
