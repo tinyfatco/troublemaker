@@ -113,8 +113,27 @@ function selectAccountBinding(config, claims) {
 			&& candidate.subject === claims.subject
 			&& candidate.agent.id === claims.agent
 	));
-	if (!binding) throw new WebAppRequestError(403, "account_not_configured");
-	return binding;
+	if (binding) return binding;
+	const concierge = config.webApp.concierge;
+	// Signed-in accounts with no agent of their own get a private concierge chat.
+	// Bound accounts never fall through: their subject or email must match exactly.
+	if (
+		concierge
+		&& claims.agent === concierge.agent.id
+		&& !config.webApp.accountBindings.some((candidate) => (
+			candidate.accountEmail === claims.email || candidate.subject === claims.subject
+		))
+	) {
+		return {
+			accountEmail: claims.email,
+			principalEmail: claims.email,
+			subject: claims.subject,
+			role: "operator",
+			agent: concierge.agent,
+			concierge: true,
+		};
+	}
+	throw new WebAppRequestError(403, "account_not_configured");
 }
 
 function selectPrincipalProject(config, binding, projectSlug) {
@@ -133,6 +152,16 @@ function selectPrincipalProject(config, binding, projectSlug) {
 				projects: [],
 			},
 			project: { slug: "intake", name: "Private relationship", siteDeployments: [] },
+		};
+	}
+	if (binding.concierge) {
+		const project = config.webApp.concierge.project;
+		if (projectSlug && projectSlug !== project.slug) {
+			throw new WebAppRequestError(404, "project_not_available");
+		}
+		return {
+			principal: { email: binding.principalEmail, name: "", channel: "email", projects: [project] },
+			project,
 		};
 	}
 	const principal = config.routing.knownPrincipals.find((candidate) => candidate.email === binding.principalEmail);

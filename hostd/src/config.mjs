@@ -1242,6 +1242,18 @@ function webAppConfig(raw, environment) {
 	if (new Set(configuredSubjects).size !== configuredSubjects.length) {
 		throw new Error("webApp.accountBindings cannot repeat an account subject");
 	}
+	let concierge;
+	if (webApp.concierge !== undefined) {
+		const raw = object(webApp.concierge, "webApp.concierge");
+		const agent = namedAgentConfig(raw.agent, "webApp.concierge.agent");
+		concierge = {
+			agent: { ...agent, targetId: text(raw.agent.targetId, "webApp.concierge.agent.targetId") },
+			project: { slug: "workspace", name: "Workspace setup" },
+		};
+		if (accountBindings.some((binding) => binding.agent.id === agent.id)) {
+			throw new Error("webApp.concierge agent cannot also be an account-bound agent");
+		}
+	}
 	return {
 		host: listenerHost,
 		port: integer(webApp.port, 3120, "webApp.port", 1024, 65535),
@@ -1265,6 +1277,7 @@ function webAppConfig(raw, environment) {
 		defaultProject,
 		websitePaintEnabled: boolean(webApp.websitePaintEnabled, false, "webApp.websitePaintEnabled"),
 		accountBindings,
+		...(concierge ? { concierge } : {}),
 	};
 }
 
@@ -2017,6 +2030,24 @@ export async function loadConfig(path, environment = process.env) {
 				throw new Error(`webApp agent ${binding.agent.id} has conflicting identity metadata`);
 			}
 			agents.set(binding.agent.id, identity);
+		}
+		if (webApp.concierge) {
+			const { agent } = webApp.concierge;
+			const selectedTarget = targets.find((target) => target.id === agent.targetId);
+			if (selectedTarget?.driver !== "oci" || !selectedTarget.agent) {
+				throw new Error("webApp.concierge.agent.targetId must reference an OCI target with named agent identity");
+			}
+			const identity = { id: agent.id, name: agent.name, slug: agent.slug, email: agent.email };
+			if (JSON.stringify(identity) !== JSON.stringify(selectedTarget.agent)) {
+				throw new Error("webApp.concierge.agent identity must match its target identity");
+			}
+			if (selectedTarget.computer?.enabled === true) {
+				throw new Error("webApp.concierge target must not enable the shared computer");
+			}
+			if (configuredPrincipals.some((principal) => principal.targetId === selectedTarget.id)
+				|| configuredPhonePrincipals.some((principal) => principal.targetId === selectedTarget.id)) {
+				throw new Error("webApp.concierge target must be dedicated to the concierge");
+			}
 		}
 	}
 	const siteFactories = configuredPrincipals.flatMap((principal) => (

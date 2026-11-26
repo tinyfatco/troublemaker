@@ -1127,3 +1127,42 @@ test("chat images: the agent's workspace images reach the chat only as JSON data
 		await close(runtimeServer);
 	}
 });
+
+test("routes an unbound signed-in account to the concierge workspace only", async () => {
+	const conciergeAgent = { id: "concierge", name: "Concierge", slug: "concierge", email: "concierge@example.com", targetId: "concierge" };
+	const conciergeTarget = { ...TARGET, id: "concierge" };
+	const newEmail = "new@example.com";
+	const base = state(65534);
+	base.config.webApp.concierge = { agent: conciergeAgent, project: { slug: "workspace", name: "Workspace setup" } };
+	base.config.targetsById.set("concierge", conciergeTarget);
+	const resolved = [];
+	base.router.resolve = (input) => {
+		resolved.push(input);
+		return { targetId: "concierge", contextId: "concierge:x:workspace", principalHash: "x", projectSlug: "workspace" };
+	};
+	base.router.ensurePrincipalScope = base.router.resolve;
+	base.store.getContextScope = () => ({ principalHash: "x", emailAddress: newEmail, projectSlug: "workspace" });
+	const appServer = createWebAppServer(base);
+	const appPort = await listen(appServer);
+	const headersFor = (path, email, agent, subject = "00000000-0000-4000-8000-000000000009") => createWebAppAssertionHeaders({
+		secret: SECRET, issuer: "example-product", audience: "example-hostd-web",
+		method: "GET", path, body: Buffer.alloc(0), subject, email, agent,
+	});
+	try {
+		const path = "/v1/app/session";
+		const ok = await fetch(`http://127.0.0.1:${appPort}${path}`, { headers: headersFor(path, newEmail, "concierge") });
+		assert.equal(ok.status, 200, await ok.clone().text());
+		const session = await ok.json();
+		assert.equal(session.agent.id, "concierge");
+		assert.equal(session.project.slug, "workspace");
+
+		const wrongProject = `${path}?project=website`;
+		assert.notEqual((await fetch(`http://127.0.0.1:${appPort}${wrongProject}`, { headers: headersFor(wrongProject, newEmail, "concierge") })).status, 200);
+		assert.equal((await fetch(`http://127.0.0.1:${appPort}${path}`, { headers: headersFor(path, newEmail, "scout") })).status, 403);
+		// A bound account never falls through to the concierge, by email or subject.
+		assert.equal((await fetch(`http://127.0.0.1:${appPort}${path}`, { headers: headersFor(path, EMAIL, "concierge") })).status, 403);
+		assert.equal((await fetch(`http://127.0.0.1:${appPort}${path}`, { headers: headersFor(path, newEmail, "concierge", SUBJECT) })).status, 403);
+	} finally {
+		await close(appServer);
+	}
+});
