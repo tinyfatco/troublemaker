@@ -535,6 +535,10 @@ function createAdapter(name: string): AdapterWithHandler {
 	) {
 		throw new Error("MOM_ZULIP_CHANNEL_MESSAGES_DIRECT must be true or false");
 	}
+	const zulipAmbient = process.env.MOM_ZULIP_AMBIENT;
+	if (zulipAmbient !== undefined && zulipAmbient !== "true" && zulipAmbient !== "false") {
+		throw new Error("MOM_ZULIP_AMBIENT must be true or false");
+	}
 
 	switch (name) {
 		case "slack":
@@ -674,7 +678,8 @@ function createAdapter(name: string): AdapterWithHandler {
 				allowedChannelIds: allowedZulipChannelIds,
 				allowedDmUserIds: allowedZulipDmUserIds,
 				directChannelMessages: zulipChannelMessagesDirect !== "false",
-				onAmbientMessage: handleAmbientMessage,
+				// MOM_ZULIP_AMBIENT=false: mentions-only, no ambient listening in channels.
+				onAmbientMessage: zulipAmbient === "false" ? undefined : handleAmbientMessage,
 			});
 		}
 		case "telegram":

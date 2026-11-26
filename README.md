@@ -223,6 +223,7 @@ batch thread.
 | `MOM_ZULIP_ALLOWED_CHANNELS` | zulip:webhook | Optional numeric stream allowlist; when omitted, the adapter follows the bot's live subscriptions |
 | `MOM_ZULIP_ALLOWED_DM_USERS` | zulip:webhook | Optional comma-separated Zulip user IDs allowed to invoke the agent by direct message |
 | `MOM_ZULIP_CHANNEL_MESSAGES_DIRECT` | zulip:webhook | When `true`, every non-self channel message directly wakes the agent; otherwise unmentioned traffic is ambient |
+| `MOM_ZULIP_AMBIENT` | zulip:webhook | Set `false` for mentions-only: unmentioned channel traffic never triggers ambient engagement (DMs and @mentions still wake the agent) |
 | `MOM_ZULIP_AGENT_NAME` | zulip:webhook | Human-facing agent name used in the local transcript |
 | `MOM_TELEGRAM_BOT_TOKEN` | telegram:* | Telegram bot token from @BotFather |
 | `MOM_TELEGRAM_WEBHOOK_URL` | telegram:webhook | Public URL for webhook registration |
