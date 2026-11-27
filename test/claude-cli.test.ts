@@ -13,6 +13,7 @@ import {
 	isClaudeCliAuthenticated,
 	registerClaudeCliRuntimeAuth,
 	resetClaudeCliAuthCache,
+	isInterruptedClaudeCliRun,
 	resetClaudeCliSession,
 } from "../src/claude-cli.js";
 import { listModels, resolveModel } from "../src/model-config.js";
@@ -34,6 +35,7 @@ const envKeys = [
 	"FAKE_CLAUDE_AUTHENTICATED",
 	"FAKE_CLAUDE_INVOCATION_LOG",
 	"FAKE_CLAUDE_REJECT_RESUME",
+	"FAKE_CLAUDE_HANG",
 	"ANTHROPIC_API_KEY",
 ];
 for (const key of envKeys) originalEnv.set(key, process.env[key]);
@@ -61,8 +63,9 @@ async function collect(
 	streamFn: ReturnType<typeof createClaudeCliStream>,
 	model: Model<any>,
 	context: Context,
+	options?: Parameters<ReturnType<typeof createClaudeCliStream>>[2],
 ): Promise<{ message: AssistantMessage; deltas: string[] }> {
-	const stream = streamFn(model, context);
+	const stream = streamFn(model, context, options);
 	const deltas: string[] = [];
 	for await (const event of stream) {
 		if (event.type === "text_delta") deltas.push(event.delta);
@@ -105,6 +108,11 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
   const sessionFlag = resumeIndex >= 0 ? resumeIndex : args.indexOf("--session-id");
   const sessionId = args[sessionFlag + 1];
   process.stdout.write(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId, model: "fake-claude-model" }) + "\\n");
+  if (process.env.FAKE_CLAUDE_HANG === "true") {
+    process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "working" } } }) + "\\n");
+    setInterval(() => {}, 1000);
+    return;
+  }
   process.stdout.write(JSON.stringify({ type: "stream_event", parent_tool_use_id: "toolu_nested", event: { type: "content_block_delta", delta: { type: "text_delta", text: "nested leak" } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } } }) + "\\n");
   process.stdout.write(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "from claude" } } }) + "\\n");
@@ -304,6 +312,33 @@ if (resumeIndex >= 0 && process.env.FAKE_CLAUDE_REJECT_RESUME === "true") {
 	resetClaudeCliSession(workspaceDir);
 	await collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext);
 	assert.ok(readInvocations().at(-1)?.args.includes("--session-id"), "/clear session reset forces a fresh Claude session");
+
+	// An interrupted run keeps its Claude session so the next turn resumes with
+	// full tool history instead of a text-only reseed.
+	const sessionFile = join(awarenessDir, "claude-cli-session.json");
+	const beforeAbort = JSON.parse(readFileSync(sessionFile, "utf8")).sessionId;
+	process.env.FAKE_CLAUDE_HANG = "true";
+	const controller = new AbortController();
+	const abortedRun = collect(createClaudeCliStream(workspaceDir), sonnet, thirdContext, { signal: controller.signal });
+	setTimeout(() => controller.abort(), 300);
+	const aborted = await abortedRun;
+	delete process.env.FAKE_CLAUDE_HANG;
+	assert.equal(aborted.message.stopReason, "aborted", "user abort is reported as aborted");
+	assert.equal(
+		JSON.parse(readFileSync(sessionFile, "utf8")).sessionId,
+		beforeAbort,
+		"an aborted run keeps the resumable Claude session",
+	);
+	await collect(createClaudeCliStream(workspaceDir), sonnet, contextWith([
+		...thirdContext.messages,
+		aborted.message,
+		{ role: "user", content: "after the interrupt", timestamp: Date.now() },
+	]));
+	invocations = readInvocations();
+	assert.ok(invocations.at(-1)?.args.includes("--resume"), "the turn after an abort resumes instead of reseeding");
+	assert.doesNotMatch(invocations.at(-1)?.input || "", /conversation_reseed/, "no text-only reseed after an abort");
+	assert.equal(isInterruptedClaudeCliRun({ aborted: false, errorText: "Claude CLI output exceeded 8388608 characters" }), true);
+	assert.equal(isInterruptedClaudeCliRun({ aborted: false, errorText: "API Error: 529 overloaded" }), false);
 
 	console.log("claude-cli ok");
 } finally {
