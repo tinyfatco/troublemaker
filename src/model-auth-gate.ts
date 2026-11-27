@@ -29,3 +29,24 @@ export async function runWithModelCredentialGate<T>({
 		};
 	}
 }
+
+const MODEL_USAGE_LIMIT_PATTERNS: RegExp[] = [
+	/usage limit has been reached/i,
+	/usage[_ ]limit[_ ]reached/i,
+	/hit your usage limit/i,
+	/usage_?limit_?exceeded/i,
+	/insufficient_quota/i,
+	/exceeded your current quota/i,
+];
+
+/**
+ * A provider usage limit (e.g. "Codex error: The usage limit has been
+ * reached") is an account-level outage like a missing credential. It must
+ * not be posted as conversation content: in a shared channel two residents
+ * on the same exhausted account answer each other's "Sorry, something went
+ * wrong" posts, each failing again, and echo indefinitely.
+ */
+export function isModelUsageLimitError(message: string | undefined): boolean {
+	if (!message) return false;
+	return MODEL_USAGE_LIMIT_PATTERNS.some((pattern) => pattern.test(message));
+}
