@@ -15,3 +15,8 @@ export function shouldAutoCollapseToolDetails(
 export function isToolDetailsExpanded(hasDetails: boolean, manualOpen: boolean, autoOpen: boolean): boolean {
   return hasDetails && (manualOpen || autoOpen);
 }
+
+/** A streaming output box keeps following new lines while its reader is within a line of the bottom. */
+export function shouldStickToolOutputToBottom(scrollHeight: number, scrollTop: number, clientHeight: number, threshold = 16): boolean {
+  return scrollHeight - scrollTop - clientHeight <= threshold;
+}

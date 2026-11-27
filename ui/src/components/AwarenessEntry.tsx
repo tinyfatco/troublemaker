@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { debugStream, summarizeToolCall } from '../streamDebug';
 import { getToolDetail, getToolStatus, getToolStatusText, getToolTitle } from '../toolDisplay';
 import {
@@ -6,6 +6,7 @@ import {
   shouldAutoCollapseToolDetails,
   shouldAutoOpenToolDetails,
   TOOL_AUTO_COLLAPSE_DELAY_MS,
+  shouldStickToolOutputToBottom,
 } from '../toolExpansion';
 import { getThinkingPreview } from '../thinkingDisplay';
 import { parseOperatorControlEvent, type OperatorControlEvent } from '../operatorControlEvents';
@@ -234,6 +235,7 @@ function ToolCallBlock({ block, isRunning, collapseAutoDetails, output, result, 
                   placeholder={isRunning ? 'waiting for output...' : ''}
                   chips={buildOutputChips(output, result)}
                   kind="output"
+                  follow={!!isRunning}
                 />
               </div>
             )}
@@ -256,13 +258,23 @@ interface ToolDetailFrameModel {
   chips: ToolDetailChip[];
 }
 
-function ToolDetailFrame({ text, placeholder, chips, kind }: {
+function ToolDetailFrame({ text, placeholder, chips, kind, follow = false }: {
   text: string;
   placeholder?: string;
   chips: ToolDetailChip[];
   kind: ToolDetailFrameModel['kind'];
+  /** Keep the box scrolled to its newest line while output streams in, unless the reader scrolled up. */
+  follow?: boolean;
 }) {
   const displayText = text || placeholder || '';
+  const preRef = useRef<HTMLPreElement>(null);
+  const stuckToBottomRef = useRef(true);
+
+  useLayoutEffect(() => {
+    const el = preRef.current;
+    if (!el || !follow || !stuckToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [displayText, follow]);
 
   return (
     <div className={`tool-detail-frame ${kind}`}>
@@ -277,7 +289,16 @@ function ToolDetailFrame({ text, placeholder, chips, kind }: {
         </div>
       )}
       {displayText && (
-        <pre className={`tool-detail-text ${text ? '' : 'placeholder'}`}>{displayText}</pre>
+        <pre
+          className={`tool-detail-text ${text ? '' : 'placeholder'}`}
+          onScroll={(event) => {
+            const el = event.currentTarget;
+            stuckToBottomRef.current = shouldStickToolOutputToBottom(el.scrollHeight, el.scrollTop, el.clientHeight);
+          }}
+          ref={preRef}
+        >
+          {displayText}
+        </pre>
       )}
     </div>
   );
